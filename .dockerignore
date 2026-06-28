@@ -1,0 +1,25 @@
+# Python junk
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+.env
+
+# Docker junk
+.dockerignore
+Dockerfile
+*.Dockerfile
+docker-compose*.yml
+
+# IDE junk
+.vscode/
+.idea/
+
+# Local data
+models/
+cache/
+logs/
+data/

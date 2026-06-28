@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orion Admin Dashboard</title>
+    <link rel="stylesheet" href="css/admin.css">
+    <style>
+        .admin-tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 2px solid var(--border-color, #2d2d3a); }
+        .admin-tab-btn { padding: 10px 24px; background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 0.95rem; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: color 0.2s, border-color 0.2s; }
+        .admin-tab-btn.active { color: #7c3aed; border-bottom-color: #7c3aed; }
+        .admin-tab-panel { display: none; }
+        .admin-tab-panel.active { display: block; }
+        .chats-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+        .chats-table th { text-align: left; padding: 10px 12px; background: rgba(124,58,237,0.1); color: #94a3b8; font-weight: 600; border-bottom: 1px solid #2d2d3a; }
+        .chats-table td { padding: 9px 12px; border-bottom: 1px solid #1e1e2e; vertical-align: middle; }
+        .chats-table tr:hover td { background: rgba(255,255,255,0.02); }
+        .chat-name-cell { display: flex; align-items: center; gap: 8px; }
+        .inline-name-input { background: #1e1e2e; border: 1px solid #7c3aed; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; width: 200px; }
+        .btn-sm { padding: 4px 10px; font-size: 0.78rem; border-radius: 4px; border: none; cursor: pointer; font-weight: 500; }
+        .btn-rename { background: #3b82f6; color: white; }
+        .btn-del { background: #ef4444; color: white; }
+        .btn-save-name { background: #22c55e; color: white; display:none; }
+        .user-badge { font-size: 0.72rem; background: rgba(124,58,237,0.2); color: #a78bfa; padding: 1px 6px; border-radius: 10px; }
+        .chats-toolbar { display: flex; gap: 10px; margin-bottom: 14px; align-items: center; }
+        .search-input { padding: 8px 12px; background: #1e1e2e; border: 1px solid #2d2d3a; color: white; border-radius: 6px; font-size: 0.88rem; width: 260px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Orion Admin Dashboard</h1>
+            <div class="auth-box">
+                <input type="password" id="admin-key" placeholder="Admin API Key">
+            </div>
+            <div id="admin-connection-status" class="admin-connection-status">Bağlanıyor...</div>
+        </header>
+
+        <main>
+            <div id="error-message" class="error" style="display: none;"></div>
+
+            <div class="admin-tabs">
+                <button class="admin-tab-btn active" data-tab="tab-settings">⚙️ Kullanıcı Ayarları</button>
+                <button class="admin-tab-btn" data-tab="tab-chats">💬 Sohbet Yönetimi</button>
+            </div>
+
+            <!-- Settings Tab -->
+            <div id="tab-settings" class="admin-tab-panel active">
+                <div class="section-header">
+                    <h2>User Settings Overrides</h2>
+                </div>
+                <div class="users-container" id="users-container">
+                    <p class="placeholder">Please authorize and load data.</p>
+                </div>
+            </div>
+
+            <!-- Chats Tab -->
+            <div id="tab-chats" class="admin-tab-panel">
+                <div class="section-header">
+                    <h2>Sohbet Yönetimi</h2>
+                </div>
+                <div class="chats-toolbar">
+                    <input type="text" class="search-input" id="chat-search" placeholder="Sohbet ID veya kullanıcı ara...">
+                    <span id="chats-count" style="color:#94a3b8;font-size:0.85rem;"></span>
+                </div>
+                <div id="chats-container">
+                    <p class="placeholder">Yetkilendirin ve verileri yükleyin.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="chat-history-overlay" class="chat-history-overlay" style="display:none;">
+        <div class="chat-history-modal">
+            <button id="chat-history-close" class="chat-history-close" aria-label="Kapat">×</button>
+            <div id="chat-history-panel" class="chat-history-panel" style="display:none;"></div>
+        </div>
+    </div>
+
+    <!-- Template for user card -->
+    <template id="user-card-template">
+        <div class="user-card">
+            <div class="user-header">
+                <h3 class="user-id"></h3>
+            </div>
+            <table class="settings-table">
+                <thead>
+                    <tr>
+                        <th>Setting Key</th>
+                        <th>Value</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="settings-tbody">
+                </tbody>
+            </table>
+        </div>
+    </template>
+
+    <script src="js/admin.js"></script>
+</body>
+</html>

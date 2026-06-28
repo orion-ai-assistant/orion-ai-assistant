@@ -1,0 +1,4 @@
+networks:
+  orion-network:
+    name: ${ORION_NETWORK}
+    driver: bridge

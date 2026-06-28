@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${REDIS_HOST}
+    restart: unless-stopped
+    networks:
+      - orion-network
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${POSTGRES_HOST}
+    restart: unless-stopped
+    env_file:
+      - ../.env.global
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - orion-network
+
+  api:
+    build:
+      dockerfile: api.Dockerfile
+    container_name: ${HUB_HOST}
+    restart: unless-stopped
+    ports:
+      - "${HUB_PORT}:${HUB_CONTAINER_PORT}"
+    env_file:
+      - ../.env.global
+    volumes:
+      - ./src/orion/api/ui:/app/src/orion/api/ui
+      - ./src/orion/api/admin_ui:/app/src/orion/api/admin_ui
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - orion-network
+
+  worker:
+    build:
+      dockerfile: worker.Dockerfile
+    container_name: ${WORKER_HOST}
+    restart: unless-stopped
+    env_file:
+      - ../.env.global
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - orion-network
+
+
+networks:
+  orion-network:
+    external: true
+    name: ${ORION_NETWORK}
+
+volumes:
+  postgres_data:
+  redis_data:

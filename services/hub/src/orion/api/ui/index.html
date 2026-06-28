@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orion Hub Test Client</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="auth-modal" class="auth-modal">
+        <div class="auth-card">
+            <h2>Orion Hub'a Giriş Yap</h2>
+            <p>Devam etmek için lütfen giriş yapın veya kayıt olun.</p>
+            <div id="auth-error" class="auth-error" style="display: none; color: #ef4444; margin-bottom: 15px; font-size: 0.9rem;"></div>
+            <div class="auth-form">
+                <input type="text" id="auth-username" placeholder="Kullanıcı Adı" autocomplete="username">
+                <input type="password" id="auth-password" placeholder="Şifre" autocomplete="current-password">
+                <div class="auth-actions">
+                    <button id="auth-login-btn" class="btn btn-primary">Giriş Yap</button>
+                    <button id="auth-register-btn" class="btn btn-secondary">Kayıt Ol</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="header">
+            <h1>
+                <div class="status-indicator" id="status-indicator"></div>
+                Orion Hub Test
+                <span id="connection-status-text" class="connection-status-text">Bağlanıyor...</span>
+            </h1>
+            <div class="settings">
+                <span id="user-profile-badge" style="color: #94a3b8; font-size: 0.9rem; margin-right: 10px;"></span>
+                <button class="btn btn-danger" id="logout-btn" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">Çıkış Yap</button>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab-btn active" data-target="chat-view">Sohbet</button>
+            <button class="tab-btn" data-target="settings-view">Ayarlar</button>
+            <button class="tab-btn" data-target="status-view">İş (Job) Durumu</button>
+        </div>
+
+        <div id="chat-view" class="view active chat-view-container">
+            <div class="chat-sidebar" id="chat-sidebar">
+                <button class="btn btn-primary" id="new-chat-btn" style="width: 100%; margin-bottom: 15px;">+ Yeni Sohbet</button>
+                <div class="chat-list" id="chat-list">
+                    <!-- JS ile doldurulacak -->
+                </div>
+            </div>
+            
+            <div class="chat-main">
+                <div class="chat-area" id="chat-area">
+                    <!-- JavaScript tarafından doldurulacak -->
+                </div>
+
+                <div class="input-area">
+                    <button class="btn btn-danger" id="stop-btn" style="display: none;">Durdur</button>
+                    <input type="text" id="message-input" placeholder="Mesajınızı yazın...">
+                    <button class="btn btn-primary" id="send-btn">Gönder</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="settings-view" class="view">
+            <div style="padding: 20px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; overflow: hidden;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-shrink: 0;">
+                    <div>
+                        <h2 style="margin: 0 0 5px 0;">Kullanıcı Ayarları (Ayarlar)</h2>
+                        <p style="margin: 0; color: #94a3b8; font-size: 0.9rem;">Kişisel model ve arayüz ayarlarınızı özelleştirin.</p>
+                    </div>
+                </div>
+                
+                <div id="settings-result" style="color: #22c55e; margin-bottom: 15px; font-weight: 500; min-height: 20px; flex-shrink: 0;"></div>
+
+                <div id="settings-dashboard" style="display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; padding-right: 10px; padding-bottom: 40px;">
+                    <!-- JS ile dinamik doldurulacak -->
+                    <div style="text-align: center; padding: 40px; color: #94a3b8;">Ayarlar yükleniyor...</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="status-view" class="view">
+            <div style="padding: 20px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; overflow: hidden;">
+                <h2 style="margin-top: 0; margin-bottom: 5px;">İş (Job) Durumu Sorgulama</h2>
+                <p style="margin: 0 0 15px 0; color: #94a3b8; font-size: 0.9rem;">Oluşturulan bir Chat ID'nin arka plandaki (Redis) durumunu sorgulayın.</p>
+                <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-shrink: 0;">
+                    <input type="text" id="query-chat-id" placeholder="Chat ID Girin" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--secondary-color); color: white; outline: none;">
+                    <button class="btn btn-primary" id="check-status-btn">Sorgula</button>
+                </div>
+                <pre id="status-result" style="background: var(--bg-color); padding: 15px; border-radius: 8px; overflow-y: auto; flex: 1; margin: 0; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.9rem; padding-bottom: 35px;"></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts split by modules -->
+    <script src="js/config.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/sse.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+{
+  "id": "llama-cpp",
+  "name": "llama.cpp LLM Server",
+  "category": "llm",
+  "description": "Yüksek performanslı, GGUF formatında LLM inference sunucusu. OpenAI-compatible API.",
+  "version": "latest",
+  "vram_required_gb": 4,
+  "parameters": {
+    "GPU_LAYERS": {"default": 35, "label": "GPU Katman Sayısı", "min": 0, "max": 100, "type": "int"},
+    "CONTEXT_SIZE": {"default": 8192, "label": "Bağlam Boyutu (Context)", "min": 512, "max": 128000, "type": "int"},
+    "BATCH_SIZE": {"default": 512, "label": "Batch Boyutu", "min": 8, "max": 8192, "type": "int"},
+    "N_PARALLEL": {"default": 1, "label": "Paralel İstek Sayısı", "min": 1, "max": 16, "type": "int"}
+  },
+  "models_path": "models/",
+  "models_catalog": [
+    {
+      "id": "gemma-4-unsloth",
+      "name": "Google Gemma 4 - Multimodal",
+      "folder": "gemma-4-multimodal",
+      "description": "Unsloth tarafından optimize edilmiş, vizyon destekli hafif model.",
+      "download_url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
+      "files": [
+        "gemma-4-E2B-it-Q3_K_S.gguf",
+        "mmproj-BF16.gguf"
+      ],
+      "env": {
+        "EXTRA_ARGS": "--flash-attn auto"
+      }
+    },
+    {
+      "id": "miniplm-qwen-200m",
+      "name": "MiniPLM Qwen 200M (Q2 & Q3)",
+      "folder": "miniplm-qwen-200m",
+      "description": "Ultra hafif Qwen tabanlı model. Q2 ve Q3 sürümleri bir arada.",
+      "download_url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/main/",
+      "files": [
+        "MiniPLM-Qwen-200M-Q2_K.gguf",
+        "MiniPLM-Qwen-200M-Q3_K_M.gguf"
+      ]
+    }
+  ],
+  "supports": [
+    "nvidia",
+    "amd",
+    "cpu"
+  ],
+  "default_hardware": "nvidia",
+  "source": {
+    "type": "docker",
+    "registry": "ghcr.io",
+    "image": "ggml-org/llama.cpp",
+    "tags": {
+      "nvidia": "server-cuda",
+      "amd": "server-rocm",
+      "cpu": "server"
+    }
+  },
+  "supported_environments": [
+    {
+      "id": "llm-nv-cuda",
+      "name": "NVIDIA - CUDA (Hızlı)",
+      "base_image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
+      "hardware": "nvidia"
+    },
+    {
+      "id": "llm-amd-rocm",
+      "name": "AMD - ROCm",
+      "base_image": "ghcr.io/ggml-org/llama.cpp:server-rocm",
+      "hardware": "amd"
+    },
+    {
+      "id": "llm-cpu-only",
+      "name": "Sadece CPU (Yavaş)",
+      "base_image": "ghcr.io/ggml-org/llama.cpp:server",
+      "hardware": "cpu"
+    }
+  ],
+  "compose_files": {
+    "nvidia": "docker-compose.nvidia.yml",
+    "amd": "docker-compose.amd.yml",
+    "cpu": "docker-compose.cpu.yml"
+  },
+  "api": {
+    "style": "openai-compatible",
+    "endpoint": "/v1/chat/completions"
+  },
+  "status": "installable"
+}

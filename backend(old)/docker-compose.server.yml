@@ -1,0 +1,104 @@
+services:
+  arangodb:
+    image: "arangodb:3.12.7.1"
+    container_name: arangodb
+    restart: always
+    environment:
+      ARANGO_ROOT_PASSWORD: ${ARANGO_PASSWORD:-rootpassword}
+    ports:
+      - "8529:8529"
+    volumes:
+      - arango_data:/var/lib/arangodb3
+      - arango_apps_data:/var/lib/arangodb3-apps
+    networks:
+      - appnet
+
+  redis:
+    image: "redis:8.4.0-alpine"
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - appnet
+
+  orion_agent:
+    image: krstlcm/orion-agent:prod
+    container_name: orion_agent
+    restart: always
+    volumes:
+      - "./config/shared:/config/shared"
+    environment:
+      - CONFIG_FILE=/config/shared/ai_config.json
+      - PORT=8001
+      - PYTHONPATH=/app
+      # Python kodu (agent) tarafından import edilen env var'lar
+      - ENV=prod
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - AGENT_HEARTBEAT_SECONDS=${AGENT_HEARTBEAT_SECONDS}
+    depends_on:
+      - redis
+    networks:
+      - appnet
+
+  api:
+    image: krstlcm/orion-api:prod
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - "./config/shared:/config/shared"
+    environment:
+      - CONFIG_FILE=/config/shared/ai_config.json
+      # Python kodu (config.settings.api_server) tarafından import edilen env var'lar
+      - ENV=prod
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - WS_ENABLE_REAL_AGENT=true
+      - REDIS_URL=redis://redis:6379
+      # Python kodu (config.settings.ai) tarafından import edilen env var'lar
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - PYTHONPATH=/app
+    depends_on:
+      - arangodb
+      - redis
+      - orion_agent
+    networks:
+      - appnet
+
+  admin_panel:
+    image: krstlcm/orion-admin_panel:prod
+    container_name: admin_panel
+    restart: always
+    volumes:
+      - "./config/shared:/config/shared"
+    ports:
+      - "3000:3000"
+    environment:
+      - CONFIG_FILE=/config/shared/ai_config.json
+      # Python kodu (config.settings.admin) tarafından import edilen env var'lar
+      - ADMIN_HOST=0.0.0.0
+      - ADMIN_PORT=3000
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - API_BACKEND_URL=http://api:8000
+      - ENV=prod
+    depends_on:
+      - api
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
+
+volumes:
+  arango_data:
+  arango_apps_data:
+  redis_data:

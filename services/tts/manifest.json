@@ -1,0 +1,122 @@
+{
+  "id": "orion-tts",
+  "name": "Orion TTS",
+  "category": "tts",
+  "description": "Seçilen modele göre dinamik olarak yapılandırılan TTS servisi.",
+  "version": "2.1",
+  "vram_required_gb": 6,
+  "parameters": {
+    "LOW_VRAM": {
+      "default": true,
+      "label": "VRAM Tasarrufu (CPU)"
+    },
+    "IDLE_CLEANUP_MINS": {
+      "default": 2,
+      "label": "Boşta VRAM Temizleme (0=Kapalı)",
+      "min": 0,
+      "max": 1440,
+      "type": "int"
+    }
+  },
+  "models_path": "models/",
+  "env": {
+    "START_COMMAND": "python3 /app/api.py",
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1"
+  },
+  "models_catalog": [
+    {
+      "id": "voxcpm2",
+      "name": "VoxCPM2",
+      "folder": "voxcpm2",
+      "description": "Yüksek kaliteli Türkçe ses klonlama ve sentez.",
+      "download_url": "https://huggingface.co/krstalacam/VoxCPM2/resolve/main/",
+      "files": [
+        "model.safetensors",
+        "config.json",
+        "audiovae.pth",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ],
+      "build_args": {
+        "ENGINE_NAME": "voxcpm2"
+      },
+      "env": {
+        "MODEL_PATH": "/app/models/voxcpm2",
+        "ENGINE_NAME": "voxcpm2"
+      }
+    },
+    {
+      "id": "omnivoice-multilang",
+      "name": "OmniVoice (600+ Dil)",
+      "folder": "omnivoice",
+      "description": "Xiaomi'nin geniş dil destekli TTS modeli.",
+      "download_url": "https://huggingface.co/k2-fsa/OmniVoice/resolve/main/",
+      "files": [
+        "model.safetensors",
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "audio_tokenizer/model.safetensors",
+        "audio_tokenizer/config.json",
+        "audio_tokenizer/preprocessor_config.json"
+      ],
+      "build_args": {
+        "ENGINE_NAME": "omnivoice"
+      },
+      "env": {
+        "MODEL_PATH": "/app/models/omnivoice",
+        "ENGINE_NAME": "omnivoice"
+      }
+    }
+  ],
+  "supports": [
+    "nvidia",
+    "amd",
+    "cpu"
+  ],
+  "default_hardware": "nvidia",
+  "source": {
+    "type": "image",
+    "registry": "docker.io",
+    "image": "orionai/tts-unified",
+    "tags": {
+      "nvidia": "cuda124",
+      "amd": "rocm60",
+      "cpu": "cpu"
+    }
+  },
+  "supported_environments": [
+    {
+      "id": "tts-nv-cuda",
+      "name": "NVIDIA - CUDA",
+      "hardware": "nvidia",
+      "base_image": "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
+
+    },
+    {
+      "id": "tts-amd-rocm",
+      "name": "AMD - ROCm",
+      "hardware": "amd",
+      "base_image": "rocm/pytorch:rocm6.2.3_ubuntu22.04_py3.10_pytorch_release_2.3.0"
+
+    },
+    {
+      "id": "tts-cpu",
+      "name": "Sadece CPU",
+      "hardware": "cpu",
+      "base_image": "python:3.10-slim"
+
+    }
+  ],
+  "compose_files": {
+    "nvidia": "docker-compose.nvidia.yml",
+    "amd": "docker-compose.amd.yml",
+    "cpu": "docker-compose.cpu.yml"
+  },
+  "api": {
+    "style": "openai",
+    "endpoint": "/v1/audio/speech"
+  },
+  "status": "installable"
+}

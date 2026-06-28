@@ -1,0 +1,26 @@
+{
+  "id": "orion-router",
+  "name": "Orion Router",
+  "category": "router",
+  "description": "Yönlendirme servisidir. Eğer host/port değerlerini değiştirirseniz, hub için de bu değişikliği yapmanız gerekir.",
+  "version": "1.0.0",
+  "supports": [
+    "cpu"
+  ],
+  "default_hardware": "cpu",
+  "supported_environments": [
+    {
+      "id": "default",
+      "name": "Standart (CPU)",
+      "hardware": "cpu"
+    }
+  ],
+  "compose_files": {
+    "cpu": "docker-compose.yml"
+  },
+  "host_env": "ROUTER_HOST",
+  "port_env": "ROUTER_PORT",
+  "container_name": "router",
+  "order": 90,
+  "status": "enabled"
+}

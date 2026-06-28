@@ -1,0 +1,11 @@
+STREAM_NAME = "agent_jobs"
+CONSUMER_GROUP = "orion-workers"
+CHAT_STATE_KEY_PREFIX = "chat:state:"
+CHAT_STOP_KEY_PREFIX = "chat:stop:"
+CHAT_META_KEY_PREFIX = "chat:meta:"
+CHAT_HISTORY_KEY_PREFIX = "chat:history:"
+CHAT_USER_INDEX_PREFIX = "chat:user:index:"
+ROOM_USER_PREFIX = "room:user:"
+SETTINGS_HASH_KEY_PREFIX = "orion:settings:"
+SETTINGS_DEFAULT_USER = "global"
+HISTORY_CACHE_TTL = 3600  # 1 hour in seconds

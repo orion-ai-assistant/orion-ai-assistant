@@ -1,0 +1,111 @@
+{
+  "provider": "vertexai",
+  "google_api_key": "new-key",
+  "vertex_project": "gen-lang-client-0430976171",
+  "vertex_location": "europe-west1",
+  "enable_tool_binding": true,
+  "thinking_enabled": false,
+  "log_settings": {
+    "enabled": true,
+    "levels": {
+      "DEBUG": true,
+      "ERROR": true,
+      "INFO": true,
+      "STREAM": true,
+      "WARNING": true
+    },
+    "components": {
+      "agent/debug": true,
+      "agent/graph": true,
+      "agent/main": true,
+      "agent/worker": true,
+      "api/app/routes/http_routes": true,
+      "api/app/routes/socketio_agent_tasks": true,
+      "api/app/routes/socketio_routes": true,
+      "api/app/services/agent_graph_service": true,
+      "api/app/services/agent_service": true,
+      "api/app/services/session_service": true,
+      "api/app/store/redis_store": true,
+      "api/app/connection_manager": true,
+      "api/app/main": true,
+      "config/manager/defaults": true,
+      "config/manager/operations": true,
+      "config/manager/sync": true,
+      "config/config_manager": true,
+      "repositories/session_repo": true,
+      "routes/http_routes": true,
+      "routes/socketio_agent_tasks": true,
+      "routes/socketio_routes": true,
+      "scripts/agent_queue_worker": true,
+      "services/agent_event_bridge": true,
+      "services/agent_graph_service": true,
+      "services/agent_queue_service": true,
+      "services/agent_service": true,
+      "services/config_service": true,
+      "services/session_service": true,
+      "services/user_service": true,
+      "store/redis_store": true,
+      "connection_manager": true,
+      "main": true
+    }
+  },
+  "agents": {
+    "chat": {
+      "display_name": "Chat Agent",
+      "description": "Genel sohbet için.",
+      "system_prompt": "Kullanıcı ne söylerse yardımcı olmalısın. nazik ve neşeli ol",
+      "model": "gemini-2.5-flash",
+      "tools": [
+        "get_current_time",
+        "do_not_reply"
+      ],
+      "graph": "default",
+      "default": true
+    }
+  },
+  "active_agent": "chat",
+  "models": [
+    {
+      "name": "gemini-2.5-flash",
+      "enabled": true,
+      "max_tokens": 4096,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 40,
+      "is_default": true,
+      "thinking_capable": true
+    }
+  ],
+  "tools": [
+    {
+      "name": "search",
+      "description": "Web'de arama yapar. Güncel bilgi, haber gibi sorularda kullan.",
+      "enabled": true
+    },
+    {
+      "name": "get_current_time",
+      "description": "Belirtilen timezone'daki anlık tarih ve saati döner.",
+      "enabled": true
+    },
+    {
+      "name": "get_weather",
+      "description": "Belirtilen şehrin anlık hava durumunu getirir.",
+      "enabled": true
+    },
+    {
+      "name": "run_python_code",
+      "description": "Verilen Python kodunu çalıştırır ve standart çıktısını (ve hatalarını) döner.",
+      "enabled": false
+    },
+    {
+      "name": "do_not_reply",
+      "description": "Bu araç senin GHOSTING yeteneğindir.",
+      "enabled": true
+    }
+  ],
+  "max_conversation_history": 20,
+  "rate_limit_per_user": 100,
+  "ws_enable_real_agent": false,
+  "last_updated": "2026-04-04 20:56:07.532768",
+  "updated_by": "admin"
+}

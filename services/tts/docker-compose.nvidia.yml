@@ -1,0 +1,35 @@
+services:
+  tts:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - "ENGINE_NAME=${ENGINE_NAME}"
+        - "BASE_IMAGE=${BASE_IMAGE}"
+        - "PYTORCH_URL=${PYTORCH_URL}"
+    image: orion-tts:local
+    pull_policy: build
+    container_name: ${TTS_HOST}
+    ports:
+      - "${TTS_PORT}:${TTS_CONTAINER_PORT}"
+    env_file:
+      - ../.env.global
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT}
+              capabilities: [gpu]
+    volumes:
+      - ./models:/app/models
+      - ./voices:/app/voices
+    networks:
+      - orion-network
+    restart: unless-stopped
+
+networks:
+  orion-network:
+    external: true
+    name: ${ORION_NETWORK}

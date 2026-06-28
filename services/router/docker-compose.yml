@@ -1,0 +1,60 @@
+services:
+  router:
+    image: ghcr.io/krstalacam/orion-router:latest
+    pull_policy: always
+    container_name: router
+    restart: unless-stopped
+    ports:
+      - "${ROUTER_PORT:-20128}:${ROUTER_CONTAINER_PORT:-20128}"
+    environment:
+      # PORT yerine ROUTER_PORT kullanıyoruz ki uygulama doğru portta çalışsın
+      - ROUTER_PORT=${ROUTER_CONTAINER_PORT:-20128}
+      - POSTGRES_HOST=router-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=orion_router
+      - POSTGRES_USER=router_user
+      - POSTGRES_PASSWORD=router_pass
+      - LLM_HOST=${LLM_HOST}
+      - LLM_PORT=${LLM_PORT}
+      - EMBED_HOST=${EMBED_HOST}
+      - EMBED_PORT=${EMBED_PORT}
+      - TTS_HOST=${TTS_HOST}
+      - TTS_PORT=${TTS_PORT}
+      # Yeni eklenen kritik güvenlik ve yönetim değişkenleri
+      - ADMIN_SECRET=${ADMIN_SECRET:-orion}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY} # Restart'larda API key'lerin bozulmaması için şart
+      - CLI_LANG=${CLI_LANG:-en}
+    networks:
+      - orion-network
+    depends_on:
+      router-db:
+        condition: service_healthy
+
+  router-db:
+    image: postgres:16-alpine
+    container_name: router-db
+    restart: unless-stopped
+    networks:
+      - orion-network
+    environment:
+      POSTGRES_DB: orion_router
+      POSTGRES_USER: router_user
+      POSTGRES_PASSWORD: router_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - orion_router_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U router_user -d orion_router"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  orion_router_postgres_data:
+    name: orion_router_postgres_data
+
+networks:
+  orion-network:
+    name: ${ORION_NETWORK:-orion-network}
+    external: true

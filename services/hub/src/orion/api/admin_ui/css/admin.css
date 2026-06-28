@@ -1,0 +1,423 @@
+:root {
+    --bg-color: #0f172a;
+    --card-bg: #1e293b;
+    --text-color: #f8fafc;
+    --text-muted: #94a3b8;
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --danger: #ef4444;
+    --danger-hover: #dc2626;
+    --success: #22c55e;
+    --success-hover: #16a34a;
+    --warning: #f59e0b;
+    --border: #334155;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+h1 {
+    margin: 0;
+    font-size: 1.8rem;
+}
+
+.auth-box {
+    display: flex;
+    gap: 10px;
+}
+
+.admin-connection-status {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.admin-connection-status.offline {
+    color: var(--warning);
+}
+
+input {
+    background-color: #0b1120;
+    border: 1px solid var(--border);
+    color: var(--text-color);
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    outline: none;
+}
+
+input:focus {
+    border-color: var(--primary);
+}
+
+button {
+    background-color: var(--primary);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.2s, opacity 0.2s;
+}
+
+button:hover {
+    background-color: var(--primary-hover);
+}
+
+button.btn-danger {
+    background-color: var(--danger);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+}
+
+button.btn-danger:hover {
+    background-color: var(--danger-hover);
+}
+
+button.btn-disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+button.btn-disabled:hover {
+    background-color: var(--danger);
+}
+
+button.btn-save {
+    background-color: var(--success);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+}
+
+button.btn-save:hover {
+    background-color: var(--success-hover);
+}
+
+button.btn-add {
+    background-color: var(--primary);
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+}
+
+button.btn-add:hover {
+    background-color: var(--primary-hover);
+}
+
+button.btn-view {
+    background-color: #6366f1;
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+}
+
+button.btn-view:hover {
+    background-color: #4f46e5;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+}
+
+.error {
+    background-color: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+    padding: 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    border: 1px solid var(--danger);
+}
+
+.users-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.user-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+}
+
+.user-header {
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+}
+
+.user-id {
+    margin: 0;
+    color: var(--primary);
+    font-size: 1.2rem;
+}
+
+.settings-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.settings-table th, .settings-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.settings-table th {
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+.placeholder {
+    color: var(--text-muted);
+    text-align: center;
+    font-style: italic;
+    padding: 2rem;
+}
+
+/* Editable input in table */
+.edit-input {
+    width: 100%;
+    box-sizing: border-box;
+    background-color: #0b1120;
+    border: 1px solid var(--border);
+    color: var(--text-color);
+    padding: 0.4rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.edit-input:focus {
+    border-color: var(--primary);
+}
+
+/* Actions cell layout */
+.actions-cell {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    white-space: nowrap;
+}
+
+/* Add row styling */
+.add-row td {
+    border-bottom: none;
+    padding-top: 0.5rem;
+}
+
+/* Badge styles */
+.badge-global {
+    display: inline-block;
+    background: rgba(59, 130, 246, 0.15);
+    color: var(--primary);
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+    letter-spacing: 0.5px;
+}
+
+.badge-legacy {
+    display: inline-block;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--warning);
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 3px;
+    vertical-align: middle;
+    letter-spacing: 0.3px;
+}
+
+/* Toast notifications */
+.toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--success);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.3s, transform 0.3s;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-error {
+    background: var(--danger);
+}
+
+.chat-history-panel {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+}
+
+.chat-history-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9998;
+}
+
+.chat-history-modal {
+    width: min(920px, 92vw);
+    max-height: 80vh;
+    background: #0b1120;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    position: relative;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+}
+
+.chat-history-modal .chat-history-panel {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.chat-history-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.4rem;
+    cursor: pointer;
+}
+
+.chat-history-close:hover {
+    color: var(--text-color);
+}
+
+.chat-history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.chat-history-title {
+    font-size: 0.95rem;
+    color: var(--text-color);
+    margin: 0;
+}
+
+.chat-history-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.chat-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 360px;
+    overflow: auto;
+    padding-right: 6px;
+}
+
+.chat-history-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #0b1120;
+    border: 1px solid #1f2937;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+.chat-history-item.user {
+    border-left: 3px solid var(--primary);
+}
+
+.chat-history-item.assistant {
+    border-left: 3px solid var(--success);
+}
+
+.chat-history-item .role {
+    font-weight: 600;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.think-block {
+    margin: 6px 0 10px;
+    background: rgba(234, 179, 8, 0.06);
+    border: 1px solid rgba(234, 179, 8, 0.25);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 0.8rem;
+}
+
+.think-summary {
+    padding: 6px 10px;
+    cursor: pointer;
+    color: #ca8a04;
+    font-weight: 600;
+    list-style: none;
+    background: rgba(234, 179, 8, 0.08);
+}
+
+.think-summary::-webkit-details-marker {
+    display: none;
+}
+
+.think-body {
+    padding: 8px 12px;
+    margin: 0;
+    max-height: 220px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #a3a3a3;
+    font-family: "Consolas", "Fira Code", monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    border-top: 1px solid rgba(234, 179, 8, 0.15);
+}

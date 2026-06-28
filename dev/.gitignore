@@ -1,0 +1,14 @@
+# Ignore virtual environments under dev/
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment/configuration files
+.env
+.env.local

@@ -1,0 +1,24 @@
+{
+  "id": "orion-hub",
+  "name": "Orion Hub",
+  "category": "hub",
+  "description": "Orion'un ana orkestrasyon katmanı. API, Worker, Redis ve Veritabanı servislerini içerir.",
+  "version": "1.0.0",
+  "supports": [
+    "cpu"
+  ],
+  "default_hardware": "cpu",
+  "supported_environments": [
+    {
+      "id": "default",
+      "name": "Standart (CPU)",
+      "hardware": "cpu"
+    }
+  ],
+  "compose_files": {
+    "cpu": "docker-compose.yml",
+    "lb": "docker-compose.lb.yml"
+  },
+  "order": 99,
+  "status": "enabled"
+}

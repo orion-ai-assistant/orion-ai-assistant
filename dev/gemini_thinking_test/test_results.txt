@@ -1,0 +1,1091 @@
+============================================================
+GOOGLE-GENAI SDK DIAGNOSTICS
+============================================================
+SDK Module Path: D:\krstlcm Workspace\DevProjects\orion-ai-assistant\dev\gemini_thinking_test\.venv\Lib\site-packages\google\genai\__init__.py
+types.ThinkingConfig constructor signature:
+  (self, /, **data: 'Any') -> 'None'
+types.GenerateContentConfig parameters containing 'think':
+  []
+============================================================
+
+============================================================
+TESTING MODEL: gemini-2.5-flash-lite
+CONFIGURATION: Default (No Thinking Config)
+PROMPT: En sevdiğin renk ne?
+============================================================
+Request Configuration:
+{
+  "http_options": null,
+  "should_return_http_response": null,
+  "system_instruction": null,
+  "temperature": null,
+  "top_p": null,
+  "top_k": null,
+  "candidate_count": null,
+  "max_output_tokens": null,
+  "stop_sequences": null,
+  "response_logprobs": null,
+  "logprobs": null,
+  "presence_penalty": null,
+  "frequency_penalty": null,
+  "seed": null,
+  "response_mime_type": null,
+  "response_schema": null,
+  "response_json_schema": null,
+  "routing_config": null,
+  "model_selection_config": null,
+  "safety_settings": null,
+  "tools": null,
+  "tool_config": null,
+  "labels": null,
+  "cached_content": null,
+  "response_modalities": null,
+  "media_resolution": null,
+  "speech_config": null,
+  "audio_timestamp": null,
+  "automatic_function_calling": null,
+  "thinking_config": null,
+  "image_config": null,
+  "enable_enhanced_civic_answers": null,
+  "model_armor_config": null,
+  "service_tier": null
+}
+
+--- Starting Stream ---
+
+API Error during execution: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+
+--- End Stream ---
+Total Chunks Received: 0
+============================================================
+
+============================================================
+TESTING MODEL: gemini-2.5-flash-lite
+CONFIGURATION: Thinking Config ON (include_thoughts=True, budget=1024)
+PROMPT: En sevdiğin renk ne?
+============================================================
+Request Configuration:
+{
+  "http_options": null,
+  "should_return_http_response": null,
+  "system_instruction": null,
+  "temperature": null,
+  "top_p": null,
+  "top_k": null,
+  "candidate_count": null,
+  "max_output_tokens": null,
+  "stop_sequences": null,
+  "response_logprobs": null,
+  "logprobs": null,
+  "presence_penalty": null,
+  "frequency_penalty": null,
+  "seed": null,
+  "response_mime_type": null,
+  "response_schema": null,
+  "response_json_schema": null,
+  "routing_config": null,
+  "model_selection_config": null,
+  "safety_settings": null,
+  "tools": null,
+  "tool_config": null,
+  "labels": null,
+  "cached_content": null,
+  "response_modalities": null,
+  "media_resolution": null,
+  "speech_config": null,
+  "audio_timestamp": null,
+  "automatic_function_calling": null,
+  "thinking_config": {
+    "include_thoughts": true,
+    "thinking_budget": 1024,
+    "thinking_level": null
+  },
+  "image_config": null,
+  "enable_enhanced_civic_answers": null,
+  "model_armor_config": null,
+  "service_tier": null
+}
+
+--- Starting Stream ---
+
+[Chunk #1]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "**Defining Preferences**\n\nI've identified the core question as \"What is your favorite color?\". Now, I'm working to understand that as an AI, I lack personal preferences or physical senses, therefore, I cannot have a favorite color. It's a key distinction in processing the question.\n\n\n",
+            "thought": true,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": null,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 67,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 75,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: True
+     * text: '**Defining Preferences**\n\nI\'ve identified the core question as "What is your favorite color?". Now, I\'m working to understand that as an AI, I lack personal preferences or physical senses, therefore, I cannot have a favorite color. It\'s a key distinction in processing the question.\n\n\n'
+
+[Chunk #2]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "**Refining My Response**\n\nI'm now formulating a direct, yet engaging, response. The goal is to articulate my lack of a favorite color due to being an AI, and then to offer an alternative, positive engagement. I'm focusing on the *concept* of color and the information I can offer about them. I'm avoiding sounding dismissive. I'm considering all colors' meanings.\n\n\n",
+            "thought": true,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": null,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 317,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 325,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: True
+     * text: "**Refining My Response**\n\nI'm now formulating a direct, yet engaging, response. The goal is to articulate my lack of a favorite color due to being an AI, and then to offer an alternative, positive engagement. I'm focusing on the *concept* of color and the information I can offer about them. I'm avoiding sounding dismissive. I'm considering all colors' meanings.\n\n\n"
+
+[Chunk #3]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "**Formulating My Response**\n\nI'm now integrating the draft response in Turkish, and I'm refining the engaging follow-up. I'm focusing on acknowledging the human perspective on colors while also reinforcing my AI nature. The aim is to bridge the gap between my inability to have a favorite and my capacity to process information about colors. I'm considering the best way to smoothly transition into offering information about colors' meanings and cultural significance. I'm also ensuring the tone remains friendly and informative.\n\n\n",
+            "thought": true,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": null,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 572,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 580,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: True
+     * text: "**Formulating My Response**\n\nI'm now integrating the draft response in Turkish, and I'm refining the engaging follow-up. I'm focusing on acknowledging the human perspective on colors while also reinforcing my AI nature. The aim is to bridge the gap between my inability to have a favorite and my capacity to process information about colors. I'm considering the best way to smoothly transition into offering information about colors' meanings and cultural significance. I'm also ensuring the tone remains friendly and informative.\n\n\n"
+
+[Chunk #4]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "**Evaluating My Response**\n\nI've reviewed the Turkish translation, and I'm very happy with how it came out. The explanation is clear and the engagement flows naturally. I've rephrased some portions for better clarity and fluency. It's now perfectly clear that I'm an AI and don't have personal preferences, yet I'm still eager to learn about the user's perspective.\n\n\n",
+            "thought": true,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": null,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 705,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 713,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: True
+     * text: "**Evaluating My Response**\n\nI've reviewed the Turkish translation, and I'm very happy with how it came out. The explanation is clear and the engagement flows naturally. I've rephrased some portions for better clarity and fluency. It's now perfectly clear that I'm an AI and don't have personal preferences, yet I'm still eager to learn about the user's perspective.\n\n\n"
+
+[Chunk #5]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "Ben bir yapay zeka olduğum için, insanların sahip olduğu gibi kiş",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 11,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 705,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 724,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: 'Ben bir yapay zeka olduğum için, insanların sahip olduğu gibi kiş'
+
+[Chunk #6]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "isel tercihlerim veya duygularım yok. Bu yüzden \"en sevdiğim renk\" gibi bir kavram benim için geçerli değil.\n\nAncak, renklerin insan kültüründeki, psikolojisindeki ve dünyadaki çeşitliliğini ve",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 62,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 705,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 775,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: 'isel tercihlerim veya duygularım yok. Bu yüzden "en sevdiğim renk" gibi bir kavram benim için geçerli değil.\n\nAncak, renklerin insan kültüründeki, psikolojisindeki ve dünyadaki çeşitliliğini ve'
+
+[Chunk #7]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:03 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=28249",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": " önemini anlıyorum. Her rengin kendine özgü anlamları ve güzellikleri var!\n\nSizin en sevdiğiniz renk ne peki? Onu duymak isterim!",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": "STOP",
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "f0USaoelAfa2kdUPjo6S0AI",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 103,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": 705,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 816,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: ' önemini anlıyorum. Her rengin kendine özgü anlamları ve güzellikleri var!\n\nSizin en sevdiğiniz renk ne peki? Onu duymak isterim!'
+
+--- End Stream ---
+Total Chunks Received: 7
+============================================================
+
+============================================================
+TESTING MODEL: gemini-2.5-flash-lite
+CONFIGURATION: Thinking Config OFF (thinking_budget=0)
+PROMPT: En sevdiğin renk ne?
+============================================================
+Request Configuration:
+{
+  "http_options": null,
+  "should_return_http_response": null,
+  "system_instruction": null,
+  "temperature": null,
+  "top_p": null,
+  "top_k": null,
+  "candidate_count": null,
+  "max_output_tokens": null,
+  "stop_sequences": null,
+  "response_logprobs": null,
+  "logprobs": null,
+  "presence_penalty": null,
+  "frequency_penalty": null,
+  "seed": null,
+  "response_mime_type": null,
+  "response_schema": null,
+  "response_json_schema": null,
+  "routing_config": null,
+  "model_selection_config": null,
+  "safety_settings": null,
+  "tools": null,
+  "tool_config": null,
+  "labels": null,
+  "cached_content": null,
+  "response_modalities": null,
+  "media_resolution": null,
+  "speech_config": null,
+  "audio_timestamp": null,
+  "automatic_function_calling": null,
+  "thinking_config": {
+    "include_thoughts": null,
+    "thinking_budget": 0,
+    "thinking_level": null
+  },
+  "image_config": null,
+  "enable_enhanced_civic_answers": null,
+  "model_armor_config": null,
+  "service_tier": null
+}
+
+--- Starting Stream ---
+
+[Chunk #1]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:06 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=1132",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "Ben bir",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "nUUSaq7YL-6lkdUPhI-b-QM",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 2,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": null,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 10,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: 'Ben bir'
+
+[Chunk #2]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:06 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=1132",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": " yapay zeka olduğum için renklerim yok, bu yüzden en sevdiğim renk",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "nUUSaq7YL-6lkdUPhI-b-QM",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 20,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": null,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 28,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: ' yapay zeka olduğum için renklerim yok, bu yüzden en sevdiğim renk'
+
+[Chunk #3]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:06 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=1132",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": " diye bir şeyim yok.\n\nAncak, insanların renkler hakkındaki düşüncelerini ve hangi renklerin neyi temsil ettiğini anlayabiliyorum. Renklerin duygularımız ve algılarımız üzerinde büyük bir etkisi olabilir.\n\nSenin en sev",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": null,
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "nUUSaq7YL-6lkdUPhI-b-QM",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 73,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": null,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 81,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: ' diye bir şeyim yok.\n\nAncak, insanların renkler hakkındaki düşüncelerini ve hangi renklerin neyi temsil ettiğini anlayabiliyorum. Renklerin duygularımız ve algılarımız üzerinde büyük bir etkisi olabilir.\n\nSenin en sev'
+
+[Chunk #4]
+RAW JSON:
+{
+  "sdk_http_response": {
+    "headers": {
+      "content-type": "text/event-stream",
+      "content-disposition": "attachment",
+      "vary": "Origin, X-Origin, Referer",
+      "transfer-encoding": "chunked",
+      "date": "Sun, 24 May 2026 00:26:06 GMT",
+      "server": "scaffolding on HTTPServer2",
+      "x-xss-protection": "0",
+      "x-frame-options": "SAMEORIGIN",
+      "x-content-type-options": "nosniff",
+      "server-timing": "gfet4t7; dur=1132",
+      "alt-svc": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    },
+    "body": null
+  },
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "media_resolution": null,
+            "code_execution_result": null,
+            "executable_code": null,
+            "file_data": null,
+            "function_call": null,
+            "function_response": null,
+            "inline_data": null,
+            "text": "diğin renk ne? Neden o rengi seviyorsun? Merak ediyorum!",
+            "thought": null,
+            "thought_signature": null,
+            "video_metadata": null,
+            "tool_call": null,
+            "tool_response": null,
+            "part_metadata": null
+          }
+        ],
+        "role": "model"
+      },
+      "citation_metadata": null,
+      "finish_message": null,
+      "token_count": null,
+      "finish_reason": "STOP",
+      "grounding_metadata": null,
+      "avg_logprobs": null,
+      "index": 0,
+      "logprobs_result": null,
+      "safety_ratings": null,
+      "url_context_metadata": null
+    }
+  ],
+  "create_time": null,
+  "model_version": "gemini-2.5-flash-lite",
+  "prompt_feedback": null,
+  "response_id": "nUUSaq7YL-6lkdUPhI-b-QM",
+  "usage_metadata": {
+    "cache_tokens_details": null,
+    "cached_content_token_count": null,
+    "candidates_token_count": 91,
+    "candidates_tokens_details": null,
+    "prompt_token_count": 8,
+    "prompt_tokens_details": [
+      {
+        "modality": "TEXT",
+        "token_count": 8
+      }
+    ],
+    "thoughts_token_count": null,
+    "tool_use_prompt_token_count": null,
+    "tool_use_prompt_tokens_details": null,
+    "total_token_count": 99,
+    "traffic_type": null
+  },
+  "model_status": null,
+  "automatic_function_calling_history": null,
+  "parsed": null
+}
+  -> Part #1:
+     * thought: None
+     * text: 'diğin renk ne? Neden o rengi seviyorsun? Merak ediyorum!'
+
+--- End Stream ---
+Total Chunks Received: 4
+============================================================
+

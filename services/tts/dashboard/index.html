@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orion TTS Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/css/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1 style="margin-bottom: 5px;">Orion TTS Dashboard</h1>
+        <p id="activeModelDisplay"
+            style="text-align: center; color: var(--accent); margin-bottom: 30px; font-weight: 600;">Bağlanıyor...</p>
+
+        <div class="grid">
+            <!-- Üretim Kısmı -->
+            <div>
+                <p class="section-title">Konuşma Üret</p>
+                <textarea id="textInput" placeholder="Söyletmek istediğiniz metni buraya yazın..." rows="4"></textarea>
+
+                <div class="tab-buttons">
+                    <button id="tab-clone" class="tab-btn active">🎙️ Klonlanmış Ses</button>
+                    <button id="tab-design" class="tab-btn">🎨 Sıfırdan Tasarla (Omni)</button>
+                </div>
+
+                <!-- Klon Modu -->
+                <div id="mode-clone" class="tab-content active">
+                    <p class="section-title">Ses Seçimi</p>
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <select id="voiceSelect" style="margin-bottom: 0;">
+                            <option value="" disabled selected>Lütfen bir klon ses seçin...</option>
+                        </select>
+                        <button id="delVoiceBtn" style="background: #ef4444; width: auto; padding: 0 20px;">SİL</button>
+                    </div>
+                </div>
+
+                <!-- Tasarım Modu -->
+                <div id="mode-design" class="tab-content">
+                    <p class="section-title">Karakter Tasarımı</p>
+
+                    <!-- OmniVoice Tasarım Kontrolleri -->
+                    <div id="omniControls" class="hidden">
+                        <select id="vdGender">
+                            <option value="">Cinsiyet (Auto)</option>
+                        </select>
+                        <select id="vdAge">
+                            <option value="">Yaş Grubu (Auto)</option>
+                        </select>
+                        <select id="vdPitch">
+                            <option value="">Ton (Auto)</option>
+                        </select>
+                        <select id="vdStyle">
+                            <option value="">Stil (Auto)</option>
+                        </select>
+                        <select id="vdAccent">
+                            <option value="">Aksan Yok / Standart (Auto)</option>
+                        </select>
+                        <select id="vdDialect">
+                            <option value="">Çince Lehçe (Auto)</option>
+                        </select>
+                    </div>
+
+                    <!-- VoxCPM2 Tasarım Kontrolleri -->
+                    <div id="voxControls" class="hidden">
+                        <textarea id="voxDescInput"
+                            placeholder="Karakteri betimleyin. Örn: A young girl with a soft, sweet voice. Speaks slowly with a melancholic tone."
+                            rows="3"></textarea>
+                    </div>
+                </div>
+
+                <div class="advanced-settings">
+                    <p class="section-title toggle-btn" data-target="streaming-options">
+                        🌊 Streaming Ayarları (Tıkla Aç/Kapat)
+                    </p>
+                    <div id="streaming-options" class="hidden" style="margin-top:15px;">
+                        <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+                            <input type="checkbox" id="streamAutoMode" checked>
+                            <label for="streamAutoMode" style="color:var(--accent); font-weight:600;">🧠 Zeki Mod (Cümle Boyuna Göre Ayarla)</label>
+                        </div>
+
+                        <div id="streamManualControls" class="hidden">
+                            <label>Ölçüm Süresi (ms) — Hız tespiti için:</label>
+                            <input type="number" id="streamProbeMs" value="500" step="100">
+
+                            <label>Hız Katsayısı (Multiplier) — Örn: 1.5:</label>
+                            <input type="number" id="streamMultiplier" value="1.5" step="0.1">
+
+                            <label>Minimum Ön Yükleme (sn):</label>
+                            <input type="number" id="streamMinBuffer" value="0.3" step="0.1">
+
+                            <label>Maksimum Ön Yükleme (sn):</label>
+                            <input type="number" id="streamMaxBuffer" value="6.0" step="0.5">
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--muted); margin-top: 5px;">
+                            * Zeki Mod: Kısa cümlelerde hızlı başlar, uzun cümlelerde kesinti olmaması için otomatik tampon artırır.
+                        </div>
+                    </div>
+                </div>
+
+                <div class="advanced-settings">
+                    <p class="section-title toggle-btn" data-target="adv-options">
+                        ⚙️ Gelişmiş Ayarlar (Tıkla Aç/Kapat)
+                    </p>
+                    <div id="adv-options" class="hidden" style="margin-top:15px;">
+                        <div id="langContainer">
+                            <label>Dil (Language):</label>
+                            <select id="langInput">
+                                <option value="Auto">Otomatik Algıla (Auto)</option>
+                            </select>
+                        </div>
+
+                        <label>Konuşma Hızı (Speed): <span id="speedVal">1.0</span></label>
+                        <input type="range" id="speedInput" min="0.5" max="2.0" step="0.1" value="1.0">
+
+                        <label>Yaratıcılık (Guidance Scale): <span id="cfgVal">2.0</span></label>
+                        <input type="range" id="cfgInput" min="1.0" max="10.0" step="0.5" value="2.0">
+
+                        <label>Kalite Adımı (Steps): <span id="stepVal">Varsayılan</span></label>
+                        <input type="range" id="stepInput" min="5" max="50" step="1" value="15">
+
+                        <label>Sabit Seed (Rastgele için -1):</label>
+                        <input type="number" id="seedInput" value="-1">
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button id="generateBtn">Konuşma Üret (Tam)</button>
+                    <button id="generateStreamBtn" style="background: #8b5cf6;">Akış (Streaming) Üret</button>
+                </div>
+                <div id="genLoader" class="loader"></div>
+            </div>
+
+            <!-- Klonlama Kısmı -->
+            <div>
+                <p class="section-title">Yeni Ses Klonla</p>
+                <input type="text" id="cloneName" placeholder="Sese bir isim verin">
+                <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor?">
+                <input type="file" id="cloneFile" accept="audio/*">
+
+                <button id="cloneBtn" style="background: #10b981;">Sesi İşle ve Tensör Olarak Kaydet</button>
+                <div id="cloneLoader" class="loader"></div>
+
+                <div id="cloneStatus" style="margin-top: 15px; font-size: 0.9rem; color: #10b981; display: none;">Ses
+                    tensöre dönüştürüldü ve kaydedildi!</div>
+            </div>
+        </div>
+
+        <div id="resultContainer" class="audio-result">
+            <p class="section-title">Üretilen Ses</p>
+            <div id="metrics"
+                style="font-size: 0.8rem; color: var(--muted); margin-bottom: 10px; display: flex; justify-content: center; gap: 20px;">
+                <span id="ttfbMetric"></span>
+                <span id="totalTimeMetric"></span>
+            </div>
+            <div id="bufferStatus" class="buffering">⏳ Ön yükleme yapılıyor...</div>
+            <div id="bufferBar">
+                <div id="bufferBarFill" style="width:0%"></div>
+            </div>
+            <audio id="audioPlayer" controls></audio>
+            <a id="downloadLink" href="#" download="speech.wav"
+                style="display: block; margin-top: 10px; color: var(--accent); text-decoration: none; font-size: 0.85rem;">Dosyayı
+                İndir</a>
+        </div>
+    </div>
+
+    <script type="module" src="/dashboard/js/app.js"></script>
+</body>
+
+</html>

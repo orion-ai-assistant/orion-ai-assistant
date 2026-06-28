@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "omnivoice"
+version = "0.1.0"
+description = "OmniVoice: State-of-the-art TTS for 600+ languages"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+authors = [
+    { name = "Han Zhu" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.5.0",
+    "torchaudio",
+    "transformers>=4.46.0",
+    "numpy",
+    "sentencepiece",
+    "huggingface_hub",
+    "gradio>=4.0.0",
+    "accelerate",
+    "soundfile",
+    "librosa",
+    "tqdm",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "flake8",
+]
+
+[project.urls]
+Homepage = "https://github.com/k2-fsa/OmniVoice"
+Repository = "https://github.com/k2-fsa/OmniVoice"
+
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["omnivoice"]
+
+[project.scripts]
+omnivoice-demo = "omnivoice.cli.demo:main"

@@ -1,0 +1,20 @@
+services:
+  stt:
+    image: ${BASE_IMAGE}
+    container_name: ${STT_HOST}
+    restart: unless-stopped
+    ports:
+      - "${STT_PORT}:${STT_CONTAINER_PORT}"
+    env_file:
+      - ../../../.env.global
+      - .env
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL}
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+    networks:
+      - orion-network
+
+networks:
+  orion-network:
+    external: true
+    name: ${ORION_NETWORK}

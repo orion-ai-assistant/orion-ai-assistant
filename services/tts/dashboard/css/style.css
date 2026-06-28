@@ -1,0 +1,227 @@
+:root {
+    --bg: #0f172a;
+    --card: #1e293b;
+    --accent: #3b82f6;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --success: #10b981;
+    --danger: #ef4444;
+    --warning: #fbbf24;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.container {
+    width: 100%;
+    max-width: 900px;
+    background: var(--card);
+    border-radius: 24px;
+    padding: 40px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+h1 {
+    font-weight: 800;
+    font-size: 2.5rem;
+    margin-bottom: 30px;
+    text-align: center;
+    background: linear-gradient(to right, #3b82f6, #60a5fa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+}
+
+.section-title {
+    font-weight: 600;
+    margin-bottom: 15px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.toggle-btn {
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.toggle-btn:hover {
+    color: var(--accent);
+}
+
+textarea,
+input,
+select {
+    width: 100%;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 15px;
+    color: white;
+    font-size: 1rem;
+    margin-bottom: 20px;
+    outline: none;
+    transition: border 0.3s;
+}
+
+textarea:focus,
+input:focus {
+    border-color: var(--accent);
+}
+
+button {
+    width: 100%;
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 15px;
+    border-radius: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s, opacity 0.2s;
+}
+
+button:hover {
+    opacity: 0.9;
+    transform: translateY(-2px);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+.audio-result {
+    margin-top: 30px;
+    padding: 20px;
+    background: rgba(15, 23, 42, 0.5);
+    border-radius: 16px;
+    display: none;
+    text-align: center;
+}
+
+audio {
+    width: 100%;
+    margin-top: 15px;
+}
+
+.loader {
+    display: none;
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: white;
+    animation: spin 1s linear infinite;
+    margin: 10px auto;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.tab-buttons {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.tab-btn {
+    flex: 1;
+    background: rgba(15, 23, 42, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--muted);
+}
+
+.tab-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.advanced-settings {
+    margin-bottom: 20px;
+}
+
+#bufferStatus {
+    display: none;
+    margin: 10px auto 0;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    text-align: center;
+    max-width: 400px;
+}
+
+#bufferStatus.buffering {
+    background: rgba(251, 191, 36, 0.15);
+    border: 1px solid rgba(251, 191, 36, 0.4);
+    color: var(--warning);
+}
+
+#bufferStatus.playing {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    color: var(--success);
+}
+
+#bufferStatus.underrun {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: var(--danger);
+}
+
+#bufferBar {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    margin: 6px 0 0;
+    overflow: hidden;
+    display: none;
+}
+
+#bufferBarFill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.2s ease;
+}
+
+@media (max-width: 768px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+}
