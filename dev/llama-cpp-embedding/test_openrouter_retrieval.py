@@ -1,9 +1,13 @@
+import os
 import json
 import urllib.request
 import math
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Ayarlar
-OPENROUTER_API_KEY = "YOUR_OPENROUTER_API_KEY"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 URL_OPENROUTER_EMBEDDINGS = "https://openrouter.ai/api/v1/embeddings"
 MODEL_NAME = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
 
@@ -64,8 +68,8 @@ def cosine_similarity(v1, v2):
 def run_test():
     print(f"=== OpenRouter Retrieval Testi ({MODEL_NAME}) ===\n")
     
-    if OPENROUTER_API_KEY == "YOUR_OPENROUTER_API_KEY":
-        print("!!! Hata: API KEY tanımlanmamış. Lütfen script içindeki 'YOUR_OPENROUTER_API_KEY' kısmını güncelleyin.")
+    if not OPENROUTER_API_KEY:
+        print("!!! Hata: API KEY tanımlanmamış. Lütfen .env dosyasını kontrol edin.")
         return
 
     # 1. Kayıtlı Bilgiler (Knowledge Base)

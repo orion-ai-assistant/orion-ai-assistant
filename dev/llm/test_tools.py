@@ -8,6 +8,9 @@ import re
 import webbrowser
 from colorama import init, Fore, Style
 from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()
 
 init(autoreset=True)
 
@@ -24,7 +27,7 @@ init(autoreset=True)
 # )
 
 # --- OpenRouter Config (Bulut) ---
-OPENROUTER_API_KEY = "YOUR_OPENROUTER_API_KEY"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 MODEL_NAME = "openai/gpt-oss-120b"
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
