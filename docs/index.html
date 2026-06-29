@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Orion AI Assistant</title>
+    <meta name="description" content="Orion AI Assistant — Modüler yapay zeka asistanı. Docker ile tek komutla kurun." />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet" />
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="bg-cosmos" id="bg-cosmos-layer"></div>
+    <div class="noise-overlay" id="noise-bg"></div>
+
+    <!-- Navbar -->
+    <header class="navbar" id="orion-main-nav">
+        <div class="container nav-inner" id="navbar-wrapper">
+            <a href="#" class="logo" id="orion-brand-identity">
+                <div class="logo-icon" id="orion-logo-box">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:18px;height:18px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+                    </svg>
+                </div>
+                <span id="orion-brand-text">Orion AI</span>
+            </a>
+            <nav class="nav-links" id="orion-nav-links">
+                <a href="#" id="nav-link-home" data-i18n="nav_home">Ana Sayfa</a>
+                <a href="#features" id="nav-link-features" data-i18n="nav_features">Özellikler</a>
+                <a href="#architecture" id="nav-link-arch" data-i18n="nav_architecture">Mimari</a>
+                <div class="lang-selector-container" id="orion-lang-selector-container">
+                    <button class="lang-selector-trigger" id="orion-lang-selector-trigger">
+                        <span id="current-lang-text">TR</span>
+                        <svg class="chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </button>
+                    <div class="lang-dropdown" id="orion-lang-dropdown">
+                        <!-- Dynamic items populated by script.js -->
+                    </div>
+                </div>
+                <a href="https://github.com/orion-ai-assistant/orion-ai-assistant" target="_blank" rel="noreferrer"
+                    class="btn-github" id="nav-link-github">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path fill-rule="evenodd"
+                            d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .284.14.562.672.513A10.425 10.425 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                            clip-rule="evenodd" />
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <main class="hero container" id="orion-hero-section">
+        <div class="hero-badge reveal delay-1" id="hero-badge">
+            <span class="status-dot"></span>
+            <span data-i18n="badge_text">Açık Kaynak AI Asistanı</span>
+        </div>
+
+        <h1 class="reveal delay-1" id="hero-headline" data-i18n="hero_title">
+            Modüler Yapay Zeka<br /><span class="text-gradient">Asistanınız</span>
+        </h1>
+        <p class="hero-desc reveal delay-2" id="hero-description" data-i18n="hero_desc">
+            LLM, TTS, STT, Embedding ve daha fazlasını tek bir çatı altında toplayan, Docker ile saniyeler içinde
+            kurulan açık kaynak AI platformu.
+        </p>
+
+        <!-- Terminal Installation Panel -->
+        <div class="glass-panel terminal-panel reveal delay-3" id="orion-terminal-panel">
+            <div class="os-tabs" id="os-tab-bar">
+                <button class="os-tab active" data-os="win" id="tab-windows">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                        style="width:13px;height:13px;margin-right:5px;vertical-align:middle;display:inline">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                    <span data-i18n="tab_windows">Windows (PowerShell)</span>
+                </button>
+                <button class="os-tab disabled" data-os="mac" id="tab-macos">
+                    <span data-i18n="tab_macos">macOS / Linux</span>
+                    <span class="os-tab-tooltip" data-i18n="tooltip_unsupported">Yakında</span>
+                </button>
+            </div>
+
+            <div class="terminal-body" id="terminal-body">
+                <!-- Windows Command -->
+                <div id="cmd-win" class="code-line active">
+                    <span class="cmd-text">
+                        <span class="cmd-keyword">powershell</span>
+                        <span class="cmd-flag">-c</span>
+                        <span class="cmd-string">"iex(irm raw.github.com/orion-ai-assistant/orion-ai-assistant/main/install.ps1)"</span>
+                    </span>
+                </div>
+
+                <!-- macOS/Linux Command (hidden, disabled) -->
+                <div id="cmd-mac" class="code-line">
+                    <span class="cmd-text">
+                        <span class="cmd-keyword">curl</span>
+                        <span class="cmd-flag">-sSL</span>
+                        <span class="cmd-url">https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/install.sh</span>
+                        <span class="cmd-flag">|</span>
+                        <span class="cmd-keyword">bash</span>
+                        <span class="cmd-comment"># yakında</span>
+                    </span>
+                </div>
+
+                <div class="terminal-info-lines" id="terminal-info-lines">
+                    <div class="terminal-info-row">
+                        <span class="info-dot info-dot--cyan"></span>
+                        <span class="info-label" data-i18n="term_info_repo">Installer açılır — hangi servisleri kurmak istediğinizi siz seçersiniz</span>
+                    </div>
+                    <div class="terminal-info-row">
+                        <span class="info-dot info-dot--violet"></span>
+                        <span class="info-label" data-i18n="term_info_cmd">Seçilen servisler Docker üzerinde otomatik olarak kurulur</span>
+                    </div>
+                    <div class="terminal-info-row">
+                        <span class="info-dot info-dot--green"></span>
+                        <span class="info-label" data-i18n="term_info_ready">Orion başlatılır...</span>
+                    </div>
+                </div>
+
+                <button class="copy-btn" id="terminal-copy-btn" aria-label="Komutu kopyala">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- Features Section -->
+    <section id="features" class="container section">
+        <div class="section-heading text-center reveal" id="features-header">
+            <span class="section-tag" data-i18n="feat_tag">Özellikler</span>
+            <h2 data-i18n="feat_title">Her Şey Bir Arada</h2>
+            <p data-i18n="feat_subtitle">Yapay zeka ihtiyaçlarınızın tamamını tek bir platformdan yönetin.</p>
+        </div>
+
+        <div class="feature-grid" id="features-grid">
+            <div class="glass-panel feature-card reveal delay-1" id="feat-llm">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_llm_title">LLM Sohbet</h3>
+                <p data-i18n="feat_llm_desc">Birden fazla büyük dil modeli ile doğal dilde sohbet edin. OpenAI, Gemini,
+                    Claude ve daha fazlası.</p>
+            </div>
+
+            <div class="glass-panel feature-card reveal delay-2" id="feat-tts">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_tts_title">Metin → Ses (TTS)</h3>
+                <p data-i18n="feat_tts_desc">Metinlerinizi doğal ses tonuyla seslendirin. Çoklu dil ve ses modeli
+                    desteği.</p>
+            </div>
+
+            <div class="glass-panel feature-card reveal delay-3" id="feat-stt">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_stt_title">Ses → Metin (STT)</h3>
+                <p data-i18n="feat_stt_desc">Konuşmayı anında metne çevirin. Whisper ve diğer modeller ile yüksek
+                    doğruluk.</p>
+            </div>
+
+            <div class="glass-panel feature-card reveal delay-1" id="feat-embed">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_embed_title">Embedding</h3>
+                <p data-i18n="feat_embed_desc">Metin ve belgeleri vektörlere dönüştürün. RAG ve semantik arama için
+                    hazır.</p>
+            </div>
+
+            <div class="glass-panel feature-card reveal delay-2" id="feat-router">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_router_title">Akıllı Router</h3>
+                <p data-i18n="feat_router_desc">Orion Router entegrasyonu ile tüm modellere OpenAI SDK uyumlu tek bir
+                    API üzerinden erişin.</p>
+            </div>
+
+            <div class="glass-panel feature-card reveal delay-3" id="feat-docker">
+                <div class="feat-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:22px;height:22px">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M21 7.5l-2.25-1.313M21 7.5v2.25m0-2.25l-2.25 1.313M3 7.5l2.25-1.313M3 7.5l2.25 1.313M3 7.5v2.25m9 3l2.25-1.313M12 12.75l-2.25-1.313M12 12.75V15m0 6.75l2.25-1.313M12 21.75V19.5m0 2.25l-2.25-1.313m0-16.875L12 2.25l2.25 1.313M21 14.25v2.25l-2.25 1.313m-13.5 0L3 16.5v-2.25" />
+                    </svg>
+                </div>
+                <h3 data-i18n="feat_docker_title">Docker ile Kolay Kurulum</h3>
+                <p data-i18n="feat_docker_desc">Tek bir komut ile tüm servisleri Docker üzerinde çalıştırın. Karmaşık
+                    yapılandırma yok.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section id="architecture" class="container section">
+        <div class="section-heading text-center reveal" id="arch-header">
+            <span class="section-tag" data-i18n="arch_tag">Mimari</span>
+            <h2 data-i18n="arch_title">Modüler Servis Mimarisi</h2>
+            <p data-i18n="arch_subtitle">Her servis bağımsız çalışır, Docker Compose ile orkestre edilir.</p>
+        </div>
+
+        <div class="glass-panel arch-diagram reveal delay-2" id="arch-diagram">
+            <div class="arch-flow arch-flow--horizontal">
+                <div class="arch-node">
+                    <div class="arch-node-icon">👤</div>
+                    <div class="arch-node-label" data-i18n="arch_user">Kullanıcı</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-node">
+                    <div class="arch-node-icon">🌐</div>
+                    <div class="arch-node-label">Hub UI</div>
+                    <div class="arch-node-sub" data-i18n="arch_hub_sub">Web Arayüzü</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-node">
+                    <div class="arch-node-icon">🔀</div>
+                    <div class="arch-node-label">Router</div>
+                    <div class="arch-node-sub" data-i18n="arch_router_sub">API Gateway</div>
+                </div>
+                <div class="arch-arrow">→</div>
+                <div class="arch-node">
+                    <div class="arch-node-icon">⚡</div>
+                    <div class="arch-node-label" data-i18n="arch_services">Servisler</div>
+                    <div class="arch-node-sub">LLM · TTS · STT · Embed</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Requirements -->
+        <div class="section-heading text-center reveal" style="margin-top: 60px;" id="req-header">
+            <span class="section-tag" data-i18n="req_tag">Gereksinimler</span>
+            <h2 data-i18n="req_title" style="font-size: 2rem;">Başlamadan Önce</h2>
+        </div>
+
+        <div class="req-cards reveal delay-2" id="req-cards">
+            <div class="glass-panel req-card" id="req-windows">
+                <div class="req-icon">🪟</div>
+                <div class="req-info">
+                    <h4 data-i18n="req_os_title">Windows 10/11</h4>
+                    <p data-i18n="req_os_desc">Şu an sadece Windows üzerinden kurulum desteklenmektedir.</p>
+                </div>
+            </div>
+            <div class="glass-panel req-card" id="req-docker">
+                <div class="req-icon">🐳</div>
+                <div class="req-info">
+                    <h4 data-i18n="req_docker_title">Docker</h4>
+                    <p data-i18n="req_docker_desc">Docker kurulu ve çalışıyor olmalıdır.</p>
+                </div>
+            </div>
+            <div class="glass-panel req-card" id="req-ps">
+                <div class="req-icon">🐍</div>
+                <div class="req-info">
+                    <h4 data-i18n="req_ps_title">Python 3.11+</h4>
+                    <p data-i18n="req_ps_desc">Python 3.11 veya daha yeni bir sürüm kurulu olmalıdır.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer id="orion-footer">
+        <div class="container text-center" id="footer-inner">
+            <p data-i18n="footer_text">&copy; 2026 Orion AI Assistant. <a href="#orion-main-nav"
+                    id="footer-license-link">MIT Lisansı</a> ile açık kaynak projesidir.</p>
+        </div>
+    </footer>
+
+    <script src="i18n.js"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>
