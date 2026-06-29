@@ -26,6 +26,7 @@ services:
       - CLI_LANG=${CLI_LANG:-en}
       - APP_REFERER=${APP_REFERER}
       - APP_TITLE=${APP_TITLE}
+      - APP_CATEGORIES=${APP_CATEGORIES}
     networks:
       - orion-network
     depends_on:
