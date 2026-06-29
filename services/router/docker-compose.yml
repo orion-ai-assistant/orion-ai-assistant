@@ -24,6 +24,8 @@ services:
       - ADMIN_SECRET=${ADMIN_SECRET:-orion}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY} # Restart'larda API key'lerin bozulmaması için şart
       - CLI_LANG=${CLI_LANG:-en}
+      - APP_REFERER=${APP_REFERER}
+      - APP_TITLE=${APP_TITLE}
     networks:
       - orion-network
     depends_on:
