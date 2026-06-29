@@ -35,3 +35,20 @@ export async function postDownloadModel(serviceId, modelId) {
     const response = await fetch(`${API_BASE}/services/${serviceId}/models/download?model_id=${modelId}`, { method: 'POST' });
     return await response.json();
 }
+
+export async function postKeepAlive() {
+    try {
+        const response = await fetch(`${API_BASE}/keepalive`, { method: 'POST' });
+        return await response.json();
+    } catch (err) {
+        console.error("Keepalive failed:", err);
+    }
+}
+
+export function sendShutdownBeacon() {
+    if (navigator.sendBeacon) {
+        navigator.sendBeacon(`${API_BASE}/shutdown`);
+    } else {
+        fetch(`${API_BASE}/shutdown`, { method: 'POST', keepalive: true }).catch(() => {});
+    }
+}

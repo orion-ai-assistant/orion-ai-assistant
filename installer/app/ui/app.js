@@ -397,7 +397,12 @@ function initWizard() {
 
 // Initialization
 window.addEventListener('DOMContentLoaded', () => {
+    api.postKeepAlive();
     initWizard();
     fetchHardware().then(fetchServices);
     setInterval(fetchServices, 5000);
+});
+
+window.addEventListener('beforeunload', () => {
+    api.sendShutdownBeacon();
 });
