@@ -3,15 +3,14 @@ import re
 import subprocess
 import logging
 from . import config
+from .utils import docker_utils, system_utils, model_resolver
 
 # ==========================================
 # AYARLAR VE SABİTLER
 # ==========================================
 _ENV_KEY_PATTERN = re.compile(r"\$\{([A-Z0-9_]+)(?:[^}]*)\}")
 _CONFLICT_PATTERN = re.compile(r'container name "(/[^"]+)" is already in use', re.IGNORECASE)
-_IMAGE_PATTERN = re.compile(r"^\s*image:\s*(.+?)\s*$", re.IGNORECASE)
 
-SERVICE_MOUNT_PREFIXES = {"embedding-infinity": "/app/.cache/"}
 MANAGED_HOSTS = {"REDIS_HOST", "POSTGRES_HOST", "HUB_HOST", "WORKER_HOST", "API_2_HOST", "NGINX_HOST", "EMBED_HOST"}
 GPU_VENDORS = {"nvidia", "amd"}
 
@@ -23,122 +22,6 @@ def _get_context(service_id: str) -> tuple[dict | None, str, dict]:
     if not manifest: 
         return None, "", {}
     return manifest, os.path.dirname(m_path), config._load_global_env()
-
-def _read_env(path: str) -> dict[str, str]:
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            return {k.strip(): v.strip() for line in f if "=" in line and not line.strip().startswith("#") for k, v in [line.split("=", 1)]}
-    except OSError:
-        return {}
-
-def _run_compose(files: list[str], action: str, cwd: str, env: dict) -> bool:
-    success = False
-    seen = set()
-    for f in files:
-        if not f or f in seen or not os.path.exists(os.path.join(cwd, f)):
-            continue
-        seen.add(f)
-        res = subprocess.run(["docker-compose", "-f", f, action], cwd=cwd, env={**os.environ, **env}, capture_output=True, stdin=subprocess.DEVNULL)
-        # Decode manually to avoid UnicodeDecodeError on Windows
-        _ = res.stdout.decode("utf-8", errors="replace")
-
-        success = True
-    return success
-
-def _get_compose_image(compose_file: str, cwd: str) -> str:
-    try:
-        with open(os.path.join(cwd, compose_file), "r", encoding="utf-8") as f:
-            for line in f:
-                m = _IMAGE_PATTERN.match(line)
-                if m:
-                    return m.group(1).strip()
-    except OSError:
-        return ""
-    return ""
-
-def _image_exists(image_name: str) -> bool:
-    if not image_name:
-        return False
-    try:
-        res = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, stdin=subprocess.DEVNULL)
-        return res.returncode == 0
-    except Exception:
-        return False
-
-async def check_and_resolve_port_conflict(port: int = 20128) -> dict:
-    try:
-        import psutil
-    except ImportError:
-        return {"status": "error", "message": "psutil kütüphanesi eksik, port taraması yapılamıyor."}
-    
-    found_pid = None
-    process_name = ""
-    
-    try:
-        for conn in psutil.net_connections(kind='inet'):
-            if conn.laddr.port == port and conn.status == 'LISTEN':
-                found_pid = conn.pid
-                break
-                
-        if found_pid:
-            try:
-                proc = psutil.Process(found_pid)
-                process_name = proc.name()
-                proc.kill()
-                proc.wait(timeout=3)
-                return {"status": "success", "message": f"Port {port}'u kullanan {process_name} (PID: {found_pid}) basariyla kapatildi."}
-            except psutil.AccessDenied:
-                return {"status": "error", "message": f"Port {port}'u kullanan uygulama kapatilamadi (Erisim engellendi). Lutfen manuel kapatin."}
-            except psutil.NoSuchProcess:
-                return {"status": "success", "message": "Islem zaten kapanmis."}
-            except Exception as e:
-                return {"status": "error", "message": f"Kapatma hatasi: {e}"}
-                
-        return {"status": "success", "message": f"Port {port} temiz, cakisca yok."}
-    except psutil.AccessDenied:
-        # Some OS restrict net_connections
-        return {"status": "warning", "message": "Port taramasi icin yetki yetersiz, lutfen portlarin bos oldugundan emin olun."}
-    except Exception as e:
-        return {"status": "error", "message": f"Port tarama hatasi: {e}"}
-
-# ==========================================
-# ANA FONKSİYONLAR
-# ==========================================
-def _resolve_model_path(service_id: str, full_dir: str, selected: str, valid_exts: tuple) -> str:
-    prefix = SERVICE_MOUNT_PREFIXES.get(service_id)
-
-    # Infinity Otomatik Model Tespiti
-    if service_id == "embedding-infinity" and (not selected or selected == prefix):
-        if os.path.isdir(full_dir):
-            for d in sorted(os.listdir(full_dir)):
-                cand = os.path.join(full_dir, d)
-                if os.path.isdir(cand) and d.lower() != "huggingface":
-                    if os.path.exists(os.path.join(cand, "config.json")) and os.path.exists(os.path.join(cand, "model.safetensors")):
-                        return f"{prefix.rstrip('/')}/{d}" if prefix else d
-
-    if not selected: 
-        return ""
-        
-    full_path = os.path.join(full_dir, selected)
-    
-    # Path yoksa, patlamaması için direkt selected dön (FileNotError fix)
-    if not os.path.exists(full_path):
-        return selected
-
-    if os.path.isdir(full_path):
-        # Klasör seçildiğinde ana modeli bul (mmproj OLMAYAN ilk .gguf)
-        match = next(
-            (n for n in sorted(os.listdir(full_path)) 
-             if n.lower().endswith(valid_exts) and "mmproj" not in n.lower() and "vision" not in n.lower()), 
-            None
-        )
-        # Eğer yukarıdaki filtreyle bir şey bulunamazsa (belki sadece mmproj vardır), herhangi bir geçerli dosyayı al
-        if not match:
-            match = next((n for n in sorted(os.listdir(full_path)) if n.lower().endswith(valid_exts)), None)
-            
-        return os.path.join(selected, match).replace("\\", "/") if match else selected
-
-    return selected
 
 def _validate_params(params: dict, specs: dict) -> tuple[dict | None, dict | None]:
     validated = {}
@@ -173,24 +56,37 @@ def _validate_params(params: dict, specs: dict) -> tuple[dict | None, dict | Non
 
     return {k: ("true" if v is True else "false" if v is False else str(v)) for k, v in validated.items()}, None
 
+def toggle_autostart(service_id: str) -> dict:
+    manifest, s_dir, _ = _get_context(service_id)
+    if not manifest: return {"status": "error", "message": "Servis bulunamadı"}
+    
+    disabled_path = os.path.join(s_dir, ".disabled")
+    if os.path.exists(disabled_path):
+        try:
+            os.remove(disabled_path)
+            return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
+        except OSError:
+            return {"status": "error", "message": "Dosya silinemedi"}
+    else:
+        try:
+            with open(disabled_path, "w") as f: pass
+            return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
+        except OSError:
+            return {"status": "error", "message": "Dosya oluşturulamadı"}
+
 def get_services() -> list[dict]:
-    containers = {}
-    # Hata fırlatma ihtimaline karşı try/except (Docker daemon erişim sorunları için)
-    try:
-        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}"], capture_output=True, stdin=subprocess.DEVNULL)
-        stdout = r.stdout.decode("utf-8", errors="replace")
-        containers = {line.split("|")[0]: line.split("|")[1].startswith("Up") for line in stdout.splitlines() if "|" in line}
-
-    except Exception:
-        pass
-
+    containers = docker_utils.get_running_containers()
     services = []
-    for data, _ in config.all_manifests():
+    for data, m_path in config.all_manifests():
         c_name = data.get("container_name", "")
+        s_dir = os.path.dirname(m_path)
+        autostart = not os.path.exists(os.path.join(s_dir, ".disabled"))
+        
         data.update({
             "is_installed": c_name in containers,
             "is_running": containers.get(c_name, False),
-            "is_installing": data["id"] in config.INSTALLING_SERVICES
+            "is_installing": data["id"] in config.INSTALLING_SERVICES,
+            "autostart": autostart
         })
         services.append(data)
         
@@ -226,9 +122,15 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
 
     # Orijinal Environment Fallback
     envs = manifest.get("supported_environments", [])
-    selected_env_id = env_id or (envs[0]["id"] if envs else None)
+    if env_id:
+        selected_env_id = env_id
+    elif envs:
+        matched_env = next((e for e in envs if e.get("hardware") == hw), None)
+        selected_env_id = matched_env["id"] if matched_env else envs[0]["id"]
+    else:
+        selected_env_id = None
+
     c_env = next((e for e in envs if e.get("id") == selected_env_id), {})
-    
     catalog = manifest.get("models_catalog", [])
     sel_mod = next((m for m in catalog if model_file in (m.get("folder"), m.get("id"), m.get("file_name"))), {})
     model_env = sel_mod.get("env", {})
@@ -239,7 +141,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
 
     from .core.models import VALID_EXTENSIONS 
     m_dir = os.path.join(s_dir, manifest.get("models_path", "models"))
-    model_file = _resolve_model_path(service_id, m_dir, model_file, VALID_EXTENSIONS)
+    model_file = model_resolver._resolve_model_path(service_id, m_dir, model_file, VALID_EXTENSIONS)
     
     # Akıllı MMPROJ Otomatik Algılama: 
     # Sadece LLM kategorisindeki servisler için vizyon dosyası seçilmediyse otomatik bul.
@@ -260,7 +162,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
                 mmproj_args = f"--mmproj /app/models/{mmproj_path}"
                 print(f"[DEBUG] Multimodal projector detected: {mmproj_path}")
 
-    mmproj_file = _resolve_model_path(service_id, m_dir, mmproj_file, (".gguf",))
+    mmproj_file = model_resolver._resolve_model_path(service_id, m_dir, mmproj_file, (".gguf",))
 
     enable_vision = False
     enable_audio = False
@@ -373,7 +275,7 @@ def stop_service(service_id: str) -> bool:
     g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
 
     if manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}:
-        return _run_compose(list(manifest.get("compose_files", {}).values()), "stop", s_dir, g_vars)
+        return docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "stop", s_dir, g_vars)
     
     host_env = manifest.get("host_env")
     c_name = g_vars.get(host_env) if host_env else manifest.get("container_name")
@@ -388,14 +290,28 @@ def remove_service(service_id: str) -> bool:
     project_name_key = f"{category_upper}_PROJECT_NAME"
     g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
 
-    return _run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars)
+    return docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars)
+
+def remove_image(service_id: str) -> bool:
+    manifest, s_dir, g_vars = _get_context(service_id)
+    if not manifest: return False
+
+    hw = g_vars.get("DETECTED_GPU_VENDOR", "cpu")
+    if manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}:
+        hw = "cpu"
+        
+    compose_file = manifest.get("compose_files", {}).get(hw)
+    if not compose_file: return False
+    
+    image_name = docker_utils._get_compose_image(compose_file, s_dir)
+    return docker_utils._remove_image(image_name)
 
 def run_installation(service_id: str, service_dir: str, compose_file: str, build_env: dict, env_file_keys: set[str]):
     try:
         # Kurulumda `.env.global` ve `.env.global.local` referansı
         g_vars_file = {
-            **_read_env(os.path.join(config.SERVICES_DIR, ".env.global")),
-            **_read_env(os.path.join(config.SERVICES_DIR, ".env.global.local"))
+            **system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global")),
+            **system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global.local"))
         }
         
         with open(os.path.join(service_dir, ".env"), "w", encoding="utf-8") as f:
@@ -413,16 +329,20 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
         runtime_g_vars = config._load_global_env()
         subprocess.run(["docker", "network", "create", runtime_g_vars.get("ORION_NETWORK", "orion-network")], stderr=subprocess.DEVNULL)
         
-        # Adım 1: Imaj build (sadece gerekiyorsa)
+        # Adım 1: Şimdi servisi oluştur (başlatmadan)
         force_rebuild = str(build_env.get("REBUILD_IMAGE", "false")).lower() == "true"
-        image_name = _get_compose_image(compose_file, service_dir)
-        if force_rebuild or not _image_exists(image_name):
-            build_cmd = ["docker-compose", "-f", compose_file, "build"]
-            subprocess.run(build_cmd, cwd=service_dir, env={**os.environ, **build_env})
-
-        # Adım 2: Şimdi servisi başlat (Kod değişikliklerini algılaması için --build eklendi)
-        cmd = ["docker-compose", "-f", compose_file, "up", "-d", "--build"]
+        cmd = ["docker-compose", "-f", compose_file, "up", "--no-start"]
+        if force_rebuild:
+            cmd.append("--build")
+            
         process = subprocess.Popen(cmd, cwd=service_dir, env={**os.environ, **build_env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        
+        disabled_path = os.path.join(service_dir, ".disabled")
+        if os.path.exists(disabled_path):
+            try:
+                os.remove(disabled_path)
+            except OSError:
+                pass
         
         out_lines = []
         for line in process.stdout:

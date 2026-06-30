@@ -48,7 +48,8 @@ async def install_service(
     port_to_check = build_env.get("APP_PORT")
     kill_msg = ""
     if port_to_check:
-        conflict_res = await services.check_and_resolve_port_conflict(int(port_to_check))
+        from .utils import system_utils
+        conflict_res = await system_utils.check_and_resolve_port_conflict(int(port_to_check))
         if conflict_res["status"] == "error":
             return conflict_res
         elif conflict_res.get("message") and "kapatildi" in conflict_res["message"].lower():
@@ -79,6 +80,34 @@ def remove_service(service_id: str):
     if not services.remove_service(service_id):
         raise HTTPException(status_code=404, detail="Servis bulunamadi")
     return {"status": "success", "message": "Servis silindi"}
+
+@router.post("/api/services/{service_id}/remove-image")
+def remove_image(service_id: str):
+    if not services.remove_image(service_id):
+        raise HTTPException(status_code=404, detail="Imaj bulunamadi veya silinemedi")
+    return {"status": "success", "message": "Imaj basariyla silindi"}
+
+@router.post("/api/services/{service_id}/autostart")
+def toggle_autostart(service_id: str):
+    res = services.toggle_autostart(service_id)
+    if res["status"] == "error":
+        raise HTTPException(status_code=500, detail=res["message"])
+    return res
+
+# ---------------------------------------------------------------------------
+# System Run
+# ---------------------------------------------------------------------------
+@router.post("/api/system/start")
+def start_system():
+    import subprocess
+    import os
+    project_root = os.path.dirname(config.SERVICES_DIR)
+    script_path = os.path.join(project_root, "orion.ps1")
+    if not os.path.exists(script_path):
+        raise HTTPException(status_code=500, detail="orion.ps1 bulunamadi")
+    
+    subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path, "start"], cwd=project_root)
+    return {"status": "success", "message": "Sistem baslatiliyor"}
 
 # ---------------------------------------------------------------------------
 # Models

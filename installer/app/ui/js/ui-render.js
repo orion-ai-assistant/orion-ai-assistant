@@ -16,7 +16,7 @@ export function renderServices(services, previousServiceStates, allServiceModels
 
     const allowedIds = new Set();
     const step = viewOptions.step || 1;
-    grid.classList.toggle('grid-centered', step === 3);
+    grid.classList.toggle('grid-centered', step === 4);
 
     services.forEach(service => {
         if (service.status === 'disabled') return;

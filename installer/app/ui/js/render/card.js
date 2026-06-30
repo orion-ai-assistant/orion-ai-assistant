@@ -55,9 +55,11 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
         : '';
 
     const newHtml = `
-        <div class="category-tag">${service.category.toUpperCase()}</div>
         <div class="service-header">
-            <h3 class="service-name">${service.name}</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <h3 class="service-name" style="margin-bottom: 0;">${service.name}</h3>
+                <div id="status-dot-container-${service.id}"></div>
+            </div>
             <p class="service-desc">${service.description}</p>
         </div>
         ${installMode ? `<div id="general-${service.id}" class="tab-content active">${generalHtml}</div>` : ''}
@@ -76,36 +78,46 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     const footer = card.querySelector('.service-footer-dynamic');
     if (!footer) return;
 
+    const hasInstall = service.is_installed;
+    const statusLabel = !hasInstall ? 'Kurulmamis' : (service.is_running ? 'Calisiyor' : 'Durduruldu');
+    const statusClass = !hasInstall ? 'status-missing' : (service.is_running ? 'status-running' : 'status-stopped');
+
+    // Update status dot in the header
+    const dotContainer = card.querySelector(`#status-dot-container-${service.id}`);
+    if (dotContainer) {
+        dotContainer.innerHTML = `<div class="status-badge ${statusClass}" title="${statusLabel}" style="margin: 0;"><span class="status-dot"></span></div>`;
+    }
+
     if (viewMode === 'models-only') {
         if (footer.innerHTML !== '') footer.innerHTML = '';
         return;
     }
 
-    const hasInstall = service.is_installed;
-    const statusLabel = !hasInstall ? 'Kurulmamis' : (service.is_running ? 'Calisiyor' : 'Durduruldu');
-    const statusClass = !hasInstall ? 'status-missing' : (service.is_running ? 'status-running' : 'status-stopped');
-
     let actionHtml = '';
     const hasContainer = !!service.is_installed;
 
-    if (isDisabled) {
+    if (isDisabled && !service.is_installed) {
         actionHtml = '<button class="btn" disabled>Kullanilamaz</button>';
     } else if (service.is_installing) {
-        actionHtml = '<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> Kuruluyor...</button>';
+        actionHtml = '<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> Hazırlanıyor...</button>';
     } else {
-        const mainBtnClass = service.is_running ? 'btn btn-danger' : 'btn btn-primary';
-        const mainBtnLabel = !hasContainer ? 'Kur' : (service.is_running ? 'Durdur' : 'Yeniden Kur');
+        const isAutostart = service.autostart !== false;
+        const mainBtnClass = !hasContainer ? 'btn btn-primary' : (isAutostart ? 'btn btn-danger' : 'btn btn-success');
+        const mainBtnLabel = !hasContainer ? 'Kur' : (isAutostart ? 'Devre Dışı Bırak' : 'Aktifleştir');
         const mainBtnId = `btn-main-${service.id}`;
+
         const menuBtnId = `btn-menu-${service.id}`;
         const dropdownId = `menu-${service.id}`;
-        const showDropdown = service.is_running;
-        const dropdownHtml = showDropdown ? `
+
+        const dropdownHtml = hasContainer ? `
             <div class="split-dropdown">
                 <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="false" aria-controls="${dropdownId}" title="Diger islemler">
                     <i class="fas fa-chevron-down"></i>
                 </button>
                 <div class="dropdown-menu hidden" id="${dropdownId}">
-                    <button class="dropdown-item danger" id="btn-remove-${service.id}">Sil</button>
+                    <button class="dropdown-item" id="btn-reinstall-${service.id}">Yeniden Kur</button>
+                    <button class="dropdown-item danger" id="btn-remove-${service.id}">Kaldır</button>
+                    <button class="dropdown-item danger" id="btn-delete-image-${service.id}">İmajı Sil</button>
                 </div>
             </div>
         ` : '';
@@ -114,9 +126,10 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         `;
     }
 
+
     const newFooterHtml = `
         <div class="service-footer">
-            <div class="status-badge ${statusClass}"><span class="status-dot"></span> ${statusLabel}</div>
+            <div class="category-tag" style="margin-bottom: 0;">${service.category.toUpperCase()}</div>
             <div class="footer-actions">${actionHtml}</div>
         </div>
     `;
@@ -127,10 +140,8 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         // Re-bind events ONLY if HTML changed
         const mainBtn = card.querySelector(`#btn-main-${service.id}`);
         if (mainBtn) {
-            if (service.is_running) {
-                mainBtn.onclick = () => handlers.onStop(service.id, mainBtn);
-            } else if (hasContainer) {
-                mainBtn.onclick = () => handlers.onReinstall(service.id, mainBtn);
+            if (hasContainer) {
+                mainBtn.onclick = () => handlers.onToggleAutostart(service.id, mainBtn);
             } else {
                 mainBtn.onclick = () => handlers.onStart(service.id, mainBtn);
             }
@@ -152,15 +163,21 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
             }, { once: true });
         }
 
+        const reinstallBtn = card.querySelector(`#btn-reinstall-${service.id}`);
+        if (reinstallBtn) reinstallBtn.onclick = () => handlers.onReinstall(service.id, reinstallBtn);
+
         const removeBtn = card.querySelector(`#btn-remove-${service.id}`);
         if (removeBtn) removeBtn.onclick = () => handlers.onRemove(service.id, removeBtn);
+
+        const delImageBtn = card.querySelector(`#btn-delete-image-${service.id}`);
+        if (delImageBtn) delImageBtn.onclick = () => handlers.onDeleteImage(service.id, delImageBtn);
     }
 }
 
 export function toggleFormElements(card, isDisabled) {
     card.querySelectorAll('input, select, .tab').forEach(el => {
         const currentlyDisabled = el.hasAttribute('disabled') || (el.classList.contains('tab') && el.style.pointerEvents === 'none');
-        
+
         if (isDisabled && !currentlyDisabled) {
             el.setAttribute('disabled', 'true');
             if (el.classList.contains('tab')) el.style.pointerEvents = 'none';

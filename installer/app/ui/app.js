@@ -68,8 +68,8 @@ async function fetchHardware() {
 
 function getServiceRuntimeState(service) {
     if (!service?.is_installed) return { label: 'Kurulmamis', className: 'status-missing' };
-    if (service.is_running) return { label: 'Aktif', className: 'status-running' };
-    return { label: 'Pasif', className: 'status-stopped' };
+    if (service.autostart === false) return { label: 'Devre Dışı', className: 'status-stopped' };
+    return { label: 'Aktif', className: 'status-running' };
 }
 
 function renderCompletionPanel() {
@@ -78,7 +78,7 @@ function renderCompletionPanel() {
     if (!summaryEl || !listEl) return;
 
     const services = Object.values(allServices).filter(s => s.status !== 'disabled');
-    const activeCount = services.filter(s => s.is_running).length;
+    const activeCount = services.filter(s => s.is_installed && s.autostart !== false).length;
     const installedCount = services.filter(s => s.is_installed).length;
 
     summaryEl.innerHTML = `
@@ -95,7 +95,7 @@ function renderCompletionPanel() {
                     <div class="completion-service-name">${service.name}</div>
                     <div class="completion-service-meta">${service.category.toUpperCase()}</div>
                 </div>
-                <div class="status-badge ${state.className}"><span class="status-dot"></span> ${state.label}</div>
+                <div class="status-badge ${state.className}" title="${state.label}"><span class="status-dot"></span></div>
             </div>
         `;
     }).join('');
@@ -121,10 +121,12 @@ async function fetchServices() {
         services.forEach(service => {
             const prevState = previousServiceStates[service.id];
             if (prevState) {
-                if (prevState.is_installing && !service.is_installing && service.is_running) {
-                    showToast(`${service.name} başarıyla kuruldu!`, 'success');
-                } else if (prevState.is_installing && !service.is_installing && !service.is_running) {
-                    showToast(`${service.name} başlatılamadı.`, 'error');
+                if (prevState.is_installing && !service.is_installing) {
+                    if (service.is_installed) {
+                        showToast(`${service.name} başarıyla kuruldu!`, 'success');
+                    } else {
+                        showToast(`${service.name} kurulumu başarısız!`, 'error');
+                    }
                 }
             }
             allServices[service.id] = service;
@@ -139,9 +141,10 @@ async function fetchServices() {
 
         uiRender.renderServices(services, previousServiceStates, allServiceModels, {
             onStart: installService,
-            onStop: stopService,
+            onToggleAutostart: toggleAutostart,
             onReinstall: reinstallService,
             onRemove: removeService,
+            onDeleteImage: deleteImage,
             onDownload: downloadModel,
             onModelChange: (serviceId, path) => uiRender.filterVisionModels(serviceId, path, allServiceModels),
             onTabModels: (serviceId) => loadModelStatus(serviceId)
@@ -162,9 +165,10 @@ function renderFromCache() {
 
     uiRender.renderServices(services, previousServiceStates, allServiceModels, {
         onStart: installService,
-        onStop: stopService,
+        onToggleAutostart: toggleAutostart,
         onReinstall: reinstallService,
         onRemove: removeService,
+        onDeleteImage: deleteImage,
         onDownload: downloadModel,
         onModelChange: (serviceId, path) => uiRender.filterVisionModels(serviceId, path, allServiceModels),
         onTabModels: (serviceId) => loadModelStatus(serviceId)
@@ -249,15 +253,35 @@ async function installService(id, btn) {
     }
 }
 
-async function stopService(id, btn) {
+async function toggleAutostart(id, btn) {
     try {
         btn.disabled = true;
-        const result = await api.postStopService(id);
-        showToast(result.message || "Servis durduruldu", 'success');
+        const result = await api.postToggleAutostart(id);
+        if (result.status === 'success') {
+            showToast(result.message, 'success');
+        } else {
+            showToast(result.message || "Hata oluştu", 'error');
+        }
         fetchServices();
     } catch (err) {
-        showToast("Durdurma hatası!", 'error');
+        showToast("Bağlantı hatası!", 'error');
         btn.disabled = false;
+    }
+}
+
+async function deleteImage(id, btn) {
+    try {
+        if (btn) btn.disabled = true;
+        const result = await api.postRemoveImage(id);
+        if (result.status === 'success') {
+            showToast(result.message || "İmaj silindi", 'success');
+        } else {
+            showToast(result.message || "İmaj silinemedi", 'error');
+        }
+        if (btn) btn.disabled = false;
+    } catch (err) {
+        showToast("Bağlantı hatası!", 'error');
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -375,7 +399,18 @@ function initWizard() {
     if (nextBtn) {
         nextBtn.onclick = () => {
             if (currentStep === steps.length) {
-                openCompletionPanel();
+                nextBtn.disabled = true;
+                nextBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sistem Başlatılıyor...';
+                api.postStartSystem().then(res => {
+                    showToast(res.message || "Sistem başlatılıyor...", "success");
+                    openCompletionPanel();
+                    nextBtn.disabled = false;
+                    nextBtn.innerHTML = 'Bitir';
+                }).catch(err => {
+                    showToast("Sistem başlatılırken hata oluştu!", "error");
+                    nextBtn.disabled = false;
+                    nextBtn.innerHTML = 'Bitir';
+                });
                 return;
             }
             setStep(currentStep + 1);

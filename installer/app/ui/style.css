@@ -117,14 +117,20 @@ header {
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 28px;
     margin-top: 28px;
 }
 
 .grid-centered {
-    grid-template-columns: repeat(auto-fit, minmax(320px, 440px));
+    display: flex;
     justify-content: center;
+    gap: 28px;
+}
+.grid-centered > .service-card {
+    width: 32%;
+    min-width: 280px;
+    max-width: 380px;
 }
 
 .service-card {
@@ -244,6 +250,21 @@ header {
     color: #0b0f14;
 }
 
+/* Success split style */
+.split-action > .btn-success + .split-dropdown .btn-split-toggle {
+    background: rgba(111, 208, 165, 0.12);
+    color: var(--success);
+    border: 1px solid rgba(111, 208, 165, 0.4);
+    border-left: 1px solid rgba(111, 208, 165, 0.2) !important;
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+}
+
+.split-action > .btn-success + .split-dropdown .btn-split-toggle:hover {
+    background: var(--success);
+    color: #0b0f14;
+}
+
 .dropdown-menu {
     position: absolute;
     left: 50%;
@@ -292,9 +313,10 @@ header {
 }
 
 .status-running .status-dot { background: var(--success); box-shadow: 0 0 8px rgba(111, 208, 165, 0.6); }
-.status-stopped .status-dot { background: var(--text-secondary); }
+.status-stopped .status-dot { background: var(--danger); box-shadow: 0 0 8px rgba(240, 139, 127, 0.6); }
 .status-disabled .status-dot { background: #64748b; }
-.status-missing .status-dot { background: var(--warning); }
+.status-missing .status-dot { background: var(--text-secondary); }
+.status-stopped { color: var(--danger); }
 .status-disabled { color: var(--text-secondary); }
 .status-missing { color: var(--text-secondary); }
 
@@ -459,6 +481,17 @@ header {
 
 .btn-danger:hover {
     background: var(--danger);
+    color: #0b0f14;
+}
+
+.btn-success {
+    background: rgba(111, 208, 165, 0.12);
+    color: var(--success);
+    border: 1px solid rgba(111, 208, 165, 0.4);
+}
+
+.btn-success:hover {
+    background: var(--success);
     color: #0b0f14;
 }
 

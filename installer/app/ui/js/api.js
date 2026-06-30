@@ -31,6 +31,21 @@ export async function postRemoveService(id) {
     return await response.json();
 }
 
+export async function postRemoveImage(id) {
+    const response = await fetch(`${API_BASE}/services/${id}/remove-image`, { method: 'POST' });
+    return await response.json();
+}
+
+export async function postToggleAutostart(id) {
+    const response = await fetch(`${API_BASE}/services/${id}/autostart`, { method: 'POST' });
+    return await response.json();
+}
+
+export async function postStartSystem() {
+    const response = await fetch(`${API_BASE}/system/start`, { method: 'POST' });
+    return await response.json();
+}
+
 export async function postDownloadModel(serviceId, modelId) {
     const response = await fetch(`${API_BASE}/services/${serviceId}/models/download?model_id=${modelId}`, { method: 'POST' });
     return await response.json();
