@@ -134,11 +134,6 @@ Write-Host ""
 # 5. Global CLI command registry
 Write-Host "[5/5] Installing global 'orion' command..." -ForegroundColor Yellow
 
-$BinFolder = Join-Path $TargetFolder "bin"
-if (-not (Test-Path $BinFolder)) {
-    New-Item -ItemType Directory -Path $BinFolder | Out-Null
-}
-
 # Wrapper batch/powershell file content
 $lines = [System.Collections.Generic.List[string]]::new()
 $lines.Add('param ([Parameter(Position=0)][string]$Action = "help", [Parameter(Position=1)][string]$SubService = "")')
@@ -310,28 +305,33 @@ $lines.Add('} finally {')
 $lines.Add('    Set-Location $PreviousLocation')
 $lines.Add('}')
 
-$WrapperScriptPath = Join-Path $BinFolder "orion.ps1"
-[System.IO.File]::WriteAllLines($WrapperScriptPath, $lines.ToArray())
+# orion.ps1 — kök dizine yaz (router ile aynı mantık)
+$WrapperScriptPath = Join-Path $TargetFolder "orion.ps1"
+[System.IO.File]::WriteAllText($WrapperScriptPath, ($lines -join "`r`n"), (New-Object System.Text.UTF8Encoding $false))
 
-# Wrapper Batch file so Command Prompt users can use 'orion' directly too
-$BatLines = @(
-    "@echo off",
-    'powershell -NoProfile -ExecutionPolicy Bypass -Command "& ''' + $WrapperScriptPath + ''' %*"'
-)
-$WrapperBatPath = Join-Path $BinFolder "orion.bat"
-[System.IO.File]::WriteAllLines($WrapperBatPath, $BatLines)
+# orion.cmd — %~dp0 ile kendi dizinine göre relatif path (router ile aynı mantık)
+$CmdContent = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0orion.ps1`" %*"
+[System.IO.File]::WriteAllText((Join-Path $TargetFolder "orion.cmd"), $CmdContent, (New-Object System.Text.UTF8Encoding $false))
 
-# Add to user PATH safely
+# PATH'e $TargetFolder köküne ekle (router ile aynı mantık)
 Write-Host "Registering 'orion' command to Environment PATH..." -ForegroundColor DarkGray
+$CleanFolder = $TargetFolder.TrimEnd('\')
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($UserPath -notlike "*$BinFolder*") {
-    $NewPath = $UserPath.TrimEnd(';') + ";" + $BinFolder
-    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $NewPath
-    Write-Host "[OK] Added to User PATH variables. You might need to restart your terminal." -ForegroundColor Green
+$PathParts = $UserPath -split ";" | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { $_ }
+if ($CleanFolder -notin $PathParts) {
+    $NewUserPath = ($PathParts + $CleanFolder) -join ";"
+    [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
+    Write-Host "[OK] Added to User PATH variables." -ForegroundColor Green
 } else {
     Write-Host "[OK] Already exists in PATH." -ForegroundColor Green
 }
+
+# Mevcut oturum PATH'ine de ekle
+$CurrentPathParts = $env:Path -split ";" | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { $_ }
+if ($CleanFolder -notin $CurrentPathParts) {
+    $env:Path = ($CurrentPathParts + $CleanFolder) -join ";"
+}
+Write-Host "[OK] 'orion' command registered." -ForegroundColor Green
 
 Write-Host "`n=======================================================" -ForegroundColor Cyan
 Write-Host "  Orion AI Assistant is successfully installed!" -ForegroundColor Green

@@ -53,7 +53,7 @@
       "folder": "omnivoice",
       "description": "Xiaomi'nin geniş dil destekli TTS modeli.",
       "download_url": "https://huggingface.co/k2-fsa/OmniVoice/resolve/main/",
-      "size_mb": 3040,
+      "size_mb": 3481,
       "files": [
         "model.safetensors",
         "config.json",
