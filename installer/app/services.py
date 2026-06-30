@@ -26,7 +26,7 @@ def _get_context(service_id: str) -> tuple[dict | None, str, dict]:
 
 def _read_env(path: str) -> dict[str, str]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             return {k.strip(): v.strip() for line in f if "=" in line and not line.strip().startswith("#") for k, v in [line.split("=", 1)]}
     except OSError:
         return {}
@@ -422,11 +422,17 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
 
         # Adım 2: Şimdi servisi başlat (Kod değişikliklerini algılaması için --build eklendi)
         cmd = ["docker-compose", "-f", compose_file, "up", "-d", "--build"]
-        res = subprocess.run(cmd, cwd=service_dir, env={**os.environ, **build_env}, capture_output=True)
+        process = subprocess.Popen(cmd, cwd=service_dir, env={**os.environ, **build_env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
         
-        if res.returncode != 0:
-            out = res.stderr.decode("utf-8", errors="replace") + "\n" + res.stdout.decode("utf-8", errors="replace")
-
+        out_lines = []
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            out_lines.append(line)
+            
+        process.wait()
+        out = "".join(out_lines)
+        
+        if process.returncode != 0:
             conflicts = {n.lstrip("/") for n in _CONFLICT_PATTERN.findall(out)} 
             managed = {str(build_env.get(k, "")).strip() for k in MANAGED_HOSTS if build_env.get(k)}
             removable_conflicts = sorted(conflicts & managed)
@@ -435,7 +441,11 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
                 logging.warning("Install conflict (%s). Removing %s and retrying...", service_id, removable_conflicts)
                 for name in removable_conflicts: 
                     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-                subprocess.run(cmd, cwd=service_dir, env={**os.environ, **build_env})
+                
+                retry_process = subprocess.Popen(cmd, cwd=service_dir, env={**os.environ, **build_env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+                for line in retry_process.stdout:
+                    print(line, end="", flush=True)
+                retry_process.wait()
             else:
                 print(f"[INSTALL ERROR] {service_id}: {out}")
 

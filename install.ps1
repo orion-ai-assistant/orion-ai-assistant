@@ -101,7 +101,7 @@ if (-not (Test-Path $envGlobalLocal)) {
 $envContent = Get-Content $envGlobalLocal -ErrorAction SilentlyContinue
 if ($null -eq $envContent -or -not ($envContent -match "(?m)^CLI_LANG=")) {
     $sysLang = (Get-Culture).TwoLetterISOLanguageName
-    Add-Content -Path $envGlobalLocal -Value "`n# Cihaz dili otomatik algılandı`nCLI_LANG=$sysLang"
+    Add-Content -Path $envGlobalLocal -Value "`n# Auto-detected system language`nCLI_LANG=$sysLang" -Encoding UTF8
     Write-Host "[OK] Sistem dili algılandı ve ayarlandı: $sysLang" -ForegroundColor Green
 }
 Write-Host ""

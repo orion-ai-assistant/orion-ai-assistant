@@ -1,4 +1,5 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+import fastapi
 
 from . import config
 from .core import models
@@ -18,7 +19,11 @@ def get_hardware():
 # ---------------------------------------------------------------------------
 @router.get("/api/services")
 def list_services():
-    return services.get_services()
+    try:
+        return services.get_services()
+    except Exception as e:
+        import traceback
+        return fastapi.responses.JSONResponse(status_code=500, content={"error": str(e), "trace": traceback.format_exc()})
 
 
 @router.post("/api/services/{service_id}/install")

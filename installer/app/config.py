@@ -33,7 +33,7 @@ def _load_global_env() -> dict[str, str]:
     env = {}
     path = os.path.join(SERVICES_DIR, ".env.global")
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#") and line:
@@ -43,7 +43,7 @@ def _load_global_env() -> dict[str, str]:
     # Yerel ezmeleri yükle (.env.global.local)
     local_path = os.path.join(SERVICES_DIR, ".env.global.local")
     if os.path.exists(local_path):
-        with open(local_path, encoding="utf-8") as f:
+        with open(local_path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#") and line:

@@ -1,6 +1,6 @@
 services:
   router:
-    image: ghcr.io/krstalacam/orion-router:latest
+    image: ghcr.io/orion-ai-assistant/orion-router:latest
     pull_policy: always
     container_name: router
     restart: unless-stopped
