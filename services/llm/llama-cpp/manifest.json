@@ -14,11 +14,12 @@
   "models_path": "models/",
   "models_catalog": [
     {
-      "id": "gemma-4-unsloth",
-      "name": "Google Gemma 4 - Multimodal",
+      "id": "gemma-4-e2b-it-q3-k-s",
+      "name": "Google Gemma 4 (E2B-it Q3_K_S)",
       "folder": "gemma-4-multimodal",
       "description": "Unsloth tarafından optimize edilmiş, vizyon destekli hafif model.",
       "download_url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
+      "size_mb": 3266,
       "files": [
         "gemma-4-E2B-it-Q3_K_S.gguf",
         "mmproj-BF16.gguf"
@@ -33,6 +34,7 @@
       "folder": "miniplm-qwen-200m",
       "description": "Ultra hafif Qwen tabanlı model. Q2 ve Q3 sürümleri bir arada.",
       "download_url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/main/",
+      "size_mb": 250,
       "files": [
         "MiniPLM-Qwen-200M-Q2_K.gguf",
         "MiniPLM-Qwen-200M-Q3_K_M.gguf"

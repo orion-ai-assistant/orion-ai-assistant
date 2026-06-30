@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Kullanıcının başlangıç dizinini kaydet — kurulum sonunda geri döneceğiz
+$OriginalLocation = Get-Location
+
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "   Orion AI Assistant Native Installer    " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -145,75 +148,163 @@ $lines.Add('$ProjectPath = "$env:LOCALAPPDATA\OrionAIAssistant"')
 $lines.Add('$PreviousLocation = Get-Location')
 $lines.Add('try {')
 $lines.Add('    Set-Location -Path $ProjectPath')
-$lines.Add('    if ($Action -in @("help", "")) {')
-$lines.Add('        Write-Host ""')
-$lines.Add('        Write-Host "  Orion AI Assistant CLI" -ForegroundColor Cyan')
-$lines.Add('        Write-Host "  --------------------------------" -ForegroundColor DarkGray')
-$lines.Add('        Write-Host "  Usage: orion [installer|start|stop|logs|status|help]" -ForegroundColor Yellow')
-$lines.Add('        Write-Host ""')
-$lines.Add('        Write-Host "  Commands:"')
-$lines.Add('        Write-Host "    installer  Launch the local Web installer GUI panel"' -ForegroundColor Green)
-$lines.Add('        Write-Host "    start      Build and spin up the Orion Docker stack"' -ForegroundColor Green)
-$lines.Add('        Write-Host "    stop       Stop all running Orion containers"' -ForegroundColor Green)
-$lines.Add('        Write-Host "    logs       Stream docker container logs"' -ForegroundColor Green)
-$lines.Add('        Write-Host "    status     List all running Orion container states"' -ForegroundColor Green)
-$lines.Add('        Write-Host "    help       Display this help documentation"')
-$lines.Add('        Write-Host ""')
-$lines.Add('        exit 0')
-$lines.Add('    }')
-$lines.Add('')
-$lines.Add('    if ($Action -eq "installer") {')
-$lines.Add('        Write-Host "Launching Orion Installer Application..." -ForegroundColor Cyan')
-$lines.Add('        & python "$ProjectPath\orion.py" installer')
-$lines.Add('    } elseif ($Action -eq "start") {')
-$lines.Add('        Write-Host "Starting Docker stack via Docker Compose..." -ForegroundColor Cyan')
-$lines.Add('        # Start services via Compose if docker-compose.yml files are located in services/router etc.')
-$lines.Add('        # Or launch installer backend so the user can control it from GUI')
-$lines.Add('        # We also support starting specific service directly if compose is inside its dir')
-$lines.Add('        if ($SubService -ne "") {')
-$lines.Add('            if (Test-Path "services\$SubService") {')
-$lines.Add('                Set-Location "services\$SubService"')
-$lines.Add('                docker compose up -d')
-$lines.Add('            } else {')
-$lines.Add('                Write-Host "Service $SubService not found." -ForegroundColor Red')
+$lines.Add('    if ($Action -in @("help", "")) {
+        Write-Host ""
+        Write-Host "  Orion AI Assistant CLI" -ForegroundColor Cyan
+        Write-Host "  --------------------------------" -ForegroundColor DarkGray
+        Write-Host "  Usage: orion [installer|start|stop|logs|status|help]" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Commands:"
+        Write-Host "    installer  Launch the local Web installer GUI panel" -ForegroundColor Green
+        Write-Host "    start      Build and spin up the Orion Docker stack" -ForegroundColor Green
+        Write-Host "    stop       Stop all running Orion containers" -ForegroundColor Green
+        Write-Host "    logs       Stream logs (e.g., orion log installer, orion log router)" -ForegroundColor Green
+        Write-Host "    status     List all running Orion container states" -ForegroundColor Green
+        Write-Host "    help       Display this help documentation"
+        Write-Host ""
+        exit 0
+    }')
+$lines.Add('    if ($Action -eq "installer") {
+        Write-Host "Launching Orion Installer Application in background..." -ForegroundColor Cyan
+        $PidFile = "$ProjectPath\.installer.pid"
+        $LogFile = "$ProjectPath\installer.log"
+        $ErrFile = "$ProjectPath\installer.err.log"
+        $InstallerPy  = Join-Path (Join-Path $ProjectPath "installer") ".venv\Scripts\python.exe"
+        $OrionPy      = Join-Path $ProjectPath "orion.py"
+        if (-not (Test-Path $InstallerPy)) { $InstallerPy = "python" }
+        if (-not (Test-Path $LogFile)) { New-Item -Path $LogFile -ItemType File -Force | Out-Null }
+        if (-not (Test-Path $ErrFile)) { New-Item -Path $ErrFile -ItemType File -Force | Out-Null }
+        $AppArgs = @($OrionPy, "installer")
+        $p = Start-Process -FilePath $InstallerPy -ArgumentList $AppArgs -WindowStyle Hidden -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile -PassThru
+        $p.Id | Out-File -FilePath $PidFile -Encoding ASCII
+        Write-Host "[OK] Installer baslatildi, arayuz aciliyor..." -ForegroundColor Green
+    } elseif ($Action -eq "start") {')
+$lines.Add('        Write-Host "Checking Docker status..." -ForegroundColor Cyan')
+$lines.Add('        $DockerReady = $false')
+$lines.Add('        try { docker info 2>$null | Out-Null; $DockerReady = $true } catch { $DockerReady = $false }')
+$lines.Add('        if (-not $DockerReady) {')
+$lines.Add('            Write-Host "[!] Docker Daemon hazir degil. Docker Desktop baslatiliyor..." -ForegroundColor Yellow')
+$lines.Add('            $dp = "C:\Program Files\Docker\Docker\Docker Desktop.exe"')
+$lines.Add('            if (Test-Path $dp) {')
+$lines.Add('                Start-Process -FilePath $dp')
+$lines.Add('                $maxRetry = 12')
+$lines.Add('                for ($i = 1; $i -le $maxRetry; $i++) {')
+$lines.Add('                    Start-Sleep -Seconds 5')
+$lines.Add('                    try { docker info 2>$null | Out-Null; $DockerReady = $true; break } catch {}')
+$lines.Add('                    $dots = "." * $i')
+$lines.Add('                    Write-Host "`r    Bekleniyor$dots ($($i*5)s)" -NoNewline -ForegroundColor DarkGray')
+$lines.Add('                }')
+$lines.Add('                Write-Host ""')
 $lines.Add('            }')
-$lines.Add('        } else {')
-$lines.Add('            Write-Host "Spinning up all active services. Type `orion installer` to manage them from GUI." -ForegroundColor Yellow')
-$lines.Add('            # Standard compose startup from service layers')
-$lines.Add('            Get-ChildItem -Path "services" -Filter "docker-compose.yml" -Recurse | ForEach-Object {')
-$lines.Add('                $dir = $_.DirectoryName')
-$lines.Add('                Write-Host "Starting service at: $dir" -ForegroundColor DarkGray')
+$lines.Add('            if (-not $DockerReady) {')
+$lines.Add('                Write-Host "[ERROR] Docker baslatilamadi. Lutfen Docker Desktop''i manuel acip tekrar deneyin." -ForegroundColor Red')
+$lines.Add('                exit 1')
+$lines.Add('            }')
+$lines.Add('        }')
+$lines.Add('')
+$lines.Add('        $running_up = docker ps --format "{{.Names}}" 2>$null')
+$lines.Add('        if ($running_up -match "orion-") {')
+$lines.Add('            Write-Host "[i] Orion servisleri zaten calisiyor. Durdurmak icin: orion stop" -ForegroundColor Yellow')
+$lines.Add('            exit 0')
+$lines.Add('        }')
+$lines.Add('')
+$lines.Add('        Write-Host "Starting Docker stack via Docker Compose..." -ForegroundColor Cyan')
+$lines.Add('        Get-ChildItem "$ProjectPath\services" -Filter "manifest.json" -Recurse | ForEach-Object {')
+$lines.Add('            $dir = $_.DirectoryName')
+$lines.Add('            if (Test-Path "$dir\.env") {')
+$lines.Add('                $m = Get-Content $_.FullName | ConvertFrom-Json')
+$lines.Add('                $cat = $m.category')
+$lines.Add('                if (-not $cat) { $cat = "misc" }')
+$lines.Add('                $projName = "orion-$cat"')
+$lines.Add('                Write-Host "Starting installed service: $($m.name) (Project: $projName)" -ForegroundColor DarkGray')
 $lines.Add('                Set-Location $dir')
-$lines.Add('                docker compose up -d')
+$lines.Add('                ')
+$lines.Add('                $composeArgs = @("-p", $projName)')
+$lines.Add('                if (Test-Path "$ProjectPath\services\.env.global") { $composeArgs += "--env-file", "$ProjectPath\services\.env.global" }')
+$lines.Add('                if (Test-Path "$ProjectPath\services\.env.global.local") { $composeArgs += "--env-file", "$ProjectPath\services\.env.global.local" }')
+$lines.Add('                if (Test-Path ".env") { $composeArgs += "--env-file", ".env" }')
+$lines.Add('                $composeArgs += "up", "-d"')
+$lines.Add('                ')
+$lines.Add('                & docker compose $composeArgs')
 $lines.Add('                Set-Location $ProjectPath')
 $lines.Add('            }')
 $lines.Add('        }')
+$lines.Add('        Write-Host "[OK] Orion servisleri baslatildi." -ForegroundColor Green')
 $lines.Add('    } elseif ($Action -eq "stop") {')
 $lines.Add('        Write-Host "Stopping all Orion services..." -ForegroundColor Yellow')
-$lines.Add('        Get-ChildItem -Path "services" -Filter "docker-compose.yml" -Recurse | ForEach-Object {')
+$lines.Add('        Get-ChildItem "$ProjectPath\services" -Filter "manifest.json" -Recurse | ForEach-Object {')
+$lines.Add('            $m = Get-Content $_.FullName | ConvertFrom-Json')
+$lines.Add('            $cat = $m.category')
+$lines.Add('            if (-not $cat) { $cat = "misc" }')
+$lines.Add('            $projName = "orion-$cat"')
 $lines.Add('            $dir = $_.DirectoryName')
 $lines.Add('            Set-Location $dir')
-$lines.Add('            docker compose down')
+$lines.Add('            if (Test-Path "docker-compose.yml") {')
+$lines.Add('                docker compose -p $projName down')
+$lines.Add('            }')
 $lines.Add('            Set-Location $ProjectPath')
 $lines.Add('        }')
-$lines.Add('    } elseif ($Action -eq "logs") {')
+$lines.Add('        $PidFile = "$ProjectPath\.installer.pid"')
+$lines.Add('        if (Test-Path $PidFile) {')
+$lines.Add('            $existingPid = Get-Content $PidFile')
+$lines.Add('            if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {')
+$lines.Add('                Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue')
+$lines.Add('                Write-Host "[OK] Background installer stopped." -ForegroundColor Green')
+$lines.Add('            }')
+$lines.Add('            Remove-Item -Path $PidFile -ErrorAction SilentlyContinue')
+$lines.Add('        }')
+$lines.Add('    } elseif ($Action -in @("logs", "log")) {')
 $lines.Add('        Write-Host "Streaming logs... (Ctrl+C to exit)" -ForegroundColor Gray')
-$lines.Add('        if ($SubService -ne "") {')
-$lines.Add('            if (Test-Path "services\$SubService") {')
+$lines.Add('        if ($SubService -eq "installer") {')
+$lines.Add('            $LogFile = "$ProjectPath\installer.log"')
+$lines.Add('            if (Test-Path $LogFile) { Get-Content $LogFile -Wait -Tail 100 } else { Write-Host "No installer logs found." }')
+$lines.Add('        } elseif ($SubService -ne "") {')
+$lines.Add('            if (Test-Path "services\$SubService\manifest.json") {')
+$lines.Add('                $m = Get-Content "services\$SubService\manifest.json" | ConvertFrom-Json')
+$lines.Add('                $cat = $m.category; if (-not $cat) { $cat = "misc" }; $projName = "orion-$cat"')
 $lines.Add('                Set-Location "services\$SubService"')
-$lines.Add('                docker compose logs -f --tail=100')
+$lines.Add('                docker compose -p $projName logs -f --tail=100')
+$lines.Add('                Set-Location $ProjectPath')
 $lines.Add('            }')
 $lines.Add('        } else {')
-$lines.Add('            Get-ChildItem -Path "services" -Filter "docker-compose.yml" -Recurse | ForEach-Object {')
+$lines.Add('            Write-Host "[i] Printing last 30 lines for all services." -ForegroundColor DarkGray')
+$lines.Add('            Write-Host "[i] To stream continuously, use: orion log <service-name> (e.g. orion log installer, orion log router)" -ForegroundColor DarkGray')
+$lines.Add('            ')
+$lines.Add('            $LogFile = "$ProjectPath\installer.log"')
+$lines.Add('            if (Test-Path $LogFile) { ')
+$lines.Add('                Write-Host "`n--- installer ---" -ForegroundColor Cyan')
+$lines.Add('                Get-Content $LogFile -Tail 30 ')
+$lines.Add('            }')
+$lines.Add('            ')
+$lines.Add('            Get-ChildItem "$ProjectPath\services" -Filter "manifest.json" -Recurse | ForEach-Object {')
+$lines.Add('                $m = Get-Content $_.FullName | ConvertFrom-Json')
+$lines.Add('                $cat = $m.category; if (-not $cat) { $cat = "misc" }; $projName = "orion-$cat"')
 $lines.Add('                $dir = $_.DirectoryName')
 $lines.Add('                Set-Location $dir')
-$lines.Add('                docker compose logs -f --tail=30')
+$lines.Add('                if (Test-Path "docker-compose.yml") { ')
+$lines.Add('                    Write-Host "`n--- $($m.name) ---" -ForegroundColor Cyan')
+$lines.Add('                    docker compose -p $projName logs --tail=30 ')
+$lines.Add('                }')
 $lines.Add('                Set-Location $ProjectPath')
 $lines.Add('            }')
 $lines.Add('        }')
 $lines.Add('    } elseif ($Action -eq "status") {')
-$lines.Add('        Write-Host "Container Status:" -ForegroundColor Yellow')
-$lines.Add('        docker ps --filter "name=orion-"')
+$lines.Add('        Write-Host "Container Status:" -ForegroundColor Cyan')
+$lines.Add('        docker ps --filter "network=orion-network"')
+$lines.Add('    } elseif ($Action -eq "help" -or $Action -eq "-h" -or $Action -eq "--help") {')
+$lines.Add('        Write-Host "`n  Orion AI Assistant CLI" -ForegroundColor Cyan')
+$lines.Add('        Write-Host "  --------------------------------" -ForegroundColor Cyan')
+$lines.Add('        Write-Host "  Usage: orion [installer|start|stop|logs|status|help]"')
+$lines.Add('        Write-Host "`n  Commands:"')
+$lines.Add('        Write-Host "    installer  Launch the local Web installer GUI panel"')
+$lines.Add('        Write-Host "    start      Build and spin up the Orion Docker stack"')
+$lines.Add('        Write-Host "    stop       Stop all running Orion containers"')
+$lines.Add('        Write-Host "    logs       Stream logs (e.g., orion log installer, orion log router)"')
+$lines.Add('        Write-Host "    status     List all running Orion container states"')
+$lines.Add('        Write-Host "    help       Display this help documentation`n"')
+$lines.Add('    } else {')
+$lines.Add('        Write-Host "Unknown command: $Action" -ForegroundColor Red')
+$lines.Add('        Write-Host "Type ''orion help'' to see available commands." -ForegroundColor Gray')
 $lines.Add('    }')
 $lines.Add('} finally {')
 $lines.Add('    Set-Location $PreviousLocation')
@@ -225,7 +316,7 @@ $WrapperScriptPath = Join-Path $BinFolder "orion.ps1"
 # Wrapper Batch file so Command Prompt users can use 'orion' directly too
 $BatLines = @(
     "@echo off",
-    "powershell -NoProfile -ExecutionPolicy Bypass -Command `\"& '$WrapperScriptPath' %*`\""
+    'powershell -NoProfile -ExecutionPolicy Bypass -Command "& ''' + $WrapperScriptPath + ''' %*"'
 )
 $WrapperBatPath = Join-Path $BinFolder "orion.bat"
 [System.IO.File]::WriteAllLines($WrapperBatPath, $BatLines)
@@ -245,7 +336,31 @@ if ($UserPath -notlike "*$BinFolder*") {
 Write-Host "`n=======================================================" -ForegroundColor Cyan
 Write-Host "  Orion AI Assistant is successfully installed!" -ForegroundColor Green
 Write-Host "=======================================================" -ForegroundColor Cyan
-Write-Host "  Type: orion installer" -ForegroundColor Yellow
-Write-Host "  This command will open the interactive setup panel."
 Write-Host "  To start docker services directly, type: orion start"
 Write-Host "=======================================================" -ForegroundColor Cyan
+
+# Kullanıcının başlangıç dizinine geri dön
+Set-Location -Path $OriginalLocation
+
+# Installer arayüzünü otomatik başlat
+Write-Host "`n[>>] Orion Installer arayüzü başlatılıyor..." -ForegroundColor Cyan
+$OrionPy      = Join-Path $TargetFolder "orion.py"
+$InstallerPy  = Join-Path (Join-Path $TargetFolder "installer") ".venv\Scripts\python.exe"
+$PidFile      = Join-Path $TargetFolder ".installer.pid"
+$LogFile      = Join-Path $TargetFolder "installer.log"
+
+$ErrFile      = Join-Path $TargetFolder "installer.err.log"
+
+if (-not (Test-Path $InstallerPy)) {
+    $InstallerPy = "python"
+}
+
+if (-not (Test-Path $LogFile)) { New-Item -Path $LogFile -ItemType File -Force | Out-Null }
+if (-not (Test-Path $ErrFile)) { New-Item -Path $ErrFile -ItemType File -Force | Out-Null }
+
+$AppArgs = @($OrionPy, "installer")
+Start-Process $InstallerPy -ArgumentList $AppArgs -WindowStyle Hidden -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile -PassThru | ForEach-Object {
+    $_.Id | Out-File -FilePath $PidFile -Encoding ASCII
+    Write-Host "[OK] Installer arka planda başlatıldı (PID: $($_.Id))" -ForegroundColor Green
+    Write-Host "[i]  Uygulama penceresi birkaç saniye içinde açılacak." -ForegroundColor DarkGray
+}

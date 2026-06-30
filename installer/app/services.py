@@ -38,7 +38,7 @@ def _run_compose(files: list[str], action: str, cwd: str, env: dict) -> bool:
         if not f or f in seen or not os.path.exists(os.path.join(cwd, f)):
             continue
         seen.add(f)
-        res = subprocess.run(["docker-compose", "-f", f, action], cwd=cwd, env={**os.environ, **env}, capture_output=True)
+        res = subprocess.run(["docker-compose", "-f", f, action], cwd=cwd, env={**os.environ, **env}, capture_output=True, stdin=subprocess.DEVNULL)
         # Decode manually to avoid UnicodeDecodeError on Windows
         _ = res.stdout.decode("utf-8", errors="replace")
 
@@ -60,7 +60,7 @@ def _image_exists(image_name: str) -> bool:
     if not image_name:
         return False
     try:
-        res = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True)
+        res = subprocess.run(["docker", "image", "inspect", image_name], capture_output=True, stdin=subprocess.DEVNULL)
         return res.returncode == 0
     except Exception:
         return False
@@ -177,7 +177,7 @@ def get_services() -> list[dict]:
     containers = {}
     # Hata fırlatma ihtimaline karşı try/except (Docker daemon erişim sorunları için)
     try:
-        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}"], capture_output=True)
+        r = subprocess.run(["docker", "ps", "-a", "--format", "{{.Names}}|{{.Status}}"], capture_output=True, stdin=subprocess.DEVNULL)
         stdout = r.stdout.decode("utf-8", errors="replace")
         containers = {line.split("|")[0]: line.split("|")[1].startswith("Up") for line in stdout.splitlines() if "|" in line}
 

@@ -31,6 +31,7 @@
       "folder": "voxcpm2",
       "description": "Yüksek kaliteli Türkçe ses klonlama ve sentez.",
       "download_url": "https://huggingface.co/krstalacam/VoxCPM2/resolve/main/",
+      "size_mb": 4720,
       "files": [
         "model.safetensors",
         "config.json",
@@ -52,6 +53,7 @@
       "folder": "omnivoice",
       "description": "Xiaomi'nin geniş dil destekli TTS modeli.",
       "download_url": "https://huggingface.co/k2-fsa/OmniVoice/resolve/main/",
+      "size_mb": 3040,
       "files": [
         "model.safetensors",
         "config.json",
@@ -92,21 +94,18 @@
       "name": "NVIDIA - CUDA",
       "hardware": "nvidia",
       "base_image": "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"
-
     },
     {
       "id": "tts-amd-rocm",
       "name": "AMD - ROCm",
       "hardware": "amd",
       "base_image": "rocm/pytorch:rocm6.2.3_ubuntu22.04_py3.10_pytorch_release_2.3.0"
-
     },
     {
       "id": "tts-cpu",
       "name": "Sadece CPU",
       "hardware": "cpu",
       "base_image": "python:3.10-slim"
-
     }
   ],
   "compose_files": {

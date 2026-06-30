@@ -138,6 +138,7 @@ def open_app_window(host: str, port: int):
             f"--user-data-dir={profile_dir}",
             "--no-first-run",
             "--no-default-browser-check",
+            "--start-maximized",
         ]
 
         try:

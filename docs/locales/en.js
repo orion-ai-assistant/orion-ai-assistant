@@ -9,7 +9,7 @@ window.ORION_TRANSLATIONS.en = {
     "badge_text": "Open Source AI Assistant",
     "hero_title": "Modular AI<br /><span class=\"text-gradient\">Assistant</span>",
     "hero_desc": "An open-source AI platform that brings LLM, TTS, STT, Embedding and more under one roof, installed in seconds with Docker.",
-    "tab_windows": "Windows (PowerShell)",
+    "tab_windows": "Windows",
     "tab_macos": "macOS / Linux",
     "tooltip_unsupported": "Coming Soon",
     "term_info_repo": "Installer opens — you choose which services to install",

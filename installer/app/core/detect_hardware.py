@@ -12,7 +12,7 @@ def get_nvidia_info() -> dict | None:
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
-            encoding="utf-8",
+            encoding="utf-8", stdin=subprocess.DEVNULL
         )
         name, vram, cap = out.strip().split("\n")[0].split(", ")
         return {
@@ -27,7 +27,7 @@ def get_nvidia_info() -> dict | None:
 
 def get_amd_info() -> dict | None:
     try:
-        out = subprocess.check_output(["wmic", "path", "win32_VideoController", "get", "name"], encoding="utf-8")
+        out = subprocess.check_output(["wmic", "path", "win32_VideoController", "get", "name"], encoding="utf-8", stdin=subprocess.DEVNULL)
         if "Radeon" in out or "AMD" in out:
             return {
                 "DETECTED_GPU_VENDOR": "amd",
@@ -42,7 +42,7 @@ def get_amd_info() -> dict | None:
 def get_cpu_info() -> str:
     try:
         # Windows için wmic kullanarak CPU ismi al
-        out = subprocess.check_output(["wmic", "cpu", "get", "name"], encoding="utf-8")
+        out = subprocess.check_output(["wmic", "cpu", "get", "name"], encoding="utf-8", stdin=subprocess.DEVNULL)
         lines = [line.strip() for line in out.split("\n") if line.strip()]
         if len(lines) > 1:
             return lines[1].strip()

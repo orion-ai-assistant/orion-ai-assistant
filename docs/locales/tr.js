@@ -9,7 +9,7 @@ window.ORION_TRANSLATIONS.tr = {
     "badge_text": "Açık Kaynak AI Asistanı",
     "hero_title": "Modüler Yapay Zeka<br /><span class=\"text-gradient\">Asistanınız</span>",
     "hero_desc": "LLM, TTS, STT, Embedding ve daha fazlasını tek bir çatı altında toplayan, Docker ile saniyeler içinde kurulan açık kaynak AI platformu.",
-    "tab_windows": "Windows (PowerShell)",
+    "tab_windows": "Windows",
     "tab_macos": "macOS / Linux",
     "tooltip_unsupported": "Yakında",
     "term_info_repo": "Installer açılır — hangi servisleri kurmak istediğinizi siz seçersiniz",
