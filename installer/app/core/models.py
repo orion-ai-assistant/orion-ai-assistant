@@ -72,6 +72,7 @@ def _catalog_entry(service_id: str, m: dict, models_dir: str) -> tuple[dict, str
         "is_incomplete":     not is_installed and size > 0 and dl is None,
         "incomplete_status": status_text,
         "size_mb":           round(size / 1024 ** 2, 2),
+        "manifest_size_mb":  m.get("size_mb", 0),
         "path": m_folder, "rel_path": rel,
     }, rel
 

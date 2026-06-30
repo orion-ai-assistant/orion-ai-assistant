@@ -132,9 +132,10 @@ function renderModelItem(m, isDisabled) {
         btnHtml = '<button class="btn btn-primary btn-small" disabled>Hazir</button>';
     } else {
         const incompleteText = m.incomplete_status ? ` (${m.incomplete_status})` : '';
+        const manifestSizeText = m.manifest_size_mb > 0 ? ` (${formatSize(m.manifest_size_mb)})` : '';
         statusHtml = m.is_incomplete
             ? `<span class="model-status warning">Yarida Kaldi${incompleteText}</span>`
-            : '<span class="model-status missing">Eksik</span>';
+            : `<span class="model-status missing">Eksik${manifestSizeText}</span>`;
         btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''}>${m.is_incomplete ? 'Devam Et' : 'Indir'}</button>`;
     }
 
