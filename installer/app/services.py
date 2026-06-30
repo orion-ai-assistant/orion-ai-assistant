@@ -301,18 +301,6 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
 
     # 2. Router-specific keys (only generated if installing orion-router)
     if service_id == "orion-router":
-        has_key = g_vars.get("ENCRYPTION_KEY")
-        if not has_key or not has_key.strip():
-            import base64
-            try:
-                from cryptography.fernet import Fernet
-                new_key = Fernet.generate_key().decode("utf-8")
-            except ImportError:
-                new_key = base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8")
-                
-            g_vars["ENCRYPTION_KEY"] = new_key
-            added_global_vars["ENCRYPTION_KEY"] = new_key
-
         has_secret = g_vars.get("ADMIN_SECRET")
         if not has_secret or not has_secret.strip():
             g_vars["ADMIN_SECRET"] = "orion"

@@ -21,12 +21,13 @@ services:
       - TTS_HOST=${TTS_HOST}
       - TTS_PORT=${TTS_PORT}
       # Yeni eklenen kritik güvenlik ve yönetim değişkenleri
-      - ADMIN_SECRET=${ADMIN_SECRET:-orion}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY} # Restart'larda API key'lerin bozulmaması için şart
-      - CLI_LANG=${CLI_LANG:-en}
+      - ADMIN_SECRET=${ADMIN_SECRET}
+      - CLI_LANG=${CLI_LANG}
       - APP_REFERER=${APP_REFERER}
       - APP_TITLE=${APP_TITLE}
       - APP_CATEGORIES=${APP_CATEGORIES}
+    volumes:
+      - orion_router_app_data:/app/persistent
     networks:
       - orion-network
     depends_on:
@@ -56,6 +57,8 @@ services:
 volumes:
   orion_router_postgres_data:
     name: orion_router_postgres_data
+  orion_router_app_data:
+    name: orion_router_app_data
 
 networks:
   orion-network:
