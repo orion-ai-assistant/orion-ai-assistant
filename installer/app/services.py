@@ -244,6 +244,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         "MMPROJ_ARGS": mmproj_args,
         "EXTRA_ARGS": extra_args,
         "GPU_COUNT": "1" if hw in GPU_VENDORS else "0", 
+        "COMPOSE_FILE": compose_file,
         **f_params,
     }
     
@@ -401,17 +402,28 @@ def start_active_services() -> dict:
     
     for manifest, s_dir in active_services:
         try:
-            hw = g_vars.get("DETECTED_GPU_VENDOR", "cpu")
-            is_core = manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}
-            if is_core:
-                hw = "cpu"
-                
-            compose_file = manifest.get("compose_files", {}).get(hw)
+            compose_file = None
+            env_path = os.path.join(s_dir, ".env")
+            if os.path.exists(env_path):
+                with open(env_path, encoding="utf-8") as ef:
+                    for line in ef:
+                        line = line.strip()
+                        if line.startswith("COMPOSE_FILE="):
+                            compose_file = line.split("=", 1)[1].strip()
+                            break
+
             if not compose_file:
-                compose_files = manifest.get("compose_files", {})
-                if compose_files:
-                    hw = list(compose_files.keys())[0]
-                    compose_file = compose_files[hw]
+                hw = g_vars.get("DETECTED_GPU_VENDOR", "cpu")
+                is_core = manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}
+                if is_core:
+                    hw = "cpu"
+                    
+                compose_file = manifest.get("compose_files", {}).get(hw)
+                if not compose_file:
+                    compose_files = manifest.get("compose_files", {})
+                    if compose_files:
+                        hw = list(compose_files.keys())[0]
+                        compose_file = compose_files[hw]
             
             if not compose_file:
                 continue
