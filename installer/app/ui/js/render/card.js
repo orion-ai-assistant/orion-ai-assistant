@@ -102,8 +102,16 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         actionHtml = '<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> Hazırlanıyor...</button>';
     } else {
         const isAutostart = service.autostart !== false;
-        const mainBtnClass = !hasContainer ? 'btn btn-primary' : (isAutostart ? 'btn btn-danger' : 'btn btn-success');
-        const mainBtnLabel = !hasContainer ? 'Kur' : (isAutostart ? 'Devre Dışı Bırak' : 'Aktifleştir');
+        let mainBtnClass = !hasContainer ? 'btn btn-primary' : (isAutostart ? 'btn btn-danger' : 'btn btn-success');
+        let mainBtnLabel = !hasContainer ? 'Kur' : (isAutostart ? 'Devre Dışı Bırak' : 'Aktifleştir');
+        let mainBtnAttr = '';
+
+        if (hasContainer && isCoreService(service)) {
+            mainBtnClass = 'btn btn-success';
+            mainBtnLabel = 'Aktif';
+            mainBtnAttr = 'disabled style="cursor: default;"';
+        }
+
         const mainBtnId = `btn-main-${service.id}`;
 
         const menuBtnId = `btn-menu-${service.id}`;
@@ -122,7 +130,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
             </div>
         ` : '';
         actionHtml = `
-            <div class="split-action"><button class="${mainBtnClass}" id="${mainBtnId}">${mainBtnLabel}</button>${dropdownHtml}</div>
+            <div class="split-action"><button class="${mainBtnClass}" id="${mainBtnId}" ${mainBtnAttr}>${mainBtnLabel}</button>${dropdownHtml}</div>
         `;
     }
 
@@ -141,7 +149,9 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         const mainBtn = card.querySelector(`#btn-main-${service.id}`);
         if (mainBtn) {
             if (hasContainer) {
-                mainBtn.onclick = () => handlers.onToggleAutostart(service.id, mainBtn);
+                if (!isCoreService(service)) {
+                    mainBtn.onclick = () => handlers.onToggleAutostart(service.id, mainBtn);
+                }
             } else {
                 mainBtn.onclick = () => handlers.onStart(service.id, mainBtn);
             }

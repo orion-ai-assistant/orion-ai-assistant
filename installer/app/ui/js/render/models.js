@@ -100,6 +100,9 @@ export function renderModelList(serviceId, models, handlers, isDisabled = false)
         models.forEach(m => {
             const btn = document.getElementById(`btn-dl-${m.id}`);
             if (btn) btn.onclick = () => handlers.onDownload(serviceId, m.id, btn);
+
+            const delBtn = document.getElementById(`btn-del-${m.id}`);
+            if (delBtn) delBtn.onclick = () => handlers.onDelete(serviceId, m.id, delBtn);
         });
     }
 }
@@ -126,17 +129,17 @@ function renderModelItem(m, isDisabled) {
         const progressText = m.download_progress ? `(${m.download_progress})` : '';
         const sizeText = totalSize ? `${currentSize} / ${totalSize}` : currentSize;
         statusHtml = `<span class="model-status downloading">Indiriliyor ${progressText} ${sizeText}</span>`;
-        btnHtml = '<button class="btn btn-primary btn-small" disabled><i class="fas fa-spinner fa-spin"></i> Indiriliyor...</button>';
+        btnHtml = '<button class="btn btn-primary btn-small" disabled><i class="fas fa-spinner fa-spin"></i></button>';
     } else if (m.is_installed) {
-        statusHtml = `<span class="model-status installed">${m.type === 'local' ? 'Yerel' : 'Yuklu'} (${currentSize})</span>`;
-        btnHtml = '<button class="btn btn-primary btn-small" disabled>Hazir</button>';
+        statusHtml = `<span class="model-status installed">${currentSize}</span>`;
+        btnHtml = `<button class="btn btn-danger btn-small" id="btn-del-${m.id}" ${isDisabled ? 'disabled' : ''} title="Sil"><i class="fas fa-trash"></i></button>`;
     } else {
         const incompleteText = m.incomplete_status ? ` (${m.incomplete_status})` : '';
         const manifestSizeText = m.manifest_size_mb > 0 ? ` (${formatSize(m.manifest_size_mb)})` : '';
         statusHtml = m.is_incomplete
             ? `<span class="model-status warning">Yarida Kaldi${incompleteText}</span>`
             : `<span class="model-status missing">Eksik${manifestSizeText}</span>`;
-        btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''}>${m.is_incomplete ? 'Devam Et' : 'Indir'}</button>`;
+        btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''} title="${m.is_incomplete ? 'Devam Et' : 'Indir'}">${m.is_incomplete ? '<i class="fas fa-play"></i>' : '<i class="fas fa-download"></i>'}</button>`;
     }
 
     return `

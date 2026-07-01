@@ -99,15 +99,11 @@ def toggle_autostart(service_id: str):
 # ---------------------------------------------------------------------------
 @router.post("/api/system/start")
 def start_system():
-    import subprocess
-    import os
-    project_root = os.path.dirname(config.SERVICES_DIR)
-    script_path = os.path.join(project_root, "orion.ps1")
-    if not os.path.exists(script_path):
-        raise HTTPException(status_code=500, detail="orion.ps1 bulunamadi")
+    res = services.start_active_services()
+    if res["status"] == "error":
+        raise HTTPException(status_code=500, detail=res["message"])
     
-    subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", script_path, "start"], cwd=project_root)
-    return {"status": "success", "message": "Sistem baslatiliyor"}
+    return {"status": "success", "message": "Sistem başlatılıyor..."}
 
 # ---------------------------------------------------------------------------
 # Models
@@ -133,3 +129,8 @@ def download_model(service_id: str, model_id: str, background_tasks: BackgroundT
     service_dir = m_path.replace("manifest.json", "")
     background_tasks.add_task(models.run_model_download, service_id, service_dir, model)
     return {"status": "success", "message": "İndirme başlatıldı"}
+
+
+@router.post("/api/services/{service_id}/models/delete")
+def delete_model(service_id: str, model_id: str):
+    return models.delete_model(service_id, model_id)

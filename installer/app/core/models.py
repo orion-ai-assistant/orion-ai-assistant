@@ -63,6 +63,8 @@ def _catalog_entry(service_id: str, m: dict, models_dir: str) -> tuple[dict, str
     is_installed = (finished_count == total_files and total_files > 0)
     status_text = f"{finished_count}/{total_files} dosya bitti" if total_files > 1 else ""
 
+    target_path = os.path.join(models_dir, m["file_name"]) if m.get("file_name") else m_folder
+
     return {
         "id": m["id"], "name": m["name"], "type": "catalog",
         "is_installed":      is_installed,
@@ -73,7 +75,7 @@ def _catalog_entry(service_id: str, m: dict, models_dir: str) -> tuple[dict, str
         "incomplete_status": status_text,
         "size_mb":           round(size / 1024 ** 2, 2),
         "manifest_size_mb":  m.get("size_mb", 0),
-        "path": m_folder, "rel_path": rel,
+        "path": target_path, "rel_path": rel,
     }, rel
 
 
@@ -275,3 +277,35 @@ def _remote_size(url: str) -> int:
                 return int(r.getheader("Content-Length", 0))
         except Exception:
             return 0
+
+
+def delete_model(service_id: str, model_id: str) -> dict:
+    models_list = check_models(service_id)
+    model_entry = next((m for m in models_list if m["id"] == model_id), None)
+    if not model_entry:
+        return {"status": "error", "message": "Model bulunamadı."}
+    
+    path = model_entry.get("path")
+    if not path or not os.path.exists(path):
+        return {"status": "error", "message": "Model dosyası bulunamadı veya zaten silinmiş."}
+        
+    manifest, m_path = config.find_manifest(service_id)
+    if not manifest:
+        return {"status": "error", "message": "Servis manifesti bulunamadı."}
+        
+    models_rel_path = manifest.get("models_path", "models")
+    models_dir = os.path.abspath(os.path.join(os.path.dirname(m_path), models_rel_path))
+    
+    resolved_path = os.path.abspath(path)
+    if not resolved_path.startswith(models_dir):
+        return {"status": "error", "message": "Geçersiz dosya yolu."}
+        
+    try:
+        import shutil
+        if os.path.isdir(resolved_path):
+            shutil.rmtree(resolved_path)
+        else:
+            os.remove(resolved_path)
+        return {"status": "success", "message": f"{model_entry['name']} başarıyla silindi."}
+    except Exception as e:
+        return {"status": "error", "message": f"Model silinirken hata oluştu: {str(e)}"}

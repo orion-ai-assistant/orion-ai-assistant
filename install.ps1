@@ -22,50 +22,7 @@ foreach ($cmd in $requiredCommands) {
     catch { Write-Error "Error: '$cmd' not found! Please install it and try again."; exit 1 }
 }
 
-# Test if Docker daemon is running
-$DockerReady = $false
-try { docker info 2>$null | Out-Null; $DockerReady = $true } catch { $DockerReady = $false }
-if (-not $DockerReady) {
-    Write-Host "`n[!] Docker daemon is not running. Attempting to start it..." -ForegroundColor Yellow
-    
-    # Try known Docker GUI app locations (Docker Desktop, Rancher Desktop, etc.)
-    $dockerApps = @(
-        "C:\Program Files\Docker\Docker\Docker Desktop.exe",
-        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Docker Desktop.lnk",
-        "C:\Program Files\Rancher Desktop\Rancher Desktop.exe",
-        "$env:LOCALAPPDATA\Programs\Rancher Desktop\Rancher Desktop.exe"
-    )
-    
-    $launched = $false
-    foreach ($app in $dockerApps) {
-        if (Test-Path $app) {
-            Write-Host "    Found: $app" -ForegroundColor DarkGray
-            Start-Process -FilePath $app -WindowStyle Hidden
-            $launched = $true
-            break
-        }
-    }
-    
-    if ($launched) {
-        $maxRetry = 12
-        for ($i = 1; $i -le $maxRetry; $i++) {
-            Start-Sleep -Seconds 5
-            try { docker info 2>$null | Out-Null; $DockerReady = $true; break } catch {}
-            $dots = "." * $i
-            Write-Host "`r    Waiting for Docker$dots ($($i*5)s)" -NoNewline -ForegroundColor DarkGray
-        }
-        Write-Host ""
-    }
-    
-    if (-not $DockerReady) {
-        Write-Host "[ERROR] Could not start Docker automatically." -ForegroundColor Red
-        Write-Host "  Please start your Docker runtime manually (Docker Desktop, Rancher Desktop, or Docker Engine via WSL)" -ForegroundColor Yellow
-        Write-Host "  then run this installer again.`n" -ForegroundColor Yellow
-        exit 1
-    } else {
-        Write-Host "[OK] Docker is now running." -ForegroundColor Green
-    }
-}
+# Docker is now started automatically by 'orion.py installer' or the 'orion' CLI when needed.
 
 $joinedCmds = $requiredCommands -join ', '
 Write-Host "[OK] Requirements met ($joinedCmds)." -ForegroundColor Green

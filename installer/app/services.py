@@ -296,6 +296,9 @@ def remove_image(service_id: str) -> bool:
     manifest, s_dir, g_vars = _get_context(service_id)
     if not manifest: return False
 
+    # First delete the container
+    remove_service(service_id)
+
     hw = g_vars.get("DETECTED_GPU_VENDOR", "cpu")
     if manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}:
         hw = "cpu"
@@ -373,3 +376,71 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
         print(f"[INSTALL ERROR] {service_id}: {e}")
     finally:
         config.INSTALLING_SERVICES.discard(service_id)
+
+
+def start_active_services() -> dict:
+    import subprocess
+    active_services = []
+    g_vars = config._load_global_env()
+    
+    for data, m_path in config.all_manifests():
+        s_dir = os.path.dirname(m_path)
+        env_path = os.path.join(s_dir, ".env")
+        disabled_path = os.path.join(s_dir, ".disabled")
+        
+        if os.path.exists(env_path) and not os.path.exists(disabled_path):
+            active_services.append((data, s_dir))
+            
+    active_services.sort(key=lambda item: (
+        0 if item[0].get("id") == "orion-hub" or item[0].get("category") in {"core", "hub", "router"} else 1,
+        int(item[0].get("order", 50))
+    ))
+    
+    started = []
+    failed = []
+    
+    for manifest, s_dir in active_services:
+        try:
+            hw = g_vars.get("DETECTED_GPU_VENDOR", "cpu")
+            is_core = manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}
+            if is_core:
+                hw = "cpu"
+                
+            compose_file = manifest.get("compose_files", {}).get(hw)
+            if not compose_file:
+                compose_files = manifest.get("compose_files", {})
+                if compose_files:
+                    hw = list(compose_files.keys())[0]
+                    compose_file = compose_files[hw]
+            
+            if not compose_file:
+                continue
+                
+            category_upper = manifest.get("category", "misc").upper()
+            project_name_key = f"{category_upper}_PROJECT_NAME"
+            project_name = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
+            
+            subprocess.run(["docker", "network", "create", g_vars.get("ORION_NETWORK", "orion-network")], stderr=subprocess.DEVNULL)
+            
+            compose_env = {
+                **os.environ,
+                **g_vars,
+                "COMPOSE_PROJECT_NAME": project_name
+            }
+            
+            cmd = ["docker-compose", "-p", project_name, "-f", compose_file, "up", "-d"]
+            print(f"[SYSTEM] Starting service {manifest['name']} in {s_dir} with command: {' '.join(cmd)}")
+            
+            res = subprocess.run(cmd, cwd=s_dir, env=compose_env, capture_output=True, text=True, errors="replace")
+            
+            if res.returncode == 0:
+                started.append(manifest["name"])
+            else:
+                print(f"[SYSTEM] Failed to start {manifest['name']}: {res.stderr}")
+                failed.append(manifest["name"])
+                
+        except Exception as e:
+            print(f"[SYSTEM] Exception starting {manifest['name']}: {e}")
+            failed.append(manifest["name"])
+            
+    return {"status": "success", "started": started, "failed": failed}

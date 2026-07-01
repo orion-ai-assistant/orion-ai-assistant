@@ -6,6 +6,7 @@ let previousServiceStates = {};
 let allServiceModels = {};
 let allServices = {};
 let currentStep = 1;
+let isSystemStarting = false;
 
 function isCoreService(service) {
     return service?.id === 'orion-hub' || service?.category === 'core' || service?.category === 'hub' || service?.category === 'router';
@@ -67,9 +68,11 @@ async function fetchHardware() {
 }
 
 function getServiceRuntimeState(service) {
-    if (!service?.is_installed) return { label: 'Kurulmamis', className: 'status-missing' };
+    if (!service?.is_installed) return { label: 'Kurulmamış', className: 'status-missing' };
     if (service.autostart === false) return { label: 'Devre Dışı', className: 'status-stopped' };
-    return { label: 'Aktif', className: 'status-running' };
+    if (service.is_running) return { label: 'Çalışıyor', className: 'status-running' };
+    if (isSystemStarting) return { label: 'Başlatılıyor...', className: 'status-starting' };
+    return { label: 'Durduruldu', className: 'status-stopped' };
 }
 
 function renderCompletionPanel() {
@@ -95,7 +98,10 @@ function renderCompletionPanel() {
                     <div class="completion-service-name">${service.name}</div>
                     <div class="completion-service-meta">${service.category.toUpperCase()}</div>
                 </div>
-                <div class="status-badge ${state.className}" title="${state.label}"><span class="status-dot"></span></div>
+                <div class="status-badge ${state.className}" title="${state.label}">
+                    <span class="status-dot"></span>
+                    <span>${state.label}</span>
+                </div>
             </div>
         `;
     }).join('');
@@ -127,6 +133,11 @@ async function fetchServices() {
                     } else {
                         showToast(`${service.name} kurulumu başarısız!`, 'error');
                     }
+                }
+
+                // Track service startup transition
+                if (!prevState.is_running && service.is_running) {
+                    showToast(`${service.name} başladı!`, 'success');
                 }
             }
             allServices[service.id] = service;
@@ -182,7 +193,7 @@ async function loadModelStatus(serviceId) {
         const models = await api.fetchModels(serviceId);
         allServiceModels[serviceId] = models;
         uiRender.updateModelSelect(serviceId, models, allServiceModels);
-        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel }, isDisabled);
+        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel }, isDisabled);
     } catch (err) { console.error("Load models error:", err); }
 }
 
@@ -200,6 +211,29 @@ async function downloadModel(serviceId, modelId, btn) {
     } catch (err) {
         showToast("Bağlantı hatası!", 'error');
         btn.disabled = false;
+    }
+}
+
+async function deleteModel(serviceId, modelId, btn) {
+    if (!confirm("Bu modeli silmek istediğinize emin misiniz?")) {
+        return;
+    }
+    try {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ...';
+        const result = await api.postDeleteModel(serviceId, modelId);
+        if (result.status === 'success') {
+            showToast(result.message || "Model başarıyla silindi", 'success');
+            await loadModelStatus(serviceId);
+        } else {
+            showToast(result.message || "Hata oluştu", 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-trash"></i> Sil';
+        }
+    } catch (err) {
+        showToast("Bağlantı hatası!", 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-trash"></i> Sil';
     }
 }
 
@@ -399,17 +433,38 @@ function initWizard() {
     if (nextBtn) {
         nextBtn.onclick = () => {
             if (currentStep === steps.length) {
-                nextBtn.disabled = true;
-                nextBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sistem Başlatılıyor...';
+                const routerService = allServices['orion-router'];
+                const hubService = allServices['orion-hub'];
+                
+                // Verify both are installed and active (autostart not disabled)
+                if (!routerService?.is_installed || routerService?.autostart === false ||
+                    !hubService?.is_installed || hubService?.autostart === false) {
+                    showToast("Sistemi başlatabilmek için Orion Router ve Orion Hub servislerinin hem kurulu hem de aktif (devre dışı bırakılmamış) olması zorunludur!", "error");
+                    return;
+                }
+
+                // Immediately open the completion panel in starting mode
+                isSystemStarting = true;
+                openCompletionPanel();
+
                 api.postStartSystem().then(res => {
                     showToast(res.message || "Sistem başlatılıyor...", "success");
-                    openCompletionPanel();
-                    nextBtn.disabled = false;
-                    nextBtn.innerHTML = 'Bitir';
+                    
+                    // Fast poll for 15 seconds (every 1.5s) to reflect startup changes rapidly
+                    let pollCount = 0;
+                    const pollInterval = setInterval(() => {
+                        fetchServices();
+                        pollCount++;
+                        if (pollCount >= 10) {
+                            clearInterval(pollInterval);
+                            isSystemStarting = false;
+                            fetchServices(); // final update
+                        }
+                    }, 1500);
                 }).catch(err => {
                     showToast("Sistem başlatılırken hata oluştu!", "error");
-                    nextBtn.disabled = false;
-                    nextBtn.innerHTML = 'Bitir';
+                    isSystemStarting = false;
+                    fetchServices();
                 });
                 return;
             }

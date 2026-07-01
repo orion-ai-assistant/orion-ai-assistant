@@ -13,6 +13,58 @@ def get_python_executable(venv_dir):
         return os.path.join(venv_dir, "Scripts", "python.exe")
     return os.path.join(venv_dir, "bin", "python")
 
+def ensure_docker_running():
+    import time
+    try:
+        subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    if os.name != 'nt':
+        print("\n[ERROR] Docker daemon is not running. Please start Docker manually and try again.")
+        sys.exit(1)
+
+    print("[!] Docker daemon is not running. Attempting to start it...")
+    
+    appdata = os.environ.get("APPDATA", "")
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    
+    docker_apps = [
+        r"C:\Program Files\Docker\Docker\Docker Desktop.exe",
+        os.path.join(appdata, r"Microsoft\Windows\Start Menu\Programs\Docker Desktop.lnk"),
+        r"C:\Program Files\Rancher Desktop\Rancher Desktop.exe",
+        os.path.join(localappdata, r"Programs\Rancher Desktop\Rancher Desktop.exe")
+    ]
+    
+    launched = False
+    for app in docker_apps:
+        if os.path.exists(app):
+            print(f"    Found: {app}")
+            try:
+                os.startfile(app)
+                launched = True
+                break
+            except Exception as e:
+                print(f"    Failed to start {app}: {e}")
+                
+    if launched:
+        max_retry = 12
+        for i in range(1, max_retry + 1):
+            time.sleep(5)
+            try:
+                subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                print("\n[OK] Docker is now running.")
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                dots = "." * i
+                print(f"\r    Waiting for Docker{dots} ({i * 5}s)", end="", flush=True)
+        print()
+    
+    print("\n[ERROR] Could not start Docker automatically.")
+    print("  Please start your Docker runtime manually and try again.")
+    sys.exit(1)
+
 def ensure_venv(target_dir, venv_dir):
     """Sanal ortam yoksa veya bozuksa oluşturur."""
     pyvenv_cfg = os.path.join(venv_dir, "pyvenv.cfg")
@@ -106,6 +158,7 @@ def handle_installer(args):
     if args:
         print(f"[!] Hata: 'installer' komutu ek parametre almaz. Fazla parametre: {args[0]}")
         return
+    ensure_docker_running()
     cmd_run("installer", [])
 
 
