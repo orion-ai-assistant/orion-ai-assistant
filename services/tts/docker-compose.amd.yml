@@ -6,7 +6,6 @@ services:
       args:
         - "ENGINE_NAME=${ENGINE_NAME}"
         - "BASE_IMAGE=${BASE_IMAGE}"
-        - "PYTORCH_URL=${PYTORCH_URL}"
     image: orion-tts:local
     pull_policy: build
     container_name: ${TTS_HOST}
