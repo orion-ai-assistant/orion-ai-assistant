@@ -2,6 +2,7 @@ import os
 import urllib.request
 
 from .. import config
+from . import i18n
 
 VALID_EXTENSIONS = (".gguf", ".safetensors", ".pth", ".bin")
 
@@ -283,22 +284,22 @@ def delete_model(service_id: str, model_id: str) -> dict:
     models_list = check_models(service_id)
     model_entry = next((m for m in models_list if m["id"] == model_id), None)
     if not model_entry:
-        return {"status": "error", "message": "Model bulunamadı."}
+        return {"status": "error", "message": i18n.t("MSG_MODEL_NOT_FOUND")}
     
     path = model_entry.get("path")
     if not path or not os.path.exists(path):
-        return {"status": "error", "message": "Model dosyası bulunamadı veya zaten silinmiş."}
+        return {"status": "error", "message": i18n.t("MSG_MODEL_FILE_NOT_FOUND")}
         
     manifest, m_path = config.find_manifest(service_id)
     if not manifest:
-        return {"status": "error", "message": "Servis manifesti bulunamadı."}
+        return {"status": "error", "message": i18n.t("MSG_MANIFEST_NOT_FOUND")}
         
     models_rel_path = manifest.get("models_path", "models")
     models_dir = os.path.abspath(os.path.join(os.path.dirname(m_path), models_rel_path))
     
     resolved_path = os.path.abspath(path)
     if not resolved_path.startswith(models_dir):
-        return {"status": "error", "message": "Geçersiz dosya yolu."}
+        return {"status": "error", "message": i18n.t("MSG_INVALID_PATH")}
         
     try:
         import shutil
@@ -306,6 +307,6 @@ def delete_model(service_id: str, model_id: str) -> dict:
             shutil.rmtree(resolved_path)
         else:
             os.remove(resolved_path)
-        return {"status": "success", "message": f"{model_entry['name']} başarıyla silindi."}
+        return {"status": "success", "message": i18n.t("MSG_MODEL_DELETED_SUCCESS", model_entry['name'])}
     except Exception as e:
-        return {"status": "error", "message": f"Model silinirken hata oluştu: {str(e)}"}
+        return {"status": "error", "message": i18n.t("MSG_MODEL_DELETE_FAILED", str(e))}

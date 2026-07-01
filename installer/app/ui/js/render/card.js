@@ -50,7 +50,7 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
         let title = '';
         if (disabledOnWindows) {
             const hwName = isAmd ? 'ROCm' : 'Vulkan';
-            title = ` title="${hwName} yalnızca Linux'ta desteklenir"`;
+            title = ` title="${window.t('lbl_linux_only', hwName)}"`;
         }
 
         return {
@@ -81,8 +81,11 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
     const envOptions = processedEnvs.map(env => {
         const disabledAttr = env.disabled ? 'disabled' : '';
         const selectedAttr = env.id === selectedId ? 'selected' : '';
-        const suffix = env.disabled ? ' (Linux only)' : '';
-        return `<option value="${env.id}" data-hardware="${env.hw || ''}" ${disabledAttr} ${selectedAttr}${env.title}>${env.name}${suffix}</option>`;
+        const suffix = env.disabled ? window.t('lbl_linux_only_suffix') : '';
+        const envNameKey = `env_name_${env.id}`.toLowerCase();
+        const translatedEnvName = window.t(envNameKey);
+        const envName = (translatedEnvName !== envNameKey) ? translatedEnvName : env.name;
+        return `<option value="${env.id}" data-hardware="${env.hw || ''}" ${disabledAttr} ${selectedAttr}${env.title}>${envName}${suffix}</option>`;
     }).join('');
 
     const modelsOnly = viewMode === 'models-only';
@@ -108,7 +111,7 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
         ? `
         <div id="models-${service.id}" class="tab-content active">
             <div class="card-section">
-                <div id="model-list-${service.id}" class="model-list">Modeller taraniyor...</div>
+                <div id="model-list-${service.id}" class="model-list">${window.t('lbl_scanning')}</div>
             </div>
         </div>`
         : '';
@@ -116,10 +119,10 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
     const newHtml = `
         <div class="service-header">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <h3 class="service-name" style="margin-bottom: 0;">${service.name}</h3>
+                <h3 class="service-name" style="margin-bottom: 0;">${window.t_service_name(service)}</h3>
                 <div id="status-dot-container-${service.id}"></div>
             </div>
-            <p class="service-desc">${service.description}</p>
+            <p class="service-desc">${window.t_service_desc(service)}</p>
         </div>
         ${installMode ? `<div id="general-${service.id}" class="tab-content active">${generalHtml}</div>` : ''}
         ${modelsHtml}
@@ -143,14 +146,15 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     }
 
     // Performans için durum karşılaştırması (Hiçbir şey değişmediyse DOM güncellemesini atla)
-    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}_${service.install_error || ''}`;
+    const currentLang = typeof window !== 'undefined' ? window.orionLang : 'en';
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}_${service.install_error || ''}_${currentLang}`;
     if (card.dataset.stateKey === stateKey) {
         return;
     }
     card.dataset.stateKey = stateKey;
 
     const hasInstall = service.is_installed;
-    const statusLabel = !hasInstall ? 'Kurulmamis' : (service.is_running ? 'Calisiyor' : 'Durduruldu');
+    const statusLabel = !hasInstall ? window.t('status_uninstalled') : (service.is_running ? window.t('status_running') : window.t('status_stopped'));
     const statusClass = !hasInstall ? 'status-missing' : (service.is_running ? 'status-running' : 'status-stopped');
 
     // Update status dot in the header
@@ -163,18 +167,18 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     const hasContainer = !!service.is_installed;
 
     if (isDisabled && !service.is_installed) {
-        actionHtml = '<button class="btn" disabled>Kullanilamaz</button>';
+        actionHtml = `<button class="btn" disabled>${window.t('status_unavailable')}</button>`;
     } else if (service.is_installing) {
-        actionHtml = '<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> Hazırlanıyor...</button>';
+        actionHtml = `<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}</button>`;
     } else {
         const isAutostart = service.autostart !== false;
         let mainBtnClass = !hasContainer ? 'btn btn-primary' : (isAutostart ? 'btn btn-danger' : 'btn btn-success');
-        let mainBtnLabel = !hasContainer ? 'Kur' : (isAutostart ? 'Devre Dışı Bırak' : 'Aktifleştir');
+        let mainBtnLabel = !hasContainer ? window.t('btn_install') : (isAutostart ? window.t('btn_disable') : window.t('btn_enable'));
         let mainBtnAttr = '';
 
         if (hasContainer && isCoreService(service)) {
             mainBtnClass = 'btn btn-success';
-            mainBtnLabel = 'Aktif';
+            mainBtnLabel = window.t('status_active');
             mainBtnAttr = 'disabled style="cursor: default;"';
         }
 
@@ -188,13 +192,13 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
 
         const dropdownHtml = hasContainer ? `
             <div class="split-dropdown">
-                <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="${isDropdownOpen ? 'true' : 'false'}" aria-controls="${dropdownId}" title="Diger islemler">
+                <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="${isDropdownOpen ? 'true' : 'false'}" aria-controls="${dropdownId}" title="${window.t('lbl_other_actions')}">
                     <i class="fas fa-chevron-down"></i>
                 </button>
                 <div class="dropdown-menu ${isDropdownOpen ? '' : 'hidden'} ${isDropdownOpenUp ? 'open-up' : ''}" id="${dropdownId}">
-                    <button class="dropdown-item" id="btn-reinstall-${service.id}">Yeniden Kur</button>
-                    <button class="dropdown-item danger" id="btn-remove-${service.id}">Kaldır</button>
-                    <button class="dropdown-item danger" id="btn-delete-image-${service.id}">İmajı Sil</button>
+                    <button class="dropdown-item" id="btn-reinstall-${service.id}">${window.t('btn_reinstall')}</button>
+                    <button class="dropdown-item danger" id="btn-remove-${service.id}">${window.t('btn_remove')}</button>
+                    <button class="dropdown-item danger" id="btn-delete-image-${service.id}">${window.t('btn_delete_image')}</button>
                 </div>
             </div>
         ` : '';
@@ -303,7 +307,7 @@ function renderEnvironmentSection(service, envOptions, isDisabled) {
     if (isCoreService(service)) return '';
     return `
         <div class="field">
-            <label class="field-label" for="env-select-${service.id}">Donanim / Surucu</label>
+            <label class="field-label" for="env-select-${service.id}">${window.t('lbl_hardware')}</label>
             <select id="env-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>
                 ${envOptions}
             </select>
@@ -318,9 +322,9 @@ function renderModelSelectionSection(service, isDisabled) {
 
     let html = `
         <div class="field">
-            <label class="field-label" for="model-select-${service.id}">Baslatilacak Model</label>
+            <label class="field-label" for="model-select-${service.id}">${window.t('lbl_model')}</label>
             <select id="model-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>
-                <option value="">Model Secin...</option>
+                <option value="">${window.t('lbl_select_model')}</option>
             </select>
         </div>
     `;

@@ -2,15 +2,15 @@
   "id": "llama-cpp",
   "name": "llama.cpp LLM Server",
   "category": "llm",
-  "description": "Yüksek performanslı, GGUF formatında LLM inference sunucusu. OpenAI-compatible API.",
+  "description": "High-performance GGUF format LLM inference server. OpenAI-compatible API.",
   "version": "latest",
   "vram_required_gb": 4,
   "parameters": {
-    "GPU_DEVICE_IDS": {"default": "all", "label": "Kullanılacak GPU'lar", "type": "gpu_selector"},
-    "GPU_LAYERS": {"default": 35, "label": "GPU Katman Sayısı", "min": 0, "max": 100, "type": "int"},
-    "CONTEXT_SIZE": {"default": 8192, "label": "Bağlam Boyutu (Context)", "min": 512, "max": 128000, "type": "int"},
-    "BATCH_SIZE": {"default": 512, "label": "Batch Boyutu", "min": 8, "max": 8192, "type": "int"},
-    "N_PARALLEL": {"default": 1, "label": "Paralel İstek Sayısı", "min": 1, "max": 16, "type": "int"}
+    "GPU_DEVICE_IDS": {"default": "all", "label": "GPUs to Use", "type": "gpu_selector"},
+    "GPU_LAYERS": {"default": 35, "label": "GPU Layer Count", "min": 0, "max": 100, "type": "int"},
+    "CONTEXT_SIZE": {"default": 8192, "label": "Context Size", "min": 512, "max": 128000, "type": "int"},
+    "BATCH_SIZE": {"default": 512, "label": "Batch Size", "min": 8, "max": 8192, "type": "int"},
+    "N_PARALLEL": {"default": 1, "label": "Parallel Request Count", "min": 1, "max": 16, "type": "int"}
   },
   "models_path": "models/",
   "models_catalog": [
@@ -18,7 +18,7 @@
       "id": "gemma-4-e2b-it-q3-k-s",
       "name": "Google Gemma 4 (E2B-it Q3_K_S)",
       "folder": "gemma-4-multimodal",
-      "description": "Unsloth tarafından optimize edilmiş, vizyon destekli hafif model.",
+      "description": "Lightweight model with vision support optimized by Unsloth.",
       "download_url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
       "size_mb": 3266,
       "files": [
@@ -33,7 +33,7 @@
       "id": "miniplm-qwen-200m",
       "name": "MiniPLM Qwen 200M (Q2 & Q3)",
       "folder": "miniplm-qwen-200m",
-      "description": "Ultra hafif Qwen tabanlı model. Q2 ve Q3 sürümleri bir arada.",
+      "description": "Ultra lightweight Qwen-based model. Q2 and Q3 versions together.",
       "download_url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/main/",
       "size_mb": 250,
       "files": [
@@ -63,7 +63,7 @@
   "supported_environments": [
     {
       "id": "llm-nv-cuda",
-      "name": "NVIDIA - CUDA (Hızlı)",
+      "name": "NVIDIA - CUDA (Fast)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
       "hardware": "nvidia"
     },
@@ -75,13 +75,13 @@
     },
     {
       "id": "llm-vulkan",
-      "name": "Vulkan - Tüm GPU'lar (AMD/Intel/NVIDIA)",
+      "name": "Vulkan - All GPUs (AMD/Intel/NVIDIA)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server-vulkan",
       "hardware": "vulkan"
     },
     {
       "id": "llm-cpu-only",
-      "name": "Sadece CPU (Yavaş)",
+      "name": "CPU Only (Slow)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server",
       "hardware": "cpu"
     }

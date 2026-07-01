@@ -2,18 +2,18 @@
   "id": "orion-tts",
   "name": "Orion TTS",
   "category": "tts",
-  "description": "Seçilen modele göre dinamik olarak yapılandırılan TTS servisi.",
+  "description": "TTS service dynamically configured according to the selected model.",
   "version": "2.1",
   "vram_required_gb": 6,
   "parameters": {
-    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "Kullanılacak GPU'lar", "default": "all" },
+    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "GPUs to Use", "default": "all" },
     "LOW_VRAM": {
       "default": true,
-      "label": "VRAM Tasarrufu (CPU)"
+      "label": "VRAM Savings (CPU)"
     },
     "IDLE_CLEANUP_MINS": {
       "default": 2,
-      "label": "Boşta VRAM Temizleme (0=Kapalı)",
+      "label": "Idle VRAM Cleanup (0=Disabled)",
       "min": 0,
       "max": 1440,
       "type": "int"
@@ -30,7 +30,7 @@
       "id": "voxcpm2",
       "name": "VoxCPM2",
       "folder": "voxcpm2",
-      "description": "Yüksek kaliteli Türkçe ses klonlama ve sentez.",
+      "description": "High-quality Turkish voice cloning and synthesis.",
       "download_url": "https://huggingface.co/krstalacam/VoxCPM2/resolve/main/",
       "size_mb": 4720,
       "files": [
@@ -52,7 +52,7 @@
       "id": "omnivoice-multilang",
       "name": "OmniVoice (600+ Dil)",
       "folder": "omnivoice",
-      "description": "Xiaomi'nin geniş dil destekli TTS modeli.",
+      "description": "Xiaomi's wide language support TTS model.",
       "download_url": "https://huggingface.co/k2-fsa/OmniVoice/resolve/main/",
       "size_mb": 3481,
       "files": [
@@ -104,7 +104,7 @@
     },
     {
       "id": "tts-cpu",
-      "name": "Sadece CPU",
+      "name": "CPU Only",
       "hardware": "cpu",
       "base_image": "python:3.10-slim"
     }

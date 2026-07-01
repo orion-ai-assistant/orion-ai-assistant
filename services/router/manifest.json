@@ -2,7 +2,7 @@
   "id": "orion-router",
   "name": "Orion Router",
   "category": "router",
-  "description": "Yönlendirme servisidir. Eğer host/port değerlerini değiştirirseniz, hub için de bu değişikliği yapmanız gerekir.",
+  "description": "Routing service. If you change host/port values, you must also make this change for the hub.",
   "version": "1.0.0",
   "supports": [
     "cpu"
@@ -11,7 +11,7 @@
   "supported_environments": [
     {
       "id": "default",
-      "name": "Standart (CPU)",
+      "name": "Standard (CPU)",
       "hardware": "cpu"
     }
   ],

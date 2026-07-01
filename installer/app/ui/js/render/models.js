@@ -5,7 +5,7 @@ export function updateModelSelect(serviceId, models, allServiceModels) {
     if (!select) return;
 
     const currentVal = select.value;
-    let newHtml = '<option value="">Model Secin...</option>';
+    let newHtml = `<option value="">${window.t('lbl_select_model')}</option>`;
 
     models.filter(m => m.is_installed && !(m.rel_path || "").toLowerCase().includes('mmproj')).forEach(m => {
         const path = m.rel_path || m.id;
@@ -64,11 +64,11 @@ export function filterVisionModels(serviceId, selectedModelPath, allServiceModel
             <div class="mmproj-toggle-wrapper">
                 <input type="checkbox" id="mmproj-toggle-${serviceId}" class="mmproj-checkbox" data-path="${found.rel_path}">
                 <label for="mmproj-toggle-${serviceId}" class="mmproj-toggle-btn">
-                    <i class="fas fa-eye"></i> Vision ve Audio Aktifleştir
+                    <i class="fas fa-eye"></i> ${window.t('ui_btn_vision')}
                 </label>
             </div>
             <div class="mmproj-info">
-                <i class="fas fa-info-circle"></i> Algilanan: <code>${found.name}</code>
+                <i class="fas fa-info-circle"></i> ${window.t('ui_detected')}: <code>${found.name}</code>
             </div>
         `;
     } else {
@@ -85,8 +85,8 @@ export function renderModelList(serviceId, models, handlers, isDisabled = false)
     const localModels = models.filter(m => m.type === 'local');
 
     const newHtml = [
-        renderModelGroup('Sistem Modelleri', systemModels, isDisabled),
-        renderModelGroup('Yerel Modeller', localModels, isDisabled)
+        renderModelGroup(window.t('ui_system_models'), systemModels, isDisabled),
+        renderModelGroup(window.t('ui_local_models'), localModels, isDisabled)
     ].filter(Boolean).join('');
 
     // Karşılaştırmayı daha esnek yapalım (boşluklar vs. sorun olmasın)
@@ -128,18 +128,18 @@ function renderModelItem(m, isDisabled) {
     if (m.is_downloading) {
         const progressText = m.download_progress ? `(${m.download_progress})` : '';
         const sizeText = totalSize ? `${currentSize} / ${totalSize}` : currentSize;
-        statusHtml = `<span class="model-status downloading">Indiriliyor ${progressText} ${sizeText}</span>`;
+        statusHtml = `<span class="model-status downloading">${window.t('ui_downloading')} ${progressText} ${sizeText}</span>`;
         btnHtml = '<button class="btn btn-primary btn-small" disabled><i class="fas fa-spinner fa-spin"></i></button>';
     } else if (m.is_installed) {
         statusHtml = `<span class="model-status installed">${currentSize}</span>`;
-        btnHtml = `<button class="btn btn-danger btn-small" id="btn-del-${m.id}" ${isDisabled ? 'disabled' : ''} title="Sil"><i class="fas fa-trash"></i></button>`;
+        btnHtml = `<button class="btn btn-danger btn-small" id="btn-del-${m.id}" ${isDisabled ? 'disabled' : ''} title="${window.t('btn_remove')}"><i class="fas fa-trash"></i></button>`;
     } else {
         const incompleteText = m.incomplete_status ? ` (${m.incomplete_status})` : '';
         const manifestSizeText = m.manifest_size_mb > 0 ? ` (${formatSize(m.manifest_size_mb)})` : '';
         statusHtml = m.is_incomplete
-            ? `<span class="model-status warning">Yarida Kaldi${incompleteText}</span>`
-            : `<span class="model-status missing">Eksik${manifestSizeText}</span>`;
-        btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''} title="${m.is_incomplete ? 'Devam Et' : 'Indir'}">${m.is_incomplete ? '<i class="fas fa-play"></i>' : '<i class="fas fa-download"></i>'}</button>`;
+            ? `<span class="model-status warning">${window.t('ui_incomplete')}${incompleteText}</span>`
+            : `<span class="model-status missing">${window.t('ui_missing')}${manifestSizeText}</span>`;
+        btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''} title="${m.is_incomplete ? window.t('ui_resume') : window.t('ui_download')}">${m.is_incomplete ? '<i class="fas fa-play"></i>' : '<i class="fas fa-download"></i>'}</button>`;
     }
 
     return `

@@ -2,39 +2,39 @@
   "id": "llama-cpp-embed",
   "name": "llama.cpp Embedding Server",
   "category": "embedding",
-  "description": "Yüksek performanslı, GGUF formatında multimodal embedding sunucusu.",
+  "description": "High-performance GGUF format multimodal embedding server.",
   "version": "1.0.0",
   "vram_required_gb": 4,
   "parameters": {
     "GPU_DEVICE_IDS": {
       "default": "all",
-      "label": "Kullanılacak GPU'lar",
+      "label": "GPUs to Use",
       "type": "gpu_selector"
     },
     "GPU_LAYERS": {
       "default": 35,
-      "label": "GPU Katman Sayısı",
+      "label": "GPU Layer Count",
       "min": 0,
       "max": 100,
       "type": "int"
     },
     "CONTEXT_SIZE": {
       "default": 8192,
-      "label": "Bağlam Boyutu (Context)",
+      "label": "Context Size",
       "min": 512,
       "max": 128000,
       "type": "int"
     },
     "BATCH_SIZE": {
       "default": 512,
-      "label": "Batch Boyutu",
+      "label": "Batch Size",
       "min": 8,
       "max": 8192,
       "type": "int"
     },
     "N_PARALLEL": {
       "default": 1,
-      "label": "Paralel İstek Sayısı",
+      "label": "Parallel Request Count",
       "min": 1,
       "max": 16,
       "type": "int"
@@ -46,7 +46,7 @@
       "id": "jina-v5-omni-nano",
       "name": "Jina Embeddings v5 Omni-Nano",
       "folder": "jina-embeddings",
-      "description": "Jina AI tarafından geliştirilen çok amaçlı (multimodal) embedding modeli. GGUF formatı.",
+      "description": "Multipurpose (multimodal) embedding model developed by Jina AI. GGUF format.",
       "files": [
         "jina-embeddings-v5-omni-nano-retrieval-F16.gguf"
       ],
@@ -60,7 +60,7 @@
       "id": "lco-embedding-omni-7b",
       "name": "LCO Embedding Omni 7B",
       "folder": "LCO-Embedding",
-      "description": "LCO (Large Context Omni) Embedding modeli. 7B parametreli, yüksek kapasiteli ve geniş bağlam desteği.",
+      "description": "LCO (Large Context Omni) Embedding model. 7B parameter, high capacity and wide context support.",
       "files": [
         "LCO-Embedding-Omni-7B-IQ2_M.gguf"
       ],
@@ -92,7 +92,7 @@
   "supported_environments": [
     {
       "id": "llm-nv-cuda",
-      "name": "NVIDIA - CUDA (Hızlı)",
+      "name": "NVIDIA - CUDA (Fast)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server-cuda",
       "hardware": "nvidia"
     },
@@ -104,13 +104,13 @@
     },
     {
       "id": "llm-vulkan",
-      "name": "Vulkan - Tüm GPU'lar (AMD/Intel/NVIDIA)",
+      "name": "Vulkan - All GPUs (AMD/Intel/NVIDIA)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server-vulkan",
       "hardware": "vulkan"
     },
     {
       "id": "llm-cpu-only",
-      "name": "Sadece CPU (Yavaş)",
+      "name": "CPU Only (Slow)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server",
       "hardware": "cpu"
     }

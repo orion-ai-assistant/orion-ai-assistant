@@ -2,13 +2,13 @@
   "id": "whisper-stt",
   "name": "Faster Whisper STT",
   "category": "stt",
-  "description": "Hızlı ve verimli Speech-to-Text sunucusu. OpenAI-compatible API desteği.",
+  "description": "Fast and efficient Speech-to-Text server. OpenAI-compatible API support.",
   "version": "1.10.0",
   "vram_required_gb": 2,
   "parameters": {
-    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "Kullanılacak GPU'lar", "default": "all" },
-    "WHISPER_MODEL": {"default": "base", "label": "Whisper Modeli"},
-    "WHISPER_COMPUTE_TYPE": {"default": "float16", "label": "Hesaplama Tipi (Compute)"}
+    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "GPUs to Use", "default": "all" },
+    "WHISPER_MODEL": {"default": "base", "label": "Whisper Model"},
+    "WHISPER_COMPUTE_TYPE": {"default": "float16", "label": "Compute Type"}
   },
   "supports": ["nvidia", "cpu"],
   "default_hardware": "nvidia",
@@ -21,7 +21,7 @@
     },
     {
       "id": "stt-cpu",
-      "name": "Sadece CPU",
+      "name": "CPU Only",
       "base_image": "docker.io/fedirz/faster-whisper-server:latest-cpu",
       "hardware": "cpu"
     }

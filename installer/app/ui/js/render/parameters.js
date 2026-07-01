@@ -2,7 +2,15 @@ export function renderParameters(service, isDisabled) {
     return Object.entries(service.parameters || {}).map(([id, rawValue]) => {
         const isObj = typeof rawValue === 'object' && rawValue !== null && !Array.isArray(rawValue);
         const defVal = isObj ? rawValue.default : rawValue;
-        const label = isObj ? (rawValue.label || id) : id;
+        const genericLabelKey = `param_${id}`.toLowerCase();
+        const serviceLabelKey = `param_${service.id.replace(/-/g, '_')}_${id}`.toLowerCase();
+
+        let label = isObj ? (rawValue.label || id) : id;
+        if (window.t(serviceLabelKey) !== serviceLabelKey) {
+            label = window.t(serviceLabelKey);
+        } else if (window.t(genericLabelKey) !== genericLabelKey) {
+            label = window.t(genericLabelKey);
+        }
 
         if (typeof defVal === 'boolean') {
             const isChecked = defVal ? 'checked' : '';
@@ -20,7 +28,7 @@ export function renderParameters(service, isDisabled) {
             let gpuContent = '';
             if (gpus.length <= 1) {
                 // Sadece 1 GPU varsa veya bilinmiyorsa, disabled checked goster. API'de 'all' kullanilacak
-                const gpuName = gpus.length === 1 ? gpus[0].name : 'Varsayılan GPU';
+                const gpuName = gpus.length === 1 ? gpus[0].name : window.t('lbl_default_gpu');
                 gpuContent = `
                     <div class="checkbox-row" style="opacity: 0.7;">
                         <input type="checkbox" id="p-${service.id}-${id}-default" checked disabled class="dynamic-input" data-param-id="${id}" data-type="gpu_selector" value="all">

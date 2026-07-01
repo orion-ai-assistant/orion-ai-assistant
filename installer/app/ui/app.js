@@ -15,23 +15,23 @@ function isCoreService(service) {
 const steps = [
     {
         id: 1,
-        title: 'Kurulum Ortamı',
-        subtitle: 'Docker veya Local kurulum seçimi yapın.'
+        titleKey: 'ui_step_1_title',
+        subtitleKey: 'ui_step_1_sub'
     },
     {
         id: 2,
-        title: 'Model Indirme',
-        subtitle: 'Servis modellerini indir ve hazirla.'
+        titleKey: 'ui_step_2_title',
+        subtitleKey: 'ui_step_2_sub'
     },
     {
         id: 3,
-        title: 'Servis Kurulumu',
-        subtitle: ''
+        titleKey: 'ui_step_3_title',
+        subtitleKey: 'ui_step_3_sub'
     },
     {
         id: 4,
-        title: 'Orion Core',
-        subtitle: ''
+        titleKey: 'ui_step_4_title',
+        subtitleKey: 'ui_step_4_sub'
     }
 ];
 
@@ -41,7 +41,7 @@ async function fetchHardware() {
 
         // GPU İsmi
         const gpuNameEl = document.getElementById('hw-gpu-name');
-        if (gpuNameEl) gpuNameEl.innerText = info.DETECTED_GPU_NAME || "Bilinmiyor";
+        if (gpuNameEl) gpuNameEl.innerText = info.DETECTED_GPU_NAME || window.t('lbl_unknown');
 
         // VRAM
         const vramEl = document.getElementById('hw-vram-gb');
@@ -49,7 +49,7 @@ async function fetchHardware() {
 
         // CPU
         const cpuEl = document.getElementById('hw-cpu-name');
-        if (cpuEl) cpuEl.innerText = info.DETECTED_CPU || "Tespit edilemedi";
+        if (cpuEl) cpuEl.innerText = info.DETECTED_CPU || window.t('lbl_unknown');
 
         // OS Badge
         const osIcon = document.getElementById('os-icon');
@@ -79,11 +79,11 @@ async function fetchHardware() {
 }
 
 function getServiceRuntimeState(service) {
-    if (!service?.is_installed) return { label: 'Kurulmamış', className: 'status-missing' };
-    if (service.autostart === false) return { label: 'Devre Dışı', className: 'status-stopped' };
-    if (service.is_running) return { label: 'Çalışıyor', className: 'status-running' };
-    if (isSystemStarting) return { label: 'Başlatılıyor...', className: 'status-starting' };
-    return { label: 'Durduruldu', className: 'status-stopped' };
+    if (!service?.is_installed) return { label: window.t('status_uninstalled'), className: 'status-missing' };
+    if (service.autostart === false) return { label: window.t('status_disabled'), className: 'status-stopped' };
+    if (service.is_running) return { label: window.t('status_running'), className: 'status-running' };
+    if (isSystemStarting) return { label: window.t('status_starting'), className: 'status-starting' };
+    return { label: window.t('status_stopped'), className: 'status-stopped' };
 }
 
 function renderCompletionPanel() {
@@ -96,9 +96,9 @@ function renderCompletionPanel() {
     const installedCount = services.filter(s => s.is_installed).length;
 
     summaryEl.innerHTML = `
-        <span class="summary-pill">Toplam Servis: ${services.length}</span>
-        <span class="summary-pill">Aktif: ${activeCount}</span>
-        <span class="summary-pill">Kurulu: ${installedCount}</span>
+        <span class="summary-pill">${window.t('ui_summary_total', services.length)}</span>
+        <span class="summary-pill">${window.t('ui_summary_active', activeCount)}</span>
+        <span class="summary-pill">${window.t('ui_summary_installed', installedCount)}</span>
     `;
 
     listEl.innerHTML = services.map(service => {
@@ -106,7 +106,7 @@ function renderCompletionPanel() {
         return `
             <div class="completion-status-item">
                 <div>
-                    <div class="completion-service-name">${service.name}</div>
+                    <div class="completion-service-name">${window.t_service_name(service)}</div>
                     <div class="completion-service-meta">${service.category.toUpperCase()}</div>
                 </div>
                 <div class="status-badge ${state.className}" title="${state.label}">
@@ -140,15 +140,15 @@ async function fetchServices() {
             if (prevState) {
                 if (prevState.is_installing && !service.is_installing) {
                     if (service.is_installed) {
-                        showToast(`${service.name} başarıyla kuruldu!`, 'success');
+                        showToast(window.t('msg_service_started', window.t_service_name(service)), 'success');
                     } else {
-                        showToast(`${service.name} kurulumu başarısız!`, 'error');
+                        showToast(window.t('msg_install_failed', window.t_service_name(service)), 'error');
                     }
                 }
 
                 // Track service startup transition
                 if (!prevState.is_running && service.is_running) {
-                    showToast(`${service.name} başladı!`, 'success');
+                    showToast(window.t('msg_service_started', window.t_service_name(service)), 'success');
                 }
             }
             allServices[service.id] = service;
@@ -211,16 +211,16 @@ async function loadModelStatus(serviceId) {
 async function downloadModel(serviceId, modelId, btn) {
     try {
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ...';
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}`;
         const result = await api.postDownloadModel(serviceId, modelId);
         if (result.status === 'success') {
-            showToast(result.message || "İndirme başlatıldı", 'success');
+            showToast(result.message || window.t('msg_download_started'), 'success');
         } else {
-            showToast(result.message || "Hata oluştu", 'error');
+            showToast(result.message || window.t('msg_error'), 'error');
             btn.disabled = false;
         }
     } catch (err) {
-        showToast("Bağlantı hatası!", 'error');
+        showToast(window.t('msg_error'), 'error');
         btn.disabled = false;
     }
 }
@@ -265,33 +265,33 @@ function showConfirm(title, message) {
 }
 
 async function deleteModel(serviceId, modelId, btn) {
-    const confirmed = await showConfirm("Modeli Sil", "Bu modeli silmek istediğinize emin misiniz? Bu işlem geri alınamaz.");
+    const confirmed = await showConfirm(window.t('confirm_delete_model_title'), window.t('confirm_delete_model_msg'));
     if (!confirmed) {
         return;
     }
     try {
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ...';
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}`;
         const result = await api.postDeleteModel(serviceId, modelId);
         if (result.status === 'success') {
-            showToast(result.message || "Model başarıyla silindi", 'success');
+            showToast(result.message || window.t('msg_service_started', ''), 'success');
             await loadModelStatus(serviceId);
         } else {
-            showToast(result.message || "Hata oluştu", 'error');
+            showToast(result.message || window.t('msg_error'), 'error');
             btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-trash"></i> Sil';
+            btn.innerHTML = '<i class="fas fa-trash"></i>';
         }
     } catch (err) {
-        showToast("Bağlantı hatası!", 'error');
+        showToast(window.t('msg_error'), 'error');
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-trash"></i> Sil';
+        btn.innerHTML = '<i class="fas fa-trash"></i>';
     }
 }
 
 async function installService(id, btn) {
     try {
         btn.disabled = true;
-        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Baslatiliyor...';
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}`;
         const service = allServices[id];
         const isCore = isCoreService(service);
         const envSelect = document.getElementById(`env-select-${id}`);
@@ -340,14 +340,14 @@ async function installService(id, btn) {
         const result = await api.postInstallService(id, query);
 
         if (result.status !== 'success') {
-            showToast(result.message || "Hata!", 'error');
+            showToast(result.message || window.t('msg_error'), 'error');
             btn.disabled = false;
         } else {
-            showToast(result.message || "Kurulum başlatıldı", 'success');
+            showToast(result.message || window.t('status_preparing'), 'success');
         }
         fetchServices();
     } catch (err) {
-        showToast("Hata oluştu!", 'error');
+        showToast(window.t('msg_error'), 'error');
         btn.disabled = false;
     }
 }
@@ -359,22 +359,22 @@ async function toggleAutostart(id, btn) {
         if (result.status === 'success') {
             showToast(result.message, 'success');
         } else {
-            showToast(result.message || "Hata oluştu", 'error');
+            showToast(result.message || window.t('msg_error'), 'error');
         }
         fetchServices();
     } catch (err) {
-        showToast("Bağlantı hatası!", 'error');
+        showToast(window.t('msg_conn_error'), 'error');
         btn.disabled = false;
     }
 }
 
 async function deleteImage(id, btn) {
     const service = allServices[id];
-    const serviceName = service ? service.name : '';
+    const serviceName = service ? window.t_service_name(service) : '';
     const msg = serviceName
-        ? `"${serviceName}" servisinin Docker imajını silmek istediğinize emin misiniz?`
-        : "Bu servisin Docker imajını silmek istediğinize emin misiniz?";
-    const confirmed = await showConfirm("İmajı Sil", msg);
+        ? window.t('confirm_delete_image_msg_named', serviceName)
+        : window.t('confirm_delete_image_msg');
+    const confirmed = await showConfirm(window.t('confirm_delete_image_title'), msg);
     if (!confirmed) {
         return;
     }
@@ -382,13 +382,13 @@ async function deleteImage(id, btn) {
         if (btn) btn.disabled = true;
         const result = await api.postRemoveImage(id);
         if (result.status === 'success') {
-            showToast(result.message || "İmaj silindi", 'success');
+            showToast(result.message || window.t('msg_image_deleted'), 'success');
         } else {
-            showToast(result.message || "İmaj silinemedi", 'error');
+            showToast(result.message || window.t('msg_image_delete_failed'), 'error');
         }
         if (btn) btn.disabled = false;
     } catch (err) {
-        showToast("Bağlantı hatası!", 'error');
+        showToast(window.t('msg_conn_error'), 'error');
         if (btn) btn.disabled = false;
     }
 }
@@ -398,16 +398,16 @@ async function removeService(id, btn) {
         if (btn) btn.disabled = true;
         const result = await api.postRemoveService(id);
         if (result.status === 'success') {
-            showToast(result.message || "Servis silindi", 'success');
+            showToast(result.message || window.t('msg_service_deleted'), 'success');
             fetchServices();
             return true;
         } else {
-            showToast(result.message || "Silme islemi basarisiz", 'error');
+            showToast(result.message || window.t('msg_service_delete_failed'), 'error');
             if (btn) btn.disabled = false;
             return false;
         }
     } catch (err) {
-        showToast("Sil endpoint'i henuz hazir degil.", 'error');
+        showToast(window.t('msg_delete_endpoint_not_ready'), 'error');
         if (btn) btn.disabled = false;
         return false;
     }
@@ -418,7 +418,7 @@ async function reinstallService(id, btn) {
         if (btn) btn.disabled = true;
         const service = allServices[id];
         if (!service?.is_installed) {
-            showToast("Container bulunamadi. Dogrudan kurulum baslatiliyor.", 'warning');
+            showToast(window.t('msg_container_not_found_installing'), 'warning');
             return installService(id, btn || document.getElementById(`btn-main-${id}`));
         }
 
@@ -430,7 +430,7 @@ async function reinstallService(id, btn) {
         const mainBtn = document.getElementById(`btn-main-${id}`);
         await installService(id, mainBtn || btn);
     } catch (err) {
-        showToast("Yeniden kurulum basarisiz.", 'error');
+        showToast(window.t('msg_reinstall_failed'), 'error');
         if (btn) btn.disabled = false;
     }
 }
@@ -451,36 +451,44 @@ function updateWizardUI() {
     const nextBtn = document.getElementById('btn-step-next');
 
     const stepInfo = steps.find(s => s.id === currentStep);
-    if (titleEl && stepInfo) titleEl.innerText = stepInfo.title;
+    if (titleEl && stepInfo) {
+        const stepTitle = window.t(stepInfo.titleKey);
+        if (titleEl.innerText !== stepTitle) {
+            titleEl.innerText = stepTitle;
+        }
+    }
     if (subtitleEl) {
-        const subtitle = stepInfo ? stepInfo.subtitle : '';
-        subtitleEl.innerText = subtitle;
-        subtitleEl.classList.toggle('hidden', !subtitle);
+        const subtitle = stepInfo && stepInfo.subtitleKey ? window.t(stepInfo.subtitleKey) : '';
+        if (subtitleEl.innerText !== subtitle) {
+            subtitleEl.innerText = subtitle;
+            subtitleEl.classList.toggle('hidden', !subtitle);
+        }
     }
 
     if (stepsEl) {
-        stepsEl.innerHTML = steps.map(step => {
+        const newHtml = steps.map(step => {
             const isActive = step.id === currentStep;
             const isComplete = step.id < currentStep;
             const statusClass = isActive ? 'active' : (isComplete ? 'complete' : '');
             return `
                 <div class="wizard-step ${statusClass}" data-step="${step.id}">
                     <span class="wizard-step-number">${step.id}</span>
-                    <span class="wizard-step-label">${step.title}</span>
+                    <span class="wizard-step-label">${window.t(step.titleKey)}</span>
                 </div>
             `;
         }).join('');
 
-        stepsEl.querySelectorAll('.wizard-step').forEach(stepEl => {
-            stepEl.onclick = () => {
-                const next = Number(stepEl.dataset.step);
-                // Precheck runs when going forward from step 1
-                if (!Number.isNaN(next)) {
-                    // We don't block clicking past step 1 directly here for simplicity, but ideally we should
-                    setStep(next);
-                }
-            };
-        });
+        if (stepsEl.innerHTML.trim() !== newHtml.trim()) {
+            stepsEl.innerHTML = newHtml;
+            stepsEl.querySelectorAll('.wizard-step').forEach(stepEl => {
+                stepEl.onclick = () => {
+                    const next = Number(stepEl.dataset.step);
+                    if (!Number.isNaN(next)) {
+                        setStep(next);
+                    }
+                };
+            });
+        }
     }
 
     const envStepEl = document.getElementById('env-selection-step');
@@ -496,7 +504,7 @@ function updateWizardUI() {
     }
 
     if (backBtn) backBtn.disabled = currentStep === 1;
-    if (nextBtn) nextBtn.innerText = currentStep === steps.length ? 'Bitir' : 'Sonraki';
+    if (nextBtn) nextBtn.innerText = currentStep === steps.length ? window.t('btn_finish') : window.t('ui_btn_next');
 }
 
 function initWizard() {
@@ -513,7 +521,7 @@ function initWizard() {
                 // Verify both are installed and active (autostart not disabled)
                 if (!routerService?.is_installed || routerService?.autostart === false ||
                     !hubService?.is_installed || hubService?.autostart === false) {
-                    showToast("Sistemi başlatabilmek için Orion Router ve Orion Hub servislerinin kurulu olması gerekiyor!", "error");
+                    showToast(window.t('msg_core_req'), "error");
                     return;
                 }
 
@@ -522,7 +530,7 @@ function initWizard() {
                 openCompletionPanel();
 
                 api.postStartSystem().then(res => {
-                    showToast(res.message || "Sistem başlatılıyor...", "success");
+                    showToast(res.message || window.t('msg_system_starting'), "success");
 
                     // Fast poll for 15 seconds (every 1.5s) to reflect startup changes rapidly
                     let pollCount = 0;
@@ -536,7 +544,7 @@ function initWizard() {
                         }
                     }, 1500);
                 }).catch(err => {
-                    showToast("Sistem başlatılırken hata oluştu!", "error");
+                    showToast(window.t('msg_system_start_error'), "error");
                     isSystemStarting = false;
                     fetchServices();
                 });
@@ -561,6 +569,24 @@ function initWizard() {
 
 // Initialization
 window.addEventListener('DOMContentLoaded', () => {
+    // Setup Language Selector
+    const langSelect = document.getElementById('lang-select');
+    if (langSelect) {
+        langSelect.value = localStorage.getItem('orion_lang') || window.orionLang || 'en';
+        langSelect.addEventListener('change', (e) => {
+            if (window.setLanguage) window.setLanguage(e.target.value);
+        });
+    }
+
+    // Re-render strings when language changes
+    window.addEventListener('languageChanged', () => {
+        updateWizardUI();
+        renderFromCache();
+        if (!document.getElementById('completion-panel')?.classList.contains('hidden')) {
+            renderCompletionPanel();
+        }
+    });
+
     api.postKeepAlive();
     initWizard();
     fetchHardware().then(fetchServices);

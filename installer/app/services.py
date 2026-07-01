@@ -3,6 +3,7 @@ import re
 import subprocess
 import logging
 from . import config
+from .core import i18n
 from .utils import docker_utils, system_utils, model_resolver
 
 # ==========================================
@@ -47,10 +48,10 @@ def _validate_params(params: dict, specs: dict) -> tuple[dict | None, dict | Non
                 p_min, p_max = (spec.get("min", 0), spec.get("max")) if is_obj else (0, None)
                 
                 if num_val < p_min or (p_max is not None and num_val > p_max):
-                    return None, {"status": "error", "message": f"{label} değeri {p_min}-{p_max} arası olmalıdır."}
+                    return None, {"status": "error", "message": i18n.t("MSG_PARAM_RANGE_ERROR", label, p_min, p_max)}
                 validated[p_id] = num_val
             except (ValueError, TypeError):
-                return None, {"status": "error", "message": f"{label} geçerli bir sayı olmalıdır."}
+                return None, {"status": "error", "message": i18n.t("MSG_PARAM_MUST_BE_NUM", label)}
         else:
             validated[p_id] = val
 
@@ -58,7 +59,7 @@ def _validate_params(params: dict, specs: dict) -> tuple[dict | None, dict | Non
 
 def toggle_autostart(service_id: str) -> dict:
     manifest, s_dir, _ = _get_context(service_id)
-    if not manifest: return {"status": "error", "message": "Servis bulunamadı"}
+    if not manifest: return {"status": "error", "message": i18n.t("MSG_SERVICE_NOT_FOUND")}
     
     is_manifest_disabled = manifest.get("status") == "disabled"
     disabled_path = os.path.join(s_dir, ".disabled")
@@ -68,28 +69,28 @@ def toggle_autostart(service_id: str) -> dict:
         if os.path.exists(enabled_path):
             try:
                 os.remove(enabled_path)
-                return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
+                return {"status": "success", "message": i18n.t("MSG_SERVICE_DISABLED"), "autostart": False}
             except OSError:
-                return {"status": "error", "message": "Dosya silinemedi"}
+                return {"status": "error", "message": i18n.t("MSG_FILE_CREATE_FAILED")}
         else:
             try:
                 with open(enabled_path, "w") as f: pass
-                return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
+                return {"status": "success", "message": i18n.t("MSG_SERVICE_AUTOSTART_ADDED"), "autostart": True}
             except OSError:
-                return {"status": "error", "message": "Dosya oluşturulamadı"}
+                return {"status": "error", "message": i18n.t("MSG_FILE_CREATE_FAILED")}
     else:
         if os.path.exists(disabled_path):
             try:
                 os.remove(disabled_path)
-                return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
+                return {"status": "success", "message": i18n.t("MSG_SERVICE_AUTOSTART_ADDED"), "autostart": True}
             except OSError:
-                return {"status": "error", "message": "Dosya silinemedi"}
+                return {"status": "error", "message": i18n.t("MSG_FILE_CREATE_FAILED")}
         else:
             try:
                 with open(disabled_path, "w") as f: pass
-                return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
+                return {"status": "success", "message": i18n.t("MSG_SERVICE_DISABLED"), "autostart": False}
             except OSError:
-                return {"status": "error", "message": "Dosya oluşturulamadı"}
+                return {"status": "error", "message": i18n.t("MSG_FILE_CREATE_FAILED")}
 
 def get_services() -> list[dict]:
     containers = docker_utils.get_running_containers()
@@ -135,16 +136,16 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
 
     manifest, s_dir, g_vars = _get_context(service_id)
     if not manifest: 
-        return {"status": "error", "message": "Servis manifesti bulunamadı."}, "", "", {}, set()
+        return {"status": "error", "message": i18n.t("MSG_MANIFEST_NOT_FOUND")}, "", "", {}, set()
 
     is_core = manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}
     if not model_file and not is_core: 
-        return {"status": "error", "message": "Lütfen bir model dosyası seçin."}, "", "", {}, set()
+        return {"status": "error", "message": i18n.t("MSG_SELECT_MODEL_FILE")}, "", "", {}, set()
 
     hw = "cpu" if is_core else (hardware or g_vars.get("DETECTED_GPU_VENDOR", "cpu"))
     compose_file = manifest.get("compose_files", {}).get(hw)
     if not compose_file: 
-        return {"status": "error", "message": f"Bu donanım desteklenmiyor: {hw}"}, "", "", {}, set()
+        return {"status": "error", "message": i18n.t("MSG_HW_NOT_SUPPORTED", hw)}, "", "", {}, set()
 
     # Orijinal Environment Fallback
     envs = manifest.get("supported_environments", [])
@@ -421,11 +422,14 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
             else:
                 err_msg = out.strip()
                 if "error during connect" in err_msg and ("The system cannot find the file specified" in err_msg or "Is the docker daemon running" in err_msg):
-                    err_msg = "Docker uygulaması açık değil veya yanıt vermiyor. Lütfen Docker Desktop'ı başlatıp tekrar deneyin."
+                    err_msg = i18n.t("ERROR_DOCKER_PAUSED")
+                elif "Docker Desktop is manually paused" in err_msg:
+                    err_msg = i18n.t("ERROR_DOCKER_PAUSED")
                 elif "failed to do request: Head" in err_msg or "context deadline exceeded" in err_msg or "connectex:" in err_msg:
-                    err_msg = "Docker Hub'a bağlanılamadı. Lütfen internet bağlantınızı kontrol edin veya Docker uygulamanızı yeniden başlatın."
+                    err_msg = i18n.t("ERROR_DOCKER_HUB")
                 else:
-                    err_msg = f"Kurulum hatası: {err_msg[-200:]}" if len(err_msg) > 200 else f"Kurulum hatası: {err_msg}"
+                    short_err = err_msg[-200:] if len(err_msg) > 200 else err_msg
+                    err_msg = i18n.t("ERROR_INSTALL_PREFIX", short_err)
                 config.INSTALL_ERRORS[service_id] = err_msg
                 print(f"[INSTALL ERROR] {service_id}: {out}")
 

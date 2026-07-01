@@ -2,7 +2,7 @@
   "id": "orion-hub",
   "name": "Orion Hub",
   "category": "hub",
-  "description": "Orion'un ana orkestrasyon katmanı. API, Worker, Redis ve Veritabanı servislerini içerir.",
+  "description": "Orion's main orchestration layer. Includes API, Worker, Redis and Database services.",
   "version": "1.0.0",
   "supports": [
     "cpu"
@@ -11,7 +11,7 @@
   "supported_environments": [
     {
       "id": "default",
-      "name": "Standart (CPU)",
+      "name": "Standard (CPU)",
       "hardware": "cpu"
     }
   ],

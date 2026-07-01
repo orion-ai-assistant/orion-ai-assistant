@@ -1,8 +1,10 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 import fastapi
+import os
 
 from . import config
 from .core import models
+from .core import i18n
 from . import services
 
 router = APIRouter()
@@ -63,14 +65,14 @@ async def install_service(
         build_env,
         env_file_keys,
     )
-    return {"status": "success", "message": f"Kurulum başlatıldı{kill_msg}"}
+    return {"status": "success", "message": i18n.t("MSG_INSTALL_STARTED", kill_msg)}
 
 
 @router.post("/api/services/{service_id}/stop")
 def stop_service(service_id: str):
     if not services.stop_service(service_id):
-        raise HTTPException(status_code=404, detail="Servis bulunamadı")
-    return {"status": "success", "message": "Servis durduruldu"}
+        raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
+    return {"status": "success", "message": i18n.t("MSG_SERVICE_STOPPED")}
 
 # ---------------------------------------------------------------------------
 # Service Remove
@@ -78,14 +80,14 @@ def stop_service(service_id: str):
 @router.post("/api/services/{service_id}/remove")
 def remove_service(service_id: str):
     if not services.remove_service(service_id):
-        raise HTTPException(status_code=404, detail="Servis bulunamadi")
-    return {"status": "success", "message": "Servis silindi"}
+        raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
+    return {"status": "success", "message": i18n.t("MSG_SERVICE_DELETED")}
 
 @router.post("/api/services/{service_id}/remove-image")
 def remove_image(service_id: str):
     if not services.remove_image(service_id):
-        raise HTTPException(status_code=404, detail="Imaj bulunamadi veya silinemedi")
-    return {"status": "success", "message": "Imaj basariyla silindi"}
+        raise HTTPException(status_code=404, detail=i18n.t("MSG_IMAGE_NOT_FOUND"))
+    return {"status": "success", "message": i18n.t("MSG_IMAGE_DELETED_SUCCESS")}
 
 @router.post("/api/services/{service_id}/autostart")
 def toggle_autostart(service_id: str):
@@ -97,13 +99,43 @@ def toggle_autostart(service_id: str):
 # ---------------------------------------------------------------------------
 # System Run
 # ---------------------------------------------------------------------------
+from pydantic import BaseModel
+class LangUpdate(BaseModel):
+    lang: str
+
+@router.post("/api/system/lang")
+def update_lang(data: LangUpdate):
+    try:
+        path = os.path.join(config.SERVICES_DIR, ".env.global")
+        lines = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("CLI_LANG="):
+                lines[i] = f"CLI_LANG={data.lang}\n"
+                found = True
+                break
+        
+        if not found:
+            lines.append(f"\nCLI_LANG={data.lang}\n")
+            
+        with open(path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+            
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/api/system/start")
 def start_system():
     res = services.start_active_services()
     if res["status"] == "error":
         raise HTTPException(status_code=500, detail=res["message"])
     
-    return {"status": "success", "message": "Sistem başlatılıyor..."}
+    return {"status": "success", "message": i18n.t("MSG_SYSTEM_STARTING")}
 
 # ---------------------------------------------------------------------------
 # Models
@@ -117,18 +149,18 @@ def check_models(service_id: str):
 def download_model(service_id: str, model_id: str, background_tasks: BackgroundTasks):
     manifest, m_path = config.find_manifest(service_id)
     if not manifest:
-        return {"status": "error", "message": "Servis bulunamadı"}
+        return {"status": "error", "message": i18n.t("MSG_SERVICE_NOT_FOUND")}
     model = next((m for m in manifest.get("models_catalog", []) if m["id"] == model_id), None)
     if not model:
-        return {"status": "error", "message": "Model bulunamadı"}
+        return {"status": "error", "message": i18n.t("MSG_MODEL_NOT_FOUND")}
 
     model_key = f"{service_id}:{model_id}"
     if model_key in config.DOWNLOADING_MODELS:
-        return {"status": "error", "message": "Bu model zaten indiriliyor"}
+        return {"status": "error", "message": i18n.t("MSG_MODEL_ALREADY_DOWNLOADING")}
 
     service_dir = m_path.replace("manifest.json", "")
     background_tasks.add_task(models.run_model_download, service_id, service_dir, model)
-    return {"status": "success", "message": "İndirme başlatıldı"}
+    return {"status": "success", "message": i18n.t("MSG_DOWNLOAD_STARTED")}
 
 
 @router.post("/api/services/{service_id}/models/delete")

@@ -19,24 +19,32 @@
         <header>
             <div class="logo">
                 <h1>ORION <span>AI</span></h1>
-                <p style="color: var(--text-secondary); font-size: 0.9rem;">Altyapı ve Servis Yönetimi</p>
+                <p style="color: var(--text-secondary); font-size: 0.9rem;" data-i18n="ui_subtitle">ui_subtitle</p>
             </div>
-            <div id="os-badge" class="panel" style="padding: 8px 16px; font-size: 0.8rem; opacity: 0.8;">
-                <i id="os-icon" class="fas fa-laptop-code"></i> <span id="os-text">--</span>
+            <div style="display: flex; gap: 1rem; align-items: center;">
+                <div id="os-badge" class="panel" style="padding: 8px 16px; font-size: 0.8rem; opacity: 0.8;">
+                    <i id="os-icon" class="fas fa-laptop-code"></i> <span id="os-text">--</span>
+                </div>
+                <div class="panel" style="padding: 4px 8px; font-size: 0.8rem;">
+                    <select id="lang-select" style="background: transparent; border: none; color: var(--text-primary); cursor: pointer; outline: none; font-weight: 600;">
+                        <option value="tr">TR</option>
+                        <option value="en">EN</option>
+                    </select>
+                </div>
             </div>
         </header>
 
         <section class="hw-card panel">
             <div class="hw-item">
-                <span class="hw-label">İşlemci</span>
+                <span class="hw-label" data-i18n="ui_hw_cpu">ui_hw_cpu</span>
                 <span id="hw-cpu-name" class="hw-value">--</span>
             </div>
             <div class="hw-item hw-item-right">
-                <span class="hw-label">GPU</span>
+                <span class="hw-label" data-i18n="ui_hw_gpu">ui_hw_gpu</span>
                 <span id="hw-gpu-name" class="hw-value">--</span>
             </div>
             <div class="hw-item">
-                <span class="hw-label">VRAM Kapasitesi</span>
+                <span class="hw-label" data-i18n="ui_hw_vram">ui_hw_vram</span>
                 <span id="hw-vram-gb" class="hw-value">--</span>
             </div>
         </section>
@@ -44,39 +52,39 @@
         <section class="wizard panel">
             <div class="wizard-header">
                 <div class="wizard-title">
-                    <h2 id="wizard-title">Model Indirme</h2>
-                    <p id="wizard-subtitle">Servis modellerini indir ve hazirla.</p>
+                    <h2 id="wizard-title">ui_step_1_title</h2>
+                    <p id="wizard-subtitle">ui_step_1_sub</p>
                 </div>
                 <div id="wizard-steps" class="wizard-steps"></div>
                 <div class="wizard-actions">
-                    <button id="btn-step-back" class="btn btn-ghost">Geri</button>
-                    <button id="btn-step-next" class="btn btn-primary">Sonraki</button>
+                    <button id="btn-step-back" class="btn btn-ghost" data-i18n="ui_btn_back">ui_btn_back</button>
+                    <button id="btn-step-next" class="btn btn-primary" data-i18n="ui_btn_next">ui_btn_next</button>
                 </div>
             </div>
         </section>
 
         <div id="env-selection-step" class="panel hidden" style="margin-top: 2rem; margin-bottom: 2rem; padding: 22px;">
-            <h3 style="margin-bottom: 1rem; color: var(--text-primary);">Lütfen kurulum yapmak istediğiniz ortamı seçin:</h3>
+             <h3 style="margin-bottom: 1rem; color: var(--text-primary);" data-i18n="ui_env_title">ui_env_title</h3>
             <div class="grid grid-centered" style="margin-top: 0;">
                 <div class="service-card" style="cursor: pointer; border: 2px solid var(--primary-color);">
                     <div class="card-header">
-                        <h4><i class="fab fa-docker"></i> Docker (Önerilen)</h4>
-                        <span class="status-badge status-running"><span class="status-dot"></span> Seçili</span>
+                        <h4><i class="fab fa-docker"></i> Docker <span class="i18n-text" data-i18n="ui_env_docker_badge">ui_env_docker_badge</span></h4>
+                        <span class="status-badge status-running"><span class="status-dot"></span> <span class="i18n-text" data-i18n="ui_env_selected">ui_env_selected</span></span>
                     </div>
                     <div class="card-body">
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;">
-                            Tüm servisleri bağımsız ve izole Docker konteynerleri içerisinde kurar. Çakışma riski en düşük, Orion ekibi tarafından önerilen kararlı kurulum yöntemidir.
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;" data-i18n="ui_env_docker_desc">
+                            ui_env_docker_desc
                         </p>
                     </div>
                 </div>
                 <div class="service-card" style="opacity: 0.6; cursor: not-allowed;">
                     <div class="card-header">
-                        <h4><i class="fas fa-desktop"></i> Local Kurulum</h4>
-                        <span class="status-badge status-stopped"><span class="status-dot"></span> Yakında</span>
+                        <h4><i class="fas fa-desktop"></i> <span class="i18n-text" data-i18n="ui_env_local">ui_env_local</span></h4>
+                        <span class="status-badge status-stopped"><span class="status-dot"></span> <span class="i18n-text" data-i18n="ui_env_coming_soon">ui_env_coming_soon</span></span>
                     </div>
                     <div class="card-body">
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;">
-                            Servisleri doğrudan işletim sistemi üzerine kurar (Native). Bu kurulum seçeneği şu anda geliştirme aşamasındadır, yakında aktif edilecektir.
+                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;" data-i18n="ui_env_local_desc">
+                            ui_env_local_desc
                         </p>
                     </div>
                 </div>
@@ -93,10 +101,10 @@
         aria-labelledby="completion-title">
         <div class="completion-card panel">
             <div class="completion-head">
-                <h3 id="completion-title">Kurulum Durumu</h3>
-                <button id="btn-close-completion" class="btn btn-ghost btn-small" type="button">Kapat</button>
+                <h3 id="completion-title" data-i18n="ui_completion_title">ui_completion_title</h3>
+                <button id="btn-close-completion" class="btn btn-ghost btn-small" type="button" data-i18n="ui_btn_close">ui_btn_close</button>
             </div>
-            <p class="completion-subtitle">Aktif servis ve container durumlari</p>
+            <p class="completion-subtitle" data-i18n="ui_completion_subtitle">ui_completion_subtitle</p>
             <div id="completion-summary" class="completion-summary"></div>
             <div id="completion-status-list" class="completion-status-list"></div>
         </div>
@@ -108,15 +116,18 @@
             <div class="confirm-icon">
                 <i class="fas fa-exclamation-triangle"></i>
             </div>
-            <h3 id="confirm-modal-title" class="confirm-title">Silme Onayı</h3>
-            <p id="confirm-modal-message" class="confirm-message">Bu öğeyi silmek istediğinize emin misiniz?</p>
+            <h3 id="confirm-modal-title" class="confirm-title" data-i18n="confirm_delete_title">confirm_delete_title</h3>
+            <p id="confirm-modal-message" class="confirm-message" data-i18n="confirm_delete_msg">confirm_delete_msg</p>
             <div class="confirm-actions">
-                <button id="confirm-modal-no" class="btn btn-ghost">Vazgeç</button>
-                <button id="confirm-modal-yes" class="btn btn-danger">Evet, Sil</button>
+                <button id="confirm-modal-no" class="btn btn-ghost" data-i18n="confirm_btn_no">confirm_btn_no</button>
+                <button id="confirm-modal-yes" class="btn btn-danger" data-i18n="confirm_btn_yes">confirm_btn_yes</button>
             </div>
         </div>
     </div>
 
+    <script src="/ui/js/locales/tr.js"></script>
+    <script src="/ui/js/locales/en.js"></script>
+    <script src="/ui/js/i18n.js"></script>
     <script type="module" src="/ui/app.js?v=1.3"></script>
 </body>
 
