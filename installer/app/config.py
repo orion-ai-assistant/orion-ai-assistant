@@ -16,6 +16,7 @@ UI_DIR        = os.path.join(INSTALLER_DIR, "app", "ui")
 # ---------------------------------------------------------------------------
 INSTALLING_SERVICES: set[str]       = set()
 DOWNLOADING_MODELS:  dict[str, dict] = {}  # "service_id:model_id" -> {progress, total_mb}
+INSTALL_ERRORS:      dict[str, str]  = {}
 SHOULD_EXIT:         bool            = False
 
 # ---------------------------------------------------------------------------

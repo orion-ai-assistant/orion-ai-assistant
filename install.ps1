@@ -91,14 +91,6 @@ if (-not (Test-Path $envGlobalLocal)) {
     Write-Host "[OK] Existing $envGlobalLocal detected. Kept intact." -ForegroundColor Green
 }
 
-# --- Cihaz Dilini Otomatik Algılama ---
-$envContent = Get-Content $envGlobalLocal -ErrorAction SilentlyContinue
-if ($null -eq $envContent -or -not ($envContent -match "(?m)^CLI_LANG=")) {
-    $sysLang = (Get-Culture).TwoLetterISOLanguageName
-    Add-Content -Path $envGlobalLocal -Value "`n# Auto-detected system language`nCLI_LANG=$sysLang" -Encoding UTF8
-    Write-Host "[OK] Sistem dili algılandı ve ayarlandı: $sysLang" -ForegroundColor Green
-}
-Write-Host ""
 
 # 3. Setup Python Virtual Environment for Installer UI
 Write-Host "[3/5] Setting up python virtual environment for Installer UI..."

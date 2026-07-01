@@ -38,12 +38,51 @@ export function updateCardStatusClasses(card, isDisabled) {
 
 export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode) {
     const isWindows = (window.orionOsPlatform || '').toLowerCase() === 'windows';
-    const envOptions = (service.supported_environments || []).map(env => {
-        const isAmd = (env.hardware || '').toLowerCase() === 'amd';
-        const disabledOnWindows = isWindows && isAmd;
-        const disabledAttr = disabledOnWindows ? 'disabled' : '';
-        const title = disabledOnWindows ? ' title="ROCm yalnızca Linux\'ta desteklenir"' : '';
-        return `<option value="${env.id}" data-hardware="${env.hardware || ''}" ${disabledAttr}${title}>${env.name}${disabledOnWindows ? ' (Linux only)' : ''}</option>`;
+    const gpuVendor = (window.orionGpuVendor || '').toLowerCase();
+
+    // Process options to determine disabled state and titles
+    const processedEnvs = (service.supported_environments || []).map(env => {
+        const hw = (env.hardware || '').toLowerCase();
+        const isAmd = hw === 'amd';
+        const isVulkan = hw === 'vulkan';
+        const disabledOnWindows = isWindows && (isAmd || isVulkan);
+        
+        let title = '';
+        if (disabledOnWindows) {
+            const hwName = isAmd ? 'ROCm' : 'Vulkan';
+            title = ` title="${hwName} yalnızca Linux'ta desteklenir"`;
+        }
+
+        return {
+            ...env,
+            hw,
+            disabled: disabledOnWindows,
+            title
+        };
+    });
+
+    // Select the best default option
+    let selectedId = '';
+    const enabledEnvs = processedEnvs.filter(e => !e.disabled);
+    if (enabledEnvs.length > 0) {
+        const matched = enabledEnvs.find(e => e.hw === gpuVendor);
+        if (matched) {
+            selectedId = matched.id;
+        } else if (gpuVendor === 'amd' && enabledEnvs.some(e => e.hw === 'vulkan')) {
+            const vulkanOpt = enabledEnvs.find(e => e.hw === 'vulkan');
+            selectedId = vulkanOpt.id;
+        } else {
+            const cpuOpt = enabledEnvs.find(e => e.hw === 'cpu');
+            selectedId = cpuOpt ? cpuOpt.id : enabledEnvs[0].id;
+        }
+    }
+
+    // Render HTML options
+    const envOptions = processedEnvs.map(env => {
+        const disabledAttr = env.disabled ? 'disabled' : '';
+        const selectedAttr = env.id === selectedId ? 'selected' : '';
+        const suffix = env.disabled ? ' (Linux only)' : '';
+        return `<option value="${env.id}" data-hardware="${env.hw || ''}" ${disabledAttr} ${selectedAttr}${env.title}>${env.name}${suffix}</option>`;
     }).join('');
 
     const modelsOnly = viewMode === 'models-only';
@@ -104,7 +143,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     }
 
     // Performans için durum karşılaştırması (Hiçbir şey değişmediyse DOM güncellemesini atla)
-    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}`;
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}_${service.install_error || ''}`;
     if (card.dataset.stateKey === stateKey) {
         return;
     }
@@ -164,8 +203,14 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         `;
     }
 
+    const errorHtml = service.install_error ? `
+        <div class="install-error" style="color: #ef4444; font-size: 0.85em; padding: 8px 12px; background: rgba(239, 68, 68, 0.1); border-radius: 4px; margin: 0 16px 12px 16px;">
+            <i class="fas fa-exclamation-triangle" style="margin-right: 4px;"></i> ${service.install_error}
+        </div>
+    ` : '';
 
     const newFooterHtml = `
+        ${errorHtml}
         <div class="service-footer">
             <div class="category-tag" style="margin-bottom: 0;">${service.category.toUpperCase()}</div>
             <div class="footer-actions">${actionHtml}</div>

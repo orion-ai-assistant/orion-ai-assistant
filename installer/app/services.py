@@ -60,19 +60,36 @@ def toggle_autostart(service_id: str) -> dict:
     manifest, s_dir, _ = _get_context(service_id)
     if not manifest: return {"status": "error", "message": "Servis bulunamadı"}
     
+    is_manifest_disabled = manifest.get("status") == "disabled"
     disabled_path = os.path.join(s_dir, ".disabled")
-    if os.path.exists(disabled_path):
-        try:
-            os.remove(disabled_path)
-            return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
-        except OSError:
-            return {"status": "error", "message": "Dosya silinemedi"}
+    enabled_path = os.path.join(s_dir, ".enabled")
+    
+    if is_manifest_disabled:
+        if os.path.exists(enabled_path):
+            try:
+                os.remove(enabled_path)
+                return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
+            except OSError:
+                return {"status": "error", "message": "Dosya silinemedi"}
+        else:
+            try:
+                with open(enabled_path, "w") as f: pass
+                return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
+            except OSError:
+                return {"status": "error", "message": "Dosya oluşturulamadı"}
     else:
-        try:
-            with open(disabled_path, "w") as f: pass
-            return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
-        except OSError:
-            return {"status": "error", "message": "Dosya oluşturulamadı"}
+        if os.path.exists(disabled_path):
+            try:
+                os.remove(disabled_path)
+                return {"status": "success", "message": "Servis otomatik başlatmaya eklendi", "autostart": True}
+            except OSError:
+                return {"status": "error", "message": "Dosya silinemedi"}
+        else:
+            try:
+                with open(disabled_path, "w") as f: pass
+                return {"status": "success", "message": "Servis devre dışı bırakıldı", "autostart": False}
+            except OSError:
+                return {"status": "error", "message": "Dosya oluşturulamadı"}
 
 def get_services() -> list[dict]:
     containers = docker_utils.get_running_containers()
@@ -80,13 +97,19 @@ def get_services() -> list[dict]:
     for data, m_path in config.all_manifests():
         c_name = data.get("container_name", "")
         s_dir = os.path.dirname(m_path)
-        autostart = not os.path.exists(os.path.join(s_dir, ".disabled"))
+        
+        is_manifest_disabled = data.get("status") == "disabled"
+        if is_manifest_disabled:
+            autostart = os.path.exists(os.path.join(s_dir, ".enabled"))
+        else:
+            autostart = not os.path.exists(os.path.join(s_dir, ".disabled"))
         
         data.update({
             "is_installed": c_name in containers,
             "is_running": containers.get(c_name, False),
             "is_installing": data["id"] in config.INSTALLING_SERVICES,
-            "autostart": autostart
+            "autostart": autostart,
+            "install_error": config.INSTALL_ERRORS.get(data["id"])
         })
         services.append(data)
         
@@ -96,6 +119,9 @@ def get_services() -> list[dict]:
 def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str, mmproj_file: str, params: dict):
     if service_id in config.INSTALLING_SERVICES: 
         return {"status": "error", "message": "Bu servis zaten kuruluyor."}, "", "", {}, set()
+    
+    if service_id in config.INSTALL_ERRORS:
+        del config.INSTALL_ERRORS[service_id]
     
     # Yerel ayar dosyasini ilk kurulum aninda kopyala
     global_env_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
@@ -207,6 +233,18 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         if not has_secret or not has_secret.strip():
             g_vars["ADMIN_SECRET"] = "orion"
             added_global_vars["ADMIN_SECRET"] = "orion"
+
+    # 3. Auto-detect CLI_LANG
+    has_cli_lang = g_vars.get("CLI_LANG")
+    if not has_cli_lang or not has_cli_lang.strip():
+        import locale
+        try:
+            sys_lang = locale.getdefaultlocale()[0]
+            lang_code = sys_lang.split("_")[0] if sys_lang else "en"
+        except Exception:
+            lang_code = "en"
+        g_vars["CLI_LANG"] = lang_code
+        added_global_vars["CLI_LANG"] = lang_code
 
     if added_global_vars:
         global_env_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
@@ -342,11 +380,21 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
         process = subprocess.Popen(cmd, cwd=service_dir, env={**os.environ, **build_env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
         
         disabled_path = os.path.join(service_dir, ".disabled")
-        if os.path.exists(disabled_path):
-            try:
+        enabled_path = os.path.join(service_dir, ".enabled")
+        try:
+            if os.path.exists(disabled_path):
                 os.remove(disabled_path)
-            except OSError:
-                pass
+            
+            # Read manifest to check if we need to add .enabled
+            manifest_path = os.path.join(service_dir, "manifest.json")
+            if os.path.exists(manifest_path):
+                import json
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    mf = json.load(f)
+                if mf.get("status") == "disabled":
+                    with open(enabled_path, "w") as f: pass
+        except Exception:
+            pass
         
         out_lines = []
         for line in process.stdout:
@@ -371,9 +419,18 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
                     print(line, end="", flush=True)
                 retry_process.wait()
             else:
+                err_msg = out.strip()
+                if "error during connect" in err_msg and ("The system cannot find the file specified" in err_msg or "Is the docker daemon running" in err_msg):
+                    err_msg = "Docker uygulaması açık değil veya yanıt vermiyor. Lütfen Docker Desktop'ı başlatıp tekrar deneyin."
+                elif "failed to do request: Head" in err_msg or "context deadline exceeded" in err_msg or "connectex:" in err_msg:
+                    err_msg = "Docker Hub'a bağlanılamadı. Lütfen internet bağlantınızı kontrol edin veya Docker uygulamanızı yeniden başlatın."
+                else:
+                    err_msg = f"Kurulum hatası: {err_msg[-200:]}" if len(err_msg) > 200 else f"Kurulum hatası: {err_msg}"
+                config.INSTALL_ERRORS[service_id] = err_msg
                 print(f"[INSTALL ERROR] {service_id}: {out}")
 
     except Exception as e:
+        config.INSTALL_ERRORS[service_id] = f"Beklenmeyen Hata: {str(e)}"
         print(f"[INSTALL ERROR] {service_id}: {e}")
     finally:
         config.INSTALLING_SERVICES.discard(service_id)
@@ -388,8 +445,15 @@ def start_active_services() -> dict:
         s_dir = os.path.dirname(m_path)
         env_path = os.path.join(s_dir, ".env")
         disabled_path = os.path.join(s_dir, ".disabled")
+        enabled_path = os.path.join(s_dir, ".enabled")
         
-        if os.path.exists(env_path) and not os.path.exists(disabled_path):
+        is_manifest_disabled = data.get("status") == "disabled"
+        if is_manifest_disabled:
+            is_active = os.path.exists(env_path) and os.path.exists(enabled_path)
+        else:
+            is_active = os.path.exists(env_path) and not os.path.exists(disabled_path)
+            
+        if is_active:
             active_services.append((data, s_dir))
             
     active_services.sort(key=lambda item: (

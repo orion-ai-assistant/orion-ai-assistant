@@ -38,7 +38,7 @@ const steps = [
 async function fetchHardware() {
     try {
         const info = await api.fetchHardware();
-        
+
         // GPU İsmi
         const gpuNameEl = document.getElementById('hw-gpu-name');
         if (gpuNameEl) gpuNameEl.innerText = info.DETECTED_GPU_NAME || "Bilinmiyor";
@@ -62,16 +62,19 @@ async function fetchHardware() {
             else if (os === 'linux') osIcon.className = 'fab fa-linux';
             else osIcon.className = 'fas fa-desktop';
         }
-        
+
+        // GPU Vendor
+        window.orionGpuVendor = (info.DETECTED_GPU_VENDOR || 'cpu').toLowerCase();
+
         // GPU List
         try {
             window.orionGpuList = info.DETECTED_GPU_LIST ? JSON.parse(info.DETECTED_GPU_LIST) : [];
-        } catch(e) {
+        } catch (e) {
             window.orionGpuList = [];
         }
 
-    } catch (err) { 
-        console.error("Hardware fetch error:", err); 
+    } catch (err) {
+        console.error("Hardware fetch error:", err);
     }
 }
 
@@ -131,7 +134,7 @@ function closeCompletionPanel() {
 async function fetchServices() {
     try {
         const services = await api.fetchServices();
-        
+
         services.forEach(service => {
             const prevState = previousServiceStates[service.id];
             if (prevState) {
@@ -150,7 +153,7 @@ async function fetchServices() {
             }
             allServices[service.id] = service;
             previousServiceStates[service.id] = { is_installing: service.is_installing, is_running: service.is_running };
-            
+
             if (service.status !== 'disabled' && !isCoreService(service)) {
                 loadModelStatus(service.id);
             }
@@ -222,8 +225,48 @@ async function downloadModel(serviceId, modelId, btn) {
     }
 }
 
+function showConfirm(title, message) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('confirm-modal');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const messageEl = document.getElementById('confirm-modal-message');
+        const btnYes = document.getElementById('confirm-modal-yes');
+        const btnNo = document.getElementById('confirm-modal-no');
+
+        titleEl.innerText = title;
+        messageEl.innerText = message;
+
+        modal.classList.remove('hidden');
+
+        const cleanup = (value) => {
+            modal.classList.add('hidden');
+            btnYes.onclick = null;
+            btnNo.onclick = null;
+            modal.onclick = null;
+            window.removeEventListener('keydown', handleKeyDown);
+            resolve(value);
+        };
+
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                cleanup(false);
+            } else if (e.key === 'Enter') {
+                cleanup(true);
+            }
+        };
+
+        btnYes.onclick = () => cleanup(true);
+        btnNo.onclick = () => cleanup(false);
+        modal.onclick = (e) => {
+            if (e.target === modal) cleanup(false);
+        };
+        window.addEventListener('keydown', handleKeyDown);
+    });
+}
+
 async function deleteModel(serviceId, modelId, btn) {
-    if (!confirm("Bu modeli silmek istediğinize emin misiniz?")) {
+    const confirmed = await showConfirm("Modeli Sil", "Bu modeli silmek istediğinize emin misiniz? Bu işlem geri alınamaz.");
+    if (!confirmed) {
         return;
     }
     try {
@@ -255,14 +298,14 @@ async function installService(id, btn) {
         const envId = envSelect?.value;
         const hardware = envSelect?.options[envSelect.selectedIndex]?.getAttribute('data-hardware');
         const modelFile = isCore ? "" : (document.getElementById(`model-select-${id}`)?.value || "");
-        
+
         // MMPROJ Toggle kontrolü
         let mmprojFile = "";
         const mmprojToggle = document.getElementById(`mmproj-toggle-${id}`);
         if (mmprojToggle && mmprojToggle.checked) {
             mmprojFile = mmprojToggle.dataset.path || "";
         }
-        
+
         // Dinamik parametreleri topla
         const extraParams = {};
         document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`).forEach(input => {
@@ -295,7 +338,7 @@ async function installService(id, btn) {
 
         const query = `hardware=${hardware || ""}&env_id=${envId || ""}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
         const result = await api.postInstallService(id, query);
-        
+
         if (result.status !== 'success') {
             showToast(result.message || "Hata!", 'error');
             btn.disabled = false;
@@ -326,6 +369,15 @@ async function toggleAutostart(id, btn) {
 }
 
 async function deleteImage(id, btn) {
+    const service = allServices[id];
+    const serviceName = service ? service.name : '';
+    const msg = serviceName
+        ? `"${serviceName}" servisinin Docker imajını silmek istediğinize emin misiniz?`
+        : "Bu servisin Docker imajını silmek istediğinize emin misiniz?";
+    const confirmed = await showConfirm("İmajı Sil", msg);
+    if (!confirmed) {
+        return;
+    }
     try {
         if (btn) btn.disabled = true;
         const result = await api.postRemoveImage(id);
@@ -424,8 +476,8 @@ function updateWizardUI() {
                 const next = Number(stepEl.dataset.step);
                 // Precheck runs when going forward from step 1
                 if (!Number.isNaN(next)) {
-                     // We don't block clicking past step 1 directly here for simplicity, but ideally we should
-                     setStep(next);
+                    // We don't block clicking past step 1 directly here for simplicity, but ideally we should
+                    setStep(next);
                 }
             };
         });
@@ -457,11 +509,11 @@ function initWizard() {
             if (currentStep === steps.length) {
                 const routerService = allServices['orion-router'];
                 const hubService = allServices['orion-hub'];
-                
+
                 // Verify both are installed and active (autostart not disabled)
                 if (!routerService?.is_installed || routerService?.autostart === false ||
                     !hubService?.is_installed || hubService?.autostart === false) {
-                    showToast("Sistemi başlatabilmek için Orion Router ve Orion Hub servislerinin hem kurulu hem de aktif (devre dışı bırakılmamış) olması zorunludur!", "error");
+                    showToast("Sistemi başlatabilmek için Orion Router ve Orion Hub servislerinin kurulu olması gerekiyor!", "error");
                     return;
                 }
 
@@ -471,7 +523,7 @@ function initWizard() {
 
                 api.postStartSystem().then(res => {
                     showToast(res.message || "Sistem başlatılıyor...", "success");
-                    
+
                     // Fast poll for 15 seconds (every 1.5s) to reflect startup changes rapidly
                     let pollCount = 0;
                     const pollInterval = setInterval(() => {

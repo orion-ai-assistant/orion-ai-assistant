@@ -876,3 +876,46 @@ button:disabled {
     border-radius: 4px;
     color: var(--accent);
 }
+
+/* Confirm Modal Custom Styling */
+.confirm-card {
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+    padding: 32px 24px;
+    animation: modalSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.confirm-icon {
+    font-size: 3.5rem;
+    color: var(--danger);
+    margin-bottom: 20px;
+    display: inline-block;
+    filter: drop-shadow(0 0 12px rgba(240, 139, 127, 0.25));
+}
+
+.confirm-title {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+
+.confirm-message {
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+}
+
+.confirm-actions {
+    display: flex;
+    justify-content: center;
+    gap: 14px;
+}
+
+@keyframes modalSlideIn {
+    from { opacity: 0; transform: scale(0.95) translateY(10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
