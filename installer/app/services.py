@@ -262,7 +262,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
     keys.update(manifest.get("env_defaults", {}).keys())
     keys.update(manifest.get("env", {}).keys())
     keys.update(k for k in model_env.keys() if k != "EXTRA_ARGS")
-    keys.update({"COMPOSE_PROJECT_NAME", "BASE_IMAGE", "MODEL_FILE", "MMPROJ_FILE", "MMPROJ_ARGS", "EXTRA_ARGS", "GPU_COUNT", "REBUILD_IMAGE"})
+    keys.update({"COMPOSE_PROJECT_NAME", "BASE_IMAGE", "MODEL_FILE", "MMPROJ_FILE", "MMPROJ_ARGS", "EXTRA_ARGS", "GPU_COUNT", "REBUILD_IMAGE", "COMPOSE_FILE"})
 
     config.INSTALLING_SERVICES.add(service_id)
     return None, s_dir, compose_file, build_env, keys
