@@ -21,7 +21,7 @@ window.orionLocales.tr = {
 
     // Labels
     lbl_hardware: "Donanım / Sürücü",
-    lbl_model: "Başlatılacak Model",
+    lbl_model: "Model",
     lbl_select_model: "Model Seçin...",
     lbl_other_actions: "Diğer işlemler",
     lbl_unknown: "Bilinmiyor",
@@ -96,11 +96,10 @@ window.orionLocales.tr = {
     ui_env_local_desc: "Servisleri doğrudan işletim sistemi üzerine kurar (Native). Bu kurulum seçeneği şu anda geliştirme aşamasındadır, yakında aktif edilecektir.",
 
     // Models
-    ui_system_models: "Sistem Modelleri",
-    ui_local_models: "Yerel Modeller",
+    ui_system_models: "Hazır Modeller",
+    ui_local_models: "Sizin Ekledikleriniz",
     ui_downloading: "İndiriliyor",
     ui_incomplete: "Yarıda Kaldı",
-    ui_missing: "Eksik",
     ui_resume: "Devam Et",
     ui_download: "İndir",
     ui_btn_vision: "Vision ve Audio Aktifleştir",

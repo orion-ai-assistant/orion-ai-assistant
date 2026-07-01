@@ -135,10 +135,10 @@ function renderModelItem(m, isDisabled) {
         btnHtml = `<button class="btn btn-danger btn-small" id="btn-del-${m.id}" ${isDisabled ? 'disabled' : ''} title="${window.t('btn_remove')}"><i class="fas fa-trash"></i></button>`;
     } else {
         const incompleteText = m.incomplete_status ? ` (${m.incomplete_status})` : '';
-        const manifestSizeText = m.manifest_size_mb > 0 ? ` (${formatSize(m.manifest_size_mb)})` : '';
+        const manifestSizeText = m.manifest_size_mb > 0 ? formatSize(m.manifest_size_mb) : '';
         statusHtml = m.is_incomplete
             ? `<span class="model-status warning">${window.t('ui_incomplete')}${incompleteText}</span>`
-            : `<span class="model-status missing">${window.t('ui_missing')}${manifestSizeText}</span>`;
+            : (manifestSizeText ? `<span class="model-status missing">${manifestSizeText}</span>` : '');
         btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''} title="${m.is_incomplete ? window.t('ui_resume') : window.t('ui_download')}">${m.is_incomplete ? '<i class="fas fa-play"></i>' : '<i class="fas fa-download"></i>'}</button>`;
     }
 

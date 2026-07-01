@@ -582,6 +582,18 @@ window.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('languageChanged', () => {
         updateWizardUI();
         renderFromCache();
+
+        // Update all models lists and selects immediately from cache
+        Object.keys(allServices).forEach(serviceId => {
+            const service = allServices[serviceId];
+            if (service && service.status !== 'disabled' && !isCoreService(service) && allServiceModels[serviceId]) {
+                const models = allServiceModels[serviceId];
+                const isDisabled = service.status === 'disabled';
+                uiRender.updateModelSelect(serviceId, models, allServiceModels);
+                uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel }, isDisabled);
+            }
+        });
+
         if (!document.getElementById('completion-panel')?.classList.contains('hidden')) {
             renderCompletionPanel();
         }

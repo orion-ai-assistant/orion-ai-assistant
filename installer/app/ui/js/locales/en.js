@@ -21,7 +21,7 @@ window.orionLocales.en = {
 
     // Labels
     lbl_hardware: "Hardware / Driver",
-    lbl_model: "Model to Start",
+    lbl_model: "Model",
     lbl_select_model: "Select Model...",
     lbl_other_actions: "Other Actions",
     lbl_unknown: "Unknown",
@@ -96,11 +96,10 @@ window.orionLocales.en = {
     ui_env_local_desc: "Installs services directly onto the operating system (Native). This installation option is currently in development and will be activated soon.",
 
     // Models
-    ui_system_models: "System Models",
-    ui_local_models: "Local Models",
+    ui_system_models: "Preconfigured Models",
+    ui_local_models: "User Added",
     ui_downloading: "Downloading",
     ui_incomplete: "Incomplete",
-    ui_missing: "Missing",
     ui_resume: "Resume",
     ui_download: "Download",
     ui_btn_vision: "Enable Vision and Audio",
