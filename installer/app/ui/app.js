@@ -62,6 +62,13 @@ async function fetchHardware() {
             else if (os === 'linux') osIcon.className = 'fab fa-linux';
             else osIcon.className = 'fas fa-desktop';
         }
+        
+        // GPU List
+        try {
+            window.orionGpuList = info.DETECTED_GPU_LIST ? JSON.parse(info.DETECTED_GPU_LIST) : [];
+        } catch(e) {
+            window.orionGpuList = [];
+        }
 
     } catch (err) { 
         console.error("Hardware fetch error:", err); 
@@ -263,6 +270,13 @@ async function installService(id, btn) {
             const type = input.dataset.type;
             if (type === 'checkbox') {
                 extraParams[paramId] = input.checked;
+            } else if (type === 'gpu_selector') {
+                if (input.checked) extraParams[paramId] = input.value;
+            } else if (type === 'gpu_selector_multi') {
+                if (input.checked) {
+                    if (!extraParams[paramId]) extraParams[paramId] = [];
+                    extraParams[paramId].push(input.value);
+                }
             } else if (type === 'int') {
                 extraParams[paramId] = parseInt(input.value, 10) || 0;
             } else if (type === 'number') {
@@ -271,6 +285,13 @@ async function installService(id, btn) {
                 extraParams[paramId] = input.value;
             }
         });
+
+        // Dizi olan (çoklu seçilmiş) parametreleri virgülle birleştir
+        for (let key in extraParams) {
+            if (Array.isArray(extraParams[key])) {
+                extraParams[key] = extraParams[key].join(',');
+            }
+        }
 
         const query = `hardware=${hardware || ""}&env_id=${envId || ""}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
         const result = await api.postInstallService(id, query);

@@ -19,8 +19,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: ${GPU_COUNT}
+              count: all
               capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_IDS:-all}
     volumes:
       - ./models:/app/models
       - ./voices:/app/voices

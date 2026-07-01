@@ -6,6 +6,7 @@
   "version": "1.10.0",
   "vram_required_gb": 2,
   "parameters": {
+    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "Kullanılacak GPU'lar", "default": "all" },
     "WHISPER_MODEL": {"default": "base", "label": "Whisper Modeli"},
     "WHISPER_COMPUTE_TYPE": {"default": "float16", "label": "Hesaplama Tipi (Compute)"}
   },

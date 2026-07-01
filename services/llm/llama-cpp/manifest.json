@@ -6,6 +6,7 @@
   "version": "latest",
   "vram_required_gb": 4,
   "parameters": {
+    "GPU_DEVICE_IDS": {"default": "all", "label": "Kullanılacak GPU'lar", "type": "gpu_selector"},
     "GPU_LAYERS": {"default": 35, "label": "GPU Katman Sayısı", "min": 0, "max": 100, "type": "int"},
     "CONTEXT_SIZE": {"default": 8192, "label": "Bağlam Boyutu (Context)", "min": 512, "max": 128000, "type": "int"},
     "BATCH_SIZE": {"default": 512, "label": "Batch Boyutu", "min": 8, "max": 8192, "type": "int"},

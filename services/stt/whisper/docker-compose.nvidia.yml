@@ -11,12 +11,13 @@ services:
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_IDS:-all}
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: ${GPU_COUNT}
+              count: all
               capabilities: [gpu]
     networks:
       - orion-network

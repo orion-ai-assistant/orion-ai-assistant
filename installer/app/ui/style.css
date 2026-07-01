@@ -279,6 +279,11 @@ header {
     overflow: hidden;
 }
 
+.dropdown-menu.open-up {
+    top: auto;
+    bottom: calc(100% + 8px);
+}
+
 .dropdown-item {
     width: 100%;
     text-align: center;

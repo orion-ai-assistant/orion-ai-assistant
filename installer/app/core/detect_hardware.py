@@ -9,17 +9,29 @@ import subprocess
 
 
 def get_nvidia_info() -> dict | None:
+    import json
     try:
         out = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
             encoding="utf-8", stdin=subprocess.DEVNULL
         )
-        name, vram, cap = out.strip().split("\n")[0].split(", ")
+        lines = out.strip().split("\n")
+        gpus = []
+        for line in lines:
+            if not line.strip(): continue
+            parts = line.split(", ")
+            if len(parts) == 4:
+                gpus.append({"id": parts[0], "name": parts[1], "vram": parts[2], "cap": parts[3]})
+        
+        if not gpus:
+            return None
+
         return {
             "DETECTED_GPU_VENDOR": "nvidia",
-            "DETECTED_GPU_NAME": name,
-            "DETECTED_VRAM_GB": str(round(int(vram) / 1024)),
-            "DETECTED_GPU_CAP": cap
+            "DETECTED_GPU_NAME": gpus[0]["name"],
+            "DETECTED_VRAM_GB": str(round(int(gpus[0]["vram"]) / 1024)),
+            "DETECTED_GPU_CAP": gpus[0]["cap"],
+            "DETECTED_GPU_LIST": json.dumps(gpus)
         }
     except Exception:
         return None

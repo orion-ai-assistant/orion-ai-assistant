@@ -6,6 +6,11 @@
   "version": "1.0.0",
   "vram_required_gb": 4,
   "parameters": {
+    "GPU_DEVICE_IDS": {
+      "default": "all",
+      "label": "Kullanılacak GPU'lar",
+      "type": "gpu_selector"
+    },
     "GPU_LAYERS": {
       "default": 35,
       "label": "GPU Katman Sayısı",

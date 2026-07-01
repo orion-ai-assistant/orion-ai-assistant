@@ -6,6 +6,7 @@
   "version": "2.1",
   "vram_required_gb": 6,
   "parameters": {
+    "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "Kullanılacak GPU'lar", "default": "all" },
     "LOW_VRAM": {
       "default": true,
       "label": "VRAM Tasarrufu (CPU)"

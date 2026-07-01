@@ -1,5 +1,20 @@
 import { renderParameters } from './parameters.js';
 
+// Global click, resize, and blur listeners to make the custom dropdown behave like a native select
+const closeAllDropdowns = () => {
+    document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.add('hidden'));
+    document.querySelectorAll('.btn-split-toggle').forEach(b => b.setAttribute('aria-expanded', 'false'));
+};
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.btn-split-toggle')) {
+        closeAllDropdowns();
+    }
+});
+
+window.addEventListener('resize', closeAllDropdowns);
+window.addEventListener('blur', closeAllDropdowns);
+
 function isCoreService(service) {
     return service?.id === 'orion-hub' || service?.category === 'core' || service?.category === 'hub' || service?.category === 'router';
 }
@@ -83,6 +98,18 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     const footer = card.querySelector('.service-footer-dynamic');
     if (!footer) return;
 
+    if (viewMode === 'models-only') {
+        if (footer.innerHTML !== '') footer.innerHTML = '';
+        return;
+    }
+
+    // Performans için durum karşılaştırması (Hiçbir şey değişmediyse DOM güncellemesini atla)
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}`;
+    if (card.dataset.stateKey === stateKey) {
+        return;
+    }
+    card.dataset.stateKey = stateKey;
+
     const hasInstall = service.is_installed;
     const statusLabel = !hasInstall ? 'Kurulmamis' : (service.is_running ? 'Calisiyor' : 'Durduruldu');
     const statusClass = !hasInstall ? 'status-missing' : (service.is_running ? 'status-running' : 'status-stopped');
@@ -91,11 +118,6 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     const dotContainer = card.querySelector(`#status-dot-container-${service.id}`);
     if (dotContainer) {
         dotContainer.innerHTML = `<div class="status-badge ${statusClass}" title="${statusLabel}" style="margin: 0;"><span class="status-dot"></span></div>`;
-    }
-
-    if (viewMode === 'models-only') {
-        if (footer.innerHTML !== '') footer.innerHTML = '';
-        return;
     }
 
     let actionHtml = '';
@@ -118,16 +140,19 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         }
 
         const mainBtnId = `btn-main-${service.id}`;
-
         const menuBtnId = `btn-menu-${service.id}`;
         const dropdownId = `menu-${service.id}`;
 
+        const existingDropdown = footer.querySelector(`#menu-${service.id}`);
+        const isDropdownOpen = existingDropdown && !existingDropdown.classList.contains('hidden');
+        const isDropdownOpenUp = existingDropdown && existingDropdown.classList.contains('open-up');
+
         const dropdownHtml = hasContainer ? `
             <div class="split-dropdown">
-                <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="false" aria-controls="${dropdownId}" title="Diger islemler">
+                <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="${isDropdownOpen ? 'true' : 'false'}" aria-controls="${dropdownId}" title="Diger islemler">
                     <i class="fas fa-chevron-down"></i>
                 </button>
-                <div class="dropdown-menu hidden" id="${dropdownId}">
+                <div class="dropdown-menu ${isDropdownOpen ? '' : 'hidden'} ${isDropdownOpenUp ? 'open-up' : ''}" id="${dropdownId}">
                     <button class="dropdown-item" id="btn-reinstall-${service.id}">Yeniden Kur</button>
                     <button class="dropdown-item danger" id="btn-remove-${service.id}">Kaldır</button>
                     <button class="dropdown-item danger" id="btn-delete-image-${service.id}">İmajı Sil</button>
@@ -163,19 +188,41 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         }
 
         const menuBtn = card.querySelector(`#btn-menu-${service.id}`);
-        const dropdown = card.querySelector(`#menu-${service.id}`);
-        if (menuBtn && dropdown) {
+        if (menuBtn) {
             menuBtn.onclick = (e) => {
                 e.stopPropagation();
-                const isHidden = dropdown.classList.contains('hidden');
-                card.querySelectorAll('.dropdown-menu').forEach(m => m.classList.add('hidden'));
-                dropdown.classList.toggle('hidden', !isHidden);
-                menuBtn.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+                // Olası bir DOM yenilenmesine karşı güncel elementleri buluyoruz
+                const currentDropdown = document.getElementById(`menu-${service.id}`);
+                const currentBtn = document.getElementById(`btn-menu-${service.id}`);
+                if (!currentDropdown || !currentBtn) return;
+                
+                const isHidden = currentDropdown.classList.contains('hidden');
+                
+                // Diğer tüm açık menüleri kapat
+                document.querySelectorAll('.dropdown-menu').forEach(m => {
+                    m.classList.add('hidden');
+                    const b = document.querySelector(`[aria-controls="${m.id}"]`);
+                    if (b) b.setAttribute('aria-expanded', 'false');
+                });
+
+                if (isHidden) {
+                    currentDropdown.classList.remove('hidden');
+                    currentBtn.setAttribute('aria-expanded', 'true');
+                    
+                    // Altta yer kalıp kalmadığını ölçüyoruz (Örn: Ekran yüksekliğini taşarsa)
+                    const rect = currentDropdown.getBoundingClientRect();
+                    const windowHeight = window.innerHeight;
+                    if (rect.bottom > windowHeight) {
+                        currentDropdown.classList.add('open-up');
+                    } else {
+                        currentDropdown.classList.remove('open-up');
+                    }
+                } else {
+                    currentDropdown.classList.add('hidden');
+                    currentBtn.setAttribute('aria-expanded', 'false');
+                    currentDropdown.classList.remove('open-up');
+                }
             };
-            document.addEventListener('click', () => {
-                dropdown.classList.add('hidden');
-                menuBtn.setAttribute('aria-expanded', 'false');
-            }, { once: true });
         }
 
         const reinstallBtn = card.querySelector(`#btn-reinstall-${service.id}`);
@@ -191,6 +238,10 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
 
 export function toggleFormElements(card, isDisabled) {
     card.querySelectorAll('input, select, .tab').forEach(el => {
+        if (el.getAttribute('data-type') === 'gpu_selector') {
+            el.setAttribute('disabled', 'true');
+            return;
+        }
         const currentlyDisabled = el.hasAttribute('disabled') || (el.classList.contains('tab') && el.style.pointerEvents === 'none');
 
         if (isDisabled && !currentlyDisabled) {
@@ -255,6 +306,35 @@ function setupCardInteractions(card, service, handlers) {
     if (modelSelect) {
         modelSelect.addEventListener('change', () => {
             handlers.onModelChange(service.id, modelSelect.value);
+        });
+    }
+
+    // Donanım (CPU/GPU) seçimine göre GPU panelini göster/gizle
+    const envSelect = card.querySelector(`#env-select-${service.id}`);
+    const gpuField = card.querySelector(`#gpu-selector-field-${service.id}`);
+    if (envSelect && gpuField) {
+        const updateGpuVisibility = () => {
+            const hw = (envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware') || '').toLowerCase();
+            if (hw === 'cpu') {
+                gpuField.style.display = 'none';
+            } else {
+                gpuField.style.display = 'block';
+            }
+        };
+        envSelect.addEventListener('change', updateGpuVisibility);
+        updateGpuVisibility();
+    }
+
+    // Çoklu GPU'larda en az birinin seçili kalmasını zorunlu kıl
+    const gpuCheckboxes = card.querySelectorAll(`.dynamic-input[data-type="gpu_selector_multi"]`);
+    if (gpuCheckboxes.length > 0) {
+        gpuCheckboxes.forEach(cb => {
+            cb.addEventListener('change', () => {
+                const checkedCount = Array.from(gpuCheckboxes).filter(c => c.checked).length;
+                if (checkedCount === 0) {
+                    cb.checked = true; // Geri al
+                }
+            });
         });
     }
 }
