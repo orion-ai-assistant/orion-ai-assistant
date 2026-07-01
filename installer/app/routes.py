@@ -106,25 +106,33 @@ class LangUpdate(BaseModel):
 @router.post("/api/system/lang")
 def update_lang(data: LangUpdate):
     try:
-        path = os.path.join(config.SERVICES_DIR, ".env.global")
-        lines = []
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+        paths = [
+            os.path.join(config.SERVICES_DIR, ".env.global"),
+            os.path.join(config.SERVICES_DIR, ".env.global.local")
+        ]
         
-        found = False
-        for i, line in enumerate(lines):
-            if line.startswith("CLI_LANG="):
-                lines[i] = f"CLI_LANG={data.lang}\n"
-                found = True
-                break
-        
-        if not found:
-            lines.append(f"\nCLI_LANG={data.lang}\n")
+        for path in paths:
+            if not os.path.exists(path) and path.endswith(".local"):
+                continue  # Sadece mevcutsa local dosyayı güncelle
+                
+            lines = []
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
             
-        with open(path, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith("CLI_LANG="):
+                    lines[i] = f"CLI_LANG={data.lang}\n"
+                    found = True
+                    break
             
+            if not found:
+                lines.append(f"\nCLI_LANG={data.lang}\n")
+                
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+                
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
