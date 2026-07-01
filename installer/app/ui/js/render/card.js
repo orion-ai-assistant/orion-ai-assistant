@@ -22,9 +22,14 @@ export function updateCardStatusClasses(card, isDisabled) {
 }
 
 export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode) {
-    const envOptions = (service.supported_environments || []).map(env =>
-        `<option value="${env.id}" data-hardware="${env.hardware || ''}">${env.name}</option>`
-    ).join('');
+    const isWindows = (window.orionOsPlatform || '').toLowerCase() === 'windows';
+    const envOptions = (service.supported_environments || []).map(env => {
+        const isAmd = (env.hardware || '').toLowerCase() === 'amd';
+        const disabledOnWindows = isWindows && isAmd;
+        const disabledAttr = disabledOnWindows ? 'disabled' : '';
+        const title = disabledOnWindows ? ' title="ROCm yalnızca Linux\'ta desteklenir"' : '';
+        return `<option value="${env.id}" data-hardware="${env.hardware || ''}" ${disabledAttr}${title}>${env.name}${disabledOnWindows ? ' (Linux only)' : ''}</option>`;
+    }).join('');
 
     const modelsOnly = viewMode === 'models-only';
     const installMode = viewMode === 'install';

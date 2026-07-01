@@ -44,6 +44,7 @@
   "supports": [
     "nvidia",
     "amd",
+    "vulkan",
     "cpu"
   ],
   "default_hardware": "nvidia",
@@ -54,6 +55,7 @@
     "tags": {
       "nvidia": "server-cuda",
       "amd": "server-rocm",
+      "vulkan": "server-vulkan",
       "cpu": "server"
     }
   },
@@ -66,9 +68,15 @@
     },
     {
       "id": "llm-amd-rocm",
-      "name": "AMD - ROCm",
+      "name": "AMD - ROCm (Linux)",
       "base_image": "ghcr.io/ggml-org/llama.cpp:server-rocm",
       "hardware": "amd"
+    },
+    {
+      "id": "llm-vulkan",
+      "name": "Vulkan - Tüm GPU'lar (AMD/Intel/NVIDIA)",
+      "base_image": "ghcr.io/ggml-org/llama.cpp:server-vulkan",
+      "hardware": "vulkan"
     },
     {
       "id": "llm-cpu-only",
@@ -80,6 +88,7 @@
   "compose_files": {
     "nvidia": "docker-compose.nvidia.yml",
     "amd": "docker-compose.amd.yml",
+    "vulkan": "docker-compose.vulkan.yml",
     "cpu": "docker-compose.cpu.yml"
   },
   "api": {

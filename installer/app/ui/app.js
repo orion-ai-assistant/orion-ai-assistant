@@ -56,6 +56,7 @@ async function fetchHardware() {
         const osText = document.getElementById('os-text');
         if (osIcon && osText) {
             const os = info.OS_PLATFORM || "unknown";
+            window.orionOsPlatform = os;
             osText.innerText = os.charAt(0).toUpperCase() + os.slice(1);
             if (os === 'windows') osIcon.className = 'fab fa-windows';
             else if (os === 'linux') osIcon.className = 'fab fa-linux';
