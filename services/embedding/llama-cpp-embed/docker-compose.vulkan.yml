@@ -9,6 +9,9 @@ services:
       - ../../.env.global
       - .env
     command: --model /app/models/${MODEL_FILE} --host ${DEFAULT_LISTEN_HOST} --port ${LLM_CONTAINER_PORT} --n-gpu-layers ${GPU_LAYERS} --ctx-size ${CONTEXT_SIZE} --batch-size ${BATCH_SIZE} --parallel ${N_PARALLEL} --embedding ${MMPROJ_ARGS} ${EXTRA_ARGS}
+    environment:
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - NVIDIA_VISIBLE_DEVICES=all
     devices:
       - /dev/dri:/dev/dri
     volumes:
