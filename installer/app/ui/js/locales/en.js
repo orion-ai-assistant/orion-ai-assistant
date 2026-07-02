@@ -18,6 +18,7 @@ window.orionLocales.en = {
     btn_remove: "Remove",
     btn_delete_image: "Delete Image",
     btn_finish: "Finish",
+    btn_cancel: "Cancel",
 
     // Labels
     lbl_hardware: "Hardware / Driver",

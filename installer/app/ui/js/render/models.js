@@ -103,6 +103,9 @@ export function renderModelList(serviceId, models, handlers, isDisabled = false)
 
             const delBtn = document.getElementById(`btn-del-${m.id}`);
             if (delBtn) delBtn.onclick = () => handlers.onDelete(serviceId, m.id, delBtn);
+
+            const cancelBtn = document.getElementById(`btn-cancel-${m.id}`);
+            if (cancelBtn && handlers.onCancel) cancelBtn.onclick = () => handlers.onCancel(serviceId, m.id, cancelBtn);
         });
     }
 }
@@ -126,18 +129,25 @@ function renderModelItem(m, isDisabled) {
     const totalSize = m.total_expected_mb > 0 ? formatSize(m.total_expected_mb) : '';
 
     if (m.is_downloading) {
-        const progressText = m.download_progress ? `(${m.download_progress})` : '';
+        const progressText = m.download_progress || '';
         const sizeText = totalSize ? `${currentSize} / ${totalSize}` : currentSize;
-        statusHtml = `<span class="model-status downloading">${window.t('ui_downloading')} ${progressText} ${sizeText}</span>`;
-        btnHtml = '<button class="btn btn-primary btn-small" disabled><i class="fas fa-spinner fa-spin"></i></button>';
+        const text = progressText ? `${progressText} - ${sizeText}` : sizeText;
+        statusHtml = `<span class="model-status downloading">${text}</span>`;
+        btnHtml = `
+            <button class="btn btn-primary btn-small" disabled><i class="fas fa-spinner fa-spin"></i></button>
+            <button class="btn btn-danger btn-small" id="btn-cancel-${m.id}" ${isDisabled ? 'disabled' : ''} title="${window.t('btn_cancel') || 'İptal Et'}"><i class="fas fa-times"></i></button>
+        `;
     } else if (m.is_installed) {
         statusHtml = `<span class="model-status installed">${currentSize}</span>`;
         btnHtml = `<button class="btn btn-danger btn-small" id="btn-del-${m.id}" ${isDisabled ? 'disabled' : ''} title="${window.t('btn_remove')}"><i class="fas fa-trash"></i></button>`;
     } else {
-        const incompleteText = m.incomplete_status ? ` (${m.incomplete_status})` : '';
+        const incompleteText = m.incomplete_status ? `${m.incomplete_status}` : '';
         const manifestSizeText = m.manifest_size_mb > 0 ? formatSize(m.manifest_size_mb) : '';
+        const sizeDisplay = manifestSizeText ? `${currentSize} / ${manifestSizeText}` : currentSize;
+        const textToShow = incompleteText ? `${incompleteText} - ${sizeDisplay}` : sizeDisplay;
+        
         statusHtml = m.is_incomplete
-            ? `<span class="model-status warning">${window.t('ui_incomplete')}${incompleteText}</span>`
+            ? `<span class="model-status warning">${textToShow}</span>`
             : (manifestSizeText ? `<span class="model-status missing">${manifestSizeText}</span>` : '');
         btnHtml = `<button class="btn btn-primary btn-small" id="btn-dl-${m.id}" ${isDisabled ? 'disabled' : ''} title="${m.is_incomplete ? window.t('ui_resume') : window.t('ui_download')}">${m.is_incomplete ? '<i class="fas fa-play"></i>' : '<i class="fas fa-download"></i>'}</button>`;
     }

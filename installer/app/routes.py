@@ -171,6 +171,15 @@ def download_model(service_id: str, model_id: str, background_tasks: BackgroundT
     return {"status": "success", "message": i18n.t("MSG_DOWNLOAD_STARTED")}
 
 
+@router.post("/api/services/{service_id}/models/cancel_download")
+def cancel_download(service_id: str, model_id: str):
+    model_key = f"{service_id}:{model_id}"
+    if model_key in config.DOWNLOADING_MODELS:
+        config.DOWNLOADING_MODELS[model_key]["cancel"] = True
+        return {"status": "success", "message": "İptal ediliyor..."}
+    return {"status": "error", "message": i18n.t("MSG_MODEL_NOT_FOUND")}
+
+
 @router.post("/api/services/{service_id}/models/delete")
 def delete_model(service_id: str, model_id: str):
     return models.delete_model(service_id, model_id)

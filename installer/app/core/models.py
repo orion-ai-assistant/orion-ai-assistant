@@ -62,7 +62,7 @@ def _catalog_entry(service_id: str, m: dict, models_dir: str) -> tuple[dict, str
                 finished_count += 1
 
     is_installed = (finished_count == total_files and total_files > 0)
-    status_text = f"{finished_count}/{total_files} dosya bitti" if total_files > 1 else ""
+    status_text = f"{finished_count}/{total_files}" if total_files > 1 else ""
 
     target_path = os.path.join(models_dir, m["file_name"]) if m.get("file_name") else m_folder
 
@@ -204,7 +204,7 @@ def run_model_download(service_id: str, service_dir: str, model_data: dict):
             req.add_header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             with urllib.request.urlopen(req) as resp, open(tmp, "wb") as out:
                 while True:
-                    if config.SHOULD_EXIT: break
+                    if config.SHOULD_EXIT or config.DOWNLOADING_MODELS.get(model_key, {}).get("cancel"): break
                     chunk = resp.read(1024 * 1024)
                     if not chunk: break
                     out.write(chunk)
@@ -215,7 +215,7 @@ def run_model_download(service_id: str, service_dir: str, model_data: dict):
                     else:
                         config.DOWNLOADING_MODELS[model_key]["progress"] = f"{prefix} (İndiriliyor...)"
 
-            if config.SHOULD_EXIT:
+            if config.SHOULD_EXIT or config.DOWNLOADING_MODELS.get(model_key, {}).get("cancel"):
                 if os.path.exists(tmp): os.remove(tmp)
                 print(f"[SYSTEM] İndirme iptal edildi: {fname}")
                 break

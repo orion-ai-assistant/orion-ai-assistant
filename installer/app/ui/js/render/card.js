@@ -148,10 +148,10 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     // Performans için durum karşılaştırması (Hiçbir şey değişmediyse DOM güncellemesini atla)
     const currentLang = typeof window !== 'undefined' ? window.orionLang : 'en';
     const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}_${service.install_error || ''}_${currentLang}`;
-    if (card.dataset.stateKey === stateKey) {
+    if (footer.dataset.stateKey === stateKey) {
         return;
     }
-    card.dataset.stateKey = stateKey;
+    footer.dataset.stateKey = stateKey;
 
     const hasInstall = service.is_installed;
     const statusLabel = !hasInstall ? window.t('status_uninstalled') : (service.is_running ? window.t('status_running') : window.t('status_stopped'));

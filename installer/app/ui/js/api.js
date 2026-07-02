@@ -51,6 +51,11 @@ export async function postDownloadModel(serviceId, modelId) {
     return await response.json();
 }
 
+export async function postCancelDownload(serviceId, modelId) {
+    const response = await fetch(`${API_BASE}/services/${serviceId}/models/cancel_download?model_id=${modelId}`, { method: 'POST' });
+    return await response.json();
+}
+
 export async function postDeleteModel(serviceId, modelId) {
     const response = await fetch(`${API_BASE}/services/${serviceId}/models/delete?model_id=${modelId}`, { method: 'POST' });
     return await response.json();

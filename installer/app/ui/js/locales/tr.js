@@ -18,6 +18,7 @@ window.orionLocales.tr = {
     btn_remove: "Kaldır",
     btn_delete_image: "İmajı Sil",
     btn_finish: "Bitir",
+    btn_cancel: "İptal Et",
 
     // Labels
     lbl_hardware: "Donanım / Sürücü",

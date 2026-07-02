@@ -204,7 +204,7 @@ async function loadModelStatus(serviceId) {
         const models = await api.fetchModels(serviceId);
         allServiceModels[serviceId] = models;
         uiRender.updateModelSelect(serviceId, models, allServiceModels);
-        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel }, isDisabled);
+        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel, onCancel: cancelDownload }, isDisabled);
     } catch (err) { console.error("Load models error:", err); }
 }
 
@@ -215,6 +215,22 @@ async function downloadModel(serviceId, modelId, btn) {
         const result = await api.postDownloadModel(serviceId, modelId);
         if (result.status === 'success') {
             showToast(result.message || window.t('msg_download_started'), 'success');
+        } else {
+            showToast(result.message || window.t('msg_error'), 'error');
+            btn.disabled = false;
+        }
+    } catch (err) {
+        showToast(window.t('msg_error'), 'error');
+        btn.disabled = false;
+    }
+}
+
+async function cancelDownload(serviceId, modelId, btn) {
+    try {
+        btn.disabled = true;
+        const result = await api.postCancelDownload(serviceId, modelId);
+        if (result.status === 'success') {
+            showToast(result.message, 'success');
         } else {
             showToast(result.message || window.t('msg_error'), 'error');
             btn.disabled = false;
