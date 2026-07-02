@@ -1,3 +1,3 @@
- Stop-Process -Id (Get-NetTCPConnection -LocalPort 7000).OwningProcess -Force
+ Stop-Process -Id (Get-NetTCPConnection -LocalPort 7070).OwningProcess -Force
 
  

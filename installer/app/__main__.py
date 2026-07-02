@@ -221,7 +221,7 @@ def open_app_window(host: str, port: int):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
-    PORT = 7000
+    PORT = 7070
 
     # Check if another instance is already running on this port
     is_already_running = False
