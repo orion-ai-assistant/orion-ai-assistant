@@ -110,7 +110,7 @@
       "id": "tts-cpu",
       "name": "CPU Only",
       "hardware": "cpu",
-      "base_image": "python:3.10-slim"
+      "base_image": "python:3.11-slim"
     }
   ],
   "compose_files": {
