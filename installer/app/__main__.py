@@ -101,7 +101,12 @@ def schedule_shutdown(delay: float = 2.0):
         cancel_shutdown_unlocked()
         def perform_shutdown():
             print("\n[SYSTEM] Arayüz kapatıldı. Sunucu durduruluyor...")
-            os.kill(os.getpid(), signal.SIGINT)
+            try:
+                handle_exit(signal.SIGINT, None)
+            except KeyboardInterrupt:
+                pass
+            import _thread
+            _thread.interrupt_main()
         shutdown_timer = threading.Timer(delay, perform_shutdown)
         shutdown_timer.start()
 
