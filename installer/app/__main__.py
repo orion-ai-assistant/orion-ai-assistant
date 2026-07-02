@@ -3,6 +3,7 @@ import platform
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -32,13 +33,26 @@ def handle_exit(sig, frame):
     if browser_process is not None:
         try:
             print("[SYSTEM] Açık olan tarayıcı penceresi kapatılıyor...")
-            browser_process.terminate()
-            browser_process.wait(timeout=1.0)
+            if platform.system() == "Windows":
+                # Ensure the entire browser process tree is terminated
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(browser_process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                browser_process.terminate()
+                browser_process.wait(timeout=1.0)
         except Exception:
             try:
                 browser_process.kill()
             except Exception:
                 pass
+
+    if sig == signal.SIGINT:
+        raise KeyboardInterrupt
+    else:
+        sys.exit(0)
 
 # Sinyalleri yakala (Ctrl+C ve Kill)
 signal.signal(signal.SIGINT, handle_exit)

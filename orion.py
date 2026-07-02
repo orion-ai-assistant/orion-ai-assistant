@@ -136,10 +136,28 @@ def cmd_run(alias, extra_args):
     cmd = [py_exe, "-m", module] + extra_args
     target_cwd = os.path.join(os.path.dirname(__file__), sub_dir)
 
+    proc = None
     try:
-        subprocess.run(cmd, cwd=target_cwd)
+        proc = subprocess.Popen(cmd, cwd=target_cwd)
+        proc.wait()
     except KeyboardInterrupt:
         print("\n[!] Durduruldu.")
+        if proc:
+            try:
+                if os.name == 'nt':
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                else:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
     except Exception as e:
         print(f"\n[X] Kritik Hata: {e}")
 
