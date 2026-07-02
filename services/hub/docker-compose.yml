@@ -32,6 +32,9 @@ services:
       retries: 10
     networks:
       - orion-network
+    # Dışarıdan veritabanına erişmek isterseniz aşağıdaki iki satırı aktifleştirin (uncomment):
+    # ports:
+    #   - "${HUB_DB_PORT:-5432}:5432"
 
   api:
     build:
