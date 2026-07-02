@@ -226,25 +226,34 @@ def handle_setup(args):
             subprocess.run([sys.executable, local_db_script], check=True)
             
         print("[*] Installing Orion Router globally...")
+        import urllib.request
+        import tempfile
         if os.name == 'nt':
-            cmd = ["powershell", "-c", "Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) -ArgumentList 'local'"]
-            subprocess.run(cmd, check=True)
-            # Yükleme sonrasında otomatik başlayan router'ı durdur
-            plat, path = find_orionrouter_script()
-            if path and plat == "win":
-                subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"], capture_output=True)
-            else:
-                subprocess.run(["powershell", "-c", 'Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match "orionrouter" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'], capture_output=True)
-        else:
-            cmd = ["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local"]
-            subprocess.run(cmd, check=True)
-            # Yükleme sonrasında otomatik başlayan router'ı durdur
-            plat, path = find_orionrouter_script()
-            if path:
-                subprocess.run([path, "stop"], capture_output=True)
-            else:
-                subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
+            script_url = "https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1"
+            with urllib.request.urlopen(script_url) as response:
+                script_content = response.read().decode('utf-8')
+            # Prevent auto-start
+            script_content = script_content.replace('& (Join-Path $TargetFolder "orionrouter.ps1") start', '')
             
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".ps1") as tmp:
+                tmp.write(script_content.encode('utf-8'))
+                tmp_path = tmp.name
+            
+            subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", tmp_path, "local"], check=True)
+            os.remove(tmp_path)
+        else:
+            script_url = "https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh"
+            with urllib.request.urlopen(script_url) as response:
+                script_content = response.read().decode('utf-8')
+            # Prevent auto-start
+            script_content = script_content.replace('orionrouter start', '')
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".sh") as tmp:
+                tmp.write(script_content.encode('utf-8'))
+                tmp_path = tmp.name
+                
+            subprocess.run(["bash", tmp_path, "local"], check=True)
+            os.remove(tmp_path)
     print("[*] Setting up Installer Virtual Environment...")
     setup_environment("installer")
     print(f"\n[OK] Setup completed successfully! You can now use 'python orion.py start {mode}' or other commands.")

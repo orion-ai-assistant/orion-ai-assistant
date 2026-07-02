@@ -21,7 +21,6 @@ __pycache__/
 
 # Native cloned sub-projects
 services/router/src/
-services/*/src/
 services/*/venv/
 services/*/.venv/
 
@@ -29,3 +28,4 @@ services/*/.venv/
 models/
 data/
 services/*/data/
+dump.rdb

@@ -121,13 +121,20 @@ def get_services() -> list[dict]:
             if os.name == 'nt':
                 try:
                     out = subprocess.run(["wmic", "process", "where", "name='python.exe'", "get", "commandline"], capture_output=True, text=True).stdout
-                    if "run_local.py" in out:
-                        is_running = True
+                    if data.get("id") == "orion-router":
+                        if "orion.py prod" in out:
+                            is_running = True
+                    else:
+                        if "run_local.py" in out:
+                            is_running = True
                 except Exception:
                     pass
             else:
                 try:
-                    out = subprocess.run(["pgrep", "-f", "run_local.py"], capture_output=True, text=True).stdout
+                    if data.get("id") == "orion-router":
+                        out = subprocess.run(["pgrep", "-f", "orion.py prod"], capture_output=True, text=True).stdout
+                    else:
+                        out = subprocess.run(["pgrep", "-f", "run_local.py"], capture_output=True, text=True).stdout
                     if out.strip():
                         is_running = True
                 except Exception:
