@@ -126,6 +126,10 @@ def keepalive():
     return {"status": "success", "message": "Shutdown cancelled"}
 
 
+@app.get("/api/ping")
+def ping():
+    return {"app": "orion-installer"}
+
 # ---------------------------------------------------------------------------
 # Masaüstü Uygulama Modu (App Mode) Tetikleyici Fonksiyon
 # ---------------------------------------------------------------------------
@@ -221,43 +225,61 @@ def open_app_window(host: str, port: int):
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
-    PORT = 7070
+    import urllib.request
+    import json
+    PORT = 7171
 
-    # Check if another instance is already running on this port
+    # Check if another instance is already running on this port via ping
     is_already_running = False
+    port_occupied = False
     try:
+        # First try a quick socket check to see if anyone is listening
         with socket.create_connection(("127.0.0.1", PORT), timeout=0.2):
-            is_already_running = True
+            port_occupied = True
     except OSError:
         pass
 
-    if is_already_running:
-        print(f"\n[SYSTEM] Orion Installer zaten port {PORT} üzerinde çalışıyor.")
-        print(f"[SYSTEM] Mevcut pencere ön plana getiriliyor...")
+    if port_occupied:
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/ping")
+            with urllib.request.urlopen(req, timeout=0.5) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode())
+                    if data.get("app") == "orion-installer":
+                        is_already_running = True
+        except Exception:
+            pass
 
-        focused = False
-        if platform.system() == "Windows":
-            try:
-                # Pencere başlığına göre mevcut Edge app penceresini bul ve öne getir
-                focus_script = (
-                    '$wshell = New-Object -ComObject wscript.shell;'
-                    'if ($wshell.AppActivate("Orion AI")) { "focused" } else { "not_found" }'
-                )
-                result = subprocess.run(
-                    ['powershell', '-NoProfile', '-Command', focus_script],
-                    capture_output=True, text=True, timeout=3
-                )
-                focused = "focused" in result.stdout
-            except Exception as e:
-                print(f"[SYSTEM] Pencere odaklanamadı: {e}")
+        if is_already_running:
+            print(f"\n[SYSTEM] Orion Installer zaten çalışıyor.")
+            print(f"[SYSTEM] Mevcut pencere ön plana getiriliyor...")
 
-        if not focused:
-            # Mevcut pencere bulunamadıysa son çare olarak yeni bir pencere aç
-            print(f"[SYSTEM] Mevcut pencere bulunamadı, yeni pencere açılıyor...")
-            open_app_window("127.0.0.1", PORT)
-            time.sleep(1.0)
+            focused = False
+            if platform.system() == "Windows":
+                try:
+                    # Pencere başlığına göre mevcut Edge app penceresini bul ve öne getir
+                    focus_script = (
+                        '$wshell = New-Object -ComObject wscript.shell;'
+                        'if ($wshell.AppActivate("Orion AI")) { "focused" } else { "not_found" }'
+                    )
+                    result = subprocess.run(
+                        ['powershell', '-NoProfile', '-Command', focus_script],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    focused = "focused" in result.stdout
+                except Exception as e:
+                    print(f"[SYSTEM] Pencere odaklanamadı: {e}")
 
-        sys.exit(0)
+            if not focused:
+                # Mevcut pencere bulunamadıysa son çare olarak yeni bir pencere aç
+                print(f"[SYSTEM] Mevcut pencere bulunamadı, yeni pencere açılıyor...")
+                open_app_window("127.0.0.1", PORT)
+                time.sleep(1.0)
+
+            sys.exit(0)
+        else:
+            print(f"\n[!] Kritik Hata: {PORT} portu kullanımda, lütfen arka plandaki diğer uygulamaları kapatın.")
+            sys.exit(1)
 
     print(f"\n[SYSTEM] Orion Installer başlatıldı.")
     print(f"[SYSTEM] Arayüz otomatik olarak açılacaktır.")
