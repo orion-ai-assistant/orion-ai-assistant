@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.local_db/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables
+.env
+.env.*.local
+
+# Logs and PIDs
+*.log
+*.pid
+.installer.pid
+
+# Native cloned sub-projects
+services/router/src/
+services/*/src/
+services/*/venv/
+services/*/.venv/
+
+# Data and Models
+models/
+data/
+services/*/data/

@@ -22,6 +22,7 @@ window.orionLocales.en = {
 
     // Labels
     lbl_hardware: "Hardware / Driver",
+    ui_mode: "Mode",
     lbl_model: "Model",
     lbl_select_model: "Select Model...",
     lbl_other_actions: "Other Actions",

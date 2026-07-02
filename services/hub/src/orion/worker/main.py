@@ -23,7 +23,7 @@ async def ensure_consumer_group(redis: Redis) -> None:
 
 
 async def run() -> None:
-    redis = Redis.from_url(get_redis_url(), decode_responses=True)
+    redis = Redis.from_url(get_redis_url(), decode_responses=True, protocol=2)
     settings = await get_runtime_settings(redis, SETTINGS_DEFAULT_USER)
     consumer_name = socket.gethostname()
     semaphore = asyncio.Semaphore(settings.worker_max_concurrency)

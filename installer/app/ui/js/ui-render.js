@@ -16,7 +16,7 @@ export function renderServices(services, previousServiceStates, allServiceModels
 
     const allowedIds = new Set();
     const step = viewOptions.step || 1;
-    grid.classList.toggle('grid-centered', step === 4);
+    grid.classList.toggle('grid-centered', step === 3);
 
     services.forEach(service => {
         if (service.status === 'disabled') return;
@@ -64,15 +64,12 @@ function isCoreService(service) {
 
 function getViewMode(service, step) {
     if (step === 1) {
-        return 'hidden'; // Kurulum Ortamı step
-    }
-    if (step === 2) {
         return isCoreService(service) ? 'hidden' : 'models-only';
     }
-    if (step === 3) {
+    if (step === 2) {
         return isCoreService(service) ? 'hidden' : 'install';
     }
-    if (step === 4) {
+    if (step === 3) {
         return isCoreService(service) ? 'install' : 'hidden';
     }
     return 'install';

@@ -15,21 +15,16 @@ function isCoreService(service) {
 const steps = [
     {
         id: 1,
-        titleKey: 'ui_step_1_title',
-        subtitleKey: 'ui_step_1_sub'
-    },
-    {
-        id: 2,
         titleKey: 'ui_step_2_title',
         subtitleKey: 'ui_step_2_sub'
     },
     {
-        id: 3,
+        id: 2,
         titleKey: 'ui_step_3_title',
         subtitleKey: 'ui_step_3_sub'
     },
     {
-        id: 4,
+        id: 3,
         titleKey: 'ui_step_4_title',
         subtitleKey: 'ui_step_4_sub'
     }
@@ -61,6 +56,13 @@ async function fetchHardware() {
             if (os === 'windows') osIcon.className = 'fab fa-windows';
             else if (os === 'linux') osIcon.className = 'fab fa-linux';
             else osIcon.className = 'fas fa-desktop';
+        }
+
+        // Mode Badge
+        const modeText = document.getElementById('mode-text');
+        if (modeText) {
+            const mode = info.install_mode || "docker";
+            modeText.innerText = mode.charAt(0).toUpperCase() + mode.slice(1);
         }
 
         // GPU Vendor
@@ -507,17 +509,7 @@ function updateWizardUI() {
         }
     }
 
-    const envStepEl = document.getElementById('env-selection-step');
-    const gridEl = document.getElementById('services-grid');
-    if (envStepEl && gridEl) {
-        if (currentStep === 1) {
-            envStepEl.classList.remove('hidden');
-            gridEl.classList.add('hidden');
-        } else {
-            envStepEl.classList.add('hidden');
-            gridEl.classList.remove('hidden');
-        }
-    }
+
 
     if (backBtn) backBtn.disabled = currentStep === 1;
     if (nextBtn) nextBtn.innerText = currentStep === steps.length ? window.t('btn_finish') : window.t('ui_btn_next');

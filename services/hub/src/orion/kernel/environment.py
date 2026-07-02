@@ -1,4 +1,31 @@
 import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # If not installed, we assume we are in docker where env vars are already set
+    load_dotenv = None
+
+def load_environment():
+    if not load_dotenv:
+        return
+        
+    kernel_dir = Path(__file__).parent.absolute()
+    hub_dir = kernel_dir.parent.parent.parent
+    services_dir = hub_dir.parent
+    
+    env_files = [
+        services_dir / ".env.global",
+        services_dir / ".env.global.local",
+        hub_dir / ".env"
+    ]
+    
+    for env_file in env_files:
+        if env_file.exists():
+            load_dotenv(env_file)
+
+load_environment()
 
 
 def _require_env(name: str) -> str:

@@ -105,13 +105,49 @@ def get_services() -> list[dict]:
         else:
             autostart = not os.path.exists(os.path.join(s_dir, ".disabled"))
         
-        data.update({
-            "is_installed": c_name in containers,
-            "is_running": containers.get(c_name, False),
-            "is_installing": data["id"] in config.INSTALLING_SERVICES,
-            "autostart": autostart,
-            "install_error": config.INSTALL_ERRORS.get(data["id"])
-        })
+        install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+        is_native = data.get("id") in ["orion-hub", "orion-router"]
+
+        if install_mode == "local" and is_native:
+            if data.get("id") == "orion-router":
+                plat, r_path = find_orionrouter_script()
+                is_installed = r_path is not None
+            else:
+                setup_dir = s_dir
+                venv_path = os.path.join(setup_dir, ".venv")
+                is_installed = os.path.exists(venv_path)
+            
+            is_running = False
+            if os.name == 'nt':
+                try:
+                    out = subprocess.run(["wmic", "process", "where", "name='python.exe'", "get", "commandline"], capture_output=True, text=True).stdout
+                    if "run_local.py" in out:
+                        is_running = True
+                except Exception:
+                    pass
+            else:
+                try:
+                    out = subprocess.run(["pgrep", "-f", "run_local.py"], capture_output=True, text=True).stdout
+                    if out.strip():
+                        is_running = True
+                except Exception:
+                    pass
+
+            data.update({
+                "is_installed": is_installed,
+                "is_running": is_running,
+                "is_installing": data["id"] in config.INSTALLING_SERVICES,
+                "autostart": autostart,
+                "install_error": config.INSTALL_ERRORS.get(data["id"])
+            })
+        else:
+            data.update({
+                "is_installed": c_name in containers,
+                "is_running": containers.get(c_name, False),
+                "is_installing": data["id"] in config.INSTALLING_SERVICES,
+                "autostart": autostart,
+                "install_error": config.INSTALL_ERRORS.get(data["id"])
+            })
         services.append(data)
         
     # Sıralama mantığı: Hub/Core -> Order -> Name
@@ -141,6 +177,10 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
     is_core = manifest.get("id") == "orion-hub" or manifest.get("category") in {"core", "hub", "router"}
     if not model_file and not is_core: 
         return {"status": "error", "message": i18n.t("MSG_SELECT_MODEL_FILE")}, "", "", {}, set()
+
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+    if install_mode == "local" and manifest.get("id") in ["orion-hub", "orion-router"]:
+        return None, s_dir, "local", {}, set()
 
     hw = "cpu" if is_core else (hardware or g_vars.get("DETECTED_GPU_VENDOR", "cpu"))
     compose_file = manifest.get("compose_files", {}).get(hw)
@@ -307,9 +347,27 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
     return None, s_dir, compose_file, build_env, keys
 
 def stop_service(service_id: str) -> bool:
-    manifest, s_dir, g_vars = _get_context(service_id)
+    manifest, s_dir, _ = _get_context(service_id)
     if not manifest: return False
-    
+
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+    if install_mode == "local" and manifest.get("id") in ["orion-hub", "orion-router"]:
+        is_router = manifest.get("id") == "orion-router"
+        if is_router:
+            if os.name == 'nt':
+                subprocess.run(["powershell", "-c", 'Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match "orionrouter" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'], capture_output=True)
+            else:
+                subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
+            return True
+        else:
+            match_str = "run_local.py"
+            if os.name == 'nt':
+                subprocess.run(["powershell", "-c", f'Get-WmiObject Win32_Process | Where-Object {{ $_.CommandLine -match "{match_str}" }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}'], capture_output=True)
+            else:
+                subprocess.run(["pkill", "-f", match_str], capture_output=True)
+            return True
+
+    g_vars = config._load_global_env()
     category_upper = manifest.get("category", "misc").upper()
     project_name_key = f"{category_upper}_PROJECT_NAME"
     g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
@@ -348,6 +406,47 @@ def remove_image(service_id: str) -> bool:
     
     image_name = docker_utils._get_compose_image(compose_file, s_dir)
     return docker_utils._remove_image(image_name)
+
+def run_local_installation(service_id: str, service_dir: str):
+    import sys
+    try:
+        config.INSTALLING_SERVICES.add(service_id)
+        
+        # Native Router setup support
+        if service_id == "orion-router":
+            print("[*] Installing Orion Router globally...")
+            if os.name == 'nt':
+                subprocess.run(["powershell", "-c", "Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) -ArgumentList 'local'"], check=True)
+                plat, path = find_orionrouter_script()
+                if path and plat == "win":
+                    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"], capture_output=True)
+                else:
+                    subprocess.run(["powershell", "-c", 'Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match "orionrouter" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'], capture_output=True)
+            else:
+                subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local"], check=True)
+                plat, path = find_orionrouter_script()
+                if path:
+                    subprocess.run([path, "stop"], capture_output=True)
+                else:
+                    subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
+            return
+            
+        setup_dir = service_dir
+            
+        venv_dir = os.path.join(setup_dir, ".venv")
+        py_exe = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == 'nt' else os.path.join(venv_dir, "bin", "python")
+        pip_exe = os.path.join(venv_dir, "Scripts", "pip.exe") if os.name == 'nt' else os.path.join(venv_dir, "bin", "pip")
+        
+        if not os.path.exists(venv_dir):
+            subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True)
+            
+        subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip"], cwd=setup_dir, check=True)
+        subprocess.run([pip_exe, "install", "-e", "."], cwd=setup_dir, check=True)
+        
+    except Exception as e:
+        config.INSTALL_ERRORS[service_id] = f"Yerel Kurulum Hatasi: {str(e)}"
+    finally:
+        config.INSTALLING_SERVICES.discard(service_id)
 
 def run_installation(service_id: str, service_dir: str, compose_file: str, build_env: dict, env_file_keys: set[str]):
     try:
@@ -439,6 +538,26 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
     finally:
         config.INSTALLING_SERVICES.discard(service_id)
 
+def find_orionrouter_script():
+    import os
+    if os.name == 'nt':
+        appdata = os.environ.get("LOCALAPPDATA", "")
+        if appdata:
+            ps1_path = os.path.join(appdata, "OrionRouter", "orionrouter.ps1")
+            if os.path.exists(ps1_path):
+                return "win", ps1_path
+    else:
+        sh_path = os.path.expanduser("~/.local/share/OrionRouter/orionrouter")
+        if os.path.exists(sh_path):
+            return "unix", sh_path
+            
+    import shutil
+    cmd = shutil.which("orionrouter")
+    if cmd:
+        return "cmd", cmd
+    return None, None
+
+
 
 def start_active_services() -> dict:
     import subprocess
@@ -468,8 +587,19 @@ def start_active_services() -> dict:
     started = []
     failed = []
     
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+    
     for manifest, s_dir in active_services:
         try:
+            if install_mode == "local":
+                import sys
+                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+                py_exe = sys.executable
+                print("[SYSTEM] Starting all local services via 'orion.py start local'")
+                cflags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                subprocess.Popen([py_exe, "orion.py", "start", "local"], cwd=base_dir, creationflags=cflags)
+                return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
+                
             compose_file = None
             env_path = os.path.join(s_dir, ".env")
             if os.path.exists(env_path):

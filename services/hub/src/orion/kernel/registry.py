@@ -30,59 +30,63 @@ async def _connect() -> asyncpg.Connection | None:
 
 
 async def _ensure_tables(conn: asyncpg.Connection) -> None:
-    # --- Settings ---
-    await conn.execute(
-        """
-        create table if not exists orion_settings (
-            user_id text not null,
-            key text not null,
-            value text not null,
-            updated_at timestamptz default now(),
-            primary key (user_id, key)
-        );
-        """
-    )
-    # --- Users ---
-    await conn.execute(
-        """
-        create table if not exists orion_users (
-            id text primary key,
-            password_hash text not null,
-            created_at timestamptz default now(),
-            is_active boolean default true
-        );
-        """
-    )
-    # --- Chats (metadata) ---
-    await conn.execute(
-        """
-        create table if not exists orion_chats (
-            id text primary key,
-            user_id text not null,
-            title text not null default 'New Chat',
-            created_at timestamptz default now(),
-            updated_at timestamptz default now()
-        );
-        """
-    )
-    await conn.execute(
-        "create index if not exists idx_orion_chats_user_id on orion_chats (user_id, updated_at desc);"
-    )
-    # --- Chat Messages ---
-    await conn.execute(
-        """
-        create table if not exists orion_chat_messages (
-            id bigserial primary key,
-            chat_id text not null references orion_chats(id) on delete cascade,
-            role text not null,
-            content_json text not null,
-            created_at timestamptz default now()
-        );
-        """
-    )
-    await conn.execute(
-        "create index if not exists idx_orion_chat_messages_chat_id on orion_chat_messages (chat_id, created_at asc);"
-    )
+    try:
+        # --- Settings ---
+        await conn.execute(
+            """
+            create table if not exists orion_settings (
+                user_id text not null,
+                key text not null,
+                value text not null,
+                updated_at timestamptz default now(),
+                primary key (user_id, key)
+            );
+            """
+        )
+        # --- Users ---
+        await conn.execute(
+            """
+            create table if not exists orion_users (
+                id text primary key,
+                password_hash text not null,
+                created_at timestamptz default now(),
+                is_active boolean default true
+            );
+            """
+        )
+        # --- Chats (metadata) ---
+        await conn.execute(
+            """
+            create table if not exists orion_chats (
+                id text primary key,
+                user_id text not null,
+                title text not null default 'New Chat',
+                created_at timestamptz default now(),
+                updated_at timestamptz default now()
+            );
+            """
+        )
+        await conn.execute(
+            "create index if not exists idx_orion_chats_user_id on orion_chats (user_id, updated_at desc);"
+        )
+        # --- Chat Messages ---
+        await conn.execute(
+            """
+            create table if not exists orion_chat_messages (
+                id bigserial primary key,
+                chat_id text not null references orion_chats(id) on delete cascade,
+                role text not null,
+                content_json text not null,
+                created_at timestamptz default now()
+            );
+            """
+        )
+        await conn.execute(
+            "create index if not exists idx_orion_chat_messages_chat_id on orion_chat_messages (chat_id, created_at asc);"
+        )
+    except (asyncpg.exceptions.UniqueViolationError, asyncpg.exceptions.DuplicateTableError):
+        # Ignore concurrent table creation race conditions
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from orion.kernel.config import get_runtime_settings, seed_database_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.redis = Redis.from_url(get_redis_url(), decode_responses=True)
+    app.state.redis = Redis.from_url(get_redis_url(), decode_responses=True, protocol=2)
     await seed_database_settings(app.state.redis)
     await get_runtime_settings(app.state.redis, SETTINGS_DEFAULT_USER)
     try:

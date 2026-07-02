@@ -6,18 +6,45 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
+MODE=${1:-docker}
+
 echo -e "${CYAN}==========================================${NC}"
 echo -e "${CYAN}   Orion AI Assistant Native Installer    ${NC}"
 echo -e "${CYAN}==========================================${NC}"
-echo ""
-echo -e "${RED}ERROR: Installation is currently Windows-only!${NC}"
-echo -e "Orion AI Assistant docker setup is optimized for Windows PowerShell."
-echo -e "macOS / Linux support is under active development and will be released in the future."
-echo ""
-echo -e "Please install and run Orion AI Assistant on a ${YELLOW}Windows 10/11${NC} system with ${YELLOW}Docker Desktop${NC}."
-echo -e "You can run the installation script in PowerShell using:"
-echo -e "${CYAN}powershell -c \"iex(irm raw.github.com/orion-ai-assistant/orion-ai-assistant/main/install.ps1)\"${NC}"
-echo ""
-echo -e "${CYAN}==========================================${NC}"
+echo -e "Installation Mode: ${YELLOW}${MODE}${NC}"
 
-exit 1
+if ! command -v git &> /dev/null; then
+    echo -e "${RED}ERROR: 'git' is not installed!${NC}"
+    exit 1
+fi
+if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+    echo -e "${RED}ERROR: 'python' is not installed!${NC}"
+    exit 1
+fi
+
+PYTHON_CMD="python"
+if command -v python3 &> /dev/null; then PYTHON_CMD="python3"; fi
+
+TARGET_DIR="$HOME/.local/share/OrionAIAssistant"
+REPO_URL="https://github.com/orion-ai-assistant/orion-ai-assistant.git"
+
+echo -e "\n[1/2] Setting up Orion AI Assistant directory..."
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "Cloning fresh copy from GitHub..."
+    git clone "$REPO_URL" "$TARGET_DIR" || exit 1
+else
+    echo "Directory exists, pulling latest changes..."
+    cd "$TARGET_DIR" || exit 1
+    git fetch origin main
+    git reset --hard origin/main
+fi
+
+cd "$TARGET_DIR" || exit 1
+
+echo -e "\n[2/2] Handing over to Unified Python Installer..."
+$PYTHON_CMD orion.py setup "$MODE"
+
+if [ $? -ne 0 ]; then
+    echo -e "\n${RED}[ERROR] Setup failed.${NC}"
+    exit 1
+fi

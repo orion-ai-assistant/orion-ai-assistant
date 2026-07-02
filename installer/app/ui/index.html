@@ -25,6 +25,9 @@
                 <div id="os-badge" class="panel" style="padding: 8px 16px; font-size: 0.8rem; opacity: 0.8;">
                     <i id="os-icon" class="fas fa-laptop-code"></i> <span id="os-text">--</span>
                 </div>
+                <div id="mode-badge" class="panel" style="padding: 8px 16px; font-size: 0.8rem; opacity: 0.8;">
+                    <i id="mode-icon" class="fas fa-server"></i> <span data-i18n="ui_mode">Mode</span>: <span id="mode-text">--</span>
+                </div>
                 <div class="panel" style="padding: 4px 8px; font-size: 0.8rem;">
                     <select id="lang-select" style="background: transparent; border: none; color: var(--text-primary); cursor: pointer; outline: none; font-weight: 600;">
                         <option value="tr">TR</option>
@@ -63,33 +66,7 @@
             </div>
         </section>
 
-        <div id="env-selection-step" class="panel hidden" style="margin-top: 2rem; margin-bottom: 2rem; padding: 22px;">
-             <h3 style="margin-bottom: 1rem; color: var(--text-primary);" data-i18n="ui_env_title">ui_env_title</h3>
-            <div class="grid grid-centered" style="margin-top: 0;">
-                <div class="service-card" style="cursor: pointer; border: 2px solid var(--primary-color);">
-                    <div class="card-header">
-                        <h4><i class="fab fa-docker"></i> Docker <span class="i18n-text" data-i18n="ui_env_docker_badge">ui_env_docker_badge</span></h4>
-                        <span class="status-badge status-running"><span class="status-dot"></span> <span class="i18n-text" data-i18n="ui_env_selected">ui_env_selected</span></span>
-                    </div>
-                    <div class="card-body">
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;" data-i18n="ui_env_docker_desc">
-                            ui_env_docker_desc
-                        </p>
-                    </div>
-                </div>
-                <div class="service-card" style="opacity: 0.6; cursor: not-allowed;">
-                    <div class="card-header">
-                        <h4><i class="fas fa-desktop"></i> <span class="i18n-text" data-i18n="ui_env_local">ui_env_local</span></h4>
-                        <span class="status-badge status-stopped"><span class="status-dot"></span> <span class="i18n-text" data-i18n="ui_env_coming_soon">ui_env_coming_soon</span></span>
-                    </div>
-                    <div class="card-body">
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 1rem;" data-i18n="ui_env_local_desc">
-                            ui_env_local_desc
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </div>
+
 
         <div id="services-grid" class="grid">
             <!-- Servis kartları buraya gelecek -->

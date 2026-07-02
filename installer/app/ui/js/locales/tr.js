@@ -22,6 +22,7 @@ window.orionLocales.tr = {
 
     // Labels
     lbl_hardware: "Donanım / Sürücü",
+    ui_mode: "Kurulum Modu",
     lbl_model: "Model",
     lbl_select_model: "Model Seçin...",
     lbl_other_actions: "Diğer işlemler",

@@ -14,7 +14,9 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 @router.get("/api/hardware")
 def get_hardware():
-    return config.get_env_global()
+    hw = config.get_env_global()
+    hw["install_mode"] = os.environ.get("ORION_INSTALL_MODE", "docker")
+    return hw
 
 # ---------------------------------------------------------------------------
 # Services
@@ -47,6 +49,10 @@ async def install_service(
     if error:
         return error
         
+    if compose_file == "local":
+        background_tasks.add_task(services.run_local_installation, service_id, service_dir)
+        return {"status": "success", "message": i18n.t("MSG_INSTALL_STARTED", "")}
+
     port_to_check = build_env.get("APP_PORT")
     kill_msg = ""
     if port_to_check:
