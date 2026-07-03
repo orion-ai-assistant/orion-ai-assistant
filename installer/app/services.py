@@ -125,7 +125,7 @@ def get_services() -> list[dict]:
                         if "orion.py prod" in out:
                             is_running = True
                     else:
-                        if "run_local.py" in out:
+                        if "run_local.py" in out or "orion.api.main" in out or "orion.worker.main" in out:
                             is_running = True
                 except Exception:
                     pass
@@ -134,7 +134,7 @@ def get_services() -> list[dict]:
                     if data.get("id") == "orion-router":
                         out = subprocess.run(["pgrep", "-f", "orion.py prod"], capture_output=True, text=True).stdout
                     else:
-                        out = subprocess.run(["pgrep", "-f", "run_local.py"], capture_output=True, text=True).stdout
+                        out = subprocess.run(["pgrep", "-f", "run_local.py|orion.api.main|orion.worker.main"], capture_output=True, text=True).stdout
                     if out.strip():
                         is_running = True
                 except Exception:
@@ -367,11 +367,13 @@ def stop_service(service_id: str) -> bool:
                 subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
             return True
         else:
-            match_str = "run_local.py"
+            match_str = "run_local.py|orion.api.main|orion.worker.main"
             if os.name == 'nt':
                 subprocess.run(["powershell", "-c", f'Get-WmiObject Win32_Process | Where-Object {{ $_.CommandLine -match "{match_str}" }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}'], capture_output=True)
             else:
-                subprocess.run(["pkill", "-f", match_str], capture_output=True)
+                subprocess.run(["pkill", "-f", "run_local.py"], capture_output=True)
+                subprocess.run(["pkill", "-f", "orion.api.main"], capture_output=True)
+                subprocess.run(["pkill", "-f", "orion.worker.main"], capture_output=True)
             return True
 
     g_vars = config._load_global_env()
@@ -602,9 +604,9 @@ def start_active_services() -> dict:
                 import sys
                 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                 py_exe = sys.executable
-                print("[SYSTEM] Starting all local services via 'orion.py start local'")
-                cflags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-                subprocess.Popen([py_exe, "orion.py", "start", "local"], cwd=base_dir, creationflags=cflags)
+                print("[SYSTEM] Starting all local services via 'orion.py start'")
+                cflags = 0x08000000 if os.name == 'nt' else 0 # CREATE_NO_WINDOW
+                subprocess.Popen([py_exe, "orion.py", "start"], cwd=base_dir, creationflags=cflags)
                 return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
                 
             compose_file = None
