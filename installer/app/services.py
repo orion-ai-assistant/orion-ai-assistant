@@ -425,19 +425,9 @@ def run_local_installation(service_id: str, service_dir: str):
         if service_id == "orion-router":
             print("[*] Installing Orion Router globally...")
             if os.name == 'nt':
-                subprocess.run(["powershell", "-c", "Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) -ArgumentList 'local'"], check=True)
-                plat, path = find_orionrouter_script()
-                if path and plat == "win":
-                    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"], capture_output=True)
-                else:
-                    subprocess.run(["powershell", "-c", 'Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match "orionrouter" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'], capture_output=True)
+                subprocess.run(["powershell", "-c", "Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) -ArgumentList 'local', $true"], check=True)
             else:
-                subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local"], check=True)
-                plat, path = find_orionrouter_script()
-                if path:
-                    subprocess.run([path, "stop"], capture_output=True)
-                else:
-                    subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
+                subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local --no-start"], check=True)
             return
             
         setup_dir = service_dir

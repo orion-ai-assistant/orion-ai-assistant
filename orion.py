@@ -332,8 +332,8 @@ def handle_start(args):
                     cmd_router = ["powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start"]
                     subprocess.Popen(cmd_router, creationflags=subprocess.CREATE_NEW_CONSOLE)
                 else:
-                    cmd_router = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
-                    subprocess.Popen(cmd_router, creationflags=0x08000200)
+                    cmd_router = ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
+                    subprocess.Popen(cmd_router)
             else:
                 if show_terminals:
                     cmd_router = [path, "start"]
@@ -348,7 +348,7 @@ def handle_start(args):
             print("\n[OK] Native processes have been started in separate visible windows.")
         else:
             print("\n[OK] All local services have been started silently in the background.")
-            print("[ℹ] To view live logs at any time, run: python orion.py logs")
+            print("[i] To view live logs at any time, run: python orion.py logs")
     else:
         import shutil
         if not shutil.which("docker"):
