@@ -1,12 +1,12 @@
 const API_BASE = '/api';
 
 export async function fetchHardware() {
-    const response = await fetch(`${API_BASE}/hardware`);
+    const response = await fetch(`${API_BASE}/hardware?t=${Date.now()}`);
     return await response.json();
 }
 
 export async function fetchServices() {
-    const response = await fetch(`${API_BASE}/services`);
+    const response = await fetch(`${API_BASE}/services?t=${Date.now()}`);
     if (!response.ok) throw new Error("Server error");
     return await response.json();
 }

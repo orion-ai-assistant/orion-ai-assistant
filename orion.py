@@ -240,9 +240,10 @@ def get_mode_from_args(args):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     mode = "local" if os.path.exists(os.path.join(base_dir, "services", "hub", ".venv")) else "docker"
     if args:
-        if "--local" in args or "local" in args:
+        normalized_args = [arg.strip().lower() for arg in args]
+        if "--local" in normalized_args or "local" in normalized_args:
             mode = "local"
-        elif "--docker" in args or "docker" in args:
+        elif "--docker" in normalized_args or "docker" in normalized_args:
             mode = "docker"
     return mode
 
@@ -339,6 +340,7 @@ def cmd_help(args=None):
 
 def handle_installer(args):
     mode = get_mode_from_args(args)
+    print(f"[i] Installation Mode Set: {mode.upper()}")
     os.environ["ORION_INSTALL_MODE"] = mode
     if mode == "docker":
         ensure_docker_running()

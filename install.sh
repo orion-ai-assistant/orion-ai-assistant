@@ -50,4 +50,4 @@ if [ $? -ne 0 ]; then
 fi
 
 echo -e "\n[3/3] Starting Orion Installer..."
-$PYTHON_CMD orion.py installer
+$PYTHON_CMD orion.py installer "$MODE"

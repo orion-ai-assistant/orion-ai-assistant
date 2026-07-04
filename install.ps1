@@ -71,4 +71,4 @@ if ($LASTEXITCODE -ne 0) {
 
 # 4. Start Installer automatically
 Write-Host "`n[4/4] Starting Orion Installer..." -ForegroundColor Yellow
-python orion.py installer
+python orion.py installer $Mode
