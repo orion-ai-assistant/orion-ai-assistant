@@ -624,15 +624,20 @@ def start_active_services() -> dict:
                 import shutil
                 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
                 orion_py = os.path.join(base_dir, "orion.py")
-                # Installer'ın kendi venv Python'u yerine sistemin gerçek Python'unu kullan
-                py_exe = shutil.which("python3") or shutil.which("python") or sys.executable
-                print(f"[SYSTEM] Starting all local services via '{py_exe} orion.py start'")
+                
+                # Sanal ortamdan (venv) kaçış: 
+                # Eğer installer venv içindeysek, child process'lere VIRTUAL_ENV aktarmamalıyız.
+                # Aksi takdirde orion.py içindeki `uv pip install` komutları paketleri hub/router yerine installer venv'ine kurar!
+                clean_env = os.environ.copy()
+                clean_env.pop("VIRTUAL_ENV", None)
+                
+                print("[SYSTEM] Starting all local services via 'python orion.py start'")
                 if os.name == 'nt':
                     cflags = 0x08000000  # CREATE_NO_WINDOW
-                    subprocess.Popen([py_exe, orion_py, "start"], cwd=base_dir, creationflags=cflags,
+                    subprocess.Popen(["python", orion_py, "start"], cwd=base_dir, env=clean_env, creationflags=cflags,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
-                    subprocess.Popen([py_exe, orion_py, "start"], cwd=base_dir, start_new_session=True,
+                    subprocess.Popen(["python3", orion_py, "start"], cwd=base_dir, env=clean_env, start_new_session=True,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
                 

@@ -201,7 +201,8 @@ def ensure_venv(target_dir, venv_dir):
     if has_uv:
         subprocess.run(["uv", "venv"], cwd=target_dir, check=True)
     else:
-        subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=target_dir, check=True)
+        base_python = getattr(sys, '_base_executable', sys.executable)
+        subprocess.run([base_python, "-m", "venv", ".venv"], cwd=target_dir, check=True)
 
 def sync_dependencies(target_dir, venv_dir, py_exe):
     pyproj = os.path.join(target_dir, "pyproject.toml")
