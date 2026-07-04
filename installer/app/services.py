@@ -95,6 +95,7 @@ def toggle_autostart(service_id: str) -> dict:
 def get_services() -> list[dict]:
     containers = docker_utils.get_running_containers()
     services = []
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
     for data, m_path in config.all_manifests():
         c_name = data.get("container_name", "")
         s_dir = os.path.dirname(m_path)
@@ -105,7 +106,6 @@ def get_services() -> list[dict]:
         else:
             autostart = not os.path.exists(os.path.join(s_dir, ".disabled"))
         
-        install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
         is_native = data.get("id") in ["orion-hub", "orion-router"]
 
         if install_mode == "local" and is_native:
@@ -162,6 +162,18 @@ def get_services() -> list[dict]:
                 "is_installing": data["id"] in config.INSTALLING_SERVICES,
                 "autostart": autostart,
                 "install_error": config.INSTALL_ERRORS.get(data["id"])
+            })
+        elif install_mode == "local" and not is_native:
+            # LOCAL modda Docker AI servisleri (llm, tts, embedding, vb.) gösterilmez / kurulu sayılmaz.
+            # Bu servislerin .env dosyaları eski Docker kurulumundan kalma olabilir;
+            # local modda bunları kurulu gibi göstermek hataya yol açar.
+            data.update({
+                "is_installed": False,
+                "is_running": False,
+                "is_starting": False,
+                "is_installing": False,
+                "autostart": autostart,
+                "install_error": None
             })
         else:
             data.update({
@@ -609,11 +621,19 @@ def start_active_services() -> dict:
         try:
             if install_mode == "local":
                 import sys
+                import shutil
                 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-                py_exe = sys.executable
-                print("[SYSTEM] Starting all local services via 'orion.py start'")
-                cflags = 0x08000000 if os.name == 'nt' else 0 # CREATE_NO_WINDOW
-                subprocess.Popen([py_exe, "orion.py", "start"], cwd=base_dir, creationflags=cflags)
+                orion_py = os.path.join(base_dir, "orion.py")
+                # Installer'ın kendi venv Python'u yerine sistemin gerçek Python'unu kullan
+                py_exe = shutil.which("python3") or shutil.which("python") or sys.executable
+                print(f"[SYSTEM] Starting all local services via '{py_exe} orion.py start'")
+                if os.name == 'nt':
+                    cflags = 0x08000000  # CREATE_NO_WINDOW
+                    subprocess.Popen([py_exe, orion_py, "start"], cwd=base_dir, creationflags=cflags,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.Popen([py_exe, orion_py, "start"], cwd=base_dir, start_new_session=True,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
                 
             compose_file = None
