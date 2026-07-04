@@ -117,16 +117,16 @@ def get_services() -> list[dict]:
                 venv_path = os.path.join(setup_dir, ".venv")
                 is_installed = os.path.exists(venv_path)
             
-            is_running = False
+            proc_running = False
             if os.name == 'nt':
                 try:
                     out = subprocess.run(["wmic", "process", "where", "name='python.exe'", "get", "commandline"], capture_output=True, text=True).stdout
                     if data.get("id") == "orion-router":
                         if "orion.py prod" in out:
-                            is_running = True
+                            proc_running = True
                     else:
                         if "run_local.py" in out or "orion.api.main" in out or "orion.worker.main" in out:
-                            is_running = True
+                            proc_running = True
                 except Exception:
                     pass
             else:
@@ -136,9 +136,24 @@ def get_services() -> list[dict]:
                     else:
                         out = subprocess.run(["pgrep", "-f", "run_local.py|orion.api.main|orion.worker.main"], capture_output=True, text=True).stdout
                     if out.strip():
-                        is_running = True
+                        proc_running = True
                 except Exception:
                     pass
+
+            is_running = False
+            if proc_running:
+                port = data.get("port")
+                if port:
+                    import socket
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.settimeout(0.3)
+                            if s.connect_ex(("127.0.0.1", port)) == 0:
+                                is_running = True
+                    except Exception:
+                        pass
+                else:
+                    is_running = True
 
             data.update({
                 "is_installed": is_installed,

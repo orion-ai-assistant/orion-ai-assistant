@@ -540,15 +540,22 @@ function initWizard() {
                 api.postStartSystem().then(res => {
                     showToast(res.message || window.t('msg_system_starting'), "success");
 
-                    // Fast poll for 15 seconds (every 1.5s) to reflect startup changes rapidly
+                    // Fast poll (every 1.5s) to reflect startup changes rapidly.
+                    // Keeps 'isSystemStarting' true until all active services are running, or we timeout (30s).
                     let pollCount = 0;
-                    const pollInterval = setInterval(() => {
-                        fetchServices();
+                    const maxPolls = 20; // 20 * 1.5s = 30s timeout
+                    const pollInterval = setInterval(async () => {
+                        await fetchServices();
                         pollCount++;
-                        if (pollCount >= 10) {
+
+                        const allActiveRunning = Object.values(allServices)
+                            .filter(s => s.status !== 'disabled' && s.is_installed && s.autostart !== false)
+                            .every(s => s.is_running);
+
+                        if (allActiveRunning || pollCount >= maxPolls) {
                             clearInterval(pollInterval);
                             isSystemStarting = false;
-                            fetchServices(); // final update
+                            renderCompletionPanel(); // final UI update
                         }
                     }, 1500);
                 }).catch(err => {
