@@ -47,7 +47,7 @@ def main():
     print("==========================================")
     
     # Environment config
-    hub_port = os.environ.get("HUB_PORT", "8000")
+    hub_port = os.environ["HUB_PORT"]
     env = os.environ.copy()
     env["PYTHONPATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
     env["PYTHONUNBUFFERED"] = "1"

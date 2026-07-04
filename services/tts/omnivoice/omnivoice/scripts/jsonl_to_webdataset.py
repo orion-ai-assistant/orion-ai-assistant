@@ -49,6 +49,7 @@ Output structure:
 """
 
 import argparse
+import os
 import io
 import json
 import logging

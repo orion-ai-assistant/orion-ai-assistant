@@ -21,6 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+TTS_PORT = int(os.environ["TTS_PORT"])
+
 # ---------- Inline i18n (en + zh-CN only) ----------
 
 _USAGE_INSTRUCTIONS_EN = (
@@ -545,7 +547,7 @@ def create_demo_interface(demo: VoxCPMDemo):
 
 def run_demo(
     server_name: str = "0.0.0.0",
-    server_port: int = 8808,
+    server_port: int = TTS_PORT,
     show_error: bool = True,
     model_id: str = "openbmb/VoxCPM2",
     vae_device: str | None = None,
@@ -566,7 +568,7 @@ if __name__ == "__main__":
         "--model-id", type=str, default="openbmb/VoxCPM2",
         help="Local path or HuggingFace repo ID (default: openbmb/VoxCPM2)",
     )
-    parser.add_argument("--port", type=int, default=8808, help="Server port")
+    parser.add_argument("--port", type=int, default=TTS_PORT, help="Server port")
     parser.add_argument(
         "--vae-device", type=str, default=None,
         help="Device for AudioVAE (e.g. cpu). If not set, uses main model device."

@@ -5,7 +5,7 @@ def _read_env(path: str) -> dict[str, str]:
     except OSError:
         return {}
 
-async def check_and_resolve_port_conflict(port: int = 20128) -> dict:
+async def check_and_resolve_port_conflict(port: int) -> dict:
     try:
         import psutil
     except ImportError:

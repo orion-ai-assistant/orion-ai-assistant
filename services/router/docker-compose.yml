@@ -5,10 +5,10 @@ services:
     container_name: router
     restart: unless-stopped
     ports:
-      - "${ROUTER_PORT:-20128}:${ROUTER_CONTAINER_PORT:-20128}"
+      - "${ROUTER_PORT}:${ROUTER_CONTAINER_PORT}"
     environment:
       # PORT yerine ROUTER_PORT kullanıyoruz ki uygulama doğru portta çalışsın
-      - ROUTER_PORT=${ROUTER_CONTAINER_PORT:-20128}
+      - ROUTER_PORT=${ROUTER_CONTAINER_PORT}
       - POSTGRES_HOST=router-db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=orion_router
@@ -46,7 +46,7 @@ services:
       POSTGRES_PASSWORD: router_pass
     # Dışarıdan veritabanına erişmek isterseniz aşağıdaki iki satırı aktifleştirin (uncomment):
     # ports:
-    #   - "${ROUTER_DB_PORT:-5433}:5432"
+    #   - "${POSTGRES_PORT}:5432"
     volumes:
       - orion_router_postgres_data:/var/lib/postgresql/data
     healthcheck:

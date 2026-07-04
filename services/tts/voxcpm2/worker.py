@@ -16,6 +16,8 @@ logger = logging.getLogger("voxcpm-worker")
 
 app = FastAPI(title="Orion VoxCPM Worker")
 
+DEFAULT_TTS_PORT = int(os.environ["TTS_PORT"])
+
 # Global model değişkeni
 model = None
 MODEL_INFO = "Not Loaded"
@@ -66,7 +68,7 @@ def start_worker():
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-id", type=str, default=os.getenv("MODEL_FILE", "voxcpm2"), help="Model path or ID")
-    parser.add_argument("--port", type=int, default=8000, help="API Port")
+    parser.add_argument("--port", type=int, default=DEFAULT_TTS_PORT, help="API Port")
     parser.add_argument("--vae-device", type=str, default=os.getenv("VAE_DEVICE", None), help="VAE Device")
     args = parser.parse_args()
 

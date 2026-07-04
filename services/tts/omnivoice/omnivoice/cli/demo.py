@@ -20,11 +20,12 @@ Gradio demo for OmniVoice.
 Supports voice cloning and voice design.
 
 Usage:
-    omnivoice-demo --model /path/to/checkpoint --port 8000
+    omnivoice-demo --model /path/to/checkpoint --port <TTS_PORT>
 """
 
 import argparse
 import logging
+import os
 import time
 from typing import Any, Dict
 
@@ -129,9 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Device for audio tokenizer (e.g. cpu, cuda, mps). Defaults to model device.",
     )
-    parser.add_argument("--ip", default="0.0.0.0", help="Server IP (default: 0.0.0.0).")
+    parser.add_argument("--ip", default=os.environ.get("TTS_HOST", "0.0.0.0"), help="Server IP.")
     parser.add_argument(
-        "--port", type=int, default=7860, help="Server port (default: 7860)."
+        "--port", type=int, default=int(os.environ["TTS_PORT"]), help="Server port."
     )
     parser.add_argument(
         "--root-path",

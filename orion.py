@@ -43,11 +43,14 @@ def _read_env_files():
                 pass
     return result
 
-def load_env_port(key, default):
+def load_env_port(key):
     val = _read_env_files().get(key)
-    if val and val.isdigit():
+    if val is None:
+        raise RuntimeError(f"Missing required port env var: {key}")
+    try:
         return int(val)
-    return default
+    except ValueError as e:
+        raise RuntimeError(f"Invalid port value for {key}: {val}") from e
 
 def load_env_var(key, default=None):
     """Global env dosyalarından string bir değeri okur."""
@@ -447,9 +450,9 @@ def handle_start(args):
 
     if mode == "local":
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        hub_port = load_env_port("HUB_PORT", 8000)
-        router_port = load_env_port("ROUTER_PORT", 20128)
-        redis_port = load_env_port("REDIS_PORT", 6379)
+        hub_port = load_env_port("HUB_PORT")
+        router_port = load_env_port("ROUTER_PORT")
+        redis_port = load_env_port("REDIS_PORT")
 
         pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
         pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
@@ -478,7 +481,7 @@ def handle_start(args):
         pg_start_time = None
         if os.path.exists(pg_ctl) and os.path.exists(pg_data):
             if postgres_running:
-                postgres_port = load_env_port("POSTGRES_PORT", 5432)
+                postgres_port = load_env_port("POSTGRES_PORT")
                 print(f"[!] PostgreSQL is already running on port {postgres_port}.")
             else:
                 # Önceki bir force-kill'den kalmış bayat kilit dosyası varsa temizle,
@@ -628,106 +631,141 @@ def handle_stop(args):
         hub_dir = os.path.join(base_dir, "services", "hub")
         pid_path = os.path.join(hub_dir, "hub.pid")
 
-        # 1. Hub süreçlerini PID'den güvenli kapat
-        if os.path.exists(pid_path):
-            try:
-                with open(pid_path, "r") as f:
-                    pids = [int(line.strip()) for line in f if line.strip().isdigit()]
+        # ── 1. Hub (API, Worker, Redis) ──────────────────────────────────────
+        def stop_hub():
+            pids = []
+            if os.path.exists(pid_path):
+                try:
+                    with open(pid_path, "r") as f:
+                        pids = [int(line.strip()) for line in f if line.strip().isdigit()]
+                except Exception as e:
+                    print(f"[!] Could not read PID file: {e}")
+
+            if pids:
+                # Graceful: SIGTERM tüm PID'lere
                 for pid in pids:
-                    # Windows'ta yanlış PID öldürmemek için çalışan sürecin adını teyit et
                     if os.name == 'nt':
-                        check_cmd = f'tasklist /FI "PID eq {pid}" /NH'
-                        output = subprocess.check_output(check_cmd, shell=True).decode(errors='ignore')
-                        if "python" not in output.lower() and "cmd" not in output.lower() and "redis" not in output.lower():
-                            continue
+                        try:
+                            check_cmd = f'tasklist /FI "PID eq {pid}" /NH'
+                            output = subprocess.check_output(check_cmd, shell=True).decode(errors='ignore')
+                            if "python" not in output.lower() and "cmd" not in output.lower() and "redis" not in output.lower():
+                                continue
+                        except Exception:
+                            pass
                     try:
                         os.kill(pid, signal.SIGTERM)
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
-                if os.name != 'nt':
-                    time.sleep(1.5)
-                    for pid in pids:
-                        try:
-                            os.kill(pid, 0)
+
+                # 2 saniye bekle, sonra hâlâ yaşayanları zorla kapat
+                time.sleep(2)
+                for pid in pids:
+                    try:
+                        os.kill(pid, 0)  # process hâlâ var mı?
+                        if os.name == 'nt':
+                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+                        else:
                             os.kill(pid, signal.SIGKILL)
-                        except (ProcessLookupError, PermissionError, OSError):
-                            pass
-                os.remove(pid_path)
-                print("[OK] Hub services (API, Worker, Redis) stopped safely.")
-            except Exception as e:
-                print(f"[!] Could not read PID file: {e}")
-        else:
-            print("[!] No hub.pid found. Hub may not be running.")
-            
-        # ZOMBI AVCISI: PID dosyasından bağımsız olarak portu kontrol et ve gerekirse zorla kapat
-        hub_port = load_env_port("HUB_PORT", 8000)
-        if is_port_in_use(hub_port):
-            print(f"[!] Hub port {hub_port} is still in use! Force-stopping the orphaned process...")
+                    except (ProcessLookupError, OSError):
+                        pass  # zaten kapandı
+
+                try:
+                    os.remove(pid_path)
+                except OSError:
+                    pass
+                print("[OK] Hub services (API, Worker, Redis) stopped.")
+            else:
+                print("[i] No hub.pid found. Hub may not be running.")
+
+            # Redis: sadece Orion dizinindeki redis-server'ı hedefle
             if os.name == 'nt':
-                subprocess.run(["powershell", "-c", f"Get-Process -Id (Get-NetTCPConnection -LocalPort {hub_port} -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force"], capture_output=True)
+                subprocess.run(
+                    ["powershell", "-c",
+                     "Get-Process redis-server -ErrorAction SilentlyContinue"
+                     " | Where-Object {$_.Path -like '*orion*'}"
+                     " | Stop-Process -Force"],
+                    capture_output=True
+                )
             else:
-                subprocess.run(f"lsof -t -i:{hub_port} | xargs kill -9", shell=True, capture_output=True)
-            print("[!] Orphaned Hub process force stopped.")
+                subprocess.run(["pkill", "-f", "redis-server.*orion"], capture_output=True)
 
-        # 2. Router'ı kapat
-        plat, path = find_orionrouter_script()
-        if path:
-            if plat == "win":
-                subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"], capture_output=True)
-            else:
-                subprocess.run([path, "stop"], capture_output=True)
+        # ── 2. PostgreSQL (Hub'ın kendi portable instance'ı) ─────────────────
+        def stop_postgres():
+            pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
+            pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
+            pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
 
-        # 3. PostgreSQL'i kapat
-        pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
-        pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
-        pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
-        if os.path.exists(pg_ctl) and os.path.exists(pg_data):
-            postgres_port_for_check = load_env_port("POSTGRES_PORT", 5432)
-            if not get_pg_status(pg_ctl, pg_data):
-                if is_port_in_use(postgres_port_for_check):
-                    # pg_ctl status "çalışmıyor" diyor ama port hâlâ açık: postmaster.pid
-                    # muhtemelen bir önceki crash/kill nedeniyle güncel değil, fakat
-                    # postgres.exe hâlâ arka planda yaşıyor (orphan). Bunu sessizce
-                    # es geçmek bir sonraki açılışta yine kirli-kapanma döngüsüne
-                    # (uzun fsync + recovery) yol açar; o yüzden zorla kapatıyoruz.
-                    print("[!] pg_ctl reports PostgreSQL as stopped, but its port is still open (orphaned process).")
-                    print("[*] Force-stopping the orphaned PostgreSQL process to prevent an unclean shutdown...")
-                    if os.name == 'nt':
-                        subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
-                    else:
-                        subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
-                    print("[!] Orphaned PostgreSQL process force stopped.")
-                else:
-                    # PostgreSQL zaten çalışmıyor: "pg_ctl stop" çağırmak bayat postmaster.pid'e
-                    # sinyal göndermeye çalışıp "No such process" hatası üretir. Bunun yerine
-                    # doğrudan durumu bildir ve varsa bayat kilit dosyasını temizle.
-                    print("[i] PostgreSQL is not running (already stopped). Cleaning up any stale lock file.")
-                clean_stale_postmaster_lock(pg_data)
-            else:
-                print("[*] Attempting graceful PostgreSQL shutdown...")
-                result = subprocess.run([pg_ctl, "stop", "-D", pg_data, "-m", "fast"], capture_output=True, text=True)
+            if not (os.path.exists(pg_ctl) and os.path.exists(pg_data)):
+                return
 
+            if get_pg_status(pg_ctl, pg_data):
+                print("[*] Stopping PostgreSQL (graceful)...")
+                result = subprocess.run(
+                    [pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"],
+                    capture_output=True, text=True
+                )
                 if result.returncode == 0:
                     print("[OK] PostgreSQL stopped gracefully.")
                 else:
-                    print(f"[!] pg_ctl failed with code {result.returncode}.")
-                    print(f"--- DETAYLI HATA LOGU ---\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}\n-------------------------")
-
+                    print("[!] pg_ctl stop failed, force-stopping PostgreSQL...")
                     if os.name == 'nt':
                         subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
                     else:
                         subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
-                    print("[!] PostgreSQL force stopped as fallback.")
+                    print("[!] PostgreSQL force stopped.")
+            else:
+                print("[i] PostgreSQL is not running (already stopped).")
 
-                # Graceful ya da force, her durumda bir sonraki çalıştırmada aynı hatayı
-                # tekrar görmemek için geride kalabilecek kilit dosyasını temizle.
-                clean_stale_postmaster_lock(pg_data)
+            clean_stale_postmaster_lock(pg_data)
 
-        # 4. Redis Güvenli Temizlik (Sadece Orion dizinindekileri hedefle)
-        if os.name == 'nt':
-            subprocess.run(["powershell", "-c", "Get-Process redis-server -ErrorAction SilentlyContinue | Where-Object {$_.Path -like '*orion*'} | Stop-Process -Force"], capture_output=True)
-        else:
-            subprocess.run(["pkill", "-f", "redis-server.*orion"], capture_output=True)
+        # ── 3. Orion Router ───────────────────────────────────────────────────
+        def stop_router():
+            plat, path = find_orionrouter_script()
+            if path:
+                print("[*] Stopping Orion Router...")
+                if plat == "win":
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"],
+                        capture_output=True
+                    )
+                else:
+                    subprocess.run([path, "stop"], capture_output=True)
+                print("[OK] Orion Router stopped.")
+
+        # ── Hepsini aynı anda başlat ──────────────────────────────────────────
+        t_hub    = threading.Thread(target=stop_hub,      name="stop-hub")
+        t_pg     = threading.Thread(target=stop_postgres, name="stop-pg")
+        t_router = threading.Thread(target=stop_router,   name="stop-router")
+
+        for t in [t_hub, t_pg, t_router]:
+            t.start()
+        for t in [t_hub, t_pg, t_router]:
+            t.join()
+
+        # ── Son kontrol: hâlâ açık port var mı? ─────────────────────────────
+        hub_port = load_env_port("HUB_PORT")
+        if is_port_in_use(hub_port):
+            print(f"[!] Hub port {hub_port} still open, force-stopping orphan...")
+            if os.name == 'nt':
+                subprocess.run(
+                    ["powershell", "-c",
+                     f"Get-Process -Id (Get-NetTCPConnection -LocalPort {hub_port}"
+                     f" -ErrorAction SilentlyContinue).OwningProcess"
+                     f" -ErrorAction SilentlyContinue | Stop-Process -Force"],
+                    capture_output=True
+                )
+            else:
+                subprocess.run(f"lsof -t -i:{hub_port} | xargs kill -9", shell=True, capture_output=True)
+
+        postgres_port = load_env_port("POSTGRES_PORT")
+        if is_port_in_use(postgres_port):
+            print(f"[!] PostgreSQL port {postgres_port} still open, force-stopping orphan...")
+            if os.name == 'nt':
+                subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
+            else:
+                subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
+            pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
+            clean_stale_postmaster_lock(pg_data)
 
         print("[OK] All local services stopped.")
     else:
@@ -738,10 +776,10 @@ def handle_status(args):
     print(f"\n[*] Checking Orion AI Assistant status ({mode.upper()} mode)...\n")
     if mode == "local":
         print("--- CORE SERVICES ---")
-        hub_port = load_env_port("HUB_PORT", 8000)
-        router_port = load_env_port("ROUTER_PORT", 20128)
-        postgres_port = load_env_port("POSTGRES_PORT", 5432)
-        redis_port = load_env_port("REDIS_PORT", 6379)
+        hub_port = load_env_port("HUB_PORT")
+        router_port = load_env_port("ROUTER_PORT")
+        postgres_port = load_env_port("POSTGRES_PORT")
+        redis_port = load_env_port("REDIS_PORT")
         core_services = [
             ("Orion Hub", [hub_port, postgres_port, redis_port]),
             ("Orion Router", [router_port])

@@ -24,6 +24,8 @@ from schemas import SpeechRequest
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+TTS_PORT = int(os.environ["TTS_PORT"])
+
 # ——————————————————————————————————————————
 # Config Helpers
 # ——————————————————————————————————————————
@@ -334,4 +336,4 @@ async def get_model_info():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8808)
+    uvicorn.run(app, host="0.0.0.0", port=TTS_PORT)
