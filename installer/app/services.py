@@ -158,6 +158,7 @@ def get_services() -> list[dict]:
             data.update({
                 "is_installed": is_installed,
                 "is_running": is_running,
+                "is_starting": proc_running and not is_running,
                 "is_installing": data["id"] in config.INSTALLING_SERVICES,
                 "autostart": autostart,
                 "install_error": config.INSTALL_ERRORS.get(data["id"])
@@ -166,6 +167,7 @@ def get_services() -> list[dict]:
             data.update({
                 "is_installed": c_name in containers,
                 "is_running": containers.get(c_name, False),
+                "is_starting": False,
                 "is_installing": data["id"] in config.INSTALLING_SERVICES,
                 "autostart": autostart,
                 "install_error": config.INSTALL_ERRORS.get(data["id"])

@@ -1,23 +1,16 @@
 import { renderParameters } from './parameters.js';
 
-// Global click, resize, and blur listeners to make the custom dropdown behave like a native select
+// Global click, resize, and blur listeners
 const closeAllDropdowns = () => {
     document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.add('hidden'));
     document.querySelectorAll('.btn-split-toggle').forEach(b => b.setAttribute('aria-expanded', 'false'));
 };
 
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.btn-split-toggle')) {
-        closeAllDropdowns();
-    }
-});
-
+document.addEventListener('click', e => !e.target.closest('.btn-split-toggle') && closeAllDropdowns());
 window.addEventListener('resize', closeAllDropdowns);
 window.addEventListener('blur', closeAllDropdowns);
 
-function isCoreService(service) {
-    return service?.id === 'orion-hub' || service?.category === 'core' || service?.category === 'hub' || service?.category === 'router';
-}
+const isCoreService = s => ['orion-hub', 'core', 'hub', 'router'].includes(s?.id) || ['core', 'hub', 'router'].includes(s?.category);
 
 export function createServiceCard(service, grid) {
     const card = document.createElement('div');
@@ -28,93 +21,58 @@ export function createServiceCard(service, grid) {
 }
 
 export function updateCardStatusClasses(card, isDisabled) {
-    const hasClass = card.classList.contains('disabled-service');
-    if (isDisabled && !hasClass) {
-        card.classList.add('disabled-service');
-    } else if (!isDisabled && hasClass) {
-        card.classList.remove('disabled-service');
-    }
+    card.classList.toggle('disabled-service', isDisabled);
 }
 
 export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode) {
     const isWindows = (window.orionOsPlatform || '').toLowerCase() === 'windows';
     const gpuVendor = (window.orionGpuVendor || '').toLowerCase();
 
-    // Process options to determine disabled state and titles
     const processedEnvs = (service.supported_environments || []).map(env => {
         const hw = (env.hardware || '').toLowerCase();
-        const isAmd = hw === 'amd';
-        const isVulkan = hw === 'vulkan';
-        const disabledOnWindows = isWindows && (isAmd || isVulkan);
-        
-        let title = '';
-        if (disabledOnWindows) {
-            const hwName = isAmd ? 'ROCm' : 'Vulkan';
-            title = ` title="${window.t('lbl_linux_only', hwName)}"`;
-        }
-
+        const disabled = isWindows && ['amd', 'vulkan'].includes(hw);
         return {
-            ...env,
-            hw,
-            disabled: disabledOnWindows,
-            title
+            ...env, hw, disabled,
+            title: disabled ? ` title="${window.t('lbl_linux_only', hw === 'amd' ? 'ROCm' : 'Vulkan')}"` : ''
         };
     });
 
-    // Select the best default option
-    let selectedId = '';
     const enabledEnvs = processedEnvs.filter(e => !e.disabled);
-    if (enabledEnvs.length > 0) {
-        const matched = enabledEnvs.find(e => e.hw === gpuVendor);
-        if (matched) {
-            selectedId = matched.id;
-        } else if (gpuVendor === 'amd' && enabledEnvs.some(e => e.hw === 'vulkan')) {
-            const vulkanOpt = enabledEnvs.find(e => e.hw === 'vulkan');
-            selectedId = vulkanOpt.id;
-        } else {
-            const cpuOpt = enabledEnvs.find(e => e.hw === 'cpu');
-            selectedId = cpuOpt ? cpuOpt.id : enabledEnvs[0].id;
-        }
-    }
+    let selectedId = enabledEnvs.find(e => e.hw === gpuVendor)?.id
+        || (gpuVendor === 'amd' ? enabledEnvs.find(e => e.hw === 'vulkan')?.id : null)
+        || enabledEnvs.find(e => e.hw === 'cpu')?.id
+        || (enabledEnvs[0]?.id || '');
 
-    // Render HTML options
     const envOptions = processedEnvs.map(env => {
-        const disabledAttr = env.disabled ? 'disabled' : '';
-        const selectedAttr = env.id === selectedId ? 'selected' : '';
-        const suffix = env.disabled ? window.t('lbl_linux_only_suffix') : '';
         const envNameKey = `env_name_${env.id}`.toLowerCase();
-        const translatedEnvName = window.t(envNameKey);
-        const envName = (translatedEnvName !== envNameKey) ? translatedEnvName : env.name;
-        return `<option value="${env.id}" data-hardware="${env.hw || ''}" ${disabledAttr} ${selectedAttr}${env.title}>${envName}${suffix}</option>`;
+        const envName = window.t(envNameKey) !== envNameKey ? window.t(envNameKey) : env.name;
+        return `<option value="${env.id}" data-hardware="${env.hw}" ${env.disabled ? 'disabled' : ''} ${env.id === selectedId ? 'selected' : ''}${env.title}>${envName}${env.disabled ? window.t('lbl_linux_only_suffix') : ''}</option>`;
     }).join('');
 
-    const modelsOnly = viewMode === 'models-only';
     const installMode = viewMode === 'install';
-
     const paramsHtml = renderParameters(service, isDisabled);
-    const envHtml = renderEnvironmentSection(service, envOptions, isDisabled);
-    const modelHtml = renderModelSelectionSection(service, isDisabled);
-    const hasGeneralContent = Boolean(envHtml || paramsHtml || modelHtml);
+    const envHtml = isCoreService(service) ? '' : `
+        <div class="field">
+            <label class="field-label" for="env-select-${service.id}">${window.t('lbl_hardware')}</label>
+            <select id="env-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>${envOptions}</select>
+        </div>`;
 
-    const generalHtml = installMode && hasGeneralContent
-        ? `
+    const modelHtml = isCoreService(service) ? '' : `
+        <div class="field">
+            <label class="field-label" for="model-select-${service.id}">${window.t('lbl_model')}</label>
+            <select id="model-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>
+                <option value="">${window.t('lbl_select_model')}</option>
+            </select>
+        </div>
+        ${['llm', 'embedding'].includes(service.category) ? `<div id="mmproj-toggle-container-${service.id}" class="mmproj-container hidden"></div>` : ''}
+    `;
+
+    const generalHtml = installMode && (envHtml || paramsHtml || modelHtml) ? `
         <div class="card-section">
             ${envHtml}
-            <div id="dynamic-params-${service.id}" class="params-container">
-                ${paramsHtml}
-            </div>
+            <div id="dynamic-params-${service.id}" class="params-container">${paramsHtml}</div>
             ${modelHtml}
-        </div>`
-        : '';
-
-    const modelsHtml = modelsOnly
-        ? `
-        <div id="models-${service.id}" class="tab-content active">
-            <div class="card-section">
-                <div id="model-list-${service.id}" class="model-list">${window.t('lbl_scanning')}</div>
-            </div>
-        </div>`
-        : '';
+        </div>` : '';
 
     const newHtml = `
         <div class="service-header">
@@ -125,7 +83,7 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
             <p class="service-desc">${window.t_service_desc(service)}</p>
         </div>
         ${installMode ? `<div id="general-${service.id}" class="tab-content active">${generalHtml}</div>` : ''}
-        ${modelsHtml}
+        ${viewMode === 'models-only' ? `<div id="models-${service.id}" class="tab-content active"><div class="card-section"><div id="model-list-${service.id}" class="model-list">${window.t('lbl_scanning')}</div></div></div>` : ''}
         <div class="service-footer-dynamic"></div>
     `;
 
@@ -135,163 +93,100 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
     }
 }
 
-
 export function updateCardDynamicContent(card, service, isDisabled, handlers, viewMode) {
     const footer = card.querySelector('.service-footer-dynamic');
     if (!footer) return;
 
     if (viewMode === 'models-only') {
-        if (footer.innerHTML !== '') footer.innerHTML = '';
+        if (footer.innerHTML) footer.innerHTML = '';
         return;
     }
 
-    // Performans için durum karşılaştırması (Hiçbir şey değişmediyse DOM güncellemesini atla)
-    const currentLang = typeof window !== 'undefined' ? window.orionLang : 'en';
-    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${isDisabled}_${service.install_error || ''}_${currentLang}`;
-    if (footer.dataset.stateKey === stateKey) {
-        return;
-    }
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${service.is_starting}_${isDisabled}_${service.install_error || ''}_${window.orionLang || 'en'}`;
+    if (footer.dataset.stateKey === stateKey) return;
     footer.dataset.stateKey = stateKey;
 
-    const hasInstall = service.is_installed;
-    const statusLabel = !hasInstall ? window.t('status_uninstalled') : (service.is_running ? window.t('status_running') : window.t('status_stopped'));
-    const statusClass = !hasInstall ? 'status-missing' : (service.is_running ? 'status-running' : 'status-stopped');
-
-    // Update status dot in the header
-    const dotContainer = card.querySelector(`#status-dot-container-${service.id}`);
-    if (dotContainer) {
-        dotContainer.innerHTML = `<div class="status-badge ${statusClass}" title="${statusLabel}" style="margin: 0;"><span class="status-dot"></span></div>`;
+    // [!] SARI IŞIK DÜZELTMESİ: is_installing eklendi
+    let statusLabel, statusClass;
+    if (service.is_installing || service.is_starting) {
+        statusLabel = window.t('status_starting');
+        statusClass = 'status-starting';
+    } else if (!service.is_installed) {
+        statusLabel = window.t('status_uninstalled');
+        statusClass = 'status-missing';
+    } else if (service.is_running) {
+        statusLabel = window.t('status_running');
+        statusClass = 'status-running';
+    } else {
+        statusLabel = window.t('status_stopped');
+        statusClass = 'status-stopped';
     }
 
-    let actionHtml = '';
-    const hasContainer = !!service.is_installed;
+    const dotContainer = card.querySelector(`#status-dot-container-${service.id}`);
+    if (dotContainer) dotContainer.innerHTML = `<div class="status-badge ${statusClass}" title="${statusLabel}" style="margin: 0;"><span class="status-dot"></span></div>`;
 
+    let actionHtml = '';
     if (isDisabled && !service.is_installed) {
         actionHtml = `<button class="btn" disabled>${window.t('status_unavailable')}</button>`;
     } else if (service.is_installing) {
         actionHtml = `<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}</button>`;
     } else {
-        const isAutostart = service.autostart !== false;
-        let mainBtnClass = !hasContainer ? 'btn btn-primary' : (isAutostart ? 'btn btn-danger' : 'btn btn-success');
-        let mainBtnLabel = !hasContainer ? window.t('btn_install') : (isAutostart ? window.t('btn_disable') : window.t('btn_enable'));
-        let mainBtnAttr = '';
+        const isAuto = service.autostart !== false;
+        const isCore = isCoreService(service);
+        const btnClass = !service.is_installed ? 'btn btn-primary' : (isCore ? 'btn btn-success' : (isAuto ? 'btn btn-danger' : 'btn btn-success'));
+        const btnLabel = !service.is_installed ? window.t('btn_install') : (isCore ? window.t('status_active') : (isAuto ? window.t('btn_disable') : window.t('btn_enable')));
+        const btnAttr = isCore && service.is_installed ? 'disabled style="cursor: default;"' : '';
 
-        if (hasContainer && isCoreService(service)) {
-            mainBtnClass = 'btn btn-success';
-            mainBtnLabel = window.t('status_active');
-            mainBtnAttr = 'disabled style="cursor: default;"';
-        }
-
-        const mainBtnId = `btn-main-${service.id}`;
-        const menuBtnId = `btn-menu-${service.id}`;
-        const dropdownId = `menu-${service.id}`;
-
-        const existingDropdown = footer.querySelector(`#menu-${service.id}`);
-        const isDropdownOpen = existingDropdown && !existingDropdown.classList.contains('hidden');
-        const isDropdownOpenUp = existingDropdown && existingDropdown.classList.contains('open-up');
-
-        const dropdownHtml = hasContainer ? `
+        const dropdownHtml = service.is_installed ? `
             <div class="split-dropdown">
-                <button class="btn btn-split-toggle" id="${menuBtnId}" aria-expanded="${isDropdownOpen ? 'true' : 'false'}" aria-controls="${dropdownId}" title="${window.t('lbl_other_actions')}">
+                <button class="btn btn-split-toggle" id="btn-menu-${service.id}" aria-expanded="false" aria-controls="menu-${service.id}" title="${window.t('lbl_other_actions')}">
                     <i class="fas fa-chevron-down"></i>
                 </button>
-                <div class="dropdown-menu ${isDropdownOpen ? '' : 'hidden'} ${isDropdownOpenUp ? 'open-up' : ''}" id="${dropdownId}">
+                <div class="dropdown-menu hidden" id="menu-${service.id}">
                     <button class="dropdown-item" id="btn-reinstall-${service.id}">${window.t('btn_reinstall')}</button>
                     <button class="dropdown-item danger" id="btn-remove-${service.id}">${window.t('btn_remove')}</button>
                     <button class="dropdown-item danger" id="btn-delete-image-${service.id}">${window.t('btn_delete_image')}</button>
                 </div>
-            </div>
-        ` : '';
-        actionHtml = `
-            <div class="split-action"><button class="${mainBtnClass}" id="${mainBtnId}" ${mainBtnAttr}>${mainBtnLabel}</button>${dropdownHtml}</div>
-        `;
+            </div>` : '';
+
+        actionHtml = `<div class="split-action"><button class="${btnClass}" id="btn-main-${service.id}" ${btnAttr}>${btnLabel}</button>${dropdownHtml}</div>`;
     }
 
-    const errorHtml = service.install_error ? `
-        <div class="install-error" style="color: #ef4444; font-size: 0.85em; padding: 8px 12px; background: rgba(239, 68, 68, 0.1); border-radius: 4px; margin: 0 16px 12px 16px;">
-            <i class="fas fa-exclamation-triangle" style="margin-right: 4px;"></i> ${service.install_error}
-        </div>
-    ` : '';
+    const errorHtml = service.install_error ? `<div class="install-error" style="color: #ef4444; font-size: 0.85em; padding: 8px 12px; background: rgba(239, 68, 68, 0.1); border-radius: 4px; margin: 0 16px 12px 16px;"><i class="fas fa-exclamation-triangle" style="margin-right: 4px;"></i> ${service.install_error}</div>` : '';
 
-    const newFooterHtml = `
-        ${errorHtml}
-        <div class="service-footer">
-            <div class="category-tag" style="margin-bottom: 0;">${service.category.toUpperCase()}</div>
-            <div class="footer-actions">${actionHtml}</div>
-        </div>
-    `;
+    footer.innerHTML = `${errorHtml}<div class="service-footer"><div class="category-tag" style="margin-bottom: 0;">${service.category.toUpperCase()}</div><div class="footer-actions">${actionHtml}</div></div>`;
 
-    if (footer.innerHTML !== newFooterHtml) {
-        footer.innerHTML = newFooterHtml;
+    // Bind events
+    const bindEvent = (id, handler) => {
+        const el = card.querySelector(id);
+        if (el) el.onclick = (e) => handler(e, el);
+    };
 
-        // Re-bind events ONLY if HTML changed
-        const mainBtn = card.querySelector(`#btn-main-${service.id}`);
-        if (mainBtn) {
-            if (hasContainer) {
-                if (!isCoreService(service)) {
-                    mainBtn.onclick = () => handlers.onToggleAutostart(service.id, mainBtn);
-                }
-            } else {
-                mainBtn.onclick = () => handlers.onStart(service.id, mainBtn);
-            }
+    bindEvent(`#btn-main-${service.id}`, () => service.is_installed && !isCoreService(service) ? handlers.onToggleAutostart(service.id, document.getElementById(`btn-main-${service.id}`)) : handlers.onStart(service.id, document.getElementById(`btn-main-${service.id}`)));
+    bindEvent(`#btn-reinstall-${service.id}`, () => handlers.onReinstall(service.id, document.getElementById(`btn-reinstall-${service.id}`)));
+    bindEvent(`#btn-remove-${service.id}`, () => handlers.onRemove(service.id, document.getElementById(`btn-remove-${service.id}`)));
+    bindEvent(`#btn-delete-image-${service.id}`, () => handlers.onDeleteImage(service.id, document.getElementById(`btn-delete-image-${service.id}`)));
+
+    bindEvent(`#btn-menu-${service.id}`, (e, btn) => {
+        e.stopPropagation();
+        const menu = document.getElementById(`menu-${service.id}`);
+        if (!menu) return;
+
+        const isHidden = menu.classList.contains('hidden');
+        closeAllDropdowns();
+
+        if (isHidden) {
+            menu.classList.remove('hidden');
+            btn.setAttribute('aria-expanded', 'true');
+            menu.classList.toggle('open-up', menu.getBoundingClientRect().bottom > window.innerHeight);
         }
-
-        const menuBtn = card.querySelector(`#btn-menu-${service.id}`);
-        if (menuBtn) {
-            menuBtn.onclick = (e) => {
-                e.stopPropagation();
-                // Olası bir DOM yenilenmesine karşı güncel elementleri buluyoruz
-                const currentDropdown = document.getElementById(`menu-${service.id}`);
-                const currentBtn = document.getElementById(`btn-menu-${service.id}`);
-                if (!currentDropdown || !currentBtn) return;
-                
-                const isHidden = currentDropdown.classList.contains('hidden');
-                
-                // Diğer tüm açık menüleri kapat
-                document.querySelectorAll('.dropdown-menu').forEach(m => {
-                    m.classList.add('hidden');
-                    const b = document.querySelector(`[aria-controls="${m.id}"]`);
-                    if (b) b.setAttribute('aria-expanded', 'false');
-                });
-
-                if (isHidden) {
-                    currentDropdown.classList.remove('hidden');
-                    currentBtn.setAttribute('aria-expanded', 'true');
-                    
-                    // Altta yer kalıp kalmadığını ölçüyoruz (Örn: Ekran yüksekliğini taşarsa)
-                    const rect = currentDropdown.getBoundingClientRect();
-                    const windowHeight = window.innerHeight;
-                    if (rect.bottom > windowHeight) {
-                        currentDropdown.classList.add('open-up');
-                    } else {
-                        currentDropdown.classList.remove('open-up');
-                    }
-                } else {
-                    currentDropdown.classList.add('hidden');
-                    currentBtn.setAttribute('aria-expanded', 'false');
-                    currentDropdown.classList.remove('open-up');
-                }
-            };
-        }
-
-        const reinstallBtn = card.querySelector(`#btn-reinstall-${service.id}`);
-        if (reinstallBtn) reinstallBtn.onclick = () => handlers.onReinstall(service.id, reinstallBtn);
-
-        const removeBtn = card.querySelector(`#btn-remove-${service.id}`);
-        if (removeBtn) removeBtn.onclick = () => handlers.onRemove(service.id, removeBtn);
-
-        const delImageBtn = card.querySelector(`#btn-delete-image-${service.id}`);
-        if (delImageBtn) delImageBtn.onclick = () => handlers.onDeleteImage(service.id, delImageBtn);
-    }
+    });
 }
 
 export function toggleFormElements(card, isDisabled) {
     card.querySelectorAll('input, select, .tab').forEach(el => {
-        if (el.getAttribute('data-type') === 'gpu_selector') {
-            el.setAttribute('disabled', 'true');
-            return;
-        }
-        const currentlyDisabled = el.hasAttribute('disabled') || (el.classList.contains('tab') && el.style.pointerEvents === 'none');
+        if (el.getAttribute('data-type') === 'gpu_selector') return el.setAttribute('disabled', 'true');
+        const currentlyDisabled = el.hasAttribute('disabled') || el.style.pointerEvents === 'none';
 
         if (isDisabled && !currentlyDisabled) {
             el.setAttribute('disabled', 'true');
@@ -303,87 +198,29 @@ export function toggleFormElements(card, isDisabled) {
     });
 }
 
-function renderEnvironmentSection(service, envOptions, isDisabled) {
-    if (isCoreService(service)) return '';
-    return `
-        <div class="field">
-            <label class="field-label" for="env-select-${service.id}">${window.t('lbl_hardware')}</label>
-            <select id="env-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>
-                ${envOptions}
-            </select>
-        </div>
-    `;
-}
-
-function renderModelSelectionSection(service, isDisabled) {
-    if (isCoreService(service)) {
-        return '';
-    }
-
-    let html = `
-        <div class="field">
-            <label class="field-label" for="model-select-${service.id}">${window.t('lbl_model')}</label>
-            <select id="model-select-${service.id}" class="field-input" ${isDisabled ? 'disabled' : ''}>
-                <option value="">${window.t('lbl_select_model')}</option>
-            </select>
-        </div>
-    `;
-
-    if (service.category === 'llm' || service.category === 'embedding') {
-        html += `
-            <div id="mmproj-toggle-container-${service.id}" class="mmproj-container hidden">
-                <!-- Otomatik buton buraya gelecek -->
-            </div>
-        `;
-    }
-    return html;
-}
-
 function setupCardInteractions(card, service, handlers) {
     card.querySelectorAll('.tab').forEach(tab => {
         tab.onclick = () => {
-            card.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            card.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            card.querySelectorAll('.tab, .tab-content').forEach(el => el.classList.remove('active'));
             tab.classList.add('active');
             const target = card.querySelector(`#${tab.dataset.tab}`);
             if (target) target.classList.add('active');
-            if (tab.dataset.tab && tab.dataset.tab.startsWith('models-')) handlers.onTabModels(service.id);
+            if (tab.dataset.tab?.startsWith('models-')) handlers.onTabModels(service.id);
         };
     });
 
-    const modelSelect = card.querySelector(`#model-select-${service.id}`);
-    if (modelSelect) {
-        modelSelect.addEventListener('change', () => {
-            handlers.onModelChange(service.id, modelSelect.value);
-        });
-    }
+    card.querySelector(`#model-select-${service.id}`)?.addEventListener('change', e => handlers.onModelChange(service.id, e.target.value));
 
-    // Donanım (CPU/GPU) seçimine göre GPU panelini göster/gizle
     const envSelect = card.querySelector(`#env-select-${service.id}`);
     const gpuField = card.querySelector(`#gpu-selector-field-${service.id}`);
     if (envSelect && gpuField) {
-        const updateGpuVisibility = () => {
-            const hw = (envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware') || '').toLowerCase();
-            if (hw === 'cpu') {
-                gpuField.style.display = 'none';
-            } else {
-                gpuField.style.display = 'block';
-            }
-        };
-        envSelect.addEventListener('change', updateGpuVisibility);
-        updateGpuVisibility();
+        const updateGpu = () => gpuField.style.display = envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware')?.toLowerCase() === 'cpu' ? 'none' : 'block';
+        envSelect.addEventListener('change', updateGpu);
+        updateGpu();
     }
 
-    // Çoklu GPU'larda en az birinin seçili kalmasını zorunlu kıl
     const gpuCheckboxes = card.querySelectorAll(`.dynamic-input[data-type="gpu_selector_multi"]`);
-    if (gpuCheckboxes.length > 0) {
-        gpuCheckboxes.forEach(cb => {
-            cb.addEventListener('change', () => {
-                const checkedCount = Array.from(gpuCheckboxes).filter(c => c.checked).length;
-                if (checkedCount === 0) {
-                    cb.checked = true; // Geri al
-                }
-            });
-        });
-    }
+    gpuCheckboxes.forEach(cb => cb.addEventListener('change', () => {
+        if (!Array.from(gpuCheckboxes).some(c => c.checked)) cb.checked = true;
+    }));
 }

@@ -2,89 +2,50 @@ import * as api from './js/api.js';
 import * as uiRender from './js/ui-render.js';
 import { showToast } from './js/ui-utils.js';
 
-let previousServiceStates = {};
-let allServiceModels = {};
-let allServices = {};
-let currentStep = 1;
-let isSystemStarting = false;
+let previousServiceStates = {}, allServiceModels = {}, allServices = {};
+let currentStep = 1, isSystemStarting = false;
 
-function isCoreService(service) {
-    return service?.id === 'orion-hub' || service?.category === 'core' || service?.category === 'hub' || service?.category === 'router';
-}
+const isCoreService = (s) => ['orion-hub', 'core', 'hub', 'router'].includes(s?.id) || ['core', 'hub', 'router'].includes(s?.category);
 
 const steps = [
-    {
-        id: 1,
-        titleKey: 'ui_step_2_title',
-        subtitleKey: 'ui_step_2_sub'
-    },
-    {
-        id: 2,
-        titleKey: 'ui_step_3_title',
-        subtitleKey: 'ui_step_3_sub'
-    },
-    {
-        id: 3,
-        titleKey: 'ui_step_4_title',
-        subtitleKey: 'ui_step_4_sub'
-    }
+    { id: 1, titleKey: 'ui_step_2_title', subtitleKey: 'ui_step_2_sub' },
+    { id: 2, titleKey: 'ui_step_3_title', subtitleKey: 'ui_step_3_sub' },
+    { id: 3, titleKey: 'ui_step_4_title', subtitleKey: 'ui_step_4_sub' }
 ];
 
 async function fetchHardware() {
     try {
         const info = await api.fetchHardware();
+        const setEl = (id, val) => document.getElementById(id) && (document.getElementById(id).innerText = val);
 
-        // GPU İsmi
-        const gpuNameEl = document.getElementById('hw-gpu-name');
-        if (gpuNameEl) gpuNameEl.innerText = info.DETECTED_GPU_NAME || window.t('lbl_unknown');
+        setEl('hw-gpu-name', info.DETECTED_GPU_NAME || window.t('lbl_unknown'));
+        setEl('hw-vram-gb', info.DETECTED_VRAM_GB ? `${info.DETECTED_VRAM_GB} GB` : "0 GB");
+        setEl('hw-cpu-name', info.DETECTED_CPU || window.t('lbl_unknown'));
 
-        // VRAM
-        const vramEl = document.getElementById('hw-vram-gb');
-        if (vramEl) vramEl.innerText = info.DETECTED_VRAM_GB ? `${info.DETECTED_VRAM_GB} GB` : "0 GB";
-
-        // CPU
-        const cpuEl = document.getElementById('hw-cpu-name');
-        if (cpuEl) cpuEl.innerText = info.DETECTED_CPU || window.t('lbl_unknown');
-
-        // OS Badge
         const osIcon = document.getElementById('os-icon');
-        const osText = document.getElementById('os-text');
-        if (osIcon && osText) {
+        if (osIcon) {
             const os = info.OS_PLATFORM || "unknown";
             window.orionOsPlatform = os;
-            osText.innerText = os.charAt(0).toUpperCase() + os.slice(1);
-            if (os === 'windows') osIcon.className = 'fab fa-windows';
-            else if (os === 'linux') osIcon.className = 'fab fa-linux';
-            else osIcon.className = 'fas fa-desktop';
+            setEl('os-text', os.charAt(0).toUpperCase() + os.slice(1));
+            osIcon.className = os === 'windows' ? 'fab fa-windows' : (os === 'linux' ? 'fab fa-linux' : 'fas fa-desktop');
         }
 
-        // Mode Badge
-        const modeText = document.getElementById('mode-text');
-        if (modeText) {
-            const mode = info.install_mode || "docker";
-            modeText.innerText = mode.charAt(0).toUpperCase() + mode.slice(1);
-        }
+        if (info.install_mode) setEl('mode-text', info.install_mode.charAt(0).toUpperCase() + info.install_mode.slice(1));
 
-        // GPU Vendor
         window.orionGpuVendor = (info.DETECTED_GPU_VENDOR || 'cpu').toLowerCase();
-
-        // GPU List
-        try {
-            window.orionGpuList = info.DETECTED_GPU_LIST ? JSON.parse(info.DETECTED_GPU_LIST) : [];
-        } catch (e) {
-            window.orionGpuList = [];
-        }
-
-    } catch (err) {
-        console.error("Hardware fetch error:", err);
-    }
+        try { window.orionGpuList = info.DETECTED_GPU_LIST ? JSON.parse(info.DETECTED_GPU_LIST) : []; }
+        catch { window.orionGpuList = []; }
+    } catch (err) { console.error("Hardware fetch error:", err); }
 }
 
 function getServiceRuntimeState(service) {
     if (!service?.is_installed) return { label: window.t('status_uninstalled'), className: 'status-missing' };
     if (service.autostart === false) return { label: window.t('status_disabled'), className: 'status-stopped' };
     if (service.is_running) return { label: window.t('status_running'), className: 'status-running' };
-    if (isSystemStarting) return { label: window.t('status_starting'), className: 'status-starting' };
+
+    // [!] Sarı ışığın Finish ekranında da yanması için service.is_starting eklendi
+    if (service.is_installing || service.is_starting || isSystemStarting) return { label: window.t('status_starting'), className: 'status-starting' };
+
     return { label: window.t('status_stopped'), className: 'status-stopped' };
 }
 
@@ -115,40 +76,26 @@ function renderCompletionPanel() {
                     <span class="status-dot"></span>
                     <span>${state.label}</span>
                 </div>
-            </div>
-        `;
+            </div>`;
     }).join('');
 }
 
-function openCompletionPanel() {
-    const panel = document.getElementById('completion-panel');
-    if (!panel) return;
-    renderCompletionPanel();
-    panel.classList.remove('hidden');
-}
+const openCompletionPanel = () => {
+    const p = document.getElementById('completion-panel');
+    if (p) { renderCompletionPanel(); p.classList.remove('hidden'); }
+};
 
-function closeCompletionPanel() {
-    const panel = document.getElementById('completion-panel');
-    if (!panel) return;
-    panel.classList.add('hidden');
-}
+const closeCompletionPanel = () => document.getElementById('completion-panel')?.classList.add('hidden');
 
 async function fetchServices() {
     try {
         const services = await api.fetchServices();
-
         services.forEach(service => {
             const prevState = previousServiceStates[service.id];
             if (prevState) {
                 if (prevState.is_installing && !service.is_installing) {
-                    if (service.is_installed) {
-                        showToast(window.t('msg_service_started', window.t_service_name(service)), 'success');
-                    } else {
-                        showToast(window.t('msg_install_failed', window.t_service_name(service)), 'error');
-                    }
+                    showToast(window.t(service.is_installed ? 'msg_service_started' : 'msg_install_failed', window.t_service_name(service)), service.is_installed ? 'success' : 'error');
                 }
-
-                // Track service startup transition
                 if (!prevState.is_running && service.is_running) {
                     showToast(window.t('msg_service_started', window.t_service_name(service)), 'success');
                 }
@@ -156,153 +103,80 @@ async function fetchServices() {
             allServices[service.id] = service;
             previousServiceStates[service.id] = { is_installing: service.is_installing, is_running: service.is_running };
 
-            if (service.status !== 'disabled' && !isCoreService(service)) {
-                loadModelStatus(service.id);
-            }
+            if (service.status !== 'disabled' && !isCoreService(service)) loadModelStatus(service.id);
         });
 
+        renderFromCache();
 
-
-        uiRender.renderServices(services, previousServiceStates, allServiceModels, {
-            onStart: installService,
-            onToggleAutostart: toggleAutostart,
-            onReinstall: reinstallService,
-            onRemove: removeService,
-            onDeleteImage: deleteImage,
-            onDownload: downloadModel,
-            onModelChange: (serviceId, path) => uiRender.filterVisionModels(serviceId, path, allServiceModels),
-            onTabModels: (serviceId) => loadModelStatus(serviceId)
-        }, { step: currentStep });
-
-        const completionPanel = document.getElementById('completion-panel');
-        if (completionPanel && !completionPanel.classList.contains('hidden')) {
-            renderCompletionPanel();
-        }
-
+        const p = document.getElementById('completion-panel');
+        if (p && !p.classList.contains('hidden')) renderCompletionPanel();
         updateWizardUI();
     } catch (err) { console.error("Services fetch error:", err); }
 }
 
 function renderFromCache() {
     const services = Object.values(allServices);
-    if (services.length === 0) return;
-
+    if (!services.length) return;
     uiRender.renderServices(services, previousServiceStates, allServiceModels, {
-        onStart: installService,
-        onToggleAutostart: toggleAutostart,
-        onReinstall: reinstallService,
-        onRemove: removeService,
-        onDeleteImage: deleteImage,
-        onDownload: downloadModel,
-        onModelChange: (serviceId, path) => uiRender.filterVisionModels(serviceId, path, allServiceModels),
-        onTabModels: (serviceId) => loadModelStatus(serviceId)
+        onStart: installService, onToggleAutostart: toggleAutostart,
+        onReinstall: reinstallService, onRemove: removeService,
+        onDeleteImage: deleteImage, onDownload: downloadModel,
+        onModelChange: (sid, path) => uiRender.filterVisionModels(sid, path, allServiceModels),
+        onTabModels: loadModelStatus
     }, { step: currentStep });
 }
 
 async function loadModelStatus(serviceId) {
     try {
-        const service = allServices[serviceId];
-        const isDisabled = service?.status === 'disabled';
         const models = await api.fetchModels(serviceId);
         allServiceModels[serviceId] = models;
         uiRender.updateModelSelect(serviceId, models, allServiceModels);
-        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel, onCancel: cancelDownload }, isDisabled);
+        uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel, onCancel: cancelDownload }, allServices[serviceId]?.status === 'disabled');
     } catch (err) { console.error("Load models error:", err); }
 }
 
-async function downloadModel(serviceId, modelId, btn) {
+async function handleAction(btn, actionStr, apiCall, onSuccess, onFail) {
     try {
-        btn.disabled = true;
-        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}`;
-        const result = await api.postDownloadModel(serviceId, modelId);
-        if (result.status === 'success') {
-            showToast(result.message || window.t('msg_download_started'), 'success');
-        } else {
-            showToast(result.message || window.t('msg_error'), 'error');
-            btn.disabled = false;
-        }
-    } catch (err) {
+        if (btn) { btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t(actionStr)}`; }
+        const res = await apiCall();
+        if (res.status === 'success') { showToast(res.message || window.t('msg_success'), 'success'); if (onSuccess) onSuccess(); }
+        else { showToast(res.message || window.t('msg_error'), 'error'); if (btn) btn.disabled = false; if (onFail) onFail(); }
+        return res.status === 'success';
+    } catch {
         showToast(window.t('msg_error'), 'error');
-        btn.disabled = false;
+        if (btn) btn.disabled = false;
+        if (onFail) onFail();
+        return false;
     }
 }
 
-async function cancelDownload(serviceId, modelId, btn) {
-    try {
-        btn.disabled = true;
-        const result = await api.postCancelDownload(serviceId, modelId);
-        if (result.status === 'success') {
-            showToast(result.message, 'success');
-        } else {
-            showToast(result.message || window.t('msg_error'), 'error');
-            btn.disabled = false;
-        }
-    } catch (err) {
-        showToast(window.t('msg_error'), 'error');
-        btn.disabled = false;
-    }
-}
+const downloadModel = (sid, mid, btn) => handleAction(btn, 'status_preparing', () => api.postDownloadModel(sid, mid), null, () => { btn.innerHTML = window.t('btn_download'); });
+const cancelDownload = (sid, mid, btn) => handleAction(btn, 'status_cancelling', () => api.postCancelDownload(sid, mid));
 
 function showConfirm(title, message) {
     return new Promise((resolve) => {
         const modal = document.getElementById('confirm-modal');
-        const titleEl = document.getElementById('confirm-modal-title');
-        const messageEl = document.getElementById('confirm-modal-message');
-        const btnYes = document.getElementById('confirm-modal-yes');
-        const btnNo = document.getElementById('confirm-modal-no');
-
-        titleEl.innerText = title;
-        messageEl.innerText = message;
-
+        document.getElementById('confirm-modal-title').innerText = title;
+        document.getElementById('confirm-modal-message').innerText = message;
         modal.classList.remove('hidden');
 
-        const cleanup = (value) => {
+        const cleanup = (val) => {
             modal.classList.add('hidden');
-            btnYes.onclick = null;
-            btnNo.onclick = null;
-            modal.onclick = null;
             window.removeEventListener('keydown', handleKeyDown);
-            resolve(value);
+            resolve(val);
         };
+        const handleKeyDown = (e) => e.key === 'Escape' ? cleanup(false) : (e.key === 'Enter' ? cleanup(true) : null);
 
-        const handleKeyDown = (e) => {
-            if (e.key === 'Escape') {
-                cleanup(false);
-            } else if (e.key === 'Enter') {
-                cleanup(true);
-            }
-        };
-
-        btnYes.onclick = () => cleanup(true);
-        btnNo.onclick = () => cleanup(false);
-        modal.onclick = (e) => {
-            if (e.target === modal) cleanup(false);
-        };
+        document.getElementById('confirm-modal-yes').onclick = () => cleanup(true);
+        document.getElementById('confirm-modal-no').onclick = () => cleanup(false);
+        modal.onclick = (e) => e.target === modal && cleanup(false);
         window.addEventListener('keydown', handleKeyDown);
     });
 }
 
-async function deleteModel(serviceId, modelId, btn) {
-    const confirmed = await showConfirm(window.t('confirm_delete_model_title'), window.t('confirm_delete_model_msg'));
-    if (!confirmed) {
-        return;
-    }
-    try {
-        btn.disabled = true;
-        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}`;
-        const result = await api.postDeleteModel(serviceId, modelId);
-        if (result.status === 'success') {
-            showToast(result.message || window.t('msg_service_started', ''), 'success');
-            await loadModelStatus(serviceId);
-        } else {
-            showToast(result.message || window.t('msg_error'), 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-trash"></i>';
-        }
-    } catch (err) {
-        showToast(window.t('msg_error'), 'error');
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-trash"></i>';
+async function deleteModel(sid, mid, btn) {
+    if (await showConfirm(window.t('confirm_delete_model_title'), window.t('confirm_delete_model_msg'))) {
+        handleAction(btn, 'status_preparing', () => api.postDeleteModel(sid, mid), () => loadModelStatus(sid), () => { btn.innerHTML = '<i class="fas fa-trash"></i>'; });
     }
 }
 
@@ -310,147 +184,58 @@ async function installService(id, btn) {
     try {
         btn.disabled = true;
         btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}`;
-        const service = allServices[id];
-        const isCore = isCoreService(service);
-        const envSelect = document.getElementById(`env-select-${id}`);
-        const envId = envSelect?.value;
-        const hardware = envSelect?.options[envSelect.selectedIndex]?.getAttribute('data-hardware');
-        const modelFile = isCore ? "" : (document.getElementById(`model-select-${id}`)?.value || "");
 
-        // MMPROJ Toggle kontrolü
-        let mmprojFile = "";
-        const mmprojToggle = document.getElementById(`mmproj-toggle-${id}`);
-        if (mmprojToggle && mmprojToggle.checked) {
-            mmprojFile = mmprojToggle.dataset.path || "";
-        }
+        const envId = document.getElementById(`env-select-${id}`)?.value || "";
+        const hw = document.getElementById(`env-select-${id}`)?.options[document.getElementById(`env-select-${id}`).selectedIndex]?.getAttribute('data-hardware') || "";
+        const modelFile = isCoreService(allServices[id]) ? "" : (document.getElementById(`model-select-${id}`)?.value || "");
+        const mmprojFile = document.getElementById(`mmproj-toggle-${id}`)?.checked ? document.getElementById(`mmproj-toggle-${id}`).dataset.path : "";
 
-        // Dinamik parametreleri topla
-        const extraParams = {};
-        document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`).forEach(input => {
-            const paramId = input.dataset.paramId;
-            const type = input.dataset.type;
-            if (type === 'checkbox') {
-                extraParams[paramId] = input.checked;
-            } else if (type === 'gpu_selector') {
-                if (input.checked) extraParams[paramId] = input.value;
-            } else if (type === 'gpu_selector_multi') {
-                if (input.checked) {
-                    if (!extraParams[paramId]) extraParams[paramId] = [];
-                    extraParams[paramId].push(input.value);
-                }
-            } else if (type === 'int') {
-                extraParams[paramId] = parseInt(input.value, 10) || 0;
-            } else if (type === 'number') {
-                extraParams[paramId] = parseFloat(input.value) || 0;
-            } else {
-                extraParams[paramId] = input.value;
+        const extraParams = Array.from(document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`)).reduce((acc, input) => {
+            const { paramId, type } = input.dataset;
+            if (type === 'checkbox') acc[paramId] = input.checked;
+            else if (['gpu_selector', 'gpu_selector_multi'].includes(type) && input.checked) {
+                acc[paramId] = type === 'gpu_selector_multi' ? [...(acc[paramId] || []), input.value] : input.value;
             }
-        });
+            else if (type === 'int') acc[paramId] = parseInt(input.value, 10) || 0;
+            else if (type === 'number') acc[paramId] = parseFloat(input.value) || 0;
+            else acc[paramId] = input.value;
+            return acc;
+        }, {});
 
-        // Dizi olan (çoklu seçilmiş) parametreleri virgülle birleştir
-        for (let key in extraParams) {
-            if (Array.isArray(extraParams[key])) {
-                extraParams[key] = extraParams[key].join(',');
-            }
-        }
+        for (let key in extraParams) if (Array.isArray(extraParams[key])) extraParams[key] = extraParams[key].join(',');
 
-        const query = `hardware=${hardware || ""}&env_id=${envId || ""}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
+        const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
+
         const result = await api.postInstallService(id, query);
-
-        if (result.status !== 'success') {
-            showToast(result.message || window.t('msg_error'), 'error');
-            btn.disabled = false;
-        } else {
-            showToast(result.message || window.t('status_preparing'), 'success');
-        }
+        showToast(result.message || (result.status === 'success' ? window.t('status_preparing') : window.t('msg_error')), result.status);
+        if (result.status !== 'success') btn.disabled = false;
         fetchServices();
-    } catch (err) {
-        showToast(window.t('msg_error'), 'error');
-        btn.disabled = false;
-    }
+    } catch { showToast(window.t('msg_error'), 'error'); btn.disabled = false; }
 }
 
-async function toggleAutostart(id, btn) {
-    try {
-        btn.disabled = true;
-        const result = await api.postToggleAutostart(id);
-        if (result.status === 'success') {
-            showToast(result.message, 'success');
-        } else {
-            showToast(result.message || window.t('msg_error'), 'error');
-        }
-        fetchServices();
-    } catch (err) {
-        showToast(window.t('msg_conn_error'), 'error');
-        btn.disabled = false;
-    }
-}
+const toggleAutostart = async (id, btn) => { btn.disabled = true; await handleAction(null, '', () => api.postToggleAutostart(id), fetchServices, () => { btn.disabled = false; }); };
 
 async function deleteImage(id, btn) {
-    const service = allServices[id];
-    const serviceName = service ? window.t_service_name(service) : '';
-    const msg = serviceName
-        ? window.t('confirm_delete_image_msg_named', serviceName)
-        : window.t('confirm_delete_image_msg');
-    const confirmed = await showConfirm(window.t('confirm_delete_image_title'), msg);
-    if (!confirmed) {
-        return;
-    }
-    try {
+    const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
+    if (await showConfirm(window.t('confirm_delete_image_title'), sName ? window.t('confirm_delete_image_msg_named', sName) : window.t('confirm_delete_image_msg'))) {
         if (btn) btn.disabled = true;
-        const result = await api.postRemoveImage(id);
-        if (result.status === 'success') {
-            showToast(result.message || window.t('msg_image_deleted'), 'success');
-        } else {
-            showToast(result.message || window.t('msg_image_delete_failed'), 'error');
-        }
-        if (btn) btn.disabled = false;
-    } catch (err) {
-        showToast(window.t('msg_conn_error'), 'error');
-        if (btn) btn.disabled = false;
+        await handleAction(null, '', () => api.postRemoveImage(id), null, () => { if (btn) btn.disabled = false; });
     }
 }
 
 async function removeService(id, btn) {
-    try {
-        if (btn) btn.disabled = true;
-        const result = await api.postRemoveService(id);
-        if (result.status === 'success') {
-            showToast(result.message || window.t('msg_service_deleted'), 'success');
-            fetchServices();
-            return true;
-        } else {
-            showToast(result.message || window.t('msg_service_delete_failed'), 'error');
-            if (btn) btn.disabled = false;
-            return false;
-        }
-    } catch (err) {
-        showToast(window.t('msg_delete_endpoint_not_ready'), 'error');
-        if (btn) btn.disabled = false;
-        return false;
-    }
+    if (btn) btn.disabled = true;
+    return await handleAction(null, '', () => api.postRemoveService(id), fetchServices, () => { if (btn) btn.disabled = false; });
 }
 
 async function reinstallService(id, btn) {
-    try {
-        if (btn) btn.disabled = true;
-        const service = allServices[id];
-        if (!service?.is_installed) {
-            showToast(window.t('msg_container_not_found_installing'), 'warning');
-            return installService(id, btn || document.getElementById(`btn-main-${id}`));
-        }
-
-        const removed = await removeService(id, null);
-        if (!removed) {
-            if (btn) btn.disabled = false;
-            return;
-        }
-        const mainBtn = document.getElementById(`btn-main-${id}`);
-        await installService(id, mainBtn || btn);
-    } catch (err) {
-        showToast(window.t('msg_reinstall_failed'), 'error');
-        if (btn) btn.disabled = false;
+    if (btn) btn.disabled = true;
+    if (!allServices[id]?.is_installed) {
+        showToast(window.t('msg_container_not_found_installing'), 'warning');
+        return installService(id, btn || document.getElementById(`btn-main-${id}`));
     }
+    if (await removeService(id, null)) await installService(id, document.getElementById(`btn-main-${id}`) || btn);
+    else if (btn) btn.disabled = false;
 }
 
 function setStep(step) {
@@ -462,156 +247,90 @@ function setStep(step) {
 }
 
 function updateWizardUI() {
-    const titleEl = document.getElementById('wizard-title');
-    const subtitleEl = document.getElementById('wizard-subtitle');
-    const stepsEl = document.getElementById('wizard-steps');
-    const backBtn = document.getElementById('btn-step-back');
-    const nextBtn = document.getElementById('btn-step-next');
-
     const stepInfo = steps.find(s => s.id === currentStep);
-    if (titleEl && stepInfo) {
-        const stepTitle = window.t(stepInfo.titleKey);
-        if (titleEl.innerText !== stepTitle) {
-            titleEl.innerText = stepTitle;
-        }
-    }
-    if (subtitleEl) {
-        const subtitle = stepInfo && stepInfo.subtitleKey ? window.t(stepInfo.subtitleKey) : '';
-        if (subtitleEl.innerText !== subtitle) {
-            subtitleEl.innerText = subtitle;
-            subtitleEl.classList.toggle('hidden', !subtitle);
-        }
+    const setEl = (id, val, hideIfEmpty = false) => {
+        const el = document.getElementById(id);
+        if (el) { el.innerText = val; if (hideIfEmpty) el.classList.toggle('hidden', !val); }
+    };
+
+    if (stepInfo) {
+        setEl('wizard-title', window.t(stepInfo.titleKey));
+        setEl('wizard-subtitle', stepInfo.subtitleKey ? window.t(stepInfo.subtitleKey) : '', true);
     }
 
+    const stepsEl = document.getElementById('wizard-steps');
     if (stepsEl) {
-        const newHtml = steps.map(step => {
-            const isActive = step.id === currentStep;
-            const isComplete = step.id < currentStep;
-            const statusClass = isActive ? 'active' : (isComplete ? 'complete' : '');
-            return `
-                <div class="wizard-step ${statusClass}" data-step="${step.id}">
-                    <span class="wizard-step-number">${step.id}</span>
-                    <span class="wizard-step-label">${window.t(step.titleKey)}</span>
-                </div>
-            `;
-        }).join('');
-
-        if (stepsEl.innerHTML.trim() !== newHtml.trim()) {
-            stepsEl.innerHTML = newHtml;
-            stepsEl.querySelectorAll('.wizard-step').forEach(stepEl => {
-                stepEl.onclick = () => {
-                    const next = Number(stepEl.dataset.step);
-                    if (!Number.isNaN(next)) {
-                        setStep(next);
-                    }
-                };
-            });
-        }
+        stepsEl.innerHTML = steps.map(step => `
+            <div class="wizard-step ${step.id === currentStep ? 'active' : (step.id < currentStep ? 'complete' : '')}" data-step="${step.id}">
+                <span class="wizard-step-number">${step.id}</span>
+                <span class="wizard-step-label">${window.t(step.titleKey)}</span>
+            </div>`).join('');
+        stepsEl.querySelectorAll('.wizard-step').forEach(el => el.onclick = () => setStep(Number(el.dataset.step) || currentStep));
     }
 
-
-
+    const backBtn = document.getElementById('btn-step-back'), nextBtn = document.getElementById('btn-step-next');
     if (backBtn) backBtn.disabled = currentStep === 1;
     if (nextBtn) nextBtn.innerText = currentStep === steps.length ? window.t('btn_finish') : window.t('ui_btn_next');
 }
 
 function initWizard() {
-    const backBtn = document.getElementById('btn-step-back');
+    document.getElementById('btn-step-back')?.addEventListener('click', () => setStep(currentStep - 1));
     const nextBtn = document.getElementById('btn-step-next');
 
-    if (backBtn) backBtn.onclick = () => setStep(currentStep - 1);
     if (nextBtn) {
         nextBtn.onclick = () => {
-            if (currentStep === steps.length) {
-                const routerService = allServices['orion-router'];
-                const hubService = allServices['orion-hub'];
+            if (currentStep !== steps.length) return setStep(currentStep + 1);
 
-                // Verify both are installed and active (autostart not disabled)
-                if (!routerService?.is_installed || routerService?.autostart === false ||
-                    !hubService?.is_installed || hubService?.autostart === false) {
-                    showToast(window.t('msg_core_req'), "error");
-                    return;
-                }
-
-                // Immediately open the completion panel in starting mode
-                isSystemStarting = true;
-                openCompletionPanel();
-
-                api.postStartSystem().then(res => {
-                    showToast(res.message || window.t('msg_system_starting'), "success");
-
-                    // Fast poll (every 1.5s) to reflect startup changes rapidly.
-                    // Keeps 'isSystemStarting' true until all active services are running, or we timeout (30s).
-                    let pollCount = 0;
-                    const maxPolls = 20; // 20 * 1.5s = 30s timeout
-                    const pollInterval = setInterval(async () => {
-                        await fetchServices();
-                        pollCount++;
-
-                        const allActiveRunning = Object.values(allServices)
-                            .filter(s => s.status !== 'disabled' && s.is_installed && s.autostart !== false)
-                            .every(s => s.is_running);
-
-                        if (allActiveRunning || pollCount >= maxPolls) {
-                            clearInterval(pollInterval);
-                            isSystemStarting = false;
-                            renderCompletionPanel(); // final UI update
-                        }
-                    }, 1500);
-                }).catch(err => {
-                    showToast(window.t('msg_system_start_error'), "error");
-                    isSystemStarting = false;
-                    fetchServices();
-                });
-                return;
+            const r = allServices['orion-router'], h = allServices['orion-hub'];
+            if (!r?.is_installed || r?.autostart === false || !h?.is_installed || h?.autostart === false) {
+                return showToast(window.t('msg_core_req'), "error");
             }
-            setStep(currentStep + 1);
+
+            isSystemStarting = true;
+            openCompletionPanel();
+
+            api.postStartSystem().then(() => {
+                showToast(window.t('msg_system_starting'), "success");
+                let pollCount = 0;
+                const pollInterval = setInterval(async () => {
+                    await fetchServices();
+                    if (Object.values(allServices).filter(s => s.status !== 'disabled' && s.is_installed && s.autostart !== false).every(s => s.is_running) || ++pollCount >= 20) {
+                        clearInterval(pollInterval);
+                        isSystemStarting = false;
+                        renderCompletionPanel();
+                    }
+                }, 1500);
+            }).catch(() => {
+                showToast(window.t('msg_system_start_error'), "error");
+                isSystemStarting = false;
+                fetchServices();
+            });
         };
     }
 
-    const closeBtn = document.getElementById('btn-close-completion');
-    if (closeBtn) closeBtn.onclick = closeCompletionPanel;
-
-    const completionPanel = document.getElementById('completion-panel');
-    if (completionPanel) {
-        completionPanel.addEventListener('click', (event) => {
-            if (event.target === completionPanel) closeCompletionPanel();
-        });
-    }
-
+    document.getElementById('btn-close-completion')?.addEventListener('click', closeCompletionPanel);
+    document.getElementById('completion-panel')?.addEventListener('click', e => e.target.id === 'completion-panel' && closeCompletionPanel());
     updateWizardUI();
 }
 
-// Initialization
 window.addEventListener('DOMContentLoaded', () => {
-    // Setup Language Selector
     const langSelect = document.getElementById('lang-select');
     if (langSelect) {
         langSelect.value = localStorage.getItem('orion_lang') || window.orionLang || 'en';
-        langSelect.addEventListener('change', (e) => {
-            if (window.setLanguage) window.setLanguage(e.target.value);
-        });
+        langSelect.addEventListener('change', e => window.setLanguage && window.setLanguage(e.target.value));
     }
 
-    // Re-render strings when language changes
     window.addEventListener('languageChanged', () => {
         updateWizardUI();
         renderFromCache();
-
-        // Update all models lists and selects immediately from cache
-        Object.keys(allServices).forEach(serviceId => {
-            const service = allServices[serviceId];
-            if (service && service.status !== 'disabled' && !isCoreService(service) && allServiceModels[serviceId]) {
-                const models = allServiceModels[serviceId];
-                const isDisabled = service.status === 'disabled';
-                uiRender.updateModelSelect(serviceId, models, allServiceModels);
-                uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel }, isDisabled);
+        Object.keys(allServices).forEach(sid => {
+            const s = allServices[sid];
+            if (s && s.status !== 'disabled' && !isCoreService(s) && allServiceModels[sid]) {
+                uiRender.updateModelSelect(sid, allServiceModels[sid], allServiceModels);
+                uiRender.renderModelList(sid, allServiceModels[sid], { onDownload: downloadModel, onDelete: deleteModel }, s.status === 'disabled');
             }
         });
-
-        if (!document.getElementById('completion-panel')?.classList.contains('hidden')) {
-            renderCompletionPanel();
-        }
+        if (!document.getElementById('completion-panel')?.classList.contains('hidden')) renderCompletionPanel();
     });
 
     api.postKeepAlive();
@@ -620,6 +339,4 @@ window.addEventListener('DOMContentLoaded', () => {
     setInterval(fetchServices, 5000);
 });
 
-window.addEventListener('beforeunload', () => {
-    api.sendShutdownBeacon();
-});
+window.addEventListener('beforeunload', () => api.sendShutdownBeacon());

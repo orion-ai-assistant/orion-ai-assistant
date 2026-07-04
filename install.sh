@@ -41,10 +41,13 @@ fi
 
 cd "$TARGET_DIR" || exit 1
 
-echo -e "\n[2/2] Handing over to Unified Python Installer..."
+echo -e "\n[2/3] Handing over to Unified Python Setup..."
 $PYTHON_CMD orion.py setup "$MODE"
 
 if [ $? -ne 0 ]; then
     echo -e "\n${RED}[ERROR] Setup failed.${NC}"
     exit 1
 fi
+
+echo -e "\n[3/3] Starting Orion Installer..."
+$PYTHON_CMD orion.py installer
