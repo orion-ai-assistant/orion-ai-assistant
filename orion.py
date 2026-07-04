@@ -24,38 +24,65 @@ def get_python_executable(venv_dir):
         return os.path.join(venv_dir, "Scripts", "python.exe")
     return os.path.join(venv_dir, "bin", "python")
 
-def load_env_port(key, default):
+def _read_env_files():
+    """Her iki global env dosyasını okuyup birleştirilmiş bir dict döner.
+    .env.global.local değerleri .env.global'ı override eder."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    ports = {}
+    result = {}
+    for env_name in [".env.global", ".env.global.local"]:
+        env_path = os.path.join(base_dir, "services", env_name)
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            result[k.strip()] = v.strip()
+            except Exception:
+                pass
+    return result
 
-    global_env = os.path.join(base_dir, "services", ".env.global")
-    if os.path.exists(global_env):
-        try:
-            with open(global_env, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        ports[k.strip()] = v.strip()
-        except Exception:
-            pass
-
-    local_env = os.path.join(base_dir, "services", ".env.global.local")
-    if os.path.exists(local_env):
-        try:
-            with open(local_env, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        ports[k.strip()] = v.strip()
-        except Exception:
-            pass
-
-    val = ports.get(key)
+def load_env_port(key, default):
+    val = _read_env_files().get(key)
     if val and val.isdigit():
         return int(val)
     return default
+
+def load_env_var(key, default=None):
+    """Global env dosyalarından string bir değeri okur."""
+    return _read_env_files().get(key, default)
+
+def save_install_mode(mode):
+    """Kurulum modunu .env.global.local dosyasına kalıcı olarak yazar."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    local_env_path = os.path.join(base_dir, "services", ".env.global.local")
+
+    lines = []
+    mode_updated = False
+    if os.path.exists(local_env_path):
+        try:
+            with open(local_env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            pass
+
+    for i, line in enumerate(lines):
+        if line.strip().startswith("ORION_INSTALL_MODE="):
+            lines[i] = f"ORION_INSTALL_MODE={mode}\n"
+            mode_updated = True
+            break
+
+    if not mode_updated:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"ORION_INSTALL_MODE={mode}\n")
+
+    try:
+        with open(local_env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except OSError as e:
+        print(f"[!] Warning: Could not save installation mode: {e}")
 
 def is_port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -165,9 +192,13 @@ def ensure_venv(target_dir, venv_dir):
             print(f"[!] Hata: Eski venv silinemedi: {e}")
 
     print(f"[!] Sanal ortam oluşturuluyor: {target_dir}")
-    uv_check = subprocess.run(["uv", "--version"], capture_output=True)
+    try:
+        uv_check = subprocess.run(["uv", "--version"], capture_output=True)
+        has_uv = (uv_check.returncode == 0)
+    except FileNotFoundError:
+        has_uv = False
 
-    if uv_check.returncode == 0:
+    if has_uv:
         subprocess.run(["uv", "venv"], cwd=target_dir, check=True)
     else:
         subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=target_dir, check=True)
@@ -237,15 +268,26 @@ def cmd_run(alias, extra_args):
         print(f"\n[X] Kritik Hata: {e}")
 
 def get_mode_from_args(args):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    mode = "local" if os.path.exists(os.path.join(base_dir, "services", "hub", ".venv")) else "docker"
+    # 1. Öncelik: CLI argümanları (örn: orion start --docker)
     if args:
         normalized_args = [arg.strip().lower() for arg in args]
         if "--local" in normalized_args or "local" in normalized_args:
-            mode = "local"
+            return "local"
         elif "--docker" in normalized_args or "docker" in normalized_args:
-            mode = "docker"
-    return mode
+            return "docker"
+
+    # 2. Öncelik: Kurulumda kaydedilen mod (ORION_INSTALL_MODE in .env.global.local)
+    saved_mode = load_env_var("ORION_INSTALL_MODE")
+    if saved_mode in ("local", "docker"):
+        return saved_mode
+
+    # 3. Geriye dönük uyumluluk: eski kurulumlardan kalan .local_db varsa local
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.exists(os.path.join(base_dir, ".local_db")):
+        return "local"
+
+    # Nihai varsayılan
+    return "docker"
 
 def find_orionrouter_script():
     if os.name == 'nt':
@@ -296,7 +338,7 @@ def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder):
         os.makedirs(pg_log_dir)
     pg_log_file = os.path.join(pg_log_dir, "postgres.log")
 
-    cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log_file, "-w"]
+    cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log_file, "-o", "-F", "-w"]
     try:
         if os.name == 'nt':
             NO_WINDOW = 0x08000000 | 0x00000200
@@ -341,6 +383,7 @@ def cmd_help(args=None):
 def handle_installer(args):
     mode = get_mode_from_args(args)
     print(f"[i] Installation Mode Set: {mode.upper()}")
+    save_install_mode(mode)
     os.environ["ORION_INSTALL_MODE"] = mode
     if mode == "docker":
         ensure_docker_running()
@@ -348,6 +391,7 @@ def handle_installer(args):
 
 def handle_setup(args):
     mode = get_mode_from_args(args)
+    save_install_mode(mode)
     print(f"\n==========================================")
     print(f"   Orion AI Assistant Setup ({mode.upper()})")
     print(f"==========================================\n")
@@ -613,6 +657,16 @@ def handle_stop(args):
                 print(f"[!] Could not read PID file: {e}")
         else:
             print("[!] No hub.pid found. Hub may not be running.")
+            
+        # ZOMBI AVCISI: PID dosyasından bağımsız olarak portu kontrol et ve gerekirse zorla kapat
+        hub_port = load_env_port("HUB_PORT", 8000)
+        if is_port_in_use(hub_port):
+            print(f"[!] Hub port {hub_port} is still in use! Force-stopping the orphaned process...")
+            if os.name == 'nt':
+                subprocess.run(["powershell", "-c", f"Get-Process -Id (Get-NetTCPConnection -LocalPort {hub_port} -ErrorAction SilentlyContinue).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force"], capture_output=True)
+            else:
+                subprocess.run(f"lsof -t -i:{hub_port} | xargs kill -9", shell=True, capture_output=True)
+            print("[!] Orphaned Hub process force stopped.")
 
         # 2. Router'ı kapat
         plat, path = find_orionrouter_script()
@@ -688,16 +742,14 @@ def handle_status(args):
         postgres_port = load_env_port("POSTGRES_PORT", 5432)
         redis_port = load_env_port("REDIS_PORT", 6379)
         core_services = [
-            ("PostgreSQL", postgres_port),
-            ("Redis", redis_port),
-            ("Orion Hub (API)", hub_port),
-            ("Orion Router", router_port)
+            ("Orion Hub", [hub_port, postgres_port, redis_port]),
+            ("Orion Router", [router_port])
         ]
         all_running = True
         hub_running = False
-        for name, port in core_services:
-            is_running = is_port_in_use(port)
-            if name == "Orion Hub (API)":
+        for name, ports in core_services:
+            is_running = all(is_port_in_use(p) for p in ports)
+            if name == "Orion Hub":
                 hub_running = is_running
 
             status_text = "\033[92mRUNNING\033[0m" if is_running else "\033[91mSTOPPED\033[0m"

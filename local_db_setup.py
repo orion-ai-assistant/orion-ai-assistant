@@ -62,7 +62,7 @@ def install_windows():
         subprocess.run([initdb_exe, "-D", data_dir, "-U", "postgres", "--auth=trust", "--locale=C", "--encoding=UTF8"], check=True)
         
         print("[*] Starting temporary PostgreSQL to create users...")
-        subprocess.run([pg_ctl_exe, "start", "-D", data_dir, "-w"])
+        subprocess.run([pg_ctl_exe, "start", "-D", data_dir, "-o", "-F", "-w"])
         
         try:
             print("[*] Creating router_user and orion_router database...")
