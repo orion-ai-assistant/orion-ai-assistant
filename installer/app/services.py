@@ -631,14 +631,16 @@ def start_active_services() -> dict:
                 clean_env = os.environ.copy()
                 clean_env.pop("VIRTUAL_ENV", None)
                 
-                print("[SYSTEM] Starting all local services via 'python orion.py start'")
+                log_path = os.path.join(base_dir, "orion_start_ui.log")
+                log_file = open(log_path, "w", encoding="utf-8")
+                print(f"[SYSTEM] Starting all local services via 'python orion.py start' | log: {log_path}")
                 if os.name == 'nt':
                     cflags = 0x08000000  # CREATE_NO_WINDOW
                     subprocess.Popen(["python", orion_py, "start"], cwd=base_dir, env=clean_env, creationflags=cflags,
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                     stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
                 else:
                     subprocess.Popen(["python3", orion_py, "start"], cwd=base_dir, env=clean_env, start_new_session=True,
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                     stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file)
                 return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
                 
             compose_file = None
