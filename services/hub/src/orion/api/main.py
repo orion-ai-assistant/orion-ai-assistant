@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from orion.api.routes import router
 from orion.api.auth_routes import router as auth_router
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
-from orion.kernel.environment import get_redis_url
+from services.shared.environment import get_redis_url
 from orion.kernel.config import get_runtime_settings, seed_database_settings
 
 

@@ -558,9 +558,13 @@ def handle_start(args):
                 if os.path.exists(pid_path):
                     os.remove(pid_path)
 
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+
                 local_env = os.environ.copy()
                 local_env["HUB_PORT"] = str(hub_port)
                 local_env["PYTHONUNBUFFERED"] = "1"
+                existing_pythonpath = local_env.get("PYTHONPATH", "")
+                local_env["PYTHONPATH"] = os.pathsep.join(filter(None, [base_dir, existing_pythonpath]))
 
                 if os.name == 'nt':
                     if show_terminals:

@@ -232,7 +232,9 @@ if __name__ == "__main__":
     import sys
     import urllib.request
     import json
-    PORT = 7171
+
+    global_env = config._load_global_env()
+    PORT = int(global_env.get("INSTALLER_PORT", "7171"))
 
     # Check if another instance is already running on this port via ping
     is_already_running = False
@@ -285,9 +287,6 @@ if __name__ == "__main__":
         else:
             print(f"\n[!] Kritik Hata: {PORT} portu kullanımda, lütfen arka plandaki diğer uygulamaları kapatın.")
             sys.exit(1)
-
-    global_env = config._load_global_env()
-    PORT = int(global_env.get("INSTALLER_PORT", "7171"))
 
     print(f"\n[SYSTEM] Orion Installer başlatıldı.")
     print(f"[SYSTEM] Arayüz otomatik olarak açılacaktır.")

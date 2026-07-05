@@ -11,6 +11,7 @@ COPY --from=ffmpeg-source /ffprobe /usr/local/bin/
 
 # 2. Sistem Bağımlılıkları (ffmpeg buradan kaldırıldı)
 ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONPATH=/app
 RUN apt-get update && apt-get install -y \
     python3-dev \
     libsndfile1 \
@@ -20,7 +21,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # 3. Bağımlılıkları Önceden Kur (Genel API Bağımlılıkları)
-COPY pyproject.toml /app/
+COPY services/tts/pyproject.toml /app/
 RUN pip3 install --no-cache-dir uv && \
     uv pip install --system -r pyproject.toml
 
@@ -28,14 +29,15 @@ RUN pip3 install --no-cache-dir uv && \
 ARG ENGINE_NAME
 
 # 4.1. Sadece yapılandırma dosyasını kopyala
-COPY ./${ENGINE_NAME}/pyproject.toml /app/src/
+COPY services/tts/${ENGINE_NAME}/pyproject.toml /app/src/
 
 # 4.2. Sadece bağımlılıkları toml üzerinden kur (Çok hızlı ve basit)
 RUN uv pip install --system -r /app/src/pyproject.toml
 
 # 4.3. Motor kodlarını kopyala (Seçili motora göre dinamik)
-COPY ./${ENGINE_NAME} /app/src/
-COPY . /app/
+COPY services/tts/${ENGINE_NAME} /app/src/
+COPY services/tts /app/
+COPY services/shared /app/services/shared
 
 # 4.4. Kodu sisteme bağla
 RUN uv pip install --system --no-deps /app/src/

@@ -1,4 +1,5 @@
 import os
+from services.shared.environment import get_env
 import time
 import uuid
 import logging
@@ -24,19 +25,19 @@ from schemas import SpeechRequest
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TTS_PORT = int(os.environ["TTS_PORT"])
+TTS_PORT = get_env("TTS_PORT", cast=int)
 
 # ——————————————————————————————————————————
 # Config Helpers
 # ——————————————————————————————————————————
 def _parse_bool_env(name: str, default: bool = False) -> bool:
-    val = os.environ.get(name)
+    val = get_env(name, default=None)
     if val is None:
         return default
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 def _parse_idle_cleanup_mins(default: int = 10) -> int:
-    raw = os.environ.get("IDLE_CLEANUP_MINS", str(default))
+    raw = get_env("IDLE_CLEANUP_MINS", str(default))
     try:
         return int(float(str(raw).strip()))
     except (TypeError, ValueError):
@@ -54,8 +55,8 @@ def create_wav_header(sample_rate: int, data_size: int) -> bytes:
 # ——————————————————————————————————————————
 engine = None
 registry = VoiceRegistry("voices")
-engine_name_env = os.environ.get("ENGINE_NAME", "omnivoice").lower().strip()
-model_path_env = os.environ.get("MODEL_PATH", "").lower()
+engine_name_env = get_env("ENGINE_NAME", "omnivoice").lower().strip()
+model_path_env = get_env("MODEL_PATH", "").lower()
 is_omnivoice = "omnivoice" in engine_name_env or "omnivoice" in model_path_env
 low_vram_enabled = _parse_bool_env("LOW_VRAM", default=False)
 

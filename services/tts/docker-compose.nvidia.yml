@@ -1,8 +1,8 @@
 services:
   tts:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../../
+      dockerfile: services/tts/Dockerfile
       args:
         - "ENGINE_NAME=${ENGINE_NAME}"
         - "BASE_IMAGE=${BASE_IMAGE}"

@@ -38,7 +38,8 @@ services:
 
   api:
     build:
-      dockerfile: api.Dockerfile
+      context: ../../
+      dockerfile: services/hub/api.Dockerfile
     container_name: ${HUB_HOST}
     restart: unless-stopped
     ports:
@@ -58,7 +59,8 @@ services:
 
   worker:
     build:
-      dockerfile: worker.Dockerfile
+      context: ../../
+      dockerfile: services/hub/worker.Dockerfile
     container_name: ${WORKER_HOST}
     restart: unless-stopped
     env_file:

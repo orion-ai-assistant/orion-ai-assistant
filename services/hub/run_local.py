@@ -5,6 +5,14 @@ import signal
 import time
 import threading
 
+# Dynamic path injection for services package imports (shared environment module)
+_hub_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(_hub_dir, "..", ".."))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from services.shared.environment import get_env
+
 COLORS = {
     "[API]": "\033[96m",     # Cyan
     "[WORKER]": "\033[93m",  # Yellow
@@ -47,9 +55,16 @@ def main():
     print("==========================================")
     
     # Environment config
-    hub_port = os.environ["HUB_PORT"]
+    hub_port = get_env("HUB_PORT")
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+    
+    hub_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(hub_dir, "..", ".."))
+    hub_src = os.path.join(hub_dir, "src")
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    new_pythonpath = os.pathsep.join(filter(None, [hub_src, repo_root, existing_pythonpath]))
+    
+    env["PYTHONPATH"] = new_pythonpath
     env["PYTHONUNBUFFERED"] = "1"
     
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

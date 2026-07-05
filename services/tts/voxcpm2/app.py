@@ -1,4 +1,5 @@
 import os
+from services.shared.environment import get_env
 import re
 import sys
 import logging
@@ -21,7 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TTS_PORT = int(os.environ["TTS_PORT"])
+TTS_PORT = get_env("TTS_PORT", cast=int)
 
 # ---------- Inline i18n (en + zh-CN only) ----------
 
@@ -576,7 +577,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     # Orion Low-VRAM Standard
     vae_device = args.vae_device
-    if os.environ.get("LOW_VRAM") == "true" and not vae_device:
+    if get_env("LOW_VRAM", default=None) == "true" and not vae_device:
         logger.info("Orion Low-VRAM mode detected: Offloading VAE to CPU")
         vae_device = "cpu"
 

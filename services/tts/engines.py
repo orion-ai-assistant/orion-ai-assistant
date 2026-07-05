@@ -1,4 +1,5 @@
 import os
+from services.shared.environment import get_env
 import sys
 import torch
 import gc
@@ -25,7 +26,7 @@ def _env_to_bool(value: Any, default: bool = False) -> bool:
 class TTSEngine:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.low_vram = _env_to_bool(os.environ.get("LOW_VRAM", "false"), default=False)
+        self.low_vram = _env_to_bool(get_env("LOW_VRAM", "false"), default=False)
 
     def set_seed(self, seed: int):
         """Merkezi rastgelelik (seed) ayarı."""
@@ -220,8 +221,8 @@ class OmniVoiceEngine(TTSEngine):
         yield audio_data.tobytes()
 
 def get_engine():
-    engine_name = os.environ.get("ENGINE_NAME", "omnivoice").lower()
-    model_path = os.environ.get("MODEL_PATH")
+    engine_name = get_env("ENGINE_NAME", "omnivoice").lower()
+    model_path = get_env("MODEL_PATH", default=None)
     
     logger.info(f"Yüklenen TTS Motoru: {engine_name}")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from services.shared.environment import get_env
 import random
 import typing
 
@@ -21,13 +22,13 @@ class Accelerator:
     """
 
     def __init__(self, amp: bool = False, seed: int = 42):
-        self.world_size = int(os.getenv("WORLD_SIZE", "1"))
+        self.world_size = get_env("WORLD_SIZE", "1", required=False, cast=int)
 
         if self.world_size > 1 and not dist.is_initialized():
             dist.init_process_group("nccl", init_method="env://")
 
         self.rank = dist.get_rank() if dist.is_initialized() else 0
-        self.local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        self.local_rank = get_env("LOCAL_RANK", "0", required=False, cast=int)
         self.amp = amp
 
         # Set random seed to ensure model initialization consistency

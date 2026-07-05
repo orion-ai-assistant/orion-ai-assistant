@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
-from orion.kernel.environment import get_router_base_urls
+from services.shared.environment import get_router_base_urls
 from orion.contracts.settings import RuntimeSettings
 
 

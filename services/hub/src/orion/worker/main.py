@@ -6,7 +6,7 @@ from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from orion.contracts.constants import CONSUMER_GROUP, SETTINGS_DEFAULT_USER, STREAM_NAME
-from orion.kernel.environment import get_redis_url
+from services.shared.environment import get_redis_url
 from orion.kernel.config import get_runtime_settings
 from orion.worker.services.job_processor import process_message
 from orion.worker.services.router import close_session

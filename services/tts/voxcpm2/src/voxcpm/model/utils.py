@@ -157,7 +157,9 @@ def pick_runtime_dtype(device: str, configured_dtype: str) -> str:
     if device != "mps":
         return configured_dtype
 
-    override = os.environ.get("VOXCPM_MPS_DTYPE", "").strip().lower()
+    from services.shared.environment import get_env
+
+    override = get_env("VOXCPM_MPS_DTYPE", default="").strip().lower()
     if override:
         if override not in _VALID_DTYPE_OVERRIDES:
             raise ValueError(

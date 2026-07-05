@@ -1,4 +1,5 @@
 import os
+from services.shared.environment import get_env
 import torch
 import voxcpm
 import soundfile as sf
@@ -16,7 +17,7 @@ logger = logging.getLogger("voxcpm-worker")
 
 app = FastAPI(title="Orion VoxCPM Worker")
 
-DEFAULT_TTS_PORT = int(os.environ["TTS_PORT"])
+DEFAULT_TTS_PORT = get_env("TTS_PORT", cast=int)
 
 # Global model değişkeni
 model = None
@@ -67,9 +68,9 @@ def start_worker():
     global model, MODEL_INFO
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-id", type=str, default=os.getenv("MODEL_FILE", "voxcpm2"), help="Model path or ID")
+    parser.add_argument("--model-id", type=str, default=get_env("MODEL_FILE", "voxcpm2"), help="Model path or ID")
     parser.add_argument("--port", type=int, default=DEFAULT_TTS_PORT, help="API Port")
-    parser.add_argument("--vae-device", type=str, default=os.getenv("VAE_DEVICE", None), help="VAE Device")
+    parser.add_argument("--vae-device", type=str, default=get_env("VAE_DEVICE", default=None), help="VAE Device")
     args = parser.parse_args()
 
     # Model yolunu belirle

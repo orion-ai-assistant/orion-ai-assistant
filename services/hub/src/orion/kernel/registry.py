@@ -5,7 +5,7 @@ import logging
 
 import asyncpg
 
-from orion.kernel.environment import get_postgres_url
+from services.shared.environment import get_postgres_url
 
 logger = logging.getLogger(__name__)
 

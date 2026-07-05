@@ -1,5 +1,5 @@
 import asyncio
-import os
+from services.shared.environment import get_env
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
@@ -161,7 +161,7 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
     return settings
 
 def _check_admin_key(request: Request):
-    admin_key = os.getenv("ADMIN_API_KEY")
+    admin_key = get_env("ADMIN_API_KEY")
     if admin_key:
         provided = request.headers.get("X-Admin-Key")
         if provided != admin_key:

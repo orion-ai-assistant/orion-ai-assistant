@@ -1,4 +1,4 @@
-import os
+from services.shared.environment import get_env
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -29,7 +29,7 @@ class UserProfile(BaseModel):
     is_active: bool
 
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> str:
-    admin_key = os.getenv("ADMIN_API_KEY")
+    admin_key = get_env("ADMIN_API_KEY")
     provided_admin_key = request.headers.get("X-Admin-Key")
     
     if provided_admin_key is not None:

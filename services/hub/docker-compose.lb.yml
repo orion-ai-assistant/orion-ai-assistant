@@ -4,8 +4,8 @@
 services:
   api_2:
     build:
-      context: .
-      dockerfile: api.Dockerfile
+      context: ../../
+      dockerfile: services/hub/api.Dockerfile
     container_name: ${API_2_HOST}
     restart: unless-stopped
     env_file:

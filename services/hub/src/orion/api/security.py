@@ -1,11 +1,11 @@
-import os
+from services.shared.environment import get_env
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 from fastapi import HTTPException, status
 
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "super-secret-default-key-for-dev")
+JWT_SECRET_KEY = get_env("JWT_SECRET_KEY", "super-secret-default-key-for-dev")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 24 * 60  # 24 hours
 

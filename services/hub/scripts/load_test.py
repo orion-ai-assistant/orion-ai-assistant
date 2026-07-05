@@ -1,17 +1,17 @@
 import asyncio
 import contextlib
 import json
-import os
+from services.shared.environment import get_env
 import statistics
 import time
 
 import aiohttp
 
-BASE_URL = os.getenv("ORION_BASE_URL", "http://localhost:8909")
-USER_COUNT = int(os.getenv("ORION_USER_COUNT", "8"))
-MESSAGE_COUNT = int(os.getenv("ORION_MESSAGE_COUNT", "1"))
-JOB_COMPLETE_TIMEOUT_SECONDS = int(os.getenv("ORION_JOB_COMPLETE_TIMEOUT_SECONDS", "60"))
-POST_TIMEOUT_SECONDS = int(os.getenv("ORION_POST_TIMEOUT_SECONDS", "20"))
+BASE_URL = get_env("ORION_BASE_URL", "http://localhost:8909")
+USER_COUNT = get_env("ORION_USER_COUNT", "8", cast=int)
+MESSAGE_COUNT = get_env("ORION_MESSAGE_COUNT", "1", cast=int)
+JOB_COMPLETE_TIMEOUT_SECONDS = get_env("ORION_JOB_COMPLETE_TIMEOUT_SECONDS", "60", cast=int)
+POST_TIMEOUT_SECONDS = get_env("ORION_POST_TIMEOUT_SECONDS", "20", cast=int)
 
 latencies_ms: list[float] = []
 post_latencies_ms: list[float] = []

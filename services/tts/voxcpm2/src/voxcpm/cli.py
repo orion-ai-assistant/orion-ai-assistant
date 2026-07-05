@@ -8,6 +8,7 @@ VoxCPM2-first CLI for voice design, cloning, and batch processing.
 import argparse
 import json
 import os
+from services.shared.environment import get_env
 import sys
 from pathlib import Path
 
@@ -173,8 +174,8 @@ def load_model(args):
 
     print("Loading VoxCPM model...", file=sys.stderr)
 
-    zipenhancer_path = getattr(args, "zipenhancer_path", None) or os.environ.get(
-        "ZIPENHANCER_MODEL_PATH", None
+    zipenhancer_path = getattr(args, "zipenhancer_path", None) or get_env(
+        "ZIPENHANCER_MODEL_PATH", default=None
     )
 
     # Build LoRA config if provided
