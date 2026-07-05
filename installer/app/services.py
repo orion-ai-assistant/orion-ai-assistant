@@ -122,7 +122,7 @@ def get_services() -> list[dict]:
                 try:
                     out = subprocess.run(["wmic", "process", "where", "name='python.exe'", "get", "commandline"], capture_output=True, text=True).stdout
                     if data.get("id") == "orion-router":
-                        if "orion.py prod" in out:
+                        if "manager.py prod" in out:
                             proc_running = True
                     else:
                         if "run_local.py" in out or "orion.api.main" in out or "orion.worker.main" in out:
@@ -132,7 +132,7 @@ def get_services() -> list[dict]:
             else:
                 try:
                     if data.get("id") == "orion-router":
-                        out = subprocess.run(["pgrep", "-f", "orion.py prod"], capture_output=True, text=True).stdout
+                        out = subprocess.run(["pgrep", "-f", "manager.py prod"], capture_output=True, text=True).stdout
                     else:
                         out = subprocess.run(["pgrep", "-f", "run_local.py|orion.api.main|orion.worker.main"], capture_output=True, text=True).stdout
                     if out.strip():
@@ -466,10 +466,29 @@ def run_local_installation(service_id: str, service_dir: str):
         pip_exe = os.path.join(venv_dir, "Scripts", "pip.exe") if os.name == 'nt' else os.path.join(venv_dir, "bin", "pip")
         
         if not os.path.exists(venv_dir):
-            subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True)
+            try:
+                subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as e:
+                raise Exception(f"Venv Hatası: {(e.stderr or e.stdout or '').strip()}")
             
-        subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip"], cwd=setup_dir, check=True)
-        subprocess.run([pip_exe, "install", "-e", "."], cwd=setup_dir, check=True)
+        try:
+            subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "--no-warn-script-location"], cwd=setup_dir, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            err_msg = (e.stderr or e.stdout or '').strip()
+            if "No module named pip" in err_msg:
+                # Pip might be broken due to an interrupted upgrade. Try to repair it.
+                try:
+                    subprocess.run([py_exe, "-m", "ensurepip", "--upgrade"], cwd=setup_dir, check=True, capture_output=True, text=True)
+                    subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "--no-warn-script-location"], cwd=setup_dir, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as repair_err:
+                    raise Exception(f"Pip Onarım Hatası: {(repair_err.stderr or repair_err.stdout or '').strip()}")
+            else:
+                raise Exception(f"Pip Güncelleme Hatası: {err_msg}")
+
+        try:
+            subprocess.run([pip_exe, "install", "-e", "."], cwd=setup_dir, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            raise Exception(f"Pip Install Hatası: {(e.stderr or e.stdout or '').strip()}")
         
     except Exception as e:
         config.INSTALL_ERRORS[service_id] = f"Yerel Kurulum Hatasi: {str(e)}"
@@ -593,13 +612,13 @@ def start_active_services() -> dict:
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     if install_mode == "local":
-        orion_py = os.path.join(base_dir, "orion.py")
+        orion_py = os.path.join(base_dir, "manager.py")
         
         # Sanal ortamdan (venv) kaçış
         clean_env = os.environ.copy()
         clean_env.pop("VIRTUAL_ENV", None)
         
-        print("[SYSTEM] Starting all local services via 'python orion.py start'")
+        print("[SYSTEM] Starting all local services via 'python manager.py start'")
         if os.name == 'nt':
             cflags = 0x08000000  # CREATE_NO_WINDOW
             subprocess.Popen(["python", orion_py, "start"], cwd=base_dir, env=clean_env, creationflags=cflags,

@@ -332,7 +332,7 @@ def clean_stale_postmaster_lock(pg_data):
         except OSError:
             pass
 
-def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder):
+def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder, postgres_port):
     """
     pg_ctl start -w komutu doğası gereği bloklayıcıdır (sunucu hazır olana kadar bekler).
     Router ve Hub'ı bekletmemek için bu fonksiyon ayrı bir thread içinde çalıştırılır.
@@ -342,7 +342,7 @@ def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder):
         os.makedirs(pg_log_dir)
     pg_log_file = os.path.join(pg_log_dir, "postgres.log")
 
-    cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log_file, "-o", "-F", "-w"]
+    cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log_file, "-o", f"-F -p {postgres_port}", "-w"]
     try:
         if os.name == 'nt':
             NO_WINDOW = 0x08000000 | 0x00000200
@@ -365,7 +365,7 @@ def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder):
 # --- KOMUT İŞLEYİCİLER ---
 def cmd_help(args=None):
     print("\n=== ORION AI ASSISTANT MANAGER ===")
-    print("Usage: python orion.py <command> [options]")
+    print("Usage: python manager.py <command> [options]")
     print("\nCommands:")
     print("  setup      Install dependencies and prepare environment")
     print("  start      Start all services (default: silent, background)")
@@ -419,14 +419,14 @@ def handle_setup(args):
             if os.name == 'nt':
                 cmd_path = os.path.join(base_dir, "orion.cmd")
                 with open(cmd_path, "w") as f:
-                    f.write('@echo off\npython "%~dp0orion.py" %*\n')
+                    f.write('@echo off\npython "%~dp0manager.py" %*\n')
                 # Add to PATH using PowerShell
                 ps_cmd = f"$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User'); if ($userPath -notlike '*{base_dir}*') {{ [Environment]::SetEnvironmentVariable('PATH', $userPath + ';{base_dir}', 'User') }}"
                 subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd])
             else:
                 sh_path = os.path.join(base_dir, "orion")
                 with open(sh_path, "w") as f:
-                    f.write('#!/usr/bin/env bash\npython3 "$(dirname "$0")/orion.py" "$@"\n')
+                    f.write('#!/usr/bin/env bash\npython3 "$(dirname "$0")/manager.py" "$@"\n')
                 os.chmod(sh_path, 0o755)
                 # Add to shell profiles
                 export_line = f'\nexport PATH="$PATH:{base_dir}"\n'
@@ -442,7 +442,7 @@ def handle_setup(args):
 
     print("[*] Setting up Installer Virtual Environment...")
     setup_environment("installer")
-    print(f"\n[OK] Setup completed successfully! You can now use 'python orion.py start {mode}' or other commands.")
+    print(f"\n[OK] Setup completed successfully! You can now use 'python manager.py start {mode}' or other commands.")
 
 def handle_start(args):
     mode = get_mode_from_args(args)
@@ -465,7 +465,7 @@ def handle_start(args):
 
         if postgres_running and redis_running and hub_running and router_running:
             print("\n[!] All local services are already running.")
-            print("    Please run 'python orion.py stop' before starting again.")
+            print("    Please run 'python manager.py stop' before starting again.")
             return
 
         print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
@@ -487,9 +487,10 @@ def handle_start(args):
                 # yoksa pg_ctl start bazı durumlarda gereksiz uyarı/çakışma verebiliyor.
                 clean_stale_postmaster_lock(pg_data)
                 pg_start_time = time.time()
+                postgres_port = load_env_port("POSTGRES_PORT")
                 pg_thread = threading.Thread(
                     target=start_postgres_blocking,
-                    args=(pg_ctl, pg_data, show_terminals, pg_result),
+                    args=(pg_ctl, pg_data, show_terminals, pg_result, postgres_port),
                     daemon=True
                 )
                 pg_thread.start()
@@ -615,7 +616,7 @@ def handle_start(args):
             print("\n[OK] Orion Hub and Orion Router have been started in separate visible windows.")
         else:
             print("\n[OK] Orion Hub and Orion Router have been started in the background.")
-            print("[i] To view live logs at any time, run: python orion.py logs")
+            print("[i] To view live logs at any time, run: python manager.py logs")
     else:
         print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
         if not shutil.which("docker"):
@@ -827,7 +828,7 @@ def handle_status(args):
             for name, sid in models:
                 print(f"  {name.ljust(20)} : \033[90mUNKNOWN (Hub is stopped)\033[0m")
 
-        print("\n" + ("All core services are RUNNING." if all_running else "Some services are STOPPED. Run 'python orion.py start' to launch them."))
+        print("\n" + ("All core services are RUNNING." if all_running else "Some services are STOPPED. Run 'python manager.py start' to launch them."))
     else:
         subprocess.run(["docker", "compose", "ps"])
 
@@ -948,4 +949,4 @@ if __name__ == "__main__":
         handler(args)
     else:
         print(f"[!] Hata: Geçersiz komut '{action}'")
-        print("Geçerli komutları görmek için: python orion.py help")
+        print("Geçerli komutları görmek için: python manager.py help")

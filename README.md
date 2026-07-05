@@ -34,22 +34,22 @@ Orion AI Assistant is a unified, cross-platform ecosystem designed to orchestrat
    
    *For Local (Native) Installation:*
    ```bash
-   python orion.py installer local
+   python manager.py installer local
    ```
    
    *For Docker Installation:*
    ```bash
-   python orion.py installer docker
+   python manager.py installer docker
    ```
    
    *The installer will automatically open in your default web browser.*
 
 ### CLI Commands
-Orion provides a unified CLI tool (`orion.py`) to manage your environment:
+Orion provides a unified CLI tool (`manager.py`) to manage your environment:
 
-- `python orion.py setup [local|docker]` : Prepares the databases, virtual environments, and fetches the Router without launching the GUI.
-- `python orion.py start [local|docker]` : Starts all configured services.
-- `python orion.py stop [local|docker]` : Stops all background processes and containers.
+- `python manager.py setup [local|docker]` : Prepares the databases, virtual environments, and fetches the Router without launching the GUI.
+- `python manager.py start [local|docker]` : Starts all configured services.
+- `python manager.py stop [local|docker]` : Stops all background processes and containers.
 
 ## 📚 Documentation
 For more detailed documentation, API references, and architecture overviews, please refer to our internal wiki or the `docs/` folder (coming soon).

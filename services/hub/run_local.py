@@ -104,7 +104,7 @@ def main():
     all_pids.append(worker_proc.pid)
     threading.Thread(target=stream_logs, args=(worker_proc, "[WORKER]", log_file, log_lock), daemon=True).start()
     
-    # Write ALL PIDs to hub.pid so orion.py stop can cleanly kill them all
+    # Write ALL PIDs to hub.pid so manager.py stop can cleanly kill them all
     write_pids(pid_path, all_pids)
     print("[*] Tailing logs (Close this window to leave processes running in background)...\n" + "-"*40)
     

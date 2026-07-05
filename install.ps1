@@ -62,7 +62,7 @@ Write-Host ""
 
 # 3. Call Unified Python Setup
 Write-Host "[3/4] Handing over to Unified Python Setup..." -ForegroundColor Yellow
-python orion.py setup $Mode
+python manager.py setup $Mode
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n[ERROR] Setup failed." -ForegroundColor Red
@@ -71,4 +71,4 @@ if ($LASTEXITCODE -ne 0) {
 
 # 4. Start Installer automatically
 Write-Host "`n[4/4] Starting Orion Installer..." -ForegroundColor Yellow
-python orion.py installer $Mode
+python manager.py installer $Mode
