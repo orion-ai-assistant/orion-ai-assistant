@@ -612,7 +612,7 @@ def start_active_services() -> dict:
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     if install_mode == "local":
-        orion_py = os.path.join(base_dir, "manager.py")
+        manager_py = os.path.join(base_dir, "manager.py")
         
         # Sanal ortamdan (venv) kaçış
         clean_env = os.environ.copy()
@@ -621,10 +621,10 @@ def start_active_services() -> dict:
         print("[SYSTEM] Starting all local services via 'python manager.py start'")
         if os.name == 'nt':
             cflags = 0x08000000  # CREATE_NO_WINDOW
-            subprocess.Popen(["python", orion_py, "start"], cwd=base_dir, env=clean_env, creationflags=cflags,
+            subprocess.Popen(["python", manager_py, "start"], cwd=base_dir, env=clean_env, creationflags=cflags,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            subprocess.Popen(["python3", orion_py, "start"], cwd=base_dir, env=clean_env, start_new_session=True,
+            subprocess.Popen(["python3", manager_py, "start"], cwd=base_dir, env=clean_env, start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"status": "success", "started": ["Orion Local Stack"], "failed": []}
 

@@ -112,32 +112,30 @@ class LangUpdate(BaseModel):
 @router.post("/api/system/lang")
 def update_lang(data: LangUpdate):
     try:
-        paths = [
-            os.path.join(config.SERVICES_DIR, ".env.global"),
-            os.path.join(config.SERVICES_DIR, ".env.global.local")
-        ]
-        
-        for path in paths:
-            lines = []
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-            elif path.endswith(".local"):
-                lines = ["# Local overrides and auto-generated keys for Orion Services\n"]
-                
-            found = False
-            for i, line in enumerate(lines):
-                if line.startswith("CLI_LANG="):
-                    lines[i] = f"CLI_LANG={data.lang}\n"
-                    found = True
-                    break
+        # Sadece .env.global.local dosyasına yazıyoruz
+
+        # CLI_LANG ayarını .env.global.local dosyasına kaydet
+        local_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
+        lines = []
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        else:
+            lines = ["# Local overrides and auto-generated keys for Orion Services\n"]
             
-            if not found:
-                lines.append(f"\nCLI_LANG={data.lang}\n")
-                
-            with open(path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-                
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("CLI_LANG="):
+                lines[i] = f"CLI_LANG={data.lang}\n"
+                found = True
+                break
+        
+        if not found:
+            lines.append(f"\nCLI_LANG={data.lang}\n")
+            
+        with open(local_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+            
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
