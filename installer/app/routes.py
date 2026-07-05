@@ -118,14 +118,13 @@ def update_lang(data: LangUpdate):
         ]
         
         for path in paths:
-            if not os.path.exists(path) and path.endswith(".local"):
-                continue  # Sadece mevcutsa local dosyayı güncelle
-                
             lines = []
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     lines = f.readlines()
-            
+            elif path.endswith(".local"):
+                lines = ["# Local overrides and auto-generated keys for Orion Services\n"]
+                
             found = False
             for i, line in enumerate(lines):
                 if line.startswith("CLI_LANG="):

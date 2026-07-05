@@ -51,6 +51,22 @@ def _load_global_env() -> dict[str, str]:
                     k, v = line.split("=", 1)
                     env[k.strip()] = v.strip()
 
+    # CLI_LANG ayarını otomatik algıla ve yerel ayarlara kaydet
+    if "CLI_LANG" not in env:
+        import locale
+        try:
+            sys_lang = locale.getdefaultlocale()[0]
+            lang_code = sys_lang.split("_")[0] if sys_lang else "en"
+        except Exception:
+            lang_code = "en"
+        
+        env["CLI_LANG"] = lang_code
+        try:
+            with open(local_path, "a", encoding="utf-8") as f:
+                f.write(f"\nCLI_LANG={lang_code}\n")
+        except Exception:
+            pass
+
     # HOST+PORT'tan URL'leri otomatik türet — global.env'de elle yazma
     for key, host in list(env.items()):
         if not key.endswith("_HOST") or not host:
