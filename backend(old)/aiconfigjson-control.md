@@ -1,1 +1,0 @@
-bak şey yap buradan değişince sanki değerler değişmiyor gibi onu kontrol et mesela burada işte şuan promt vs yok onları da ekleyebiliriz ayrıca her şey oradan değişsin ve orayla kontrol etsin diğer dosyaları mesela işte cli falanda buradan okusun bence bilemedim kontrol et bunları çünkü bir kaçında ordan algılamıyor diye hatırlıyorum.

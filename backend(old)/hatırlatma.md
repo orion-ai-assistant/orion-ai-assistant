@@ -1,1 +1,0 @@
-arangodb bir tane şeyde kendisi volume oluşturuyordu biz onu isimlendirememiştik onu çözdük mu bak bi.

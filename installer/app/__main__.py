@@ -286,6 +286,9 @@ if __name__ == "__main__":
             print(f"\n[!] Kritik Hata: {PORT} portu kullanımda, lütfen arka plandaki diğer uygulamaları kapatın.")
             sys.exit(1)
 
+    global_env = config._load_global_env()
+    PORT = int(global_env.get("INSTALLER_PORT", "7171"))
+
     print(f"\n[SYSTEM] Orion Installer başlatıldı.")
     print(f"[SYSTEM] Arayüz otomatik olarak açılacaktır.")
     print(f"[SYSTEM] Eğer otomatik açılmazsa, tarayıcınızdan şu adrese gidebilirsiniz: http://127.0.0.1:{PORT}\n")

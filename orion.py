@@ -468,8 +468,7 @@ def handle_start(args):
             print("    Please run 'python orion.py stop' before starting again.")
             return
 
-        print(f"\nStarting Orion AI Assistant in {mode.upper()} mode" + (" (WITH VISIBLE TERMINALS)" if show_terminals else " (SILENT BACKGROUND)") + "...")
-        print("[*] Launching PostgreSQL, Orion Router and Orion Hub in parallel...")
+        print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
 
         # SADECE PENCERE GİZLEME VE YENİ GRUP BAYRAĞI (ÇAKIŞMAYAN KOMBİNASYON)
         NO_WINDOW = 0x08000000 | 0x00000200 if os.name == 'nt' else 0
@@ -482,12 +481,11 @@ def handle_start(args):
         if os.path.exists(pg_ctl) and os.path.exists(pg_data):
             if postgres_running:
                 postgres_port = load_env_port("POSTGRES_PORT")
-                print(f"[!] PostgreSQL is already running on port {postgres_port}.")
+                print(f"[!] Orion Hub database is already running on port {postgres_port}.")
             else:
                 # Önceki bir force-kill'den kalmış bayat kilit dosyası varsa temizle,
                 # yoksa pg_ctl start bazı durumlarda gereksiz uyarı/çakışma verebiliyor.
                 clean_stale_postmaster_lock(pg_data)
-                print("[*] Starting Portable PostgreSQL (background thread, non-blocking)...")
                 pg_start_time = time.time()
                 pg_thread = threading.Thread(
                     target=start_postgres_blocking,
@@ -502,7 +500,7 @@ def handle_start(args):
             if router_running:
                 print(f"[!] Orion Router is already running on port {router_port}.")
             else:
-                print("[*] Starting Orion Router (Local, Parallel)...")
+                print("[*] Starting Orion Router...")
                 if plat == "win":
                     if show_terminals:
                         cmd_router = ["powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start"]
@@ -526,12 +524,9 @@ def handle_start(args):
         #    olana kadar bloke olur; bu join'i Hub'dan ÖNCEYE aldık ki Hub, DB hazır
         #    olmadan asla başlamasın. Router bundan etkilenmiyor, o zaten bağımsız.
         if pg_thread:
-            print("[*] Waiting for PostgreSQL to become ready before starting Hub...")
             pg_thread.join()
             pg_elapsed = time.time() - pg_start_time if pg_start_time else None
             if pg_result.get("success"):
-                suffix = f" (took {pg_elapsed:.1f}s)" if pg_elapsed is not None else ""
-                print(f"[OK] PostgreSQL is ready.{suffix}")
                 if pg_elapsed is not None and pg_elapsed > 8:
                     pg_log_file = os.path.join(pg_data, "log", "postgres.log")
                     log_tail = tail_file(pg_log_file, 25)
@@ -545,17 +540,17 @@ def handle_start(args):
                         print("    or 'redo starts at' — these mean it's replaying WAL (crash recovery),")
                         print("    which is the most common reason for a slow local startup.\n")
             else:
-                print(f"[!] PostgreSQL failed to start. Check the log at: {os.path.join(pg_data, 'log', 'postgres.log')}")
-                print("[!] Starting Hub anyway, but it will likely fail to connect to the database.")
+                print(f"[!] Orion Hub failed to start. Check the log at: {os.path.join(pg_data, 'log', 'postgres.log')}")
+                print("[!] Starting Hub anyway, but it may fail to connect to the database.")
 
-        # 4. ORION HUB (API, Worker, Redis) — artık DB hazır olduktan SONRA başlıyor
+        # 4. ORION HUB — artık DB hazır olduktan SONRA başlıyor
         hub_dir = os.path.join(base_dir, "services", "hub")
         hub_py = setup_environment("services/hub")
         if os.path.exists(os.path.join(hub_dir, "run_local.py")) and hub_py and os.path.exists(hub_py):
             if hub_running:
-                print(f"[!] Orion Hub (API) is already running on port {hub_port}.")
+                print(f"[!] Orion Hub is already running on port {hub_port}.")
             else:
-                print("[*] Starting Orion Hub (API, Worker, Redis)...")
+                print("[*] Starting Orion Hub...")
                 log_path = os.path.join(hub_dir, "hub.log")
                 pid_path = os.path.join(hub_dir, "hub.pid")
                 if os.path.exists(log_path):
@@ -563,16 +558,20 @@ def handle_start(args):
                 if os.path.exists(pid_path):
                     os.remove(pid_path)
 
+                local_env = os.environ.copy()
+                local_env["HUB_PORT"] = str(hub_port)
+                local_env["PYTHONUNBUFFERED"] = "1"
+
                 if os.name == 'nt':
                     if show_terminals:
                         cmd_hub = ["cmd", "/k", hub_py, "run_local.py"]
-                        subprocess.Popen(cmd_hub, cwd=hub_dir, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=subprocess.CREATE_NEW_CONSOLE)
                     else:
                         cmd_hub = [hub_py, "run_local.py"]
-                        subprocess.Popen(cmd_hub, cwd=hub_dir, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     cmd_hub = [hub_py, "run_local.py"]
-                    subprocess.Popen(cmd_hub, cwd=hub_dir, start_new_session=not show_terminals, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, start_new_session=not show_terminals, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             if not hub_running:
                 print("[!] Orion Hub files or environment missing. Cannot start Hub.")
@@ -591,7 +590,7 @@ def handle_start(args):
             t = threading.Thread(target=_measure, args=("Orion Router", router_port), daemon=True)
             measure_threads.append(t)
         if os.path.exists(os.path.join(hub_dir, "run_local.py")) and hub_py and os.path.exists(hub_py) and not hub_running:
-            t = threading.Thread(target=_measure, args=("Orion Hub (API)", hub_port), daemon=True)
+            t = threading.Thread(target=_measure, args=("Orion Hub", hub_port), daemon=True)
             measure_threads.append(t)
 
         for t in measure_threads:
@@ -600,7 +599,7 @@ def handle_start(args):
             t.join()
 
         if measure_threads:
-            print("\n--- ACTUAL READINESS TIMES (port gerçekten açıldı) ---")
+            print("\n--- ACTUAL READINESS TIMES ---")
             for name, elapsed in readiness_results.items():
                 if elapsed is not None:
                     print(f"    {name.ljust(20)} : {elapsed:.1f}s")
@@ -609,9 +608,9 @@ def handle_start(args):
             print("--------------------------------------------------------")
 
         if show_terminals:
-            print("\n[OK] Native processes have been started in separate visible windows.")
+            print("\n[OK] Orion Hub and Orion Router have been started in separate visible windows.")
         else:
-            print("\n[OK] All local services have been started in parallel in the background.")
+            print("\n[OK] Orion Hub and Orion Router have been started in the background.")
             print("[i] To view live logs at any time, run: python orion.py logs")
     else:
         print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
@@ -642,6 +641,7 @@ def handle_stop(args):
                     print(f"[!] Could not read PID file: {e}")
 
             if pids:
+                print("[*] Stopping Orion Hub...")
                 # Graceful: SIGTERM tüm PID'lere
                 for pid in pids:
                     if os.name == 'nt':
@@ -673,7 +673,7 @@ def handle_stop(args):
                     os.remove(pid_path)
                 except OSError:
                     pass
-                print("[OK] Hub services (API, Worker, Redis) stopped.")
+                print("[OK] Orion Hub stopped.")
             else:
                 print("[i] No hub.pid found. Hub may not be running.")
 
@@ -699,22 +699,18 @@ def handle_stop(args):
                 return
 
             if get_pg_status(pg_ctl, pg_data):
-                print("[*] Stopping PostgreSQL (graceful)...")
                 result = subprocess.run(
                     [pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"],
                     capture_output=True, text=True
                 )
-                if result.returncode == 0:
-                    print("[OK] PostgreSQL stopped gracefully.")
-                else:
-                    print("[!] pg_ctl stop failed, force-stopping PostgreSQL...")
+                if result.returncode != 0:
+                    print("[!] Orion Hub stop failed, forcing stop...")
                     if os.name == 'nt':
                         subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
                     else:
                         subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
-                    print("[!] PostgreSQL force stopped.")
             else:
-                print("[i] PostgreSQL is not running (already stopped).")
+                print("[i] Orion Hub database is not running (already stopped).")
 
             clean_stale_postmaster_lock(pg_data)
 

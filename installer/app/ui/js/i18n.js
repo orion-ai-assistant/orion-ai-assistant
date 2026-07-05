@@ -1,19 +1,44 @@
 const translations = window.orionLocales || { tr: {}, en: {} };
 
-let currentLanguage = localStorage.getItem('orion_lang') || window.orionLang || 'en';
+function normalizeLanguage(lang) {
+    if (!lang) return null;
+    const lower = lang.trim().toLowerCase();
+    if (translations[lower]) return lower;
+    const base = lower.split('-')[0];
+    if (translations[base]) return base;
+    return null;
+}
+
+function detectBrowserLanguage() {
+    const candidates = [];
+    if (Array.isArray(navigator.languages)) candidates.push(...navigator.languages);
+    if (navigator.language) candidates.push(navigator.language);
+    for (const candidate of candidates) {
+        const normalized = normalizeLanguage(candidate);
+        if (normalized) return normalized;
+    }
+    return null;
+}
+
+let currentLanguage = normalizeLanguage(localStorage.getItem('orion_lang'))
+    || normalizeLanguage(window.orionLang)
+    || detectBrowserLanguage()
+    || 'en';
 
 window.setLanguage = async function(lang) {
-    if (!translations[lang]) return;
-    currentLanguage = lang;
-    localStorage.setItem('orion_lang', lang);
-    window.orionLang = lang;
+    const normalized = normalizeLanguage(lang);
+    if (!normalized) return;
+    currentLanguage = normalized;
+    localStorage.setItem('orion_lang', normalized);
+    window.orionLang = normalized;
+    document.documentElement.lang = normalized;
     
     // Attempt to notify backend
     try {
         await fetch('/api/system/lang', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lang: lang })
+            body: JSON.stringify({ lang: normalized })
         });
     } catch (e) {
         console.warn("Failed to update backend language preference", e);
@@ -80,9 +105,11 @@ function updateStaticTexts() {
 
 // Initial setup
 document.addEventListener('DOMContentLoaded', () => {
-    // Determine default language from backend global config if passed, else fallback
-    if (window.orionLang && !localStorage.getItem('orion_lang')) {
-        currentLanguage = window.orionLang;
+    // Determine default language from saved preference, server config, or browser locale.
+    document.documentElement.lang = currentLanguage;
+    if (!localStorage.getItem('orion_lang') && currentLanguage) {
+        window.setLanguage(currentLanguage);
+        return;
     }
     updateStaticTexts();
 });

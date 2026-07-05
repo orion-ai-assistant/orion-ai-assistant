@@ -7,7 +7,7 @@ import time
 
 import aiohttp
 
-BASE_URL = os.getenv("ORION_BASE_URL", "http://localhost:8000")
+BASE_URL = os.getenv("ORION_BASE_URL", "http://localhost:8909")
 USER_COUNT = int(os.getenv("ORION_USER_COUNT", "8"))
 MESSAGE_COUNT = int(os.getenv("ORION_MESSAGE_COUNT", "1"))
 JOB_COMPLETE_TIMEOUT_SECONDS = int(os.getenv("ORION_JOB_COMPLETE_TIMEOUT_SECONDS", "60"))

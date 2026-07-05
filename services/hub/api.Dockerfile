@@ -15,6 +15,4 @@ RUN uv pip install --system --no-cache-dir .
 # 2. Kodları kopyala
 COPY src /app/src
 
-EXPOSE 8000
-
-CMD ["uvicorn", "orion.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn orion.api.main:app --host 0.0.0.0 --port ${HUB_CONTAINER_PORT}"]
