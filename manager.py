@@ -799,34 +799,52 @@ def handle_status(args):
 
         print("\n--- AI MODELS ---")
         models = [
-            ("Orion LLM", "llama-cpp"),
-            ("Orion Embedding", "llama-cpp-embed"),
-            ("Orion TTS", "orion-tts")
+            ("Orion LLM", "llm/llama-cpp", "LLM_PORT"),
+            ("Orion Embedding", "embedding/llama-cpp-embed", "EMBED_PORT"),
+            ("Orion TTS", "tts", "TTS_PORT")
         ]
 
-        if hub_running:
-            api_data = {}
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        for name, rel_path, port_key in models:
+            s_dir = os.path.join(base_dir, "services", rel_path)
+            manifest_path = os.path.join(s_dir, "manifest.json")
             try:
-                req = urllib.request.Request(f"http://127.0.0.1:{hub_port}/api/services")
-                with urllib.request.urlopen(req, timeout=1.0) as response:
-                    res_data = json.loads(response.read().decode())
-                    if isinstance(res_data, list):
-                        for s in res_data:
-                            api_data[s.get("id", "")] = s.get("status", "UNKNOWN")
-                    elif isinstance(res_data, dict):
-                        api_data = res_data
+                port = load_env_port(port_key)
             except Exception:
-                pass
+                port = None
 
-            for name, sid in models:
-                st = api_data.get(sid, {}).get("status") if isinstance(api_data.get(sid), dict) else api_data.get(sid)
-                if not st or st == "UNKNOWN":
-                    st = "DISABLED"
-                color = "\033[92m" if st == "ACTIVE" else "\033[90m"
-                print(f"  {name.ljust(20)} : {color}{st}\033[0m")
-        else:
-            for name, sid in models:
-                print(f"  {name.ljust(20)} : \033[90mUNKNOWN (Hub is stopped)\033[0m")
+            st = "DISABLED"
+            if port and is_port_in_use(port):
+                st = "ACTIVE"
+            else:
+                if os.path.exists(manifest_path):
+                    try:
+                        with open(manifest_path, "r", encoding="utf-8") as f:
+                            m_data = json.load(f)
+                        
+                        env_path = os.path.join(s_dir, ".env")
+                        if os.path.exists(env_path):
+                            disabled_path = os.path.join(s_dir, ".disabled")
+                            enabled_path = os.path.join(s_dir, ".enabled")
+                            is_manifest_disabled = m_data.get("status") == "disabled"
+                            
+                            if is_manifest_disabled:
+                                is_active = os.path.exists(enabled_path)
+                            else:
+                                is_active = not os.path.exists(disabled_path)
+                            
+                            if is_active:
+                                st = "STOPPED"
+                    except Exception:
+                        pass
+
+            if st == "ACTIVE":
+                color = "\033[92m"  # Green
+            elif st == "STOPPED":
+                color = "\033[91m"  # Red
+            else:
+                color = "\033[90m"  # Gray
+            print(f"  {name.ljust(20)} : {color}{st}\033[0m")
 
         print("\n" + ("All core services are RUNNING." if all_running else "Some services are STOPPED. Run 'python manager.py start' to launch them."))
     else:
