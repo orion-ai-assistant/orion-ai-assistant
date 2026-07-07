@@ -87,7 +87,8 @@ def main():
     
     if os.path.exists(redis_exe):
         print("[*] Launching Portable Redis...")
-        redis_proc = subprocess.Popen([redis_exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+        redis_dir = os.path.dirname(redis_exe)
+        redis_proc = subprocess.Popen([redis_exe], cwd=redis_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
         processes.append(redis_proc)
         all_pids.append(redis_proc.pid)
         threading.Thread(target=stream_logs, args=(redis_proc, "[REDIS]", log_file, log_lock), daemon=True).start()
