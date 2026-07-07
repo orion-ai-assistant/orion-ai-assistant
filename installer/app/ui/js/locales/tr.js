@@ -46,6 +46,7 @@ window.orionLocales.tr = {
     // Toasts / Messages
     msg_install_failed: "{0} kurulumu başarısız!",
     msg_service_started: "{0} başladı!",
+    msg_service_installed: "{0} kuruldu!",
     msg_error: "Hata!",
     msg_system_starting: "Sistem başlatılıyor...",
     msg_system_start_error: "Sistem başlatılırken hata oluştu!",

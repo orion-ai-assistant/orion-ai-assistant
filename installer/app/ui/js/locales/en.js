@@ -46,6 +46,7 @@ window.orionLocales.en = {
     // Toasts / Messages
     msg_install_failed: "Failed to install {0}!",
     msg_service_started: "{0} started!",
+    msg_service_installed: "{0} installed!",
     msg_error: "Error!",
     msg_system_starting: "Starting system...",
     msg_system_start_error: "An error occurred while starting the system!",
