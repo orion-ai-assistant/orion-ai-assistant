@@ -1,19 +1,8 @@
-# Ignore model files in service directories
-embedding/infinity/models/
-llm/llama-cpp/models/
-stt/whisper/models/
-tts/models/
-embedding/llama-cpp-embed/models/
-
-.env.global.local
-.venv/
-.env
-__pycache__/
-
-*.py[cod]
+# Python build/package artifacts
 *$py.class
 *.egg-info/
 build/
 dist/
 
+# Service control files
 .disabled
