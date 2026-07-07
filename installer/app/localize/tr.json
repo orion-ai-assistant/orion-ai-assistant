@@ -21,6 +21,7 @@
     "MSG_PARAM_RANGE_ERROR": "{0} değeri {1}-{2} arası olmalıdır.",
     "MSG_PARAM_MUST_BE_NUM": "{0} geçerli bir sayı olmalıdır.",
     "MSG_SERVICE_STOPPED": "Servis durduruldu",
+    "MSG_SERVICE_DELETED": "Servis silindi",
     "MSG_IMAGE_DELETED_SUCCESS": "İmaj başarıyla silindi",
     "MSG_IMAGE_NOT_FOUND": "İmaj bulunamadı veya silinemedi"
 }

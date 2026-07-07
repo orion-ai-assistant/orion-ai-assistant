@@ -73,10 +73,10 @@ window.orionLocales.tr = {
     ui_btn_back: "Geri",
     ui_btn_close: "Kapat",
         ui_hw_os: "İşletim Sistemi",
-    ui_hw_cpu: "İşlemci",
+    ui_hw_cpu: "CPU",
     ui_hw_gpu: "GPU",
     ui_hw_ram: "Sistem Belleği",
-    ui_hw_vram: "VRAM Kapasitesi",
+    ui_hw_vram: "VRAM",
     
     // Wizard Steps
     ui_step_1_title: "Kurulum Ortamı",

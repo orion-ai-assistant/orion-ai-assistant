@@ -73,10 +73,10 @@ window.orionLocales.en = {
     ui_btn_back: "Back",
     ui_btn_close: "Close",
     ui_hw_os: "Operating System",
-    ui_hw_cpu: "Processor (CPU)",
-    ui_hw_gpu: "Graphics Card (GPU)",
+    ui_hw_cpu: "CPU",
+    ui_hw_gpu: "GPU",
     ui_hw_ram: "System RAM",
-    ui_hw_vram: "Video RAM (VRAM)",
+    ui_hw_vram: "VRAM",
 
     // Wizard Steps
     ui_step_1_title: "Installation Environment",
