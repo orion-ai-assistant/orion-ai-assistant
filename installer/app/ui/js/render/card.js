@@ -129,7 +129,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     if (isDisabled && !service.is_installed) {
         actionHtml = `<button class="btn" disabled>${window.t('status_unavailable')}</button>`;
     } else if (service.is_installing) {
-        actionHtml = `<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> ${window.t('status_preparing')}</button>`;
+        actionHtml = `<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}</button>`;
     } else {
         const isAuto = service.autostart !== false;
         const isCore = isCoreService(service);

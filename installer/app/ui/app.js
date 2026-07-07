@@ -136,22 +136,38 @@ async function loadModelStatus(serviceId) {
 }
 
 async function handleAction(btn, actionStr, apiCall, onSuccess, onFail) {
+    const originalHtml = btn ? btn.innerHTML : '';
     try {
-        if (btn) { btn.disabled = true; btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t(actionStr)}`; }
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = actionStr ? `<i class="fas fa-spinner fa-spin"></i> ${window.t(actionStr)}` : `<i class="fas fa-spinner fa-spin"></i>`;
+        }
         const res = await apiCall();
-        if (res.status === 'success') { showToast(res.message || window.t('msg_success'), 'success'); if (onSuccess) onSuccess(); }
-        else { showToast(res.message || window.t('msg_error'), 'error'); if (btn) btn.disabled = false; if (onFail) onFail(); }
+        if (res.status === 'success') {
+            showToast(res.message || window.t('msg_success'), 'success');
+            if (onSuccess) onSuccess();
+        } else {
+            showToast(res.message || window.t('msg_error'), 'error');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+            if (onFail) onFail();
+        }
         return res.status === 'success';
     } catch {
         showToast(window.t('msg_error'), 'error');
-        if (btn) btn.disabled = false;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
         if (onFail) onFail();
         return false;
     }
 }
 
-const downloadModel = (sid, mid, btn) => handleAction(btn, 'status_preparing', () => api.postDownloadModel(sid, mid), null, () => { btn.innerHTML = window.t('btn_download'); });
-const cancelDownload = (sid, mid, btn) => handleAction(btn, 'status_cancelling', () => api.postCancelDownload(sid, mid));
+const downloadModel = (sid, mid, btn) => handleAction(btn, '', () => api.postDownloadModel(sid, mid));
+const cancelDownload = (sid, mid, btn) => handleAction(btn, '', () => api.postCancelDownload(sid, mid));
 
 function showConfirm(title, message) {
     return new Promise((resolve) => {
@@ -176,14 +192,17 @@ function showConfirm(title, message) {
 
 async function deleteModel(sid, mid, btn) {
     if (await showConfirm(window.t('confirm_delete_model_title'), window.t('confirm_delete_model_msg'))) {
-        handleAction(btn, 'status_preparing', () => api.postDeleteModel(sid, mid), () => loadModelStatus(sid), () => { btn.innerHTML = '<i class="fas fa-trash"></i>'; });
+        handleAction(btn, '', () => api.postDeleteModel(sid, mid), () => loadModelStatus(sid));
     }
 }
 
 async function installService(id, btn) {
+    const originalHtml = btn ? btn.innerHTML : '';
     try {
-        btn.disabled = true;
-        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}`;
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}`;
+        }
 
         const envId = document.getElementById(`env-select-${id}`)?.value || "";
         const hw = document.getElementById(`env-select-${id}`)?.options[document.getElementById(`env-select-${id}`).selectedIndex]?.getAttribute('data-hardware') || "";
@@ -207,10 +226,21 @@ async function installService(id, btn) {
         const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
 
         const result = await api.postInstallService(id, query);
-        showToast(result.message || (result.status === 'success' ? window.t('status_preparing') : window.t('msg_error')), result.status);
-        if (result.status !== 'success') btn.disabled = false;
+        showToast(result.message || (result.status === 'success' ? window.t('status_starting') : window.t('msg_error')), result.status);
+        if (result.status !== 'success') {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            }
+        }
         fetchServices();
-    } catch { showToast(window.t('msg_error'), 'error'); btn.disabled = false; }
+    } catch {
+        showToast(window.t('msg_error'), 'error');
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
 }
 
 const toggleAutostart = async (id, btn) => { btn.disabled = true; await handleAction(null, '', () => api.postToggleAutostart(id), fetchServices, () => { btn.disabled = false; }); };

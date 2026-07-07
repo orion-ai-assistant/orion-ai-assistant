@@ -6,7 +6,6 @@ window.orionLocales.en = {
     status_stopped: "Stopped",
     status_disabled: "Disabled",
     status_starting: "Starting...",
-    status_preparing: "Preparing...",
     status_active: "Active",
     status_unavailable: "Unavailable",
 
