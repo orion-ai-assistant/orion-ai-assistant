@@ -95,8 +95,7 @@ async function fetchServices() {
             if (prevState) {
                 if (prevState.is_installing && !service.is_installing) {
                     showToast(window.t(service.is_installed ? 'msg_service_installed' : 'msg_install_failed', window.t_service_name(service)), service.is_installed ? 'success' : 'error');
-                }
-                if (!prevState.is_running && service.is_running) {
+                } else if (!prevState.is_running && service.is_running) {
                     showToast(window.t('msg_service_started', window.t_service_name(service)), 'success');
                 }
             }
