@@ -60,6 +60,14 @@ def save_install_mode(mode):
     """Kurulum modunu .env.global.local dosyasına kalıcı olarak yazar."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     local_env_path = os.path.join(base_dir, "services", ".env.global.local")
+    example_env_path = os.path.join(base_dir, "services", ".env.global.local.example")
+
+    if not os.path.exists(local_env_path) and os.path.exists(example_env_path):
+        import shutil
+        try:
+            shutil.copyfile(example_env_path, local_env_path)
+        except OSError:
+            pass
 
     lines = []
     mode_updated = False
@@ -410,9 +418,6 @@ def handle_setup(args):
     print("[OK] All required tools are present.")
 
     if mode == "local":
-        local_db_script = os.path.join(base_dir, "local_db_setup.py")
-        if os.path.exists(local_db_script):
-            subprocess.run([sys.executable, local_db_script], check=True)
 
         print("[*] Setting up 'orion' global CLI command...")
         try:

@@ -8,6 +8,7 @@ import shutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_DB_DIR = os.path.join(BASE_DIR, ".local_db")
+CACHE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Orion", "cache")
 
 def install_windows():
     os.makedirs(LOCAL_DB_DIR, exist_ok=True)
@@ -15,23 +16,30 @@ def install_windows():
     # 1. Install Redis
     redis_dir = os.path.join(LOCAL_DB_DIR, "redis")
     if not os.path.exists(os.path.join(redis_dir, "redis-server.exe")):
-        print("[*] Downloading Portable Redis for Windows...")
-        redis_zip = os.path.join(LOCAL_DB_DIR, "redis.zip")
-        urllib.request.urlretrieve("https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip", redis_zip)
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        redis_zip = os.path.join(CACHE_DIR, "redis.zip")
+        if not os.path.exists(redis_zip):
+            print("[*] Downloading Portable Redis for Windows...")
+            urllib.request.urlretrieve("https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip", redis_zip)
+        else:
+            print("[*] Portable Redis zip found in cache.")
         
         print("[*] Extracting Redis...")
         with zipfile.ZipFile(redis_zip, 'r') as zip_ref:
             zip_ref.extractall(redis_dir)
-        os.remove(redis_zip)
     else:
         print("[OK] Portable Redis already installed.")
         
     # 2. Install Postgres
     pg_dir = os.path.join(LOCAL_DB_DIR, "postgres")
     if not os.path.exists(os.path.join(pg_dir, "bin", "pg_ctl.exe")):
-        print("[*] Downloading Portable PostgreSQL 16 for Windows (this might take a few minutes)...")
-        pg_zip = os.path.join(LOCAL_DB_DIR, "postgres.zip")
-        urllib.request.urlretrieve("https://get.enterprisedb.com/postgresql/postgresql-16.3-1-windows-x64-binaries.zip", pg_zip)
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        pg_zip = os.path.join(CACHE_DIR, "postgres.zip")
+        if not os.path.exists(pg_zip):
+            print("[*] Downloading Portable PostgreSQL 16 for Windows (this might take a few minutes)...")
+            urllib.request.urlretrieve("https://get.enterprisedb.com/postgresql/postgresql-16.3-1-windows-x64-binaries.zip", pg_zip)
+        else:
+            print("[*] Portable PostgreSQL zip found in cache.")
         
         print("[*] Extracting PostgreSQL...")
         with zipfile.ZipFile(pg_zip, 'r') as zip_ref:
@@ -44,7 +52,6 @@ def install_windows():
             if os.path.exists(pg_dir):
                 shutil.rmtree(pg_dir, ignore_errors=True)
             os.rename(pgsql_extracted, pg_dir)
-        os.remove(pg_zip)
         print("[OK] Portable PostgreSQL binaries extracted.")
         
     data_dir = os.path.join(pg_dir, "data")

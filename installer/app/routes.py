@@ -123,6 +123,15 @@ def update_lang(data: LangUpdate):
 
         # CLI_LANG ayarını .env.global.local dosyasına kaydet
         local_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
+        example_path = os.path.join(config.SERVICES_DIR, ".env.global.local.example")
+        
+        if not os.path.exists(local_path) and os.path.exists(example_path):
+            import shutil
+            try:
+                shutil.copyfile(example_path, local_path)
+            except OSError:
+                pass
+
         lines = []
         if os.path.exists(local_path):
             with open(local_path, "r", encoding="utf-8") as f:
