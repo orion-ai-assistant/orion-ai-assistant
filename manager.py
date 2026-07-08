@@ -636,19 +636,47 @@ def handle_start(args):
         ensure_docker_running()
         
         print("[*] Starting Orion services...")
-        res = subprocess.run(["docker", "ps", "-a", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
-        containers = []
+        res = subprocess.run(["docker", "ps", "-a", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}'], capture_output=True, text=True)
+        to_start = []
+        skipped = []
         for line in res.stdout.strip().splitlines():
             if "|" in line:
-                cname, proj = line.split("|", 1)
-                if proj.startswith("orion-") or cname.startswith("orion-"):
-                    containers.append(cname)
+                parts = line.split("|", 2)
+                if len(parts) < 3:
+                    continue
+                cname, proj, working_dir = parts
+                if not (proj.startswith("orion-") or cname.startswith("orion-")):
+                    continue
+                # Check .disabled / .enabled markers (same logic as web app)
+                if working_dir:
+                    disabled_path = os.path.join(working_dir, ".disabled")
+                    enabled_path = os.path.join(working_dir, ".enabled")
+                    manifest_path = os.path.join(working_dir, "manifest.json")
+                    is_manifest_disabled = False
+                    if os.path.exists(manifest_path):
+                        try:
+                            with open(manifest_path, "r", encoding="utf-8") as mf:
+                                m_data = json.load(mf)
+                            is_manifest_disabled = m_data.get("status") == "disabled"
+                        except Exception:
+                            pass
+                    if is_manifest_disabled:
+                        is_active = os.path.exists(enabled_path)
+                    else:
+                        is_active = not os.path.exists(disabled_path)
+                    if not is_active:
+                        skipped.append(cname)
+                        continue
+                to_start.append(cname)
                     
-        if containers:
-            subprocess.run(["docker", "start"] + containers)
-            print(f"[OK] {len(containers)} containers started.")
+        if to_start:
+            subprocess.run(["docker", "start"] + to_start)
+            print(f"[OK] {len(to_start)} containers started.")
         else:
             print("[i] No installed Orion containers found to start.")
+        if skipped:
+            print(f"[i] {len(skipped)} disabled service(s) skipped: {', '.join(skipped)}")
+
 
 def handle_stop(args):
     mode = get_mode_from_args(args)
@@ -814,6 +842,26 @@ def handle_status(args):
     mode = get_mode_from_args(args)
     print(f"\n[*] Checking Orion AI Assistant status ({mode.upper()} mode)...\n")
     if mode == "local":
+        # Check if Docker has running Orion containers to warn about port sharing
+        docker_active = False
+        try:
+            res = subprocess.run(["docker", "ps", "--format", '{{.Names}}|{{.State}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
+            if res.returncode == 0:
+                for line in res.stdout.strip().splitlines():
+                    if "|" in line:
+                        parts = line.split("|", 2)
+                        if len(parts) == 3:
+                            cname, state, proj = parts
+                            if state.upper() == "RUNNING" and (proj.startswith("orion-") or cname.startswith("orion-")):
+                                docker_active = True
+                                break
+        except Exception:
+            pass
+
+        if docker_active:
+            print("\033[93m[!] UYARI: Docker modundaki Orion konteynerleri aktif durumda.")
+            print("    Aynı portlar paylaşıldığı için aşağıdaki yerel durum raporu YANILTICI olabilir.\033[0m\n")
+
         print("--- CORE SERVICES ---")
         hub_port = load_env_port("HUB_PORT")
         router_port = load_env_port("ROUTER_PORT")
