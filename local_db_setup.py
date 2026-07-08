@@ -72,10 +72,6 @@ def install_windows():
         subprocess.run([pg_ctl_exe, "start", "-D", data_dir, "-o", "-F", "-w"])
         
         try:
-            print("[*] Creating router_user and orion_router database...")
-            subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE USER router_user WITH PASSWORD 'router_pass';"])
-            subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE DATABASE orion_router OWNER router_user;"])
-            
             print("[*] Creating orion user and orion database...")
             subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE USER orion WITH PASSWORD 'orion';"])
             subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE DATABASE orion OWNER orion;"])
@@ -127,9 +123,6 @@ def install_mac():
     print("[*] Configuring databases...")
     psql_cmd = ["psql", "postgres", "-c"]
     try:
-        subprocess.run(psql_cmd + ["CREATE USER router_user WITH PASSWORD 'router_pass';"])
-        subprocess.run(psql_cmd + ["CREATE DATABASE orion_router OWNER router_user;"])
-        
         subprocess.run(psql_cmd + ["CREATE USER orion WITH PASSWORD 'orion';"])
         subprocess.run(psql_cmd + ["CREATE DATABASE orion OWNER orion;"])
     except Exception as e:
@@ -156,9 +149,6 @@ def install_linux():
         time.sleep(3)
         
         print("[*] Configuring databases...")
-        subprocess.run(["sudo", "-u", "postgres", "psql", "-c", "CREATE USER router_user WITH PASSWORD 'router_pass';"])
-        subprocess.run(["sudo", "-u", "postgres", "psql", "-c", "CREATE DATABASE orion_router OWNER router_user;"])
-        
         subprocess.run(["sudo", "-u", "postgres", "psql", "-c", "CREATE USER orion WITH PASSWORD 'orion';"])
         subprocess.run(["sudo", "-u", "postgres", "psql", "-c", "CREATE DATABASE orion OWNER orion;"])
     except Exception as e:

@@ -252,7 +252,8 @@ async function deleteImage(id, btn) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (await showConfirm(window.t('confirm_delete_image_title'), sName ? window.t('confirm_delete_image_msg_named', sName) : window.t('confirm_delete_image_msg'))) {
         if (btn) btn.disabled = true;
-        await handleAction(null, '', () => api.postRemoveImage(id), null, () => { if (btn) btn.disabled = false; });
+        const mainBtn = document.getElementById(`btn-main-${id}`);
+        await handleAction(mainBtn || btn, window.t('status_starting'), () => api.postRemoveImage(id), null, () => { if (btn) btn.disabled = false; });
     }
 }
 
@@ -260,7 +261,10 @@ async function removeService(id, btn, bypassConfirm = false, keepData = false) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (bypassConfirm || await showConfirm(window.t('confirm_remove_service_title'), window.t('confirm_remove_service_msg', sName))) {
         if (btn) btn.disabled = true;
-        return await handleAction(null, '', () => api.postRemoveService(id, keepData), fetchServices, () => { if (btn) btn.disabled = false; });
+        const mainBtn = document.getElementById(`btn-main-${id}`);
+        const success = await handleAction(mainBtn || btn, window.t('status_starting'), () => api.postRemoveService(id, keepData), fetchServices, () => { if (btn) btn.disabled = false; });
+        if (success && btn) btn.disabled = false; // Ensure enabled in case UI doesn't refresh immediately
+        return success;
     }
     return false;
 }
@@ -269,7 +273,9 @@ async function wipeData(id, btn) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (await showConfirm(window.t('confirm_wipe_data_title'), window.t('confirm_wipe_data_msg', sName))) {
         if (btn) btn.disabled = true;
-        await handleAction(null, '', () => api.postWipeService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+        const mainBtn = document.getElementById(`btn-main-${id}`);
+        const success = await handleAction(mainBtn || btn, window.t('status_starting'), () => api.postWipeService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+        if (success && btn) btn.disabled = false;
     }
 }
 
@@ -277,13 +283,15 @@ async function reinstallService(id, btn) {
     if (btn) btn.disabled = true;
     if (!allServices[id]?.is_installed) {
         showToast(window.t('msg_container_not_found_installing'), 'warning');
-        return installService(id, btn || document.getElementById(`btn-main-${id}`));
+        if (btn) btn.disabled = false;
+        return installService(id, document.getElementById(`btn-main-${id}`) || btn);
     }
     
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (await showConfirm(window.t('confirm_reinstall_service_title'), window.t('confirm_reinstall_service_msg', sName))) {
         if (await removeService(id, null, true, true)) {
             await installService(id, document.getElementById(`btn-main-${id}`) || btn);
+            if (btn) btn.disabled = false;
         } else {
             if (btn) btn.disabled = false;
         }

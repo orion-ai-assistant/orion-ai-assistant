@@ -6,6 +6,7 @@ window.orionLocales.tr = {
     status_stopped: "Durduruldu",
     status_disabled: "Devre Dışı",
     status_starting: "Başlatılıyor...",
+    status_installing: "Kuruluyor...",
     status_active: "Aktif",
     status_unavailable: "Kullanılamaz",
 
