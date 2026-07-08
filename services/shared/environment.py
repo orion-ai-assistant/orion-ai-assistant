@@ -44,8 +44,11 @@ def get_redis_url() -> str:
     host = get_env("REDIS_HOST")
     port = get_env("REDIS_PORT")
     if host and port:
-        if host == "redis" and not os.path.exists("/.dockerenv"):
-            host = "127.0.0.1"
+        if host == "redis":
+            if not os.path.exists("/.dockerenv"):
+                host = "127.0.0.1"
+            else:
+                port = "6379"
         return f"redis://{host}:{port}/0"
     raise RuntimeError("Missing REDIS_HOST or REDIS_PORT")
 
@@ -57,10 +60,13 @@ def get_postgres_url() -> str:
     user = get_env("POSTGRES_USER")
     password = get_env("POSTGRES_PASSWORD")
     if host and port and db and user and password:
-        if host == "postgres" and not os.path.exists("/.dockerenv"):
-            host = "127.0.0.1"
+        if host == "postgres":
+            if not os.path.exists("/.dockerenv"):
+                host = "127.0.0.1"
+            else:
+                port = "5432"
         return f"postgresql://{user}:{password}@{host}:{port}/{db}"
-    raise RuntimeError("Missing POSTGRES_* env vars")
+    raise RuntimeError("Missing POSTGRES credentials")
 
 
 def get_router_base_urls() -> list[str]:

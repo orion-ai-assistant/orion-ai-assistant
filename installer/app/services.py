@@ -681,8 +681,9 @@ def run_local_installation(service_id: str, service_dir: str):
 def run_installation(service_id: str, service_dir: str, compose_file: str, build_env: dict, env_file_keys: set[str]):
     try:
         # Kurulumda `.env.global` ve `.env.global.local` referansı
+        g_vars_global_only = system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global"))
         g_vars_file = {
-            **system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global")),
+            **g_vars_global_only,
             **system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global.local"))
         }
         
@@ -693,7 +694,9 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
                 # Explicit empty string & None check (0 ve False değerlerini kaybetmemek için)
                 if v is None or str(v).strip() == "":
                     continue
-                if k in g_vars_file and str(g_vars_file[k]) == str(v):
+                # Sadece .env.global'daki değerlerle karşılaştır.
+                # .env.global.local'a özgü değerler (ADMIN_API_KEY gibi) daima yazılır.
+                if k in g_vars_global_only and str(g_vars_global_only[k]) == str(v):
                     continue
                 f.write(f"{k}={v}\n")
 

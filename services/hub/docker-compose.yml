@@ -46,6 +46,7 @@ services:
       - "${HUB_PORT}:${HUB_CONTAINER_PORT}"
     env_file:
       - ../.env.global
+      - ../.env.global.local
     volumes:
       - ./src/orion/api/ui:/app/src/orion/api/ui
       - ./src/orion/api/admin_ui:/app/src/orion/api/admin_ui
@@ -65,6 +66,7 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env.global
+      - ../.env.global.local
     depends_on:
       redis:
         condition: service_healthy

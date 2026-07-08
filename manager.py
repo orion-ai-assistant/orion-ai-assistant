@@ -886,7 +886,29 @@ def handle_status(args):
 
         print("\n" + ("All core services are RUNNING." if all_running else "Some services are STOPPED. Run 'python manager.py start' to launch them."))
     else:
-        subprocess.run(["docker", "compose", "ps"])
+        print("--- DOCKER SERVICES ---")
+        res = subprocess.run(["docker", "ps", "-a", "--format", '{{.Names}}|{{.State}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
+        containers = {}
+        for line in res.stdout.strip().splitlines():
+            if "|" in line:
+                parts = line.split("|", 2)
+                if len(parts) == 3:
+                    cname, state, proj = parts
+                    if proj.startswith("orion-") or cname.startswith("orion-"):
+                        containers[cname] = state.upper()
+        
+        if not containers:
+            print("  No installed Orion containers found.")
+        else:
+            for name, state in containers.items():
+                if state == "RUNNING":
+                    color = "\033[92m"
+                elif state == "EXITED":
+                    color = "\033[91m"
+                else:
+                    color = "\033[93m"
+                print(f"  {name.ljust(20)} : {color}{state}\033[0m")
+        print("\n")
 
 def safe_print(text):
     with log_lock:
@@ -980,7 +1002,59 @@ def handle_logs(args):
                     pass
             print(f"\n{COLORS['RESET']}[OK] Stopped streaming logs.")
     else:
-        subprocess.run(["docker", "compose", "logs", "-f"])
+        if not filters:
+            print("[!] Please specify a service to view logs in Docker mode (e.g. --hub, --router, --llm, --embedding, --tts)")
+            return
+            
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        services_map = {
+            "HUB": "hub",
+            "API": "hub",
+            "WORKER": "hub",
+            "REDIS": "hub",
+            "ROUTER": "router",
+            "LLM": "llm/llama-cpp",
+            "EMBEDDING": "embedding/llama-cpp-embed",
+            "TTS": "tts"
+        }
+        
+        target_dirs = set()
+        for f in filters:
+            if f in services_map:
+                target_dirs.add(os.path.join(base_dir, "services", services_map[f]))
+                
+        if not target_dirs:
+            print("[i] No matching services found for the given filters.")
+            return
+            
+        if len(target_dirs) > 1:
+            print("[!] Docker mode currently supports viewing logs for one service group at a time. Using the first one.")
+            
+        target_dir = list(target_dirs)[0]
+        manifest_path = os.path.join(target_dir, "manifest.json")
+        compose_files = []
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as mf:
+                    m_data = json.load(mf)
+                    compose_files = list(m_data.get("compose_files", {}).values())
+            except:
+                pass
+                
+        if not compose_files:
+            compose_files = ["docker-compose.yml"]
+            
+        cmd = ["docker-compose"]
+        for cf in set(compose_files):
+            if cf and os.path.exists(os.path.join(target_dir, cf)):
+                cmd.extend(["-f", cf])
+        cmd.extend(["logs", "-f"])
+        
+        print(f"\n[*] Tailing Docker logs in {os.path.basename(target_dir)}... (Press CTRL+C to exit)\n" + "-"*50)
+        try:
+            subprocess.run(cmd, cwd=target_dir)
+        except KeyboardInterrupt:
+            print("\n[OK] Stopped streaming logs.")
 
 COMMANDS = {
     "installer": handle_installer,

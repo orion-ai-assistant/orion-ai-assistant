@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 import asyncio
 
-async def _connect(retries: int = 5, delay: float = 2.0) -> asyncpg.Connection | None:
+async def _connect(retries: int = 15, delay: float = 2.0) -> asyncpg.Connection | None:
     """Return an open asyncpg connection or None on failure, with retries."""
     try:
         database_url = get_postgres_url()
