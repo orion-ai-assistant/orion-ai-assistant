@@ -4,14 +4,17 @@ import re
 
 _IMAGE_PATTERN = re.compile(r"^\s*image:\s*(.+?)\s*$", re.IGNORECASE)
 
-def _run_compose(files: list[str], action: str, cwd: str, env: dict) -> bool:
+def _run_compose(files: list[str], action: str, cwd: str, env: dict, extra_args: list[str] = None) -> bool:
     success = False
     seen = set()
     for f in files:
         if not f or f in seen or not os.path.exists(os.path.join(cwd, f)):
             continue
         seen.add(f)
-        res = subprocess.run(["docker-compose", "-f", f, action], cwd=cwd, env={**os.environ, **env}, capture_output=True, stdin=subprocess.DEVNULL)
+        cmd = ["docker-compose", "-f", f, action]
+        if extra_args:
+            cmd.extend(extra_args)
+        res = subprocess.run(cmd, cwd=cwd, env={**os.environ, **env}, capture_output=True, stdin=subprocess.DEVNULL)
         _ = res.stdout.decode("utf-8", errors="replace")
 
         success = True

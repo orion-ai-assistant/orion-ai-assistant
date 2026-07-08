@@ -470,6 +470,12 @@ def handle_start(args):
 
         print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
 
+        local_db_script = os.path.join(base_dir, "local_db_setup.py")
+        if os.path.exists(local_db_script):
+            if not os.path.exists(pg_ctl) or not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
+                print("[*] Local database missing or uninitialized. Running setup...")
+                subprocess.run([sys.executable, local_db_script], check=True)
+
         # SADECE PENCERE GİZLEME VE YENİ GRUP BAYRAĞI (ÇAKIŞMAYAN KOMBİNASYON)
         NO_WINDOW = 0x08000000 | 0x00000200 if os.name == 'nt' else 0
 
@@ -557,9 +563,9 @@ def handle_start(args):
                 if os.path.exists(log_path):
                     open(log_path, "w").close()
                 if os.path.exists(pid_path):
-                    os.remove(pid_path)
-
-                base_dir = os.path.dirname(os.path.abspath(__file__))
+                    open(pid_path, "w").close()
+                
+                log_handle = open(log_path, "a", encoding="utf-8")
 
                 local_env = os.environ.copy()
                 local_env["HUB_PORT"] = str(hub_port)
@@ -573,10 +579,10 @@ def handle_start(args):
                         subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=subprocess.CREATE_NEW_CONSOLE)
                     else:
                         cmd_hub = [hub_py, "run_local.py"]
-                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL, stdout=log_handle, stderr=log_handle)
                 else:
                     cmd_hub = [hub_py, "run_local.py"]
-                    subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, start_new_session=not show_terminals, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, start_new_session=not show_terminals, stdin=subprocess.DEVNULL, stdout=log_handle, stderr=log_handle)
         else:
             if not hub_running:
                 print("[!] Orion Hub files or environment missing. Cannot start Hub.")
@@ -852,7 +858,10 @@ def handle_status(args):
 
 def safe_print(text):
     with log_lock:
-        sys.stdout.write(text)
+        try:
+            sys.stdout.write(text)
+        except UnicodeEncodeError:
+            sys.stdout.write(text.encode(sys.stdout.encoding or 'utf-8', errors='replace').decode(sys.stdout.encoding or 'utf-8', errors='replace'))
         sys.stdout.flush()
 
 def handle_logs(args):

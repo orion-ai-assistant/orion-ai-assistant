@@ -84,10 +84,17 @@ def stop_service(service_id: str):
 # Service Remove
 # ---------------------------------------------------------------------------
 @router.post("/api/services/{service_id}/remove")
-def remove_service(service_id: str):
-    if not services.remove_service(service_id):
+def remove_service(service_id: str, keep_data: bool = False):
+    if not services.remove_service(service_id, keep_data=keep_data):
         raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
     return {"status": "success", "message": i18n.t("MSG_SERVICE_DELETED")}
+
+@router.post("/api/services/{service_id}/wipe")
+def wipe_service_data(service_id: str):
+    if not services.wipe_service_data(service_id):
+        raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
+    # Return success, using a generic message if MSG_DATA_WIPED_SUCCESS isn't in locales
+    return {"status": "success", "message": "Service data wiped successfully"}
 
 @router.post("/api/services/{service_id}/remove-image")
 def remove_image(service_id: str):

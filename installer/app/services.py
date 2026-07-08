@@ -141,19 +141,19 @@ def get_services() -> list[dict]:
                     pass
 
             is_running = False
-            if proc_running:
-                port = data.get("port")
-                if port:
-                    import socket
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                            s.settimeout(0.3)
-                            if s.connect_ex(("127.0.0.1", port)) == 0:
-                                is_running = True
-                    except Exception:
-                        pass
-                else:
-                    is_running = True
+            port = data.get("port")
+            if port:
+                import socket
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(0.3)
+                        if s.connect_ex(("127.0.0.1", port)) == 0:
+                            is_running = True
+                            proc_running = True
+                except Exception:
+                    pass
+            elif proc_running:
+                is_running = True
 
             data.update({
                 "is_installed": is_installed,
@@ -390,19 +390,35 @@ def stop_service(service_id: str) -> bool:
     if install_mode == "local" and manifest.get("id") in ["orion-hub", "orion-router"]:
         is_router = manifest.get("id") == "orion-router"
         if is_router:
-            if os.name == 'nt':
-                subprocess.run(["powershell", "-c", 'Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match "orionrouter" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }'], capture_output=True)
-            else:
-                subprocess.run(["pkill", "-f", "orionrouter"], capture_output=True)
+            plat, path = find_orionrouter_script()
+            if path:
+                if os.name == 'nt':
+                    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"], check=False)
+                else:
+                    subprocess.run([path, "stop"], check=False)
             return True
         else:
             match_str = "run_local.py|orion.api.main|orion.worker.main"
             if os.name == 'nt':
-                subprocess.run(["powershell", "-c", f'Get-WmiObject Win32_Process | Where-Object {{ $_.CommandLine -match "{match_str}" }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}'], capture_output=True)
+                wmic_query = " or ".join([f"commandline like '%{m}%'" for m in match_str.split("|")])
+                res = subprocess.run(["wmic", "process", "where", wmic_query, "get", "processid"], capture_output=True, text=True)
+                for line in res.stdout.splitlines():
+                    try:
+                        pid = int(line.strip())
+                        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+                    except ValueError: pass
             else:
                 subprocess.run(["pkill", "-f", "run_local.py"], capture_output=True)
                 subprocess.run(["pkill", "-f", "orion.api.main"], capture_output=True)
                 subprocess.run(["pkill", "-f", "orion.worker.main"], capture_output=True)
+                
+            # Gracefully stop Hub's PostgreSQL
+            base_dir = config.PROJECT_ROOT
+            pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
+            pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
+            pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
+            if os.path.exists(pg_ctl) and os.path.exists(pg_data):
+                subprocess.run([pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"], capture_output=True)
             return True
 
     g_vars = config._load_global_env()
@@ -418,15 +434,147 @@ def stop_service(service_id: str) -> bool:
     if c_name: subprocess.run(["docker", "stop", c_name], capture_output=True)
     return bool(c_name)
 
-def remove_service(service_id: str) -> bool:
+def remove_service(service_id: str, keep_data: bool = False) -> bool:
     manifest, s_dir, g_vars = _get_context(service_id)
     if not manifest: return False
     
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+    
+    if install_mode == "local" and manifest.get("id") in ["orion-hub", "orion-router"]:
+        stop_service(service_id)
+        if manifest.get("id") == "orion-hub":
+            import shutil, stat
+            def _force_rm(path: str):
+                def on_err(func, p, exc_info):
+                    try:
+                        os.chmod(p, stat.S_IWRITE)
+                        func(p)
+                    except Exception: pass
+                if os.path.exists(path):
+                    shutil.rmtree(path, onerror=on_err)
+            
+            venv_path = os.path.join(s_dir, ".venv")
+            _force_rm(venv_path)
+            log_path = os.path.join(s_dir, "hub.log")
+            if os.path.exists(log_path):
+                try: os.remove(log_path)
+                except OSError: pass
+                
+            if not keep_data:
+                local_db_path = os.path.join(config.PROJECT_ROOT, ".local_db")
+                _force_rm(os.path.join(local_db_path, "postgres", "data"))
+                _force_rm(os.path.join(local_db_path, "redis", "dump.rdb"))
+                
+            return True
+        elif manifest.get("id") == "orion-router":
+            import shutil, stat
+            plat, r_path = find_orionrouter_script()
+            if r_path:
+                r_dir = os.path.dirname(r_path)
+                if os.path.exists(r_dir):
+                    def on_rm_error(func, path, exc_info):
+                        try:
+                            os.chmod(path, stat.S_IWRITE)
+                            func(path)
+                        except: pass
+                        
+                    if keep_data:
+                        # Keep data: delete everything EXCEPT .pgdata-prod, persistent, and .git
+                        for item in os.listdir(r_dir):
+                            if item not in [".pgdata-prod", "persistent", ".git"]:
+                                item_path = os.path.join(r_dir, item)
+                                if os.path.isdir(item_path):
+                                    shutil.rmtree(item_path, onerror=on_rm_error)
+                                else:
+                                    try:
+                                        os.chmod(item_path, stat.S_IWRITE)
+                                        os.remove(item_path)
+                                    except: pass
+                    else:
+                        # Delete everything
+                        shutil.rmtree(r_dir, onerror=on_rm_error)
+            
+            # Remove global OS binaries
+            try:
+                subprocess.run(["npm", "uninstall", "-g", "orion-router"], capture_output=True)
+            except FileNotFoundError:
+                pass
+            return True
+
     category_upper = manifest.get("category", "misc").upper()
     project_name_key = f"{category_upper}_PROJECT_NAME"
     g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
 
-    return docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars)
+    extra_args = []
+    if not keep_data:
+        extra_args.append("-v")
+
+    return docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars, extra_args=extra_args)
+
+def wipe_service_data(service_id: str) -> bool:
+    manifest, s_dir, g_vars = _get_context(service_id)
+    if not manifest: return False
+
+    install_mode = os.environ.get("ORION_INSTALL_MODE", "docker")
+
+    # Sadece hedeflenen servisi durdur
+    stop_service(service_id)
+    import time
+    time.sleep(2)
+
+    if install_mode == "local":
+        import shutil, stat
+
+        def _force_rm(path: str):
+            """Salt-okunur dosyalari bile zorla silen guvenli rmtree."""
+            def on_err(func, p, exc_info):
+                try:
+                    os.chmod(p, stat.S_IWRITE)
+                    func(p)
+                except Exception:
+                    pass
+            if os.path.exists(path):
+                shutil.rmtree(path, onerror=on_err)
+
+        if manifest.get("id") == "orion-hub":
+            # Hub'in DB'si: manager.py'nin yanindaki .local_db klasoru
+            # config.PROJECT_ROOT hem gelistirme hem son kullanici icin dogru yolu verir
+            local_db_path = os.path.join(config.PROJECT_ROOT, ".local_db")
+            _force_rm(os.path.join(local_db_path, "postgres", "data"))
+            _force_rm(os.path.join(local_db_path, "redis", "dump.rdb"))
+
+        elif manifest.get("id") == "orion-router":
+            # Router'in DB'si: AppData\Local\OrionRouter\.pgdata-prod ve persistent
+            if os.name == 'nt':
+                appdata = os.environ.get("LOCALAPPDATA", "")
+                if appdata:
+                    router_dir = os.path.join(appdata, "OrionRouter")
+                    # Ana veritabani dizini: .pgdata-prod
+                    _force_rm(os.path.join(router_dir, ".pgdata-prod"))
+                    # Oturum/anahtar verileri: persistent klasoru
+                    _force_rm(os.path.join(router_dir, "persistent"))
+            else:
+                router_dir = os.path.expanduser("~/.local/share/OrionRouter")
+                _force_rm(os.path.join(router_dir, ".pgdata-prod"))
+                _force_rm(os.path.join(router_dir, "persistent"))
+
+        env_path = os.path.join(s_dir, ".env")
+        if os.path.exists(env_path):
+            try: os.remove(env_path)
+            except OSError: pass
+        return True
+    else:
+        category_upper = manifest.get("category", "misc").upper()
+        project_name_key = f"{category_upper}_PROJECT_NAME"
+        g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
+
+        res = docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars, extra_args=["-v"])
+        env_path = os.path.join(s_dir, ".env")
+        if os.path.exists(env_path):
+            try: os.remove(env_path)
+            except OSError: pass
+        return res
+
 
 def remove_image(service_id: str) -> bool:
     manifest, s_dir, g_vars = _get_context(service_id)
@@ -454,7 +602,25 @@ def run_local_installation(service_id: str, service_dir: str):
         if service_id == "orion-router":
             print("[*] Installing Orion Router globally...")
             if os.name == 'nt':
-                subprocess.run(["powershell", "-c", "Invoke-Command -ScriptBlock ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) -ArgumentList 'local', $true"], check=True)
+                import shutil
+                appdata = os.environ.get("LOCALAPPDATA", "")
+                if appdata:
+                    r_dir = os.path.join(appdata, "OrionRouter")
+                    # If repo exists but is corrupt (missing .git/HEAD), we must wipe it entirely
+                    if os.path.exists(r_dir) and not os.path.exists(os.path.join(r_dir, ".git", "HEAD")):
+                        import time, stat
+                        try:
+                            subprocess.run(["wmic", "process", "where", "commandline like '%orionrouter%' or commandline like '%manager.py prod%'", "call", "terminate"], capture_output=True)
+                        except FileNotFoundError:
+                            pass
+                        time.sleep(1)
+                        def on_rm_error(func, path, exc_info):
+                            try:
+                                os.chmod(path, stat.S_IWRITE)
+                                func(path)
+                            except: pass
+                        shutil.rmtree(r_dir, onerror=on_rm_error)
+                subprocess.run(["powershell", "-c", "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) local -NoStart; exit 0"], check=True)
             else:
                 subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local --no-start"], check=True)
             return
@@ -467,28 +633,32 @@ def run_local_installation(service_id: str, service_dir: str):
         
         if not os.path.exists(venv_dir):
             try:
-                subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True, capture_output=True, text=True)
+                print(f"[*] Creating virtual environment for {service_id}...")
+                subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True)
             except subprocess.CalledProcessError as e:
-                raise Exception(f"Venv Hatası: {(e.stderr or e.stdout or '').strip()}")
+                raise Exception(f"Venv Hatası: {e}")
             
         try:
-            subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "--no-warn-script-location"], cwd=setup_dir, check=True, capture_output=True, text=True)
+            print(f"[*] Upgrading pip for {service_id}...")
+            subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "--no-warn-script-location"], cwd=setup_dir, check=True)
         except subprocess.CalledProcessError as e:
-            err_msg = (e.stderr or e.stdout or '').strip()
-            if "No module named pip" in err_msg:
-                # Pip might be broken due to an interrupted upgrade. Try to repair it.
-                try:
-                    subprocess.run([py_exe, "-m", "ensurepip", "--upgrade"], cwd=setup_dir, check=True, capture_output=True, text=True)
-                    subprocess.run([py_exe, "-m", "pip", "install", "--upgrade", "pip", "--no-warn-script-location"], cwd=setup_dir, check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as repair_err:
-                    raise Exception(f"Pip Onarım Hatası: {(repair_err.stderr or repair_err.stdout or '').strip()}")
-            else:
-                raise Exception(f"Pip Güncelleme Hatası: {err_msg}")
+            raise Exception(f"Pip Güncelleme Hatası: {e}")
 
         try:
-            subprocess.run([pip_exe, "install", "-e", "."], cwd=setup_dir, check=True, capture_output=True, text=True)
+            print(f"[*] Installing dependencies for {service_id}...")
+            subprocess.run([pip_exe, "install", "-e", "."], cwd=setup_dir, check=True)
         except subprocess.CalledProcessError as e:
-            raise Exception(f"Pip Install Hatası: {(e.stderr or e.stdout or '').strip()}")
+            raise Exception(f"Pip Install Hatası: {e}")
+            
+        # If it's Hub, ensure local_db_setup.py runs so the user sees the Postgres download progress!
+        if service_id == "orion-hub":
+            local_db_script = os.path.join(config.PROJECT_ROOT, "local_db_setup.py")
+            if os.path.exists(local_db_script):
+                pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
+                pg_ctl = os.path.join(config.PROJECT_ROOT, ".local_db", "postgres", "bin", pg_ctl_name)
+                if not os.path.exists(pg_ctl):
+                    print("\n[*] Local database missing or uninitialized. Running setup now...")
+                    subprocess.run([sys.executable, local_db_script], check=True)
         
     except Exception as e:
         config.INSTALL_ERRORS[service_id] = f"Yerel Kurulum Hatasi: {str(e)}"

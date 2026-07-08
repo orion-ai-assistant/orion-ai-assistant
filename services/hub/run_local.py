@@ -31,11 +31,12 @@ def stream_logs(proc, prefix, log_file, lock):
         with lock:
             log_file.write(plain_line)
             log_file.flush()
-            try:
-                sys.stdout.write(colored_line)
-                sys.stdout.flush()
-            except Exception:
-                pass
+            if sys.stdout.isatty():
+                try:
+                    sys.stdout.write(colored_line)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
 
 def write_pids(pid_path, pids):
     """Write a list of PIDs to hub.pid for cross-platform stop support."""
@@ -88,7 +89,8 @@ def main():
     if os.path.exists(redis_exe):
         print("[*] Launching Portable Redis...")
         redis_dir = os.path.dirname(redis_exe)
-        redis_proc = subprocess.Popen([redis_exe], cwd=redis_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+        redis_port = get_env("REDIS_PORT")
+        redis_proc = subprocess.Popen([redis_exe, "--port", str(redis_port)], cwd=redis_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
         processes.append(redis_proc)
         all_pids.append(redis_proc.pid)
         threading.Thread(target=stream_logs, args=(redis_proc, "[REDIS]", log_file, log_lock), daemon=True).start()

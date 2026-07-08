@@ -26,8 +26,13 @@ export async function postStopService(id) {
     return await response.json();
 }
 
-export async function postRemoveService(id) {
-    const response = await fetch(`${API_BASE}/services/${id}/remove`, { method: 'POST' });
+export async function postRemoveService(id, keepData = false) {
+    const response = await fetch(`${API_BASE}/services/${id}/remove?keep_data=${keepData}`, { method: 'POST' });
+    return await response.json();
+}
+
+export async function postWipeService(id) {
+    const response = await fetch(`${API_BASE}/services/${id}/wipe`, { method: 'POST' });
     return await response.json();
 }
 

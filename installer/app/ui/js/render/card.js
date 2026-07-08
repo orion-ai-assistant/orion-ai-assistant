@@ -145,7 +145,8 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
                 <div class="dropdown-menu hidden" id="menu-${service.id}">
                     <button class="dropdown-item" id="btn-reinstall-${service.id}">${window.t('btn_reinstall')}</button>
                     <button class="dropdown-item danger" id="btn-remove-${service.id}">${window.t('btn_remove')}</button>
-                    <button class="dropdown-item danger" id="btn-delete-image-${service.id}">${window.t('btn_delete_image')}</button>
+                    <button class="dropdown-item danger" id="btn-wipe-data-${service.id}">${window.t('btn_wipe_data')}</button>
+                    ${(window.orionInstallMode || 'docker') !== 'local' ? `<button class="dropdown-item danger" id="btn-delete-image-${service.id}">${window.t('btn_delete_image')}</button>` : ''}
                 </div>
             </div>` : '';
 
@@ -165,7 +166,10 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     bindEvent(`#btn-main-${service.id}`, () => service.is_installed && !isCoreService(service) ? handlers.onToggleAutostart(service.id, document.getElementById(`btn-main-${service.id}`)) : handlers.onStart(service.id, document.getElementById(`btn-main-${service.id}`)));
     bindEvent(`#btn-reinstall-${service.id}`, () => handlers.onReinstall(service.id, document.getElementById(`btn-reinstall-${service.id}`)));
     bindEvent(`#btn-remove-${service.id}`, () => handlers.onRemove(service.id, document.getElementById(`btn-remove-${service.id}`)));
-    bindEvent(`#btn-delete-image-${service.id}`, () => handlers.onDeleteImage(service.id, document.getElementById(`btn-delete-image-${service.id}`)));
+    bindEvent(`#btn-wipe-data-${service.id}`, () => handlers.onWipeData(service.id, document.getElementById(`btn-wipe-data-${service.id}`)));
+    if ((window.orionInstallMode || 'docker') !== 'local') {
+        bindEvent(`#btn-delete-image-${service.id}`, () => handlers.onDeleteImage(service.id, document.getElementById(`btn-delete-image-${service.id}`)));
+    }
 
     bindEvent(`#btn-menu-${service.id}`, (e, btn) => {
         e.stopPropagation();

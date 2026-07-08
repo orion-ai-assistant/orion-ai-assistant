@@ -30,7 +30,10 @@ async function fetchHardware() {
             osIcon.className = os === 'windows' ? 'fab fa-windows' : (os === 'linux' ? 'fab fa-linux' : 'fas fa-desktop');
         }
 
-        if (info.install_mode) setEl('mode-text', info.install_mode.charAt(0).toUpperCase() + info.install_mode.slice(1));
+        if (info.install_mode) {
+            setEl('mode-text', info.install_mode.charAt(0).toUpperCase() + info.install_mode.slice(1));
+            window.orionInstallMode = info.install_mode.toLowerCase();
+        }
 
         window.orionGpuVendor = (info.DETECTED_GPU_VENDOR || 'cpu').toLowerCase();
         try { window.orionGpuList = info.DETECTED_GPU_LIST ? JSON.parse(info.DETECTED_GPU_LIST) : []; }
@@ -116,9 +119,10 @@ async function fetchServices() {
 function renderFromCache() {
     const services = Object.values(allServices);
     if (!services.length) return;
-    uiRender.renderServices(services, previousServiceStates, allServiceModels, {
+        uiRender.renderServices(services, previousServiceStates, allServiceModels, {
         onStart: installService, onToggleAutostart: toggleAutostart,
         onReinstall: reinstallService, onRemove: removeService,
+        onWipeData: wipeData,
         onDeleteImage: deleteImage, onDownload: downloadModel,
         onModelChange: (sid, path) => uiRender.filterVisionModels(sid, path, allServiceModels),
         onTabModels: loadModelStatus
@@ -252,9 +256,21 @@ async function deleteImage(id, btn) {
     }
 }
 
-async function removeService(id, btn) {
-    if (btn) btn.disabled = true;
-    return await handleAction(null, '', () => api.postRemoveService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+async function removeService(id, btn, bypassConfirm = false, keepData = false) {
+    const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
+    if (bypassConfirm || await showConfirm(window.t('confirm_remove_service_title'), window.t('confirm_remove_service_msg', sName))) {
+        if (btn) btn.disabled = true;
+        return await handleAction(null, '', () => api.postRemoveService(id, keepData), fetchServices, () => { if (btn) btn.disabled = false; });
+    }
+    return false;
+}
+
+async function wipeData(id, btn) {
+    const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
+    if (await showConfirm(window.t('confirm_wipe_data_title'), window.t('confirm_wipe_data_msg', sName))) {
+        if (btn) btn.disabled = true;
+        await handleAction(null, '', () => api.postWipeService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+    }
 }
 
 async function reinstallService(id, btn) {
@@ -263,8 +279,17 @@ async function reinstallService(id, btn) {
         showToast(window.t('msg_container_not_found_installing'), 'warning');
         return installService(id, btn || document.getElementById(`btn-main-${id}`));
     }
-    if (await removeService(id, null)) await installService(id, document.getElementById(`btn-main-${id}`) || btn);
-    else if (btn) btn.disabled = false;
+    
+    const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
+    if (await showConfirm(window.t('confirm_reinstall_service_title'), window.t('confirm_reinstall_service_msg', sName))) {
+        if (await removeService(id, null, true, true)) {
+            await installService(id, document.getElementById(`btn-main-${id}`) || btn);
+        } else {
+            if (btn) btn.disabled = false;
+        }
+    } else {
+        if (btn) btn.disabled = false;
+    }
 }
 
 function setStep(step) {
