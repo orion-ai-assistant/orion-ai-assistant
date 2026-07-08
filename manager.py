@@ -634,7 +634,21 @@ def handle_start(args):
             print("[!] Docker is not installed.")
             return
         ensure_docker_running()
-        subprocess.run(["docker", "compose", "up", "-d"])
+        
+        print("[*] Starting Orion services...")
+        res = subprocess.run(["docker", "ps", "-a", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
+        containers = []
+        for line in res.stdout.strip().splitlines():
+            if "|" in line:
+                cname, proj = line.split("|", 1)
+                if proj.startswith("orion-") or cname.startswith("orion-"):
+                    containers.append(cname)
+                    
+        if containers:
+            subprocess.run(["docker", "start"] + containers)
+            print(f"[OK] {len(containers)} containers started.")
+        else:
+            print("[i] No installed Orion containers found to start.")
 
 def handle_stop(args):
     mode = get_mode_from_args(args)
@@ -781,7 +795,20 @@ def handle_stop(args):
 
         print("[OK] All local services stopped.")
     else:
-        subprocess.run(["docker", "compose", "down"])
+        print("[*] Stopping Orion services...")
+        res = subprocess.run(["docker", "ps", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
+        containers = []
+        for line in res.stdout.strip().splitlines():
+            if "|" in line:
+                cname, proj = line.split("|", 1)
+                if proj.startswith("orion-") or cname.startswith("orion-"):
+                    containers.append(cname)
+                    
+        if containers:
+            subprocess.run(["docker", "stop"] + containers)
+            print(f"[OK] {len(containers)} containers stopped.")
+        else:
+            print("[i] No running Orion containers found to stop.")
 
 def handle_status(args):
     mode = get_mode_from_args(args)

@@ -568,8 +568,24 @@ def wipe_service_data(service_id: str) -> bool:
         project_name_key = f"{category_upper}_PROJECT_NAME"
         g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
 
-        docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars, extra_args=["-v"])
-        res = docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "up", s_dir, g_vars, extra_args=["-d"])
+        compose_files = list(manifest.get("compose_files", {}).values())
+        
+        # Check if the service is currently running
+        is_running = False
+        for f in set(compose_files):
+            if f and os.path.exists(os.path.join(s_dir, f)):
+                cmd = ["docker-compose", "-f", f, "ps", "-q", "--status=running"]
+                res = subprocess.run(cmd, cwd=s_dir, env={**os.environ, **g_vars}, capture_output=True)
+                if res.stdout.strip():
+                    is_running = True
+                    break
+
+        docker_utils._run_compose(compose_files, "down", s_dir, g_vars, extra_args=["-v"])
+        
+        if is_running:
+            res = docker_utils._run_compose(compose_files, "up", s_dir, g_vars, extra_args=["-d"])
+        else:
+            res = docker_utils._run_compose(compose_files, "up", s_dir, g_vars, extra_args=["--no-start"])
         return res
 
 

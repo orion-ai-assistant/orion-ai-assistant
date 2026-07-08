@@ -14,19 +14,26 @@ logger = logging.getLogger(__name__)
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-async def _connect() -> asyncpg.Connection | None:
-    """Return an open asyncpg connection or None on failure."""
+import asyncio
+
+async def _connect(retries: int = 5, delay: float = 2.0) -> asyncpg.Connection | None:
+    """Return an open asyncpg connection or None on failure, with retries."""
     try:
         database_url = get_postgres_url()
     except RuntimeError as exc:
         logger.info("Postgres not configured: %s", exc)
         return None
 
-    try:
-        return await asyncpg.connect(database_url)
-    except Exception:
-        logger.exception("Failed to connect to Postgres")
-        return None
+    for attempt in range(retries):
+        try:
+            return await asyncpg.connect(database_url)
+        except Exception as e:
+            if attempt == retries - 1:
+                logger.exception("Failed to connect to Postgres after %d attempts", retries)
+                return None
+            logger.warning("Postgres connection failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, retries, e, delay)
+            await asyncio.sleep(delay)
+    return None
 
 
 async def _ensure_tables(conn: asyncpg.Connection) -> None:

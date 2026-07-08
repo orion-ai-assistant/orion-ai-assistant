@@ -204,7 +204,7 @@ async function installService(id, btn) {
     try {
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_starting')}`;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${window.t('status_installing')}`;
         }
 
         const envId = document.getElementById(`env-select-${id}`)?.value || "";
@@ -229,7 +229,7 @@ async function installService(id, btn) {
         const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
 
         const result = await api.postInstallService(id, query);
-        showToast(result.message || (result.status === 'success' ? window.t('status_starting') : window.t('msg_error')), result.status);
+        showToast(result.message || (result.status === 'success' ? window.t('status_installing') : window.t('msg_error')), result.status);
         if (result.status !== 'success') {
             if (btn) {
                 btn.disabled = false;
