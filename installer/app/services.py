@@ -462,8 +462,8 @@ def remove_service(service_id: str, keep_data: bool = False) -> bool:
                 
             if not keep_data:
                 local_db_path = os.path.join(config.PROJECT_ROOT, ".local_db")
-                _force_rm(os.path.join(local_db_path, "postgres", "data"))
-                _force_rm(os.path.join(local_db_path, "redis", "dump.rdb"))
+                _force_rm(os.path.join(local_db_path, "postgres"))
+                _force_rm(os.path.join(local_db_path, "redis"))
                 
             return True
         elif manifest.get("id") == "orion-router":
@@ -568,11 +568,8 @@ def wipe_service_data(service_id: str) -> bool:
         project_name_key = f"{category_upper}_PROJECT_NAME"
         g_vars["COMPOSE_PROJECT_NAME"] = g_vars.get(project_name_key, f"orion-{manifest.get('category', 'misc')}")
 
-        res = docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars, extra_args=["-v"])
-        env_path = os.path.join(s_dir, ".env")
-        if os.path.exists(env_path):
-            try: os.remove(env_path)
-            except OSError: pass
+        docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "down", s_dir, g_vars, extra_args=["-v"])
+        res = docker_utils._run_compose(list(manifest.get("compose_files", {}).values()), "up", s_dir, g_vars, extra_args=["-d"])
         return res
 
 
