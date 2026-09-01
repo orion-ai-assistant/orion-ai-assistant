@@ -39,8 +39,10 @@ COPY services/tts/${ENGINE_NAME} /app/src/
 COPY services/tts /app/
 COPY services/shared /app/services/shared
 
-# 4.4. Kodu sisteme bağla
-RUN uv pip install --system --no-deps /app/src/
+# 4.4. Kodu sisteme bağla ve çakışan kaynak klasörlerini temizle
+RUN uv pip install --system --no-deps /app/src/ && \
+    rm -rf /app/src /app/omnivoice /app/voxcpm2
+
 
 # 5. Çalıştırma Komutu
 ENV START_COMMAND=""
