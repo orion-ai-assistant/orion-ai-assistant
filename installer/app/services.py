@@ -705,7 +705,7 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
         subprocess.run(["docker", "network", "create", runtime_g_vars.get("ORION_NETWORK", "orion-network")], stderr=subprocess.DEVNULL)
         
         # Adım 1: Şimdi servisi oluştur (başlatmadan)
-        force_rebuild = str(build_env.get("REBUILD_IMAGE", "false")).lower() == "true"
+        force_rebuild = str(build_env.get("REBUILD_IMAGE", "true")).lower() == "true"
         cmd = ["docker-compose", "-f", compose_file, "up", "--no-start"]
         if force_rebuild:
             cmd.append("--build")

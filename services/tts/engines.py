@@ -64,7 +64,8 @@ class VoxCPMEngine(TTSEngine):
             model_id,
             load_denoiser=False, # ZipEnhancer (modelscope) devredışı
             vae_device=vae_device,
-            local_files_only=True
+            local_files_only=True,
+            attn_implementation="flash_attention_2"
         )
 
     def encode_voice(self, audio_path: str, text: str) -> Any:
@@ -160,6 +161,7 @@ class OmniVoiceEngine(TTSEngine):
             dtype=torch.float16 if self.device == "cuda" else torch.float32,
             local_files_only=True
         )
+        
         
         if hasattr(self.model, "audio_tokenizer") and self.model.audio_tokenizer is not None:
             tokenizer_device = "cpu" if self.low_vram else self.device
