@@ -12,6 +12,8 @@ window.orionLocales.tr = {
 
     // Actions
     btn_install: "Kur",
+    btn_start: "Başlat",
+    btn_stop: "Durdur",
     btn_disable: "Devre Dışı Bırak",
     btn_enable: "Aktifleştir",
     btn_reinstall: "Yeniden Kur",

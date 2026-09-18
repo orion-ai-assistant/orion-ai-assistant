@@ -1,4 +1,18 @@
 import os
+import sys
+
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+try:
+    from dotenv import load_dotenv
+    _local_env = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_local_env):
+        load_dotenv(_local_env, override=False)
+except ImportError:
+    pass
+
 from services.shared.environment import get_env
 import time
 import uuid
@@ -7,7 +21,16 @@ import threading
 import asyncio
 import traceback
 import struct
-import torch
+
+if str(get_env("GPU_COUNT", default="1", required=False)).strip() == "0":
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ["GGML_BACKEND"] = "CPU"
+try:
+    import torch
+    def is_cuda_available(): return torch.cuda.is_available()
+except ImportError:
+    torch = None
+    def is_cuda_available(): return False
 import gc
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response
@@ -25,19 +48,19 @@ from schemas import SpeechRequest
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TTS_PORT = get_env("TTS_PORT", cast=int)
+TTS_PORT = get_env("TTS_PORT", default=8810, cast=int, required=False)
 
 # ——————————————————————————————————————————
 # Config Helpers
 # ——————————————————————————————————————————
 def _parse_bool_env(name: str, default: bool = False) -> bool:
-    val = get_env(name, default=None)
+    val = get_env(name, default=None, required=False)
     if val is None:
         return default
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 def _parse_idle_cleanup_mins(default: int = 10) -> int:
-    raw = get_env("IDLE_CLEANUP_MINS", str(default))
+    raw = get_env("IDLE_CLEANUP_MINS", str(default), required=False)
     try:
         return int(float(str(raw).strip()))
     except (TypeError, ValueError):
@@ -55,8 +78,8 @@ def create_wav_header(sample_rate: int, data_size: int) -> bytes:
 # ——————————————————————————————————————————
 engine = None
 registry = VoiceRegistry("voices")
-engine_name_env = get_env("ENGINE_NAME", "omnivoice").lower().strip()
-model_path_env = get_env("MODEL_PATH", "").lower()
+engine_name_env = get_env("ENGINE_NAME", "omnivoice", required=False).lower().strip()
+model_path_env = (get_env("MODEL_PATH", default="", required=False) or "").lower()
 is_omnivoice = "omnivoice" in engine_name_env or "omnivoice" in model_path_env
 low_vram_enabled = _parse_bool_env("LOW_VRAM", default=False)
 
@@ -77,7 +100,7 @@ async def idle_cleanup_worker():
         idle_time = (time.time() - last_request_time) / 60
         if idle_time >= idle_threshold_mins:
             if not async_inference_lock.locked():
-                if torch.cuda.is_available():
+                if is_cuda_available():
                     logger.info(f"Sistem {int(idle_time)} dakikadır boşta. VRAM temizleniyor...")
                     if engine: engine.cleanup()
                     last_request_time = time.time()
@@ -103,14 +126,18 @@ app = FastAPI(title="Orion TTS API", version="1.0.4", lifespan=lifespan)
 # ——————————————————————————————————————————
 # UI & Static
 # ——————————————————————————————————————————
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_dashboard_dir = os.path.join(_current_dir, "dashboard")
+
 @app.get("/")
 async def read_index():
-    index_path = os.path.join(os.getcwd(), "dashboard/index.html")
+    index_path = os.path.join(_dashboard_dir, "index.html")
     if not os.path.exists(index_path):
         return JSONResponse({"error": "UI file not found"}, status_code=404)
     return FileResponse(index_path)
 
-app.mount("/dashboard", StaticFiles(directory="dashboard"), name="dashboard")
+if os.path.exists(_dashboard_dir):
+    app.mount("/dashboard", StaticFiles(directory=_dashboard_dir), name="dashboard")
 
 # ——————————————————————————————————————————
 # Speech Generation
@@ -146,7 +173,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     return JSONResponse({"status": "aborted"}, status_code=499)
 
                 stream_gen = tts.generate_stream(
-                    text=speech_request.input, voice_cache=voice_cache, instruct=speech_request.model or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=speech_request.model or "",
                     speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event
@@ -170,7 +197,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             async with async_inference_lock:
                 if abort_event.is_set(): return JSONResponse({"status": "aborted"}, status_code=499)
                 sr, audio_data = tts.generate(
-                    text=speech_request.input, voice_cache=voice_cache, instruct=speech_request.model or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=speech_request.model or "",
                     speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event
@@ -210,13 +237,18 @@ async def reload_engine(reload_req: ReloadRequest):
 async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text: str = Form("")):
     if registry.voice_exists(name, engine_name_env):
         raise HTTPException(status_code=400, detail="Voice already exists")
-    
     tts = engine
     temp_path = f"/tmp/{uuid.uuid4()}.wav"
     with open(temp_path, "wb") as f: f.write(await file.read())
     try:
-        cache_obj = tts.encode_voice(temp_path, text)
+        try:
+            cache_obj = engine.encode_voice(temp_path, text)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+            
         saved_path = registry.save_voice_cache(name, cache_obj, engine_name_env)
+        if hasattr(engine, "registered_voices") and name in engine.registered_voices:
+            engine.registered_voices.remove(name)
         return {"status": "success", "voice_name": name, "path": saved_path}
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
@@ -227,101 +259,94 @@ async def list_voices():
 
 @app.delete("/v1/voices/{name}")
 async def delete_voice(name: str):
-    if registry.delete_voice(name, engine_name_env): return {"status": "success"}
+    if registry.delete_voice(name, engine_name_env): 
+        if hasattr(engine, "registered_voices") and name in engine.registered_voices:
+            engine.registered_voices.remove(name)
+        return {"status": "success"}
     raise HTTPException(status_code=404)
 
 _OMNIVOICE_LANGS = ["Auto", "Turkish", "English"]
+
+_INSTRUCT_CATEGORIES = [
+    {"male": "男", "female": "女"},
+    {"child": "儿童", "teenager": "少年", "young adult": "青年",
+     "middle-aged": "中年", "elderly": "老年"},
+    {"very low pitch": "极低音调", "low pitch": "低音调",
+     "moderate pitch": "中音调", "high pitch": "高音调",
+     "very high pitch": "极高音调"},
+    {"whisper": "耳语"},
+    {"american accent", "british accent", "australian accent",
+     "chinese accent", "canadian accent", "indian accent",
+     "korean accent", "portuguese accent", "russian accent", "japanese accent"},
+    {"河南话", "陕西话", "四川话", "贵州话", "云南话", "桂林话",
+     "济南话", "石家庄话", "甘肃话", "宁夏话", "青岛话", "东北话"},
+]
+
+friendly_labels = {
+    "male": "Erkek (Male)",
+    "female": "Kadın (Female)",
+    "child": "Çocuk (Child)",
+    "teenager": "Genç (Teenager)",
+    "young adult": "Genç Yetişkin (Young Adult)",
+    "middle-aged": "Orta Yaşlı (Middle-aged)",
+    "elderly": "Yaşlı (Elderly)",
+    "very low pitch": "Çok Kalın (Very Low)",
+    "low pitch": "Kalın (Low)",
+    "moderate pitch": "Orta (Moderate)",
+    "high pitch": "İnce (High)",
+    "very high pitch": "Çok İnce (Very High)",
+    "whisper": "Fısıltı (Whisper)",
+    "american accent": "Amerikan (American)",
+    "british accent": "İngiliz (British)",
+    "australian accent": "Avustralya (Australian)",
+    "chinese accent": "Çin (Chinese)",
+    "canadian accent": "Kanada (Canadian)",
+    "indian accent": "Hint (Indian)",
+    "korean accent": "Kore (Korean)",
+    "portuguese accent": "Portekiz (Portuguese)",
+    "russian accent": "Rus (Russian)",
+    "japanese accent": "Japon (Japanese)",
+    "河南话": "Henan (河南话)",
+    "陕西话": "Shaanxi (陕西话)",
+    "四川话": "Sichuan (四川话)",
+    "贵州话": "Guizhou (贵州话)",
+    "云南话": "Yunnan (云南话)",
+    "桂林话": "Guilin (桂林话)",
+    "济南话": "Jinan (济南话)",
+    "石家庄话": "Shijiazhuang (石家庄话)",
+    "甘肃话": "Gansu (甘肃话)",
+    "宁夏话": "Ningxia (宁夏话)",
+    "青岛话": "Qingdao (青岛话)",
+    "东北话": "Dongbei (东北话)",
+}
+
+def get_label(val):
+    return friendly_labels.get(val, val.title() if isinstance(val, str) else str(val))
+
 _OMNIVOICE_DESIGN_OPTIONS = {
-    "gender": [],
-    "age": [],
-    "pitch": [],
-    "style": [],
-    "accent": [],
-    "dialect": []
+    "gender": [{"value": k, "label": get_label(k)} for k in _INSTRUCT_CATEGORIES[0].keys()],
+    "age": [{"value": k, "label": get_label(k)} for k in _INSTRUCT_CATEGORIES[1].keys()],
+    "pitch": [{"value": k, "label": get_label(k)} for k in _INSTRUCT_CATEGORIES[2].keys()],
+    "style": [{"value": k, "label": get_label(k)} for k in _INSTRUCT_CATEGORIES[3].keys()],
+    "accent": sorted([{"value": x, "label": get_label(x)} for x in _INSTRUCT_CATEGORIES[4]], key=lambda item: item["value"]),
+    "dialect": sorted([{"value": x, "label": get_label(x)} for x in _INSTRUCT_CATEGORIES[5]], key=lambda item: item["value"]),
 }
 
 def _initialize_languages():
     global _OMNIVOICE_LANGS
     try:
+        omnivoice_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "omnivoice")
+        if omnivoice_dir not in sys.path:
+            sys.path.insert(0, omnivoice_dir)
         from omnivoice.utils.lang_map import LANG_NAMES, lang_display_name
         if LANG_NAMES:
             _OMNIVOICE_LANGS = ["Auto"] + sorted(lang_display_name(n) for n in LANG_NAMES)
             return
-    except Exception: pass
-    # Fallback to direct parsing if needed (simplified for clean code)
-
-def _initialize_design_options():
-    global _OMNIVOICE_DESIGN_OPTIONS
-    try:
-        from omnivoice.utils.voice_design import _INSTRUCT_CATEGORIES
-        
-        gender_data = _INSTRUCT_CATEGORIES[0]
-        age_data = _INSTRUCT_CATEGORIES[1]
-        pitch_data = _INSTRUCT_CATEGORIES[2]
-        style_data = _INSTRUCT_CATEGORIES[3]
-        accent_data = _INSTRUCT_CATEGORIES[4]
-        dialect_data = _INSTRUCT_CATEGORIES[5]
-        
-        friendly_labels = {
-            "male": "Erkek (Male)",
-            "female": "Kadın (Female)",
-            
-            "child": "Çocuk (Child)",
-            "teenager": "Genç (Teenager)",
-            "young adult": "Genç Yetişkin (Young Adult)",
-            "middle-aged": "Orta Yaşlı (Middle-aged)",
-            "elderly": "Yaşlı (Elderly)",
-            
-            "very low pitch": "Çok Kalın (Very Low)",
-            "low pitch": "Kalın (Low)",
-            "moderate pitch": "Orta (Moderate)",
-            "high pitch": "İnce (High)",
-            "very high pitch": "Çok İnce (Very High)",
-            
-            "whisper": "Fısıltı (Whisper)",
-            
-            "american accent": "Amerikan (American)",
-            "british accent": "İngiliz (British)",
-            "australian accent": "Avustralya (Australian)",
-            "chinese accent": "Çin (Chinese)",
-            "canadian accent": "Kanada (Canadian)",
-            "indian accent": "Hint (Indian)",
-            "korean accent": "Kore (Korean)",
-            "portuguese accent": "Portekiz (Portuguese)",
-            "russian accent": "Rus (Russian)",
-            "japanese accent": "Japon (Japanese)",
-            
-            "河南话": "Henan (河南话)",
-            "陕西话": "Shaanxi (陕西话)",
-            "四川话": "Sichuan (四川话)",
-            "贵州话": "Guizhou (贵州话)",
-            "云南话": "Yunnan (云南话)",
-            "桂林话": "Guilin (桂林话)",
-            "济南话": "Jinan (济南话)",
-            "石家庄话": "Shijiazhuang (石家庄话)",
-            "甘肃话": "Gansu (甘肃话)",
-            "宁夏话": "Ningxia (宁夏话)",
-            "青岛话": "Qingdao (青岛话)",
-            "东北话": "Dongbei (东北话)",
-        }
-        
-        def get_label(val):
-            return friendly_labels.get(val, val.title() if isinstance(val, str) else str(val))
-            
-        _OMNIVOICE_DESIGN_OPTIONS = {
-            "gender": [{"value": k, "label": get_label(k)} for k in gender_data.keys()],
-            "age": [{"value": k, "label": get_label(k)} for k in age_data.keys()],
-            "pitch": [{"value": k, "label": get_label(k)} for k in pitch_data.keys()],
-            "style": [{"value": k, "label": get_label(k)} for k in style_data.keys()],
-            "accent": sorted([{"value": x, "label": get_label(x)} for x in accent_data], key=lambda item: item["value"]),
-            "dialect": sorted([{"value": x, "label": get_label(x)} for x in dialect_data], key=lambda item: item["value"]),
-        }
     except Exception as e:
-        logger.error(f"Voice design secenekleri yuklenirken hata olustu: {e}")
+        logger.warning(f"Languages list fallback to default: {e}")
 
 if is_omnivoice:
     _initialize_languages()
-    _initialize_design_options()
 
 @app.get("/v1/languages")
 async def get_languages():
@@ -333,7 +358,8 @@ async def get_design_options():
 
 @app.get("/v1/model_info")
 async def get_model_info():
-    return {"engine": engine_name_env, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
+    dev = "NVIDIA CUDA (RTX 3060 Ti)" if is_cuda_available() else "CPU"
+    return {"engine": engine_name_env, "device": dev, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
 
 if __name__ == "__main__":
     import uvicorn

@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     libsndfile1 \
     build-essential \
+    cmake \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -41,8 +43,19 @@ COPY services/shared /app/services/shared
 
 # 4.4. Kodu sisteme bağla ve çakışan kaynak klasörlerini temizle
 RUN uv pip install --system --no-deps /app/src/ && \
-    rm -rf /app/src /app/omnivoice /app/voxcpm2
+    rm -rf /app/omnivoice /app/voxcpm2
 
+# 4.5. Eğer motor omnivoice-gguf ise C++ binary'lerini derle
+RUN if [ "$ENGINE_NAME" = "omnivoice-gguf" ]; then \
+        echo "Building C++ binaries for omnivoice-gguf..." && \
+        cd /app/src && \
+        cmake -B build -DGGML_CUDA=ON && \
+        cmake --build build --config Release --target tts-server omnivoice-codec -j$(nproc) && \
+        cp build/tts-server /usr/local/bin/ && \
+        cp build/omnivoice-codec /usr/local/bin/ && \
+        echo "C++ build completed."; \
+    fi && \
+    rm -rf /app/src
 
 # 5. Çalıştırma Komutu
 ENV START_COMMAND=""

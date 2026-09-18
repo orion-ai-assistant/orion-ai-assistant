@@ -264,24 +264,70 @@ if __name__ == "__main__":
             focused = False
             if platform.system() == "Windows":
                 try:
-                    # Pencere başlığına göre mevcut Edge app penceresini bul ve öne getir
-                    focus_script = (
-                        '$wshell = New-Object -ComObject wscript.shell;'
-                        'if ($wshell.AppActivate("Orion AI")) { "focused" } else { "not_found" }'
-                    )
-                    result = subprocess.run(
-                        ['powershell', '-NoProfile', '-Command', focus_script],
-                        capture_output=True, text=True, timeout=3
-                    )
-                    focused = "focused" in result.stdout
+                    import ctypes
+                    import ctypes.wintypes
+
+                    SW_RESTORE = 9
+                    SW_SHOW = 5
+
+                    user32 = ctypes.windll.user32
+
+                    found = [None]
+
+                    def _enum_callback(hwnd, _lParam):
+                        length = user32.GetWindowTextLengthW(hwnd)
+                        if length == 0:
+                            return True
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title = buf.value
+                        if "Orion" in title or "orion" in title or "127.0.0.1" in title:
+                            found[0] = hwnd
+                            return False  # stop enumeration
+                        return True
+
+                    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+                    user32.EnumWindows(EnumWindowsProc(_enum_callback), 0)
+
+                    if found[0]:
+                        found_hwnd = found[0]
+                        # Restore if minimized, then bring to foreground and maximize
+                        placement = ctypes.create_string_buffer(44)
+                        user32.GetWindowPlacement(found_hwnd, placement)
+                        is_minimized = ctypes.c_uint.from_buffer_copy(placement[8:12]).value == 2
+                        if is_minimized:
+                            user32.ShowWindow(found_hwnd, SW_RESTORE)
+                        user32.SetForegroundWindow(found_hwnd)
+                        user32.BringWindowToTop(found_hwnd)
+                        focused = True
                 except Exception as e:
                     print(f"[SYSTEM] Pencere odaklanamadı: {e}")
 
             if not focused:
-                # Mevcut pencere bulunamadıysa son çare olarak yeni bir pencere aç
-                print(f"[SYSTEM] Mevcut pencere bulunamadı, yeni pencere açılıyor...")
-                open_app_window("127.0.0.1", PORT)
-                time.sleep(1.0)
+                # Check if a Chrome process with the installer profile is already running
+                profile_dir = os.path.join(tempfile.gettempdir(), "orion_installer_profile")
+                chrome_already_open = False
+                if platform.system() == "Windows":
+                    try:
+                        cmd = (
+                            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" "
+                            "| Select-Object -ExpandProperty CommandLine"
+                        )
+                        res = subprocess.run(
+                            ['powershell', '-NoProfile', '-Command', cmd],
+                            capture_output=True, text=True, timeout=3
+                        )
+                        if profile_dir.lower() in res.stdout.lower():
+                            chrome_already_open = True
+                    except Exception:
+                        pass
+
+                if not chrome_already_open:
+                    print(f"[SYSTEM] Mevcut pencere bulunamadı, yeni pencere açılıyor...")
+                    open_app_window("127.0.0.1", PORT)
+                    time.sleep(1.0)
+                else:
+                    print(f"[SYSTEM] Tarayıcı penceresi zaten açık, yeni pencere açılmıyor.")
 
             sys.exit(0)
         else:

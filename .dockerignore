@@ -35,6 +35,8 @@ services/embedding/*/models/
 **/*.onnx
 **/*.zip
 **/*.tar.gz
+**/*.exe
+**/*.dll
 
 !**/models/*.py
 !**/models/__init__.py

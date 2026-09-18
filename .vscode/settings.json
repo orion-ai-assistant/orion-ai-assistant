@@ -5,5 +5,6 @@
     },
     "search.exclude": {
         "**/__pycache__": true
-    }
+    },
+    "cmake.sourceDirectory": "D:/krstlcm Workspace/DevProjects/orion-ai-assistant/services/tts/omnivoice-gguf"
 }

@@ -50,8 +50,26 @@ async def install_service(
         return error
         
     if compose_file == "local":
-        background_tasks.add_task(services.run_local_installation, service_id, service_dir)
-        return {"status": "success", "message": i18n.t("MSG_INSTALL_STARTED", "")}
+        was_running = False
+        try:
+            for s in services.get_services():
+                if s.get("id") == service_id:
+                    was_running = s.get("is_running", False)
+                    break
+        except Exception:
+            pass
+            
+        if was_running:
+            services.stop_service(service_id)
+                
+        background_tasks.add_task(services.run_local_installation, service_id, service_dir, build_env, env_file_keys)
+        
+        msg = i18n.t("MSG_INSTALL_STARTED", "")
+        if was_running:
+            # If it was running, notify the user that we stopped it
+            msg += " (Çalışan servis durduruldu)"
+            
+        return {"status": "success", "message": msg}
 
     port_to_check = build_env.get("APP_PORT")
     kill_msg = ""
@@ -80,12 +98,19 @@ def stop_service(service_id: str):
         raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
     return {"status": "success", "message": i18n.t("MSG_SERVICE_STOPPED")}
 
+@router.post("/api/services/{service_id}/start-local")
+def start_local_service(service_id: str):
+    ok = services.start_local_service(service_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Servis başlatılamadı. Kurulum tamamlandı mı?")
+    return {"status": "success", "message": "Servis başlatılıyor..."}
+
 # ---------------------------------------------------------------------------
 # Service Remove
 # ---------------------------------------------------------------------------
 @router.post("/api/services/{service_id}/remove")
-def remove_service(service_id: str, keep_data: bool = False):
-    if not services.remove_service(service_id, keep_data=keep_data):
+def remove_service(service_id: str, hardware: str = None, keep_data: bool = False):
+    if not services.remove_service(service_id, hardware, keep_data=keep_data):
         raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
     return {"status": "success", "message": i18n.t("MSG_SERVICE_DELETED")}
 

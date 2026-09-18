@@ -13,8 +13,9 @@ async function init() {
         activeEngine = info.engine;
         const lowVramText = info.low_vram ? 'ACIK' : 'KAPALI';
         const idleCleanupText = Number.isFinite(info.idle_cleanup_mins) ? `${info.idle_cleanup_mins} dk` : '-';
+        const devText = info.device || 'NVIDIA CUDA (GPU)';
         document.getElementById('activeModelDisplay').innerText =
-            `Aktif Model: ${activeEngine.toUpperCase()} | VRAM Tasarrufu: ${lowVramText} | Bos Temizleme: ${idleCleanupText}`;
+            `Aktif Model: ${activeEngine.toUpperCase()} | Donanım: ${devText} | VRAM Tasarrufu: ${lowVramText}`;
 
         if (activeEngine === 'voxcpm2') {
             document.getElementById('langContainer')?.classList.add('hidden');

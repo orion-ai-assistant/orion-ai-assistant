@@ -26,8 +26,12 @@ export async function postStopService(id) {
     return await response.json();
 }
 
-export async function postRemoveService(id, keepData = false) {
-    const response = await fetch(`${API_BASE}/services/${id}/remove?keep_data=${keepData}`, { method: 'POST' });
+export async function postRemoveService(id, keepData = false, hardware = null) {
+    let url = `${API_BASE}/services/${id}/remove?keep_data=${keepData}`;
+    if (hardware) {
+        url += `&hardware=${hardware}`;
+    }
+    const response = await fetch(url, { method: 'POST' });
     return await response.json();
 }
 
@@ -48,6 +52,11 @@ export async function postToggleAutostart(id) {
 
 export async function postStartSystem() {
     const response = await fetch(`${API_BASE}/system/start`, { method: 'POST' });
+    return await response.json();
+}
+
+export async function postStartLocalService(id) {
+    const response = await fetch(`${API_BASE}/services/${id}/start-local`, { method: 'POST' });
     return await response.json();
 }
 

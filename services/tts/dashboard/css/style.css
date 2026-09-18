@@ -90,6 +90,11 @@ input:focus {
     border-color: var(--accent);
 }
 
+select option {
+    background: var(--card);
+    color: white;
+}
+
 button {
     width: 100%;
     background: var(--accent);

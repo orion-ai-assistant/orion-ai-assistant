@@ -12,6 +12,8 @@ window.orionLocales.en = {
 
     // Actions
     btn_install: "Install",
+    btn_start: "Start",
+    btn_stop: "Stop",
     btn_disable: "Disable",
     btn_enable: "Enable",
     btn_reinstall: "Reinstall",

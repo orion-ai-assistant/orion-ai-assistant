@@ -13,11 +13,14 @@ __pycache__/
 # Environment variables
 .env
 .env.*.local
+.env.install
 
-# Logs and PIDs
+# Logs, PIDs, and local runtime state
 *.log
 *.pid
 .installer.pid
+.service.pid
+.enabled
 
 # Native cloned sub-projects
 services/router/src/
@@ -29,3 +32,40 @@ models/
 data/
 services/*/data/
 dump.rdb
+
+# Weights & Checkpoints (never commit large model binaries)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.bin
+
+# Voice clones & audio artifacts (user-specific)
+services/tts/voices/*
+!services/tts/voices/.gitkeep
+services/tts/*.wav
+*.wav
+!services/tts/voxcpm2/examples/*.wav
+!dev/**/*.wav
+
+# Compiled Binaries and Executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Downloaded Archives & Checksums
+*.zip
+*.tar.gz
+*.7z
+*.sha256
+latest_release.json
+
+# Ignore specific service binaries
+services/llm/llama-cpp/bin/
+services/embedding/llama-cpp-embed/bin/
+services/tts/omnivoice-gguf/bin/*
+!services/tts/omnivoice-gguf/bin/.gitkeep
+services/tts/omnivoice-gguf/build/
+services/tts/omnivoice-gguf/.extract_staging/

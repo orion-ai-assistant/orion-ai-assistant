@@ -41,6 +41,15 @@ export function renderServices(services, previousServiceStates, allServiceModels
             renderCardSkeleton(card, service, isDisabled, handlers, viewMode);
         }
 
+        // Use cached models immediately so we don't flash default states
+        if (allServiceModels[service.id]) {
+            if (viewMode === 'install' && !['orion-hub', 'orion-router'].includes(service.id)) {
+                updateModelSelect(service.id, allServiceModels[service.id], allServiceModels, service.installed_model);
+            } else if (viewMode === 'models-only') {
+                renderModelList(service.id, allServiceModels[service.id], handlers, isDisabled);
+            }
+        }
+        
         updateCardDynamicContent(card, service, isDisabled, handlers, viewMode);
         toggleFormElements(card, isDisabled);
     });

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+models/
+.service.pid
+service.log
+.env
+.env.install
+build/
+
+# Binaries & archives (must not be committed to keep repository lightweight)
+bin/*
+!bin/.gitkeep
+*.zip
+*.sha256
+.extract_staging/

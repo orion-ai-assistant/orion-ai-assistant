@@ -1,15 +1,31 @@
 import { formatSize } from '../ui-utils.js';
 
-export function updateModelSelect(serviceId, models, allServiceModels) {
+export function updateModelSelect(serviceId, models, allServiceModels, installedModelPath = "") {
     const select = document.getElementById(`model-select-${serviceId}`);
     if (!select) return;
 
     const currentVal = select.value;
-    let newHtml = `<option value="">${window.t('lbl_select_model')}</option>`;
+    const installedModels = models.filter(m => m.is_installed && !(m.rel_path || "").toLowerCase().includes('mmproj'));
+    const hasAnyInstalledModel = installedModels.length > 0;
+    
+    // Auto-select the first installed model if no active selection
+    let autoSelectedPath = "";
+    if (hasAnyInstalledModel && !currentVal && !installedModelPath) {
+        autoSelectedPath = installedModels[0].rel_path || installedModels[0].id;
+    }
 
-    models.filter(m => m.is_installed && !(m.rel_path || "").toLowerCase().includes('mmproj')).forEach(m => {
+    const hasInstalledMatch = models.some(m => installedModelPath && ((m.rel_path || m.id) === installedModelPath || installedModelPath.startsWith((m.rel_path || m.id) + '/') || installedModelPath.startsWith((m.rel_path || m.id) + '\\')));
+    const shouldSelectPlaceholder = !currentVal && !hasInstalledMatch && !autoSelectedPath;
+    
+    const placeholderText = hasAnyInstalledModel ? window.t('lbl_select_model') : (window.t('lbl_download_model') || 'Model Yükleyin');
+
+    let newHtml = `<option value="" disabled hidden ${shouldSelectPlaceholder ? 'selected' : ''}>${placeholderText}</option>`;
+
+    installedModels.forEach(m => {
         const path = m.rel_path || m.id;
-        newHtml += `<option value="${path}" ${currentVal === path ? 'selected' : ''}>${m.name}</option>`;
+        const isActive = installedModelPath && (path === installedModelPath || installedModelPath.startsWith(path + '/') || installedModelPath.startsWith(path + '\\'));
+        const isSelected = currentVal === path || (!currentVal && isActive) || (autoSelectedPath === path);
+        newHtml += `<option value="${path}" ${isSelected ? 'selected' : ''}>${m.name}</option>`;
     });
 
     if (select.innerHTML.trim() !== newHtml.trim()) {

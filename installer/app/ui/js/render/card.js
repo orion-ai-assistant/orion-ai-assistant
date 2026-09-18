@@ -102,16 +102,33 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         return;
     }
 
-    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${service.is_starting}_${isDisabled}_${service.install_error || ''}_${window.orionLang || 'en'}`;
+    const modelSelect = card.querySelector(`#model-select-${service.id}`);
+    const selectedModel = modelSelect ? modelSelect.value : "";
+    const envSelect = card.querySelector(`#env-select-${service.id}`);
+    const selectedEnvOption = envSelect ? envSelect.options[envSelect.selectedIndex] : null;
+    const selectedHardware = selectedEnvOption ? selectedEnvOption.getAttribute('data-hardware') : "";
+    
+    const isLocalMode = (window.orionInstallMode || 'docker') === 'local';
+    const isModelChanged = service.is_installed && selectedModel && service.installed_model && 
+                           selectedModel !== service.installed_model &&
+                           !service.installed_model.startsWith(selectedModel + '/') &&
+                           !service.installed_model.startsWith(selectedModel + '\\');
+                           
+    const isHardwareChanged = isLocalMode && service.is_installed && selectedHardware && service.installed_hardware &&
+                              selectedHardware !== service.installed_hardware;
+
+    // In local mode, if installed and no model is selected, we still show Başlat (without model enforcement)
+    const noModelSelected = !isCoreService(service) && !selectedModel;
+
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${service.is_starting}_${isDisabled}_${service.install_error || ''}_${window.orionLang || 'en'}_${isModelChanged}_${isHardwareChanged}_${selectedModel}_${selectedHardware}`;
     if (footer.dataset.stateKey === stateKey) return;
     footer.dataset.stateKey = stateKey;
 
-    // [!] SARI IŞIK DÜZELTMESİ: is_installing eklendi
     let statusLabel, statusClass;
     if (service.is_installing || service.is_starting) {
         statusLabel = window.t('status_starting');
         statusClass = 'status-starting';
-    } else if (!service.is_installed) {
+    } else if (!service.is_installed || isHardwareChanged) {
         statusLabel = window.t('status_uninstalled');
         statusClass = 'status-missing';
     } else if (service.is_running) {
@@ -126,18 +143,44 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     if (dotContainer) dotContainer.innerHTML = `<div class="status-badge ${statusClass}" title="${statusLabel}" style="margin: 0;"><span class="status-dot"></span></div>`;
 
     let actionHtml = '';
-    if (isDisabled && !service.is_installed) {
+    if (isDisabled && (!service.is_installed || isHardwareChanged)) {
         actionHtml = `<button class="btn" disabled>${window.t('status_unavailable')}</button>`;
     } else if (service.is_installing || service.is_starting) {
         actionHtml = `<button class="btn btn-primary" disabled><i class="fas fa-spinner fa-spin"></i> ${service.is_installing ? (window.t('status_installing') || window.t('status_starting')) : window.t('status_starting')}</button>`;
+    } else if (noModelSelected) {
+        // No model selected → main action button disabled
+        const btnLabel = isLocalMode && service.is_installed ? window.t('btn_start') : 
+                         (!isLocalMode && service.is_installed ? (service.autostart !== false ? window.t('btn_disable') : window.t('btn_enable')) : window.t('btn_install'));
+        actionHtml = `<button class="btn btn-primary" disabled>${btnLabel}</button>`;
     } else {
         const isAuto = service.autostart !== false;
         const isCore = isCoreService(service);
-        const btnClass = !service.is_installed ? 'btn btn-primary' : (isCore ? 'btn btn-success' : (isAuto ? 'btn btn-danger' : 'btn btn-success'));
-        const btnLabel = !service.is_installed ? window.t('btn_install') : (isCore ? window.t('status_active') : (isAuto ? window.t('btn_disable') : window.t('btn_enable')));
-        const btnAttr = isCore && service.is_installed ? 'disabled style="cursor: default;"' : '';
+        let btnClass, btnLabel, btnAttr;
 
-        const dropdownHtml = service.is_installed ? `
+        if (isHardwareChanged) {
+            btnClass = 'btn btn-primary';
+            btnLabel = window.t('btn_install');
+            btnAttr = '';
+        } else if (isLocalMode && !isCore) {
+            // Local mode installed: Başlat (if stopped) or Durdur (if running)
+            btnClass = service.is_running ? 'btn btn-danger' : 'btn btn-primary';
+            btnLabel = service.is_running ? window.t('btn_stop') : window.t('btn_start');
+            btnAttr = '';
+        } else if (isModelChanged) {
+            btnClass = 'btn btn-primary';
+            btnLabel = window.t('btn_reinstall');
+            btnAttr = '';
+        } else if (!service.is_installed) {
+            btnClass = 'btn btn-primary';
+            btnLabel = isLocalMode ? window.t('btn_start') : window.t('btn_install');
+            btnAttr = '';
+        } else {
+            btnClass = isCore ? 'btn btn-success' : (isAuto ? 'btn btn-danger' : 'btn btn-success');
+            btnLabel = isCore ? window.t('status_active') : (isAuto ? window.t('btn_disable') : window.t('btn_enable'));
+            btnAttr = isCore && service.is_installed && !isModelChanged ? 'disabled style="cursor: default;"' : '';
+        }
+
+        const dropdownHtml = (service.is_installed && !isHardwareChanged) ? `
             <div class="split-dropdown">
                 <button class="btn btn-split-toggle" id="btn-menu-${service.id}" aria-expanded="false" aria-controls="menu-${service.id}" title="${window.t('lbl_other_actions')}">
                     <i class="fas fa-chevron-down"></i>
@@ -157,15 +200,27 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
 
     footer.innerHTML = `${errorHtml}<div class="service-footer"><div class="category-tag" style="margin-bottom: 0;">${service.category.toUpperCase()}</div><div class="footer-actions">${actionHtml}</div></div>`;
 
-    // Bind events
     const bindEvent = (id, handler) => {
         const el = card.querySelector(id);
         if (el) el.onclick = (e) => handler(e, el);
     };
 
-    bindEvent(`#btn-main-${service.id}`, () => service.is_installed && !isCoreService(service) ? handlers.onToggleAutostart(service.id, document.getElementById(`btn-main-${service.id}`)) : handlers.onStart(service.id, document.getElementById(`btn-main-${service.id}`)));
+    bindEvent(`#btn-main-${service.id}`, () => {
+        const btn = document.getElementById(`btn-main-${service.id}`);
+        if (isHardwareChanged) {
+            handlers.onStart(service.id, btn);
+        } else if (isLocalMode && !isCoreService(service) && service.is_installed) {
+            handlers.onLocalToggle(service.id, service.is_running, btn, isModelChanged);
+        } else if (isModelChanged) {
+            handlers.onReinstall(service.id, btn);
+        } else if (!service.is_installed) {
+            handlers.onStart(service.id, btn);
+        } else {
+            handlers.onToggleAutostart(service.id, btn);
+        }
+    });
     bindEvent(`#btn-reinstall-${service.id}`, () => handlers.onReinstall(service.id, document.getElementById(`btn-reinstall-${service.id}`)));
-    bindEvent(`#btn-remove-${service.id}`, () => handlers.onRemove(service.id, document.getElementById(`btn-remove-${service.id}`)));
+    bindEvent(`#btn-remove-${service.id}`, () => handlers.onRemove(service.id, document.getElementById(`btn-remove-${service.id}`), false, false, selectedHardware));
     bindEvent(`#btn-wipe-data-${service.id}`, () => handlers.onWipeData(service.id, document.getElementById(`btn-wipe-data-${service.id}`)));
     if ((window.orionInstallMode || 'docker') !== 'local') {
         bindEvent(`#btn-delete-image-${service.id}`, () => handlers.onDeleteImage(service.id, document.getElementById(`btn-delete-image-${service.id}`)));
@@ -213,14 +268,22 @@ function setupCardInteractions(card, service, handlers) {
         };
     });
 
-    card.querySelector(`#model-select-${service.id}`)?.addEventListener('change', e => handlers.onModelChange(service.id, e.target.value));
+    card.querySelector(`#model-select-${service.id}`)?.addEventListener('change', e => {
+        handlers.onModelChange(service.id, e.target.value);
+        const latestService = handlers.getService ? (handlers.getService(service.id) || service) : service;
+        updateCardDynamicContent(card, latestService, card.classList.contains('disabled-service'), handlers, card.dataset.viewMode);
+    });
 
     const envSelect = card.querySelector(`#env-select-${service.id}`);
     const gpuField = card.querySelector(`#gpu-selector-field-${service.id}`);
-    if (envSelect && gpuField) {
-        const updateGpu = () => gpuField.style.display = envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware')?.toLowerCase() === 'cpu' ? 'none' : 'block';
+    if (envSelect) {
+        const updateGpu = () => {
+            if (gpuField) gpuField.style.display = envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware')?.toLowerCase() === 'cpu' ? 'none' : 'block';
+            const latestService = handlers.getService ? (handlers.getService(service.id) || service) : service;
+            updateCardDynamicContent(card, latestService, card.classList.contains('disabled-service'), handlers, card.dataset.viewMode);
+        };
         envSelect.addEventListener('change', updateGpu);
-        updateGpu();
+        if (gpuField) updateGpu();
     }
 
     const gpuCheckboxes = card.querySelectorAll(`.dynamic-input[data-type="gpu_selector_multi"]`);

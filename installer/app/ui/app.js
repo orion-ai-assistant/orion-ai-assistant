@@ -123,9 +123,11 @@ function renderFromCache() {
         onStart: installService, onToggleAutostart: toggleAutostart,
         onReinstall: reinstallService, onRemove: removeService,
         onWipeData: wipeData,
+        onLocalToggle: localToggleService,
         onDeleteImage: deleteImage, onDownload: downloadModel,
         onModelChange: (sid, path) => uiRender.filterVisionModels(sid, path, allServiceModels),
-        onTabModels: loadModelStatus
+        onTabModels: loadModelStatus,
+        getService: (sid) => allServices[sid]
     }, { step: currentStep });
 }
 
@@ -133,7 +135,7 @@ async function loadModelStatus(serviceId) {
     try {
         const models = await api.fetchModels(serviceId);
         allServiceModels[serviceId] = models;
-        uiRender.updateModelSelect(serviceId, models, allServiceModels);
+        uiRender.updateModelSelect(serviceId, models, allServiceModels, allServices[serviceId]?.installed_model);
         uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel, onCancel: cancelDownload }, allServices[serviceId]?.status === 'disabled');
     } catch (err) { console.error("Load models error:", err); }
 }
@@ -214,6 +216,8 @@ async function installService(id, btn) {
 
         const extraParams = Array.from(document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`)).reduce((acc, input) => {
             const { paramId, type } = input.dataset;
+            if (hw === 'cpu' && (type === 'gpu_selector' || type === 'gpu_selector_multi')) return acc;
+            
             if (type === 'checkbox') acc[paramId] = input.checked;
             else if (['gpu_selector', 'gpu_selector_multi'].includes(type) && input.checked) {
                 acc[paramId] = type === 'gpu_selector_multi' ? [...(acc[paramId] || []), input.value] : input.value;
@@ -248,6 +252,48 @@ async function installService(id, btn) {
 
 const toggleAutostart = async (id, btn) => { btn.disabled = true; await handleAction(null, '', () => api.postToggleAutostart(id), fetchServices, () => { btn.disabled = false; }); };
 
+async function localToggleService(id, isRunning, btn, isModelChanged = false) {
+    if (isRunning) {
+        // Durdur
+        await handleAction(btn, '', () => api.postStopService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+    } else {
+        // Başlat
+        const startFn = async () => {
+            if (isModelChanged) {
+                // Modeli .env'ye kaydetmek için install API'sini çağır
+                const envId = document.getElementById(`env-select-${id}`)?.value || "";
+                const hw = document.getElementById(`env-select-${id}`)?.options[document.getElementById(`env-select-${id}`).selectedIndex]?.getAttribute('data-hardware') || "";
+                const modelFile = document.getElementById(`model-select-${id}`)?.value || "";
+                const mmprojFile = document.getElementById(`mmproj-toggle-${id}`)?.checked ? document.getElementById(`mmproj-toggle-${id}`).dataset.path : "";
+                
+                const extraParams = Array.from(document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`)).reduce((acc, input) => {
+                    const { paramId, type } = input.dataset;
+                    if (hw === 'cpu' && (type === 'gpu_selector' || type === 'gpu_selector_multi')) return acc;
+                    
+                    if (type === 'checkbox') acc[paramId] = input.checked;
+                    else if (['gpu_selector', 'gpu_selector_multi'].includes(type) && input.checked) {
+                        acc[paramId] = type === 'gpu_selector_multi' ? [...(acc[paramId] || []), input.value] : input.value;
+                    }
+                    else if (type === 'int') acc[paramId] = parseInt(input.value, 10) || 0;
+                    else if (type === 'number') acc[paramId] = parseFloat(input.value) || 0;
+                    else acc[paramId] = input.value;
+                    return acc;
+                }, {});
+                for (let key in extraParams) if (Array.isArray(extraParams[key])) extraParams[key] = extraParams[key].join(',');
+
+                const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
+                const installRes = await api.postInstallService(id, query);
+                if (installRes.status !== 'success') return installRes;
+            }
+            return await api.postStartLocalService(id);
+        };
+
+        await handleAction(btn, '', startFn, () => {
+            setTimeout(fetchServices, 1500);
+        }, () => { if (btn) btn.disabled = false; });
+    }
+}
+
 async function deleteImage(id, btn) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (await showConfirm(window.t('confirm_delete_image_title'), sName ? window.t('confirm_delete_image_msg_named', sName) : window.t('confirm_delete_image_msg'))) {
@@ -257,12 +303,12 @@ async function deleteImage(id, btn) {
     }
 }
 
-async function removeService(id, btn, bypassConfirm = false, keepData = false) {
+async function removeService(id, btn, bypassConfirm = false, keepData = false, hardware = null) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (bypassConfirm || await showConfirm(window.t('confirm_remove_service_title'), window.t('confirm_remove_service_msg', sName))) {
         if (btn) btn.disabled = true;
         const mainBtn = document.getElementById(`btn-main-${id}`);
-        const success = await handleAction(mainBtn || btn, window.t('status_starting'), () => api.postRemoveService(id, keepData), fetchServices, () => { if (btn) btn.disabled = false; });
+        const success = await handleAction(mainBtn || btn, 'btn_remove', () => api.postRemoveService(id, keepData, hardware), fetchServices, () => { if (btn) btn.disabled = false; });
         if (success && btn) btn.disabled = false; // Ensure enabled in case UI doesn't refresh immediately
         return success;
     }
@@ -274,9 +320,11 @@ async function wipeData(id, btn) {
     if (await showConfirm(window.t('confirm_wipe_data_title'), window.t('confirm_wipe_data_msg', sName))) {
         if (btn) btn.disabled = true;
         const mainBtn = document.getElementById(`btn-main-${id}`);
-        const success = await handleAction(mainBtn || btn, window.t('status_starting'), () => api.postWipeService(id), fetchServices, () => { if (btn) btn.disabled = false; });
+        const success = await handleAction(mainBtn || btn, 'btn_wipe_data', () => api.postWipeService(id), fetchServices, () => { if (btn) btn.disabled = false; });
         if (success && btn) btn.disabled = false;
+        return success;
     }
+    return false;
 }
 
 async function reinstallService(id, btn) {

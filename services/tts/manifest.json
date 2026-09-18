@@ -53,27 +53,22 @@
       }
     },
     {
-      "id": "omnivoice-multilang",
-      "name": "OmniVoice (600+ Dil)",
-      "folder": "omnivoice",
-      "description": "Xiaomi's wide language support TTS model.",
-      "download_url": "https://huggingface.co/k2-fsa/OmniVoice/resolve/main/",
-      "size_mb": 3481,
+      "id": "omnivoice-gguf",
+      "name": "OmniVoice (GGUF - C++)",
+      "folder": "omnivoice-gguf",
+      "description": "High performance C++/CUDA version of OmniVoice with low VRAM usage.",
+      "download_url": "https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/",
+      "size_mb": 945,
       "files": [
-        "model.safetensors",
-        "config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "audio_tokenizer/model.safetensors",
-        "audio_tokenizer/config.json",
-        "audio_tokenizer/preprocessor_config.json"
+        "omnivoice-base-Q8_0.gguf",
+        "omnivoice-tokenizer-Q8_0.gguf"
       ],
       "build_args": {
-        "ENGINE_NAME": "omnivoice"
+        "ENGINE_NAME": "omnivoice-gguf"
       },
       "env": {
-        "MODEL_PATH": "/app/models/omnivoice",
-        "ENGINE_NAME": "omnivoice"
+        "MODEL_PATH": "/app/models/omnivoice-gguf",
+        "ENGINE_NAME": "omnivoice-gguf"
       }
     }
   ],
