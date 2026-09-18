@@ -73,13 +73,14 @@ def package_cuda_release():
         f.write(f"{sha}  {ZIP_NAME}\n")
 
     print("\n" + "=" * 65)
-    print(" PACKAGING COMPLETE! Created artifacts for GitHub Release:")
+    print(" PACKAGING COMPLETE! Created artifacts:")
     print("=" * 65)
     print(f"  1. {ZIP_NAME} ({total_size_mb:.2f} MB)")
     print(f"     SHA256: {sha}")
+    print(f"     -> Upload ONLY this zip to GitHub Release (Tag: tts-v1.0.0)")
     print(f"  2. checksums.sha256 ({os.path.getsize(checksum_file)} bytes)")
+    print(f"     -> Committed directly into Git repo (no upload needed)")
     print("=" * 65)
-    print("Ready to upload these 2 files to your GitHub Release (Tag: tts-v1.0.0).")
 
 
 if __name__ == "__main__":

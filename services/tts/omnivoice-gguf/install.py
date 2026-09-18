@@ -294,9 +294,24 @@ def install():
         shutil.rmtree(staging_dir, ignore_errors=True)
 
     try:
-        # Download checksums
+        # Determine expected SHA256 (bundled repo file first, then download fallback)
         expected_hash = None
-        if chk_url and download_file(chk_url, temp_chk, "checksums.sha256"):
+        local_chk = os.path.normpath(os.path.join(bin_dir, "..", "checksums.sha256"))
+        if os.path.exists(local_chk):
+            try:
+                with open(local_chk, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 2 and parts[1].endswith(ZIP_NAME):
+                            expected_hash = parts[0]
+                            break
+                if expected_hash:
+                    print(f"[*] Expected SHA256 (from repository): {expected_hash}")
+            except Exception as e:
+                print(f"  [Warning] Could not read local checksums: {e}")
+
+        # Fallback: download checksums if not found locally
+        if not expected_hash and chk_url and download_file(chk_url, temp_chk, "checksums.sha256"):
             try:
                 with open(temp_chk, "r", encoding="utf-8") as f:
                     for line in f:
@@ -305,7 +320,7 @@ def install():
                             expected_hash = parts[0]
                             break
                 if expected_hash:
-                    print(f"[*] Expected SHA256: {expected_hash}")
+                    print(f"[*] Expected SHA256 (downloaded): {expected_hash}")
             except Exception as e:
                 print(f"  [Warning] Could not parse checksums file: {e}")
 

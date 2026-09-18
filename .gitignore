@@ -60,6 +60,7 @@ services/tts/*.wav
 *.tar.gz
 *.7z
 *.sha256
+!services/tts/omnivoice-gguf/checksums.sha256
 latest_release.json
 
 # Ignore specific service binaries
