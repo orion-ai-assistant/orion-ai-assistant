@@ -224,14 +224,14 @@ def download_file(url: str, dest_path: str, description: str = "") -> bool:
         return False
 
 
-def verify_sha256(filepath: str, expected_hash: str) -> bool:
-    """Computes SHA256 of file and compares against expected hash."""
+def verify_sha256(filepath: str, expected_hashes: List[str]) -> bool:
+    """Computes SHA256 of file and compares against list of expected hash(es)."""
     sha = hashlib.sha256()
     with open(filepath, "rb") as f:
         while chunk := f.read(1024 * 1024):
             sha.update(chunk)
     computed = sha.hexdigest().lower()
-    return computed == expected_hash.strip().lower()
+    return computed in [h.lower() for h in expected_hashes]
 
 
 # ─── Installation Workflow ────────────────────────────────────────────────────
@@ -295,7 +295,7 @@ def install():
 
     try:
         # Determine expected SHA256 (bundled repo file first, then download fallback)
-        expected_hash = None
+        expected_hashes: List[str] = []
         local_chk = os.path.normpath(os.path.join(bin_dir, "..", "checksums.sha256"))
         if os.path.exists(local_chk):
             try:
@@ -303,24 +303,22 @@ def install():
                     for line in f:
                         parts = line.strip().split()
                         if len(parts) >= 2 and parts[1].endswith(ZIP_NAME):
-                            expected_hash = parts[0]
-                            break
-                if expected_hash:
-                    print(f"[*] Expected SHA256 (from repository): {expected_hash}")
+                            expected_hashes.append(parts[0].lower())
+                if expected_hashes:
+                    print(f"[*] Expected SHA256 (from repository): {', '.join(expected_hashes)}")
             except Exception as e:
                 print(f"  [Warning] Could not read local checksums: {e}")
 
         # Fallback: download checksums if not found locally
-        if not expected_hash and chk_url and download_file(chk_url, temp_chk, "checksums.sha256"):
+        if not expected_hashes and chk_url and download_file(chk_url, temp_chk, "checksums.sha256"):
             try:
                 with open(temp_chk, "r", encoding="utf-8") as f:
                     for line in f:
                         parts = line.strip().split()
                         if len(parts) >= 2 and parts[1].endswith(ZIP_NAME):
-                            expected_hash = parts[0]
-                            break
-                if expected_hash:
-                    print(f"[*] Expected SHA256 (downloaded): {expected_hash}")
+                            expected_hashes.append(parts[0].lower())
+                if expected_hashes:
+                    print(f"[*] Expected SHA256 (downloaded): {', '.join(expected_hashes)}")
             except Exception as e:
                 print(f"  [Warning] Could not parse checksums file: {e}")
 
@@ -329,9 +327,9 @@ def install():
             raise RuntimeError(f"Could not download CUDA package from {zip_url}")
 
         # Checksum Verification
-        if expected_hash:
+        if expected_hashes:
             print("[*] Verifying file integrity (SHA256)...")
-            if not verify_sha256(temp_zip, expected_hash):
+            if not verify_sha256(temp_zip, expected_hashes):
                 raise ValueError("SHA256 checksum mismatch! The downloaded archive is corrupted.")
             print("    [OK] Checksum verified successfully.")
 
