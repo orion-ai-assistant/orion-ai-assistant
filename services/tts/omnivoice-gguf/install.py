@@ -1,12 +1,11 @@
 """
-OmniVoice-GGUF Production Binary Installer
-==========================================
-Downloads pre-compiled Release binaries from GitHub Releases with:
-- OS and Architecture verification (Windows x64).
-- NVIDIA Driver & CUDA version compatibility check with graceful CPU fallback.
-- Dynamic version resolution via GitHub API with 3-tier fallback chain.
-- SHA256 integrity / checksum verification.
-- Atomic downloads and staged extraction with full rollback on failure.
+OmniVoice-GGUF Hybrid Binary Installer
+=======================================
+- CPU binaries are bundled directly with the repository (~2.4 MB) -> Instant 0-second setup.
+- CUDA runtime (ggml-cuda.dll, ~370 MB) is downloaded on-demand from GitHub Releases.
+- Dynamic GitHub API release discovery with 3-tier fallback chain.
+- SHA256 integrity verification and atomic rollback.
+- Graceful fallback to bundled CPU binaries if CUDA download or GPU driver fails.
 - Zero external dependencies (Python standard library only).
 """
 
@@ -36,9 +35,10 @@ REQUIRED_FILES_CPU = [
     "ggml-base.dll",
 ]
 
-REQUIRED_FILES_CUDA = REQUIRED_FILES_CPU + ["ggml-cuda.dll"]
+CUDA_FILE = "ggml-cuda.dll"
+ZIP_NAME = "omnivoice-gguf-windows-cuda.zip"
 
-# ─── Platform & Compatibility Checks ──────────────────────────────────────────
+# ─── Platform & Hardware Checks ───────────────────────────────────────────────
 def check_platform_support() -> bool:
     """Verifies whether the current OS and CPU architecture are supported."""
     system = platform.system()
@@ -50,15 +50,14 @@ def check_platform_support() -> bool:
             return False
         return True
 
-    # Linux / Docker guidance
     if system == "Linux":
         print(f"[OmniVoice-GGUF] NOTICE: Detected Linux ({machine}).")
-        print("  OmniVoice-GGUF is run via Docker in the Orion architecture.")
+        print("  OmniVoice-GGUF runs via Docker in the Orion Linux architecture.")
         print("  See services/tts/docker-compose.nvidia.yml or docker-compose.cpu.yml,")
         print("  or build locally using CMake inside your Linux environment.")
         return False
 
-    print(f"[OmniVoice-GGUF] ERROR: Operating system '{system}' is not currently supported for automated binary installation.")
+    print(f"[OmniVoice-GGUF] ERROR: Operating system '{system}' is not supported for automated Windows binary installation.")
     return False
 
 
@@ -97,7 +96,6 @@ def detect_hardware_and_driver() -> Tuple[str, str]:
         r = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=4)
         if r.returncode == 0:
             output = r.stdout
-            # Extract driver version: "Driver Version: 576.88"
             match = re.search(r"Driver Version:\s*([0-9.]+)", output)
             if match:
                 driver_ver_str = match.group(1)
@@ -123,75 +121,57 @@ def detect_hardware_and_driver() -> Tuple[str, str]:
     return "cpu", "No compatible NVIDIA GPU/driver detected. Using CPU engine."
 
 
-def check_binaries_complete(bin_dir: str, hw: str) -> bool:
-    """Verifies whether all required binary files exist in bin/."""
-    expected = REQUIRED_FILES_CUDA if hw == "cuda" else REQUIRED_FILES_CPU
-    for fname in expected:
+def check_cpu_binaries_present(bin_dir: str) -> bool:
+    """Verifies whether bundled CPU binaries exist in bin/."""
+    for fname in REQUIRED_FILES_CPU:
         p = os.path.join(bin_dir, fname)
         if not os.path.exists(p) or os.path.getsize(p) == 0:
             return False
     return True
 
 
-def check_is_debug_binary(filepath: str) -> bool:
-    """Detects if binary was compiled against Debug CRT."""
-    try:
-        with open(filepath, "rb") as f:
-            content = f.read(1024 * 1024)
-            if b"ucrtbased.dll" in content or b"msvcp140d.dll" in content:
-                return True
-    except Exception:
-        pass
-    return False
-
-
 # ─── Dynamic Release Resolution & Download ────────────────────────────────────
-def resolve_release_assets(hw: str) -> Tuple[str, Optional[str], str]:
+def resolve_cuda_release_urls() -> Tuple[str, Optional[str], str]:
     """
-    Finds the download URLs for the zip package and checksums file.
-    Uses a 3-tier fallback strategy:
-      Tier 1: GitHub Releases API (/repos/{repo}/releases) matching 'tts-*' or latest
+    Finds download URLs for omnivoice-gguf-windows-cuda.zip and checksums.sha256.
+    3-Tier Fallback:
+      Tier 1: GitHub API matching 'tts-*'
       Tier 2: /releases/latest/download/
       Tier 3: /releases/download/{FALLBACK_TAG}/
-    Returns: (zip_url, checksums_url, source_description)
     """
-    zip_name = f"omnivoice-gguf-windows-{hw}.zip"
     checksum_name = "checksums.sha256"
 
     # Tier 1: GitHub API
     api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
     headers = {"User-Agent": "Orion-AI-Assistant/1.0", "Accept": "application/vnd.github.v3+json"}
-    
-    print(f"[*] Querying GitHub API for latest release assets...")
+
+    print(f"[*] Querying GitHub API for latest CUDA release asset...")
     try:
         req = urllib.request.Request(api_url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as response:
             if response.status == 200:
                 releases = json.loads(response.read().decode("utf-8"))
-                # Prioritize releases with tts prefix or tag matching tts
                 candidate_releases = []
                 for rel in releases:
                     tag = rel.get("tag_name", "").lower()
                     if tag.startswith("tts-") or tag.startswith("omnivoice-"):
                         candidate_releases.append(rel)
                 if not candidate_releases and releases:
-                    candidate_releases = releases  # Fallback to any release
+                    candidate_releases = releases
 
                 for rel in candidate_releases:
                     assets = {a.get("name"): a.get("browser_download_url") for a in rel.get("assets", [])}
-                    if zip_name in assets:
-                        zip_url = assets[zip_name]
+                    if ZIP_NAME in assets:
+                        zip_url = assets[ZIP_NAME]
                         chk_url = assets.get(checksum_name)
                         tag = rel.get("tag_name", "unknown")
                         return zip_url, chk_url, f"GitHub API (Tag: {tag})"
     except Exception as e:
-        print(f"  [Notice] GitHub API query unavailable ({e}). Proceeding to direct fallback URL...")
+        print(f"  [Notice] GitHub API query unavailable ({e}). Proceeding to direct download URL...")
 
     # Tier 2: Direct latest download URL
-    tier2_zip = f"https://github.com/{GITHUB_REPO}/releases/latest/download/{zip_name}"
+    tier2_zip = f"https://github.com/{GITHUB_REPO}/releases/latest/download/{ZIP_NAME}"
     tier2_chk = f"https://github.com/{GITHUB_REPO}/releases/latest/download/{checksum_name}"
-    
-    # Check if Tier 2 is reachable with HEAD or light GET request
     try:
         req = urllib.request.Request(tier2_zip, headers=headers, method="HEAD")
         with urllib.request.urlopen(req, timeout=4) as resp:
@@ -201,7 +181,7 @@ def resolve_release_assets(hw: str) -> Tuple[str, Optional[str], str]:
         pass
 
     # Tier 3: Pinned fallback release
-    tier3_zip = f"https://github.com/{GITHUB_REPO}/releases/download/{FALLBACK_TAG}/{zip_name}"
+    tier3_zip = f"https://github.com/{GITHUB_REPO}/releases/download/{FALLBACK_TAG}/{ZIP_NAME}"
     tier3_chk = f"https://github.com/{GITHUB_REPO}/releases/download/{FALLBACK_TAG}/{checksum_name}"
     return tier3_zip, tier3_chk, f"Pinned Release Fallback (Tag: {FALLBACK_TAG})"
 
@@ -218,7 +198,7 @@ def download_file(url: str, dest_path: str, description: str = "") -> bool:
         with urllib.request.urlopen(req, timeout=30) as resp:
             total_size = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
-            block_size = 64 * 1024  # 64KB
+            block_size = 64 * 1024
 
             with open(dest_path, "wb") as out_f:
                 while True:
@@ -254,7 +234,7 @@ def verify_sha256(filepath: str, expected_hash: str) -> bool:
     return computed == expected_hash.strip().lower()
 
 
-# ─── Installation & Extraction Workflow ───────────────────────────────────────
+# ─── Installation Workflow ────────────────────────────────────────────────────
 def install():
     print("=" * 65)
     print(" OmniVoice-GGUF Binary Installer")
@@ -267,30 +247,43 @@ def install():
     bin_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
     os.makedirs(bin_dir, exist_ok=True)
 
-    # 2. Hardware and driver detection
+    # 2. Verify bundled CPU binaries
+    if not check_cpu_binaries_present(bin_dir):
+        print("[WARNING] Bundled CPU binaries are incomplete in bin/.")
+        print("  Please ensure Git LFS or repository files were pulled properly,")
+        print("  or compile them using services/tts/omnivoice-gguf/build_release.bat")
+
+    # 3. Hardware target detection
     hw, hw_msg = detect_hardware_and_driver()
     print(f"[*] Hardware target: {hw.upper()}")
     print(f"    Detail: {hw_msg}")
 
-    # 3. Check if release binaries already exist
-    if check_binaries_complete(bin_dir, hw):
-        server_exe = os.path.join(bin_dir, "tts-server.exe")
-        if not check_is_debug_binary(server_exe):
-            print(f"[OmniVoice-GGUF] Release binaries already present and valid. Installation complete!")
+    # Case A: CPU Target -> Instant ready!
+    if hw == "cpu":
+        if check_cpu_binaries_present(bin_dir):
+            print("[OmniVoice-GGUF] Bundled CPU binaries are ready. Installation complete (0s)!")
             return
         else:
-            print("[OmniVoice-GGUF] Existing binaries are DEBUG builds. Upgrading to Release...")
+            print("[ERROR] CPU binaries missing. Please compile using build_release.bat")
+            sys.exit(1)
 
-    # 4. Resolve URLs
-    zip_name = f"omnivoice-gguf-windows-{hw}.zip"
-    zip_url, chk_url, source_desc = resolve_release_assets(hw)
+    # Case B: CUDA Target -> Check if ggml-cuda.dll already present
+    cuda_dll_path = os.path.join(bin_dir, CUDA_FILE)
+    if os.path.exists(cuda_dll_path) and os.path.getsize(cuda_dll_path) > 0:
+        print(f"[OmniVoice-GGUF] CUDA runtime ({CUDA_FILE}) is already present and valid.")
+        print("Installation complete!")
+        return
+
+    # Case C: Download CUDA runtime from GitHub Releases
+    print(f"[*] CUDA runtime ({CUDA_FILE}) not found in bin/. Fetching from GitHub Releases...")
+    zip_url, chk_url, source_desc = resolve_cuda_release_urls()
     print(f"[*] Release Source: {source_desc}")
 
-    temp_zip = os.path.join(bin_dir, f"{zip_name}.tmp")
+    temp_zip = os.path.join(bin_dir, f"{ZIP_NAME}.tmp")
     temp_chk = os.path.join(bin_dir, "checksums.sha256.tmp")
     staging_dir = os.path.join(bin_dir, ".extract_staging")
 
-    # Clean any stale temporary artifacts
+    # Clean previous stale temp files
     for p in (temp_zip, temp_chk):
         if os.path.exists(p):
             try:
@@ -301,42 +294,39 @@ def install():
         shutil.rmtree(staging_dir, ignore_errors=True)
 
     try:
-        # 5. Download Checksums (if available)
+        # Download checksums
         expected_hash = None
         if chk_url and download_file(chk_url, temp_chk, "checksums.sha256"):
             try:
                 with open(temp_chk, "r", encoding="utf-8") as f:
                     for line in f:
                         parts = line.strip().split()
-                        if len(parts) >= 2 and parts[1].endswith(zip_name):
+                        if len(parts) >= 2 and parts[1].endswith(ZIP_NAME):
                             expected_hash = parts[0]
                             break
                 if expected_hash:
-                    print(f"[*] Expected SHA256 for {zip_name}: {expected_hash}")
+                    print(f"[*] Expected SHA256: {expected_hash}")
             except Exception as e:
                 print(f"  [Warning] Could not parse checksums file: {e}")
 
-        # 6. Download Archive
-        if not download_file(zip_url, temp_zip, zip_name):
-            raise RuntimeError(f"Could not download release package from {zip_url}")
+        # Download CUDA Zip
+        if not download_file(zip_url, temp_zip, ZIP_NAME):
+            raise RuntimeError(f"Could not download CUDA package from {zip_url}")
 
-        # 7. Checksum Verification
+        # Checksum Verification
         if expected_hash:
             print("[*] Verifying file integrity (SHA256)...")
             if not verify_sha256(temp_zip, expected_hash):
-                raise ValueError("SHA256 checksum mismatch! The downloaded archive is corrupted or incomplete.")
+                raise ValueError("SHA256 checksum mismatch! The downloaded archive is corrupted.")
             print("    [OK] Checksum verified successfully.")
-        else:
-            print("    [Notice] No checksum provided for this release. Proceeding with caution.")
 
-        # 8. Staged Extraction (Rollback safety)
-        print("[*] Extracting package into staging area...")
+        # Staged Extraction
+        print("[*] Extracting CUDA runtime into staging area...")
         os.makedirs(staging_dir, exist_ok=True)
         with zipfile.ZipFile(temp_zip, "r") as zf:
             zf.extractall(staging_dir)
 
-        # 9. Atomic Move to bin/
-        print("[*] Installing binaries to bin/ ...")
+        # Move extracted files to bin/
         for fname in os.listdir(staging_dir):
             src = os.path.join(staging_dir, fname)
             dst = os.path.join(bin_dir, fname)
@@ -344,24 +334,28 @@ def install():
                 shutil.move(src, dst)
 
         print("=" * 65)
-        print(f"[OmniVoice-GGUF] SUCCESS: Binaries successfully installed to:")
-        print(f"  {bin_dir}")
+        print(f"[OmniVoice-GGUF] SUCCESS: CUDA runtime installed to: {bin_dir}")
         print("=" * 65)
 
     except Exception as err:
         print("\n" + "!" * 65)
-        print(f"[OmniVoice-GGUF] INSTALLATION ERROR: {err}")
-        print("Performing automatic rollback and cleaning up temporary files...")
+        print(f"[OmniVoice-GGUF] CUDA DOWNLOAD WARNING: {err}")
         print("!" * 65)
-        # Rollback: Clean staging dir
+        # Rollback temp files
         if os.path.exists(staging_dir):
             shutil.rmtree(staging_dir, ignore_errors=True)
-        print("  If online download fails, you can compile locally using:")
-        print("  services/tts/omnivoice-gguf/build_release.bat")
-        sys.exit(1)
+        
+        # Graceful CPU Fallback:
+        if check_cpu_binaries_present(bin_dir):
+            print("\n[GRACEFUL FALLBACK] Switching to bundled CPU binaries.")
+            print("The TTS service will remain fully functional on CPU.")
+            print("To enable CUDA later, upload the release zip or compile locally with build_release.bat")
+            return
+        else:
+            print("[ERROR] Both CUDA download failed and CPU binaries missing.")
+            sys.exit(1)
 
     finally:
-        # Cleanup temporary files
         for p in (temp_zip, temp_chk):
             if os.path.exists(p):
                 try:

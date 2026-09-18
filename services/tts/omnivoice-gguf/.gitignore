@@ -6,10 +6,19 @@ service.log
 .env
 .env.install
 build/
+.extract_staging/
 
-# Binaries & archives (must not be committed to keep repository lightweight)
+# Only heavy CUDA binaries and build artifacts are ignored; lightweight CPU binaries are tracked
 bin/*
 !bin/.gitkeep
+!bin/tts-server.exe
+!bin/omnivoice-codec.exe
+!bin/ggml.dll
+!bin/ggml-cpu.dll
+!bin/ggml-base.dll
+bin/*cuda*
+bin/cpu/
+bin/cuda/
+
 *.zip
 *.sha256
-.extract_staging/

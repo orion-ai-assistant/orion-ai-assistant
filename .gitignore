@@ -65,7 +65,15 @@ latest_release.json
 # Ignore specific service binaries
 services/llm/llama-cpp/bin/
 services/embedding/llama-cpp-embed/bin/
-services/tts/omnivoice-gguf/bin/*
-!services/tts/omnivoice-gguf/bin/.gitkeep
+
+# OmniVoice-GGUF (lightweight CPU binaries tracked, heavy CUDA dll ignored)
+!services/tts/omnivoice-gguf/bin/tts-server.exe
+!services/tts/omnivoice-gguf/bin/omnivoice-codec.exe
+!services/tts/omnivoice-gguf/bin/ggml.dll
+!services/tts/omnivoice-gguf/bin/ggml-cpu.dll
+!services/tts/omnivoice-gguf/bin/ggml-base.dll
+services/tts/omnivoice-gguf/bin/*cuda*
+services/tts/omnivoice-gguf/bin/cpu/
+services/tts/omnivoice-gguf/bin/cuda/
 services/tts/omnivoice-gguf/build/
 services/tts/omnivoice-gguf/.extract_staging/
