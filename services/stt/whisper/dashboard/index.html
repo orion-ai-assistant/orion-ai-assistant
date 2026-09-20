@@ -3,78 +3,200 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Orion STT (Whisper) Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <title>Orion STT Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/dashboard/css/style.css">
 </head>
 <body>
-    <div class="container">
-        <h1 style="margin-bottom: 5px;">Orion STT Dashboard</h1>
-        <p id="connectionStatus" style="text-align: center; color: var(--accent); margin-bottom: 30px; font-weight: 600;">Bağlanıyor...</p>
-
-        <div class="grid">
-            <!-- Ana Kontrol Paneli -->
-            <div>
-                <div class="tab-buttons">
-                    <button id="tab-live" class="tab-btn active">🎙️ Canlı Mikrofon</button>
-                    <button id="tab-batch" class="tab-btn">📁 Ses Dosyası Deşifre</button>
+    <div class="app-layout">
+        <!-- Başlık Çubuğu: Sol Marka, Sağ Model/Donanım Rozeti -->
+        <header class="app-header">
+            <div class="header-brand">
+                <div class="brand-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" y1="19" x2="12" y2="22"></line>
+                    </svg>
                 </div>
-
-                <!-- Canlı Mod -->
-                <div id="mode-live" class="tab-content active">
-                    <p class="section-title">Gerçek Zamanlı Dinleme</p>
-                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                        <button id="startRecordBtn" class="primary-btn" style="flex: 1;">Dinlemeyi Başlat</button>
-                        <button id="stopRecordBtn" class="danger-btn hidden" style="flex: 1;">Dinlemeyi Durdur</button>
-                    </div>
-                    <div class="metrics">
-                        <div class="metric">
-                            <span class="metric-label">Son Çıkarım (Latency)</span>
-                            <span class="metric-value" id="latencyLiveMs">0 ms</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Batch Mod -->
-                <div id="mode-batch" class="tab-content">
-                    <p class="section-title">Dosya Yükle</p>
-                    <div class="file-drop-area" id="fileDropArea">
-                        <span class="file-msg">Sürükle bırak veya bir ses dosyası (.wav, .mp3) seçin</span>
-                        <input type="file" id="audioFileInput" accept="audio/*">
-                    </div>
-                    <div style="margin-top: 15px;">
-                        <button id="uploadBtn" class="primary-btn w-full" disabled>Deşifre Et (Transcribe)</button>
-                    </div>
-                    
-                    <div class="metrics" style="margin-top: 15px;">
-                        <div class="metric">
-                            <span class="metric-label">İşlem Süresi</span>
-                            <span class="metric-value" id="latencyBatchMs">0 ms</span>
-                        </div>
-                        <div class="metric">
-                            <span class="metric-label">Dil Tespiti</span>
-                            <span class="metric-value" id="detectedLanguage">-</span>
-                        </div>
-                    </div>
+                <div class="brand-titles">
+                    <h1 class="brand-title">Orion STT</h1>
+                    <span class="brand-subtitle">Speech to Text</span>
                 </div>
             </div>
 
-            <!-- Sonuç Paneli -->
-            <div>
-                <p class="section-title">Deşifre Sonucu (Transcription)</p>
-                <div class="transcription-box" id="transcriptionBox">
-                    <div id="finalText" class="final-text"></div>
-                    <div id="liveText" class="live-text"></div>
-                </div>
-                
-                <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
-                    <button id="playDebugAudioBtn" class="secondary-btn" style="flex: 1; border-color: var(--accent); color: var(--accent);">Dinle (Modele Giden)</button>
-                    <button id="clearBtn" class="secondary-btn" style="flex: 1;">Temizle</button>
-                </div>
+            <!-- Sağ Taraf: Model & Donanım Rozeti (Sade, Dengeli) -->
+            <div class="header-model-badge" title="Aktif Model ve Donanım">
+                <span class="model-badge-name" id="modelNameText">whisper-small-finetuned-tr</span>
+                <span class="badge" id="deviceBadge">GPU</span>
             </div>
-        </div>
+        </header>
+
+        <!-- Ana Grid: Sol Ayarlar, Sağ Aksiyonlar & Çıktı -->
+        <main class="main-container">
+            <!-- Sol Panel: Ayarlar -->
+            <aside class="sidebar-card">
+                <h2 class="card-title">Ayarlar</h2>
+
+                <!-- Dil Seçimi -->
+                <div class="setting-group">
+                    <div class="setting-label-row">
+                        <label class="setting-label" for="languageSelect">Dil</label>
+                    </div>
+                    <div class="select-wrapper">
+                        <select id="languageSelect" class="form-control">
+                            <option value="" selected>Otomatik Algıla (Auto Detect)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Prompt / Bağlam İpucu -->
+                <div class="setting-group">
+                    <div class="setting-label-row">
+                        <label class="setting-label" for="promptInput">Prompt / Bağlam İpucu</label>
+                    </div>
+                    <textarea id="promptInput" class="form-control textarea" rows="4" placeholder="Teknik terimler, özel isimler veya başlangıç bağlamı..."></textarea>
+                </div>
+            </aside>
+
+            <!-- Sağ Kolon: Aksiyonlar & Deşifre Sonucu -->
+            <section class="content-column">
+                <!-- Doğrudan Butonlar ve Sürükle-Bırak Alanı -->
+                <div class="action-card" id="dropContainer">
+                    <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
+
+                    <div class="action-buttons-row">
+                        <!-- 1. Dosya Seç / Yükle -->
+                        <button type="button" class="btn-action" id="uploadAudioBtn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            <span id="uploadBtnText">Upload Audio</span>
+                        </button>
+
+                        <span class="action-sep">VEYA</span>
+
+                        <!-- 2. Mikrofon Kaydı -->
+                        <button type="button" class="btn-action btn-mic" id="recordMicBtn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                                <line x1="12" y1="19" x2="12" y2="22"></line>
+                            </svg>
+                            <span id="recordMicBtnText">Record Mic</span>
+                        </button>
+
+                        <span class="action-sep">VEYA</span>
+
+                        <!-- 3. Canlı Akış -->
+                        <button type="button" class="btn-action btn-stream" id="streamBtn">
+                            <span class="static-dot"></span>
+                            <span id="streamBtnText">Canlı Akışı Başlat</span>
+                        </button>
+                    </div>
+
+                    <!-- Dosya Sürükle-Bırak İpucu -->
+                    <div class="drop-hint-bar" id="dropHintBar">
+                        <span id="dropHintText">Ses dosyası yükleyebilir, mikrofonla kaydedebilir veya canlı konuşabilirsiniz. (Dosyayı buraya sürükleyebilirsiniz)</span>
+                    </div>
+                </div>
+
+                <!-- Önizleme + Deşifre Aksiyonu (Dosya / Mikrofon sonrası) -->
+                <div class="preview-card hidden" id="previewCard">
+                    <div class="preview-card-header">
+                        <span class="preview-label" id="previewLabel">Kaydedilen Ses</span>
+                        <button type="button" class="btn-tool btn-tool-danger" id="cancelPreviewBtn">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                            <span>Vazgeç</span>
+                        </button>
+                    </div>
+                    <audio id="previewAudioPlayer" controls class="preview-audio-player"></audio>
+                    <div class="preview-actions">
+                        <button type="button" class="btn-action btn-transcribe" id="transcribePreviewBtn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                            </svg>
+                            <span id="transcribePreviewBtnText">Deşifre Et</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Deşifre Sonucu Kartı -->
+                <div class="result-card">
+                    <div class="result-card-header">
+                        <div class="result-title-group">
+                            <h3 class="result-title">Deşifre Sonucu</h3>
+                            <span class="status-pill status-pill-idle" id="resultStatusPill">HAZIR</span>
+                        </div>
+
+                        <div class="result-header-tools">
+                            <button type="button" class="btn-tool" id="copyTextBtn" title="Metni Kopyala">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                                </svg>
+                                <span id="copyBtnLabel">Metni Kopyala</span>
+                            </button>
+
+                            <button type="button" class="btn-tool" id="playDebugAudioBtn" title="Son deşifre edilen sesi dinle">
+                                <span id="debugBtnIconWrap">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                    </svg>
+                                </span>
+                                <span id="debugBtnLabel">Son Sesi Dinle</span>
+                            </button>
+
+                            <button type="button" class="btn-tool btn-tool-danger" id="clearBtn" title="Metni Temizle">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                                <span>Temizle</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="transcription-display" id="transcriptionBox">
+                        <div class="transcription-placeholder" id="emptyPlaceholder">
+                            Henüz bir deşifre yapılmadı. Konuşmaya başlayın veya ses yükleyin.
+                        </div>
+                        <div id="finalText" class="final-text-content"></div>
+                        <div id="liveText" class="live-text-content"></div>
+                    </div>
+
+                    <!-- Alt Metrikler Barı: Sol Metin, Sağ Dil ve İşlem Süresi -->
+                    <div class="result-footer-metrics">
+                        <div class="footer-metric">
+                            <span class="metric-key">Metin:</span>
+                            <span class="metric-val" id="textStats">0 karakter | 0 kelime</span>
+                        </div>
+                        <div class="footer-metrics-right">
+                            <div class="footer-metric">
+                                <span class="metric-key">Son Tespit Edilen Dil:</span>
+                                <span class="metric-val" id="metricDetectedLang">-</span>
+                            </div>
+                            <div class="footer-metric">
+                                <span class="metric-key">İşlem Süresi:</span>
+                                <span class="metric-val" id="metricProcessTime">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
     </div>
-    
+
+    <div id="toastNotification" class="toast-popup"></div>
+
     <script src="/dashboard/js/app.js"></script>
 </body>
 </html>

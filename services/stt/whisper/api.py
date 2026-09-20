@@ -157,10 +157,20 @@ async def create_transcription(
         
         text = "".join([segment.text for segment in segments]).strip()
         infer_duration = time.perf_counter() - start_time
-        
+        detected_lang = lang_param if lang_param else (getattr(info, "language", "unknown") if hasattr(info, "language") else "unknown")
+
+        # Cache debug audio ONLY if actual speech text was transcribed
+        if text and re.search(r'[a-zA-Z0-9çğıöşüÇĞİÖŞÜ]', text):
+            try:
+                from faster_whisper.audio import decode_audio
+                global last_debug_audio
+                last_debug_audio = decode_audio(temp_path, sampling_rate=RATE)
+            except Exception as err:
+                logger.warning(f"Could not cache debug audio: {err}")
+
         return JSONResponse({
             "text": text,
-            "language": info.language if hasattr(info, "language") else (lang_param or "unknown"),
+            "language": detected_lang,
             "duration": infer_duration
         })
         
@@ -290,6 +300,20 @@ async def get_audio_languages():
     return {"languages": langs}
 
 
+@app.get("/v1/audio/info")
+@app.get("/v1/models")
+async def get_audio_info():
+    """Whisper aktif model ve donanım bilgilerini döner."""
+    model_name = os.path.basename(MODEL_SIZE) if isinstance(MODEL_SIZE, str) else str(MODEL_SIZE)
+    return {
+        "model": model_name,
+        "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
+        "status": "ready" if model is not None else "loading",
+        "data": [{"id": model_name, "object": "model"}]
+    }
+
+
 
 # =========================================================
 # WEBSOCKET (Live Streaming STT)
@@ -315,6 +339,12 @@ async def get_last_audio():
     
     buf.seek(0)
     return Response(content=buf.read(), media_type="audio/wav")
+
+@app.post("/v1/audio/debug/clear")
+async def clear_debug_audio():
+    global last_debug_audio
+    last_debug_audio = np.array([], dtype=np.float32)
+    return {"status": "cleared"}
 
 @app.websocket("/v1/audio/transcriptions/stream")
 async def websocket_endpoint(
@@ -400,12 +430,11 @@ async def websocket_endpoint(
             current_prompt = base_prompt + " " + (context_text[-200:] if context_text else "")
             
             audio_to_process = accumulated_audio.copy()
+            # Keep un-normalized copy for debug playback (sounds natural)
+            raw_audio_for_debug = accumulated_audio.copy()
             max_amp = np.max(np.abs(audio_to_process))
             if max_amp > 0.005:
                 audio_to_process = (audio_to_process * (0.35 / max_amp)).astype(np.float32)
-                
-            global last_debug_audio
-            last_debug_audio = audio_to_process.copy()
                 
             # Transcribe
             start_infer_time = time.perf_counter()
@@ -444,13 +473,23 @@ async def websocket_endpoint(
                     text = ""
             
             last_infer_duration = time.perf_counter() - start_infer_time
+            detected_lang = lang_param if lang_param else (getattr(info, "language", "unknown") if hasattr(info, "language") else "unknown")
             
+            # Ensure text has actual letters, not just punctuation
+            if text and not re.search(r'[a-zA-Z0-9çğıöşüÇĞİÖŞÜ]', text):
+                text = ""
+
             if text:
                 if sentence_ended:
+                    # ONLY cache raw debug audio when a sentence ends with real speech!
+                    global last_debug_audio
+                    last_debug_audio = raw_audio_for_debug.copy()
+
                     await websocket.send_json({
                         "type": "final",
                         "text": text,
-                        "duration": last_infer_duration
+                        "duration": last_infer_duration,
+                        "language": detected_lang
                     })
                     context_text += " " + text
                     if len(context_text) > 500: context_text = context_text[-500:]
@@ -459,7 +498,8 @@ async def websocket_endpoint(
                     await websocket.send_json({
                         "type": "live",
                         "text": text,
-                        "duration": last_infer_duration
+                        "duration": last_infer_duration,
+                        "language": detected_lang
                     })
             
             if sentence_ended:
