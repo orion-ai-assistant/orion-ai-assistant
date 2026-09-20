@@ -87,8 +87,8 @@ class JobContext:
         )
         await self._publish(event)
 
-    async def emit_done(self, status: str) -> None:
-        event = StreamEvent.done(self.chat_id, status)
+    async def emit_done(self, status: str, metrics: dict[str, Any] | None = None) -> None:
+        event = StreamEvent.done(self.chat_id, status, metrics=metrics)
         await self._publish(event)
 
     async def emit_error(self, message: str) -> None:

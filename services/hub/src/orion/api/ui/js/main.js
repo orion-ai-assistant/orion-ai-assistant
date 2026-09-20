@@ -59,7 +59,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         }
                         UI.appendToken(chatId, msg.content);
                     } else {
-                        UI.appendStaticBotMessage(msg.content, msg.thinking);
+                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics);
                     }
                 }
             });

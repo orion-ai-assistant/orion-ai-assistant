@@ -152,7 +152,7 @@ const SSE = {
                 UI.appendThinkingToken(chatId, data.data.token);
             } else if (data.type === "done" || data.type === "error") {
                 AppState.stopGenerating(chatId);
-                UI.finishGeneration(chatId);
+                UI.finishGeneration(chatId, data.type === "done", data.data?.metrics);
             }
             return;
         }
@@ -191,7 +191,7 @@ const SSE = {
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
             }
-            UI.finishGeneration(chatId);
+            UI.finishGeneration(chatId, data.type === "done", data.data?.metrics);
             
             // Sidebar sohbet listesini ve başlıklarını güncelle (aktif sohbet ekranını sıfırlama)
             if (window.loadChats) {

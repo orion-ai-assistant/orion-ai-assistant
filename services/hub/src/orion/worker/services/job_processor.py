@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -281,6 +282,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             first_token = True
             stopped = False
             llm_done = False
+            start_perf = time.perf_counter()
+            first_token_ms: int | None = None
 
             try:
                 async def _check_stop() -> bool:
@@ -288,6 +291,10 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
                 stream = llama_stream_chat_typed(messages, settings, stop_checker=_check_stop)
                 async for kind, token in stream:
+                    now_perf = time.perf_counter()
+                    if first_token_ms is None:
+                        first_token_ms = max(1, int((now_perf - start_perf) * 1000))
+
                     # First token delay (optional artificial pre-roll)
                     if first_token and settings.first_token_delay_ms > 0:
                         await asyncio.sleep(settings.first_token_delay_ms / 1000)
@@ -319,6 +326,12 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 await context.emit_token(fallback_text)
                 await redis.hset(state_key, "partial_text", "".join(output_tokens))
                 logging.info("Worker %s published error fallback immediately for chat %s", consumer_name, context.chat_id)
+
+            total_ms = max(1, int((time.perf_counter() - start_perf) * 1000))
+            metrics = {
+                "first_token_ms": first_token_ms if first_token_ms is not None else total_ms,
+                "total_ms": total_ms,
+            }
 
             final_text = "".join(output_tokens)
 
@@ -365,9 +378,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     except Exception:
                         pass
 
-
             thinking_text = "".join(thinking_tokens)
-            assistant_entry = {"role": "assistant", "content": final_text}
+            assistant_entry = {"role": "assistant", "content": final_text, "metrics": metrics}
             if thinking_text:
                 assistant_entry["thinking"] = thinking_text
 
@@ -385,24 +397,30 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     mapping={
                         "status": "completed",
                         "updated_at": utc_now(),
-                        "result_json": json.dumps({"text": final_text}),
+                        "result_json": json.dumps({"text": final_text, "metrics": metrics}),
                     },
                 )
                 await redis.expire(state_key, settings.result_ttl_seconds)
-                await context.emit_done("completed")
-                logging.info("Worker %s completed chat %s", consumer_name, context.chat_id)
+                await context.emit_done("completed", metrics=metrics)
+                logging.info(
+                    "Worker %s completed chat %s (TTFT: %dms, Total: %dms)",
+                    consumer_name, context.chat_id, metrics["first_token_ms"], metrics["total_ms"]
+                )
             else:
                 await redis.hset(
                     state_key,
                     mapping={
                         "status": "stopped",
                         "updated_at": utc_now(),
-                        "result_json": json.dumps({"text": final_text, "stopped": True}),
+                        "result_json": json.dumps({"text": final_text, "stopped": True, "metrics": metrics}),
                     },
                 )
                 await redis.expire(state_key, settings.result_ttl_seconds)
-                await context.emit_done("stopped")
-                logging.info("Worker %s stopped (mid-generation) chat %s", consumer_name, context.chat_id)
+                await context.emit_done("stopped", metrics=metrics)
+                logging.info(
+                    "Worker %s stopped (mid-generation) chat %s (TTFT: %dms, Total: %dms)",
+                    consumer_name, context.chat_id, metrics["first_token_ms"], metrics["total_ms"]
+                )
 
         if context.stream_mode == "continuous":
             await redis.expire(state_key, settings.result_ttl_seconds)

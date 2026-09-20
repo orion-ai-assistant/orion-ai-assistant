@@ -13,13 +13,39 @@ const UI = {
 
     _getOrCreateChatState(chatId) {
         if (!this._chatDivs[chatId]) {
-            this._chatDivs[chatId] = { botDiv: null, thinkDiv: null, thinkBody: null };
+            this._chatDivs[chatId] = {
+                botDiv: null,
+                thinkDiv: null,
+                thinkBody: null,
+                startTime: null,
+                firstTokenMs: null
+            };
         }
         return this._chatDivs[chatId];
     },
 
     scrollToBottom() {
         this.chatArea.scrollTop = this.chatArea.scrollHeight;
+    },
+
+    createMetricsElement(firstTokenMs, totalMs) {
+        if (!totalMs && !firstTokenMs) return null;
+        const meta = document.createElement('div');
+        meta.className = 'message-meta';
+
+        const fmtFirst = Number(firstTokenMs || 0).toLocaleString('tr-TR');
+        const fmtTotal = Number(totalMs || 0).toLocaleString('tr-TR');
+
+        meta.innerHTML = `
+            <span class="meta-item" title="İlk Token Süresi (TTFT)">
+                <span class="meta-icon">⚡</span> İlk token: <strong>${fmtFirst} ms</strong>
+            </span>
+            <span class="meta-sep">•</span>
+            <span class="meta-item" title="Toplam Yanıt Süresi">
+                <span class="meta-icon">⏱️</span> Toplam: <strong>${fmtTotal} ms</strong>
+            </span>
+        `;
+        return meta;
     },
 
     appendUserMessage(text) {
@@ -33,7 +59,7 @@ const UI = {
         this.scrollToBottom();
     },
 
-    appendStaticBotMessage(content, thinking = null) {
+    appendStaticBotMessage(content, thinking = null, metrics = null) {
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
 
@@ -61,6 +87,11 @@ const UI = {
         
         const textNode = document.createTextNode(content);
         div.appendChild(textNode);
+
+        if (metrics && (metrics.total_ms || metrics.first_token_ms)) {
+            const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
+            if (meta) div.appendChild(meta);
+        }
         
         this.chatArea.appendChild(div);
         this.scrollToBottom();
@@ -79,6 +110,8 @@ const UI = {
             return;
         }
 
+        state.startTime = performance.now();
+        state.firstTokenMs = null;
         state.thinkDiv = null;
         state.thinkBody = null;
         state.botDiv = document.createElement('div');
@@ -99,6 +132,10 @@ const UI = {
     appendThinkingToken(chatId, token) {
         if (!chatId) return;
         const state = this._getOrCreateChatState(chatId);
+
+        if (state.firstTokenMs === null && state.startTime) {
+            state.firstTokenMs = Math.max(1, Math.round(performance.now() - state.startTime));
+        }
 
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -134,6 +171,10 @@ const UI = {
     appendToken(chatId, token) {
         if (!chatId) return;
         const state = this._getOrCreateChatState(chatId);
+
+        if (state.firstTokenMs === null && state.startTime) {
+            state.firstTokenMs = Math.max(1, Math.round(performance.now() - state.startTime));
+        }
 
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -196,10 +237,12 @@ const UI = {
     },
 
 
-    finishGeneration(chatId, hasTokens = true) {
+    finishGeneration(chatId, hasTokens = true, metrics = null) {
         if (!chatId) return;
         const state = this._chatDivs[chatId];
         if (!state) return;
+
+        const botDivRef = state.botDiv;
 
         if (state.thinkDiv) {
             state.thinkDiv.open = false;
@@ -211,11 +254,32 @@ const UI = {
             state.thinkDiv = null;
             state.thinkBody = null;
         }
-        if (state.botDiv && state.botDiv.classList.contains('typing')) {
-            state.botDiv.innerHTML = hasTokens ? '' : '<em>[Yanıt gelmedi]</em>';
-            state.botDiv.classList.remove('typing');
+        if (botDivRef && botDivRef.classList.contains('typing')) {
+            botDivRef.innerHTML = hasTokens ? '' : '<em>[Yanıt gelmedi]</em>';
+            botDivRef.classList.remove('typing');
         }
+
+        // Add metrics badge to the bot message
+        if (hasTokens && botDivRef) {
+            let firstMs = metrics?.first_token_ms;
+            let totalMs = metrics?.total_ms;
+            if (!totalMs && state.startTime) {
+                totalMs = Math.max(1, Math.round(performance.now() - state.startTime));
+            }
+            if (!firstMs && state.firstTokenMs) {
+                firstMs = state.firstTokenMs;
+            }
+            if (totalMs) {
+                const metaEl = this.createMetricsElement(firstMs, totalMs);
+                if (metaEl && !botDivRef.querySelector('.message-meta')) {
+                    botDivRef.appendChild(metaEl);
+                }
+            }
+        }
+
         state.botDiv = null;
+        state.startTime = null;
+        state.firstTokenMs = null;
 
         // Update stop button if this is the active chat
         if (chatId === AppState.currentChatId) {
