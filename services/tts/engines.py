@@ -447,10 +447,14 @@ class OmniVoiceGGUFEngine(TTSEngine):
                 self.registered_voices = set()
             target_voice = voice_name
             if target_voice not in self.registered_voices:
-                self._register_voice_to_server(voice_cache, target_name=target_voice)
+                reg_name = self._register_voice_to_server(voice_cache, target_name=target_voice)
+                if not reg_name:
+                    raise RuntimeError(f"Ses klonu '{target_voice}' tts-server sunucusuna kaydedilemedi (uyumsuz veya bozuk ses dosyası).")
                 self.registered_voices.add(target_voice)
         elif voice_cache:
             target_voice = self._register_voice_to_server(voice_cache)
+            if not target_voice:
+                raise RuntimeError("Ses klonu tts-server sunucusuna kaydedilemedi (uyumsuz veya bozuk ses dosyası).")
         
         try:
             payload = {
@@ -535,10 +539,14 @@ class OmniVoiceGGUFEngine(TTSEngine):
                 self.registered_voices = set()
             target_voice = voice_name
             if target_voice not in self.registered_voices:
-                self._register_voice_to_server(voice_cache, target_name=target_voice)
+                reg_name = self._register_voice_to_server(voice_cache, target_name=target_voice)
+                if not reg_name:
+                    raise RuntimeError(f"Ses klonu '{target_voice}' tts-server sunucusuna kaydedilemedi (uyumsuz veya bozuk ses dosyası).")
                 self.registered_voices.add(target_voice)
         elif voice_cache:
             target_voice = self._register_voice_to_server(voice_cache)
+            if not target_voice:
+                raise RuntimeError("Ses klonu tts-server sunucusuna kaydedilemedi (uyumsuz veya bozuk ses dosyası).")
             is_temp_voice = True
         
         payload = {
@@ -628,28 +636,33 @@ class VoiceRegistry:
         if not name_clean:
             return None
         
-        engines = [engine_name.lower().strip()]
-        if "omnivoice" in engine_name.lower():
-            if "omnivoice-gguf" not in engines:
-                engines.append("omnivoice-gguf")
-            if "omnivoice" not in engines:
-                engines.append("omnivoice")
-        elif "voxcpm" in engine_name.lower():
-            if "voxcpm2" not in engines:
-                engines.append("voxcpm2")
-            if "voxcpm" not in engines:
-                engines.append("voxcpm")
+        target_engine = engine_name.lower().strip()
+        target = f"{name_clean}_{target_engine}.pt"
 
         for d in self._get_search_dirs():
-            for eng in engines:
-                target = f"{name_clean}_{eng}.pt"
-                p = d / target
-                if p.exists():
-                    return p
-                for f in d.glob("*.pt"):
-                    if f.name.lower() == target:
-                        return f
+            p = d / target
+            if p.exists():
+                return p
+            for f in d.glob("*.pt"):
+                if f.name.lower() == target:
+                    return f
         return None
+
+    def find_voice_in_any_engine(self, name: str) -> list[str]:
+        """Returns list of other engine names where this voice exists."""
+        name_clean = str(name).strip().lower()
+        if not name_clean:
+            return []
+        found_in = set()
+        prefix = f"{name_clean}_"
+        for d in self._get_search_dirs():
+            for f in d.glob(f"{name_clean}_*.pt"):
+                f_lower = f.name.lower()
+                if f_lower.startswith(prefix) and f_lower.endswith(".pt"):
+                    eng = f_lower[len(prefix):-3]
+                    if eng:
+                        found_in.add(eng)
+        return sorted(list(found_in))
 
     def get_voice_cache(self, name: str, engine_name: str) -> Any:
         path = self._find_voice_file(name, engine_name)
@@ -687,25 +700,14 @@ class VoiceRegistry:
                 pickle.dump(cache_obj, f)
         return str(path)
 
-    def list_voices(self, engine_name: str):
-        engines = [engine_name.lower().strip()]
-        if "omnivoice" in engine_name.lower():
-            if "omnivoice-gguf" not in engines:
-                engines.append("omnivoice-gguf")
-            if "omnivoice" not in engines:
-                engines.append("omnivoice")
-        elif "voxcpm" in engine_name.lower():
-            if "voxcpm2" not in engines:
-                engines.append("voxcpm2")
-            if "voxcpm" not in engines:
-                engines.append("voxcpm")
+    def list_voices(self, engine_name: str) -> list[str]:
+        target_engine = engine_name.lower().strip()
+        suffix = f"_{target_engine}.pt"
 
         names = set()
         for d in self._get_search_dirs():
-            for eng in engines:
-                suffix = f"_{eng}.pt"
-                for f in d.glob("*.pt"):
-                    f_name_lower = f.name.lower()
-                    if f_name_lower.endswith(suffix):
-                        names.add(f_name_lower[:-len(suffix)])
+            for f in d.glob("*.pt"):
+                f_name_lower = f.name.lower()
+                if f_name_lower.endswith(suffix):
+                    names.add(f_name_lower[:-len(suffix)])
         return sorted(list(names))

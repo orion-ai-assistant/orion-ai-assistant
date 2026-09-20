@@ -169,8 +169,16 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             voice_cache = registry.get_voice_cache(req_voice, engine_name_env)
             if not voice_cache and not registry.voice_exists(req_voice, engine_name_env):
                 available = registry.list_voices(engine_name_env)
-                avail_str = f" Mevcut sesler: {', '.join(available)}" if available else " Kayıtlı ses yok."
-                raise HTTPException(status_code=400, detail=f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}")
+                avail_str = f" Aktif motor ({engine_name_env}) için mevcut sesler: {', '.join(available)}" if available else f" Aktif motor ({engine_name_env}) için kayıtlı ses yok."
+                other_engines = registry.find_voice_in_any_engine(req_voice)
+                if other_engines:
+                    detail_msg = (
+                        f"Bu ses klonu ('{req_voice}') şu anki aktif motor ('{engine_name_env}') ile uyumlu değil "
+                        f"(farklı motorlar için üretilmiş: {', '.join(other_engines)}).{avail_str}"
+                    )
+                else:
+                    detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
+                raise HTTPException(status_code=400, detail=detail_msg)
 
         generic_model_names = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
         instruct_val = getattr(speech_request, "instructions", None)
