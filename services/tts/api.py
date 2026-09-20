@@ -162,7 +162,14 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
     monitor_task = asyncio.create_task(monitor_disconnect())
 
     try:
-        voice_cache = registry.get_voice_cache(speech_request.voice, engine_name_env)
+        req_voice = (speech_request.voice or "").strip()
+        voice_cache = None
+        if req_voice and req_voice.lower() not in ("none", "default", "null", "alloy", ""):
+            voice_cache = registry.get_voice_cache(req_voice, engine_name_env)
+            if not voice_cache and not registry.voice_exists(req_voice, engine_name_env):
+                available = registry.list_voices(engine_name_env)
+                avail_str = f" Mevcut sesler: {available}" if available else " Kayıtlı ses yok."
+                raise HTTPException(status_code=400, detail=f"Böyle bir ses yok: '{req_voice}'.{avail_str}")
         should_stream = speech_request.stream and not is_omnivoice
 
         generic_model_names = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}

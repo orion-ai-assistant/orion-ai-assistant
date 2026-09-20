@@ -288,6 +288,15 @@ const UI = {
             resultBlock.textContent = `${key} başarıyla kaydedildi!`;
             input.style.borderColor = "#22c55e";
             setTimeout(() => { input.style.borderColor = "var(--border-color)"; }, 2000);
+
+            if (key === 'tts_enabled') {
+                const isEnabled = String(val).toLowerCase() === 'true';
+                const audioToggle = document.getElementById('audio-toggle');
+                if (audioToggle) {
+                    audioToggle.checked = isEnabled;
+                }
+                localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+            }
         }
     },
 
@@ -297,6 +306,28 @@ const UI = {
 
         if (!settings || settings.error) {
             dashboard.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--danger-color);">Ayarlar yüklenemedi.</div>';
+            return;
+        }
+
+        // If user is currently typing/focused on an element inside dashboard, never wipe it
+        if (dashboard.contains(document.activeElement)) {
+            return;
+        }
+
+        // If already rendered, update values in-place without destroying DOM or interrupting user
+        if (dashboard.children.length > 0) {
+            Object.keys(settings).forEach(key => {
+                const el = document.getElementById(`setting-input-${key}`);
+                if (el && document.activeElement !== el) {
+                    if (el.tagName === 'SELECT') {
+                        el.value = String(settings[key]).toLowerCase() === 'true' ? 'true' : 'false';
+                    } else if (key === 'tts_voice' || key === 'tts_model') {
+                        el.value = settings[key] || '';
+                    } else {
+                        el.value = settings[key] !== undefined ? settings[key] : '';
+                    }
+                }
+            });
             return;
         }
 
@@ -321,11 +352,28 @@ const UI = {
                 if (settings[key] !== undefined) {
                     hasKeys = true;
                     handledKeys.add(key);
+
+                    let inputHtml = '';
+                    if (key === 'tts_enabled') {
+                        const isChecked = String(settings[key]).toLowerCase() === 'true';
+                        inputHtml = `
+                            <select id="setting-input-${key}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">
+                                <option value="true" ${isChecked ? 'selected' : ''}>Açık (True)</option>
+                                <option value="false" ${!isChecked ? 'selected' : ''}>Kapalı (False)</option>
+                            </select>`;
+                    } else if (key === 'tts_voice') {
+                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key] || ''}" placeholder="(Boş: Modelin varsayılan sesi)" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
+                    } else if (key === 'tts_model') {
+                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key] || ''}" placeholder="voxcpm2, gemini-3.1-flash-tts-preview, tts-1..." style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
+                    } else {
+                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key]}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
+                    }
+
                     groupHtml += `
                     <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 8px;">
                         <label style="flex: 1; font-weight: 500; font-size: 0.9rem; color: var(--text-color);">${key}</label>
                         <div style="flex: 2; display: flex; gap: 10px;">
-                            <input type="text" id="setting-input-${key}" value="${settings[key]}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">
+                            ${inputHtml}
                             <button class="btn btn-primary" onclick="window.saveSetting('${key}')" style="padding: 8px 16px; font-size: 0.85rem;">Kaydet</button>
                         </div>
                     </div>`;

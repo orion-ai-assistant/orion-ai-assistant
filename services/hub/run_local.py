@@ -74,8 +74,10 @@ def main():
     log_path = os.path.join(hub_dir, "hub.log")
     
     # Commands
-    api_cmd = [sys.executable, "-m", "uvicorn", "orion.api.main:app", "--host", "127.0.0.1", "--port", hub_port]
-    worker_cmd = [sys.executable, "-m", "orion.worker.main"]
+    hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
+    py_bin = hub_venv_py if os.path.exists(hub_venv_py) else sys.executable
+    api_cmd = [py_bin, "-m", "uvicorn", "orion.api.main:app", "--host", "127.0.0.1", "--port", str(hub_port)]
+    worker_cmd = [py_bin, "-m", "orion.worker.main"]
     redis_exe = os.path.join(base_dir, ".local_db", "redis", "redis-server.exe")
     
     hide_flags = 0x08000000 if os.name == 'nt' else 0

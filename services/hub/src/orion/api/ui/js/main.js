@@ -212,8 +212,22 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (savedAudio !== null) {
             audioToggle.checked = savedAudio === "true";
         }
-        audioToggle.addEventListener('change', () => {
-            localStorage.setItem("orion_tts_enabled", audioToggle.checked ? "true" : "false");
+        audioToggle.addEventListener('change', async () => {
+            const isEnabled = audioToggle.checked;
+            localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+
+            // Also update input in settings modal if open
+            const ttsEnabledInput = document.getElementById('setting-input-tts_enabled');
+            if (ttsEnabledInput) {
+                ttsEnabledInput.value = isEnabled ? "true" : "false";
+            }
+
+            // Sync with backend settings
+            try {
+                await API.saveSettings("tts_enabled", isEnabled ? "true" : "false");
+            } catch (err) {
+                console.warn("Could not save tts_enabled to backend:", err);
+            }
         });
     }
 
@@ -228,6 +242,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             e.target.classList.add('active');
             const targetId = e.target.getAttribute('data-target');
             document.getElementById(targetId).classList.add('active');
+            if (targetId === 'settings-view') {
+                loadInitialSettings();
+            }
         });
     });
 
@@ -252,6 +269,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         const data = await API.getSettings();
         if (data && !data.error) {
             UI.renderSettings(data);
+            if (audioToggle && data.tts_enabled !== undefined) {
+                const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
+                audioToggle.checked = isEnabled;
+                localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+            }
         }
     };
     window.loadInitialSettings = loadInitialSettings;
@@ -261,9 +283,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (userPollTimer) return;
         userPollTimer = setInterval(() => {
             if (!AppState.sseConnected) return;
-            loadInitialSettings();
             if (window.loadChats) window.loadChats();
-        }, 5000);
+        }, 8000);
     };
     const stopUserPolling = () => {
         if (!userPollTimer) return;

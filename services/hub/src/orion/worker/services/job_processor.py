@@ -332,7 +332,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             is_completed = llm_done or not stopped
 
             # --- Multimodal: Text-to-Speech (TTS) Integration ---
-            should_tts = (context.audio_requested or settings.tts_enabled) and bool(final_text.strip())
+            is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
+            should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
             if should_tts and not stopped:
                 try:
                     tts_text = _clean_text_for_tts(final_text)
@@ -357,11 +358,15 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             consumer_name, context.chat_id, len(audio_bytes),
                         )
                 except Exception as tts_err:
-                    # Graceful degradation: never fail the chat stream if TTS is offline or fails
+                    # Graceful degradation: log and inform user via chat token
                     logging.warning(
-                        "Worker %s: TTS generation skipped for chat %s (%s)",
+                        "Worker %s: TTS generation failed for chat %s (%s)",
                         consumer_name, context.chat_id, tts_err,
                     )
+                    try:
+                        await context.emit_token(f"\n\n*[⚠️ TTS Uyarısı: {str(tts_err)}]*")
+                    except Exception:
+                        pass
 
 
             thinking_text = "".join(thinking_tokens)

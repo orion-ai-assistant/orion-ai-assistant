@@ -25,7 +25,7 @@ class AISettings(BaseModel):
 
     # TTS Configuration
     tts_enabled: bool = True
-    tts_voice: str = "alloy"
+    tts_voice: str = ""
     tts_model: str = "voxcpm2"
     tts_timeout_seconds: int = 15
 

@@ -307,26 +307,61 @@ async def generate_tts(
     """TTS üretimi için seçilen sağlayıcıya (öncelikle Orion Router) istek atar ve (audio_bytes, format, sample_rate) döner."""
     session = await get_session()
 
-    voice_name = voice or getattr(settings, "tts_voice", "") or ""
-    urls = _tts_urls("/v1/audio/speech")
+    raw_model = (getattr(settings, "tts_model", "") or "").strip()
+    lowered_model = raw_model.lower()
+
+    if not raw_model:
+        tts_model = "voxcpm2"
+        provider = "local"
+    else:
+        # Use exact model specified by the user without auto-correcting
+        tts_model = raw_model
+        if "gemini" in lowered_model:
+            provider = "gemini"
+        elif "openai" in lowered_model or "tts-1" in lowered_model:
+            provider = "openai"
+        elif lowered_model in ("voxcpm", "voxcpm2", "local", "local-model", "local-tts"):
+            provider = "local"
+        else:
+            provider = None
+
+    raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
+    voice_name = (raw_voice or "").strip()
+
+    # Normalize voice: if empty, default, or mismatched cross-provider leftover (e.g. alloy on Gemini)
+    if voice_name.lower() in ("default", "none", "null", ""):
+        voice_name = None
+    elif provider == "gemini" and voice_name.lower() == "alloy":
+        voice_name = None
+    elif provider == "local" and voice_name.lower() == "alloy":
+        voice_name = None
+
     api_key = getattr(settings, "router_api_key", None) or "orion"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "x-orion-api-key": api_key,
-        "x-orion-provider": "local",
         "Content-Type": "application/json",
     }
+    if provider:
+        headers["x-orion-provider"] = provider
+
     payload = {
-        "model": "local-model",
+        "model": tts_model,
         "input": text,
-        "voice": voice_name,
         "response_format": response_format,
     }
+    if voice_name:
+        payload["voice"] = voice_name
+
     timeout_sec = getattr(settings, "tts_timeout_seconds", 15)
     timeout = _request_timeout(timeout_sec)
 
-    last_error = None
-    for url in urls:
+    router_urls = [f"{_base_url(base)}/v1/audio/speech" for base in get_router_base_urls()]
+    local_tts_urls = [f"{_base_url(base)}/v1/audio/speech" for base in get_tts_base_urls()]
+
+    # 1. Router Call
+    router_err = None
+    for url in router_urls:
         try:
             async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
                 if response.status == 200:
@@ -337,13 +372,40 @@ async def generate_tts(
                     fmt = "wav" if "wav" in ct else response_format
                     return data, fmt, sample_rate
                 else:
-                    last_error = RuntimeError(f"TTS endpoint {url} returned HTTP {response.status}")
+                    err_text = await response.text()
+                    try:
+                        err_json = json.loads(err_text)
+                        err_detail = err_json.get("detail") or err_text
+                    except Exception:
+                        err_detail = err_text
+                    router_err = RuntimeError(f"Router TTS Hatası ({response.status}): {err_detail}")
+                    # If Router responded with an error, DO NOT fall back to local TTS for non-local models!
+                    if provider != "local":
+                        raise router_err
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-            last_error = e
+            router_err = e
             continue
 
-    if last_error:
-        raise last_error
-    raise RuntimeError("No valid TTS URL found.")
+    if provider != "local" and router_err:
+        raise router_err
+
+    # 2. Local TTS fallback (ONLY for local models like voxcpm2 when router is unreachable)
+    if provider == "local":
+        for url in local_tts_urls:
+            try:
+                async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.read()
+                        sr_header = response.headers.get("X-Sample-Rate")
+                        sample_rate = int(sr_header) if sr_header and sr_header.isdigit() else None
+                        ct = response.headers.get("Content-Type", "")
+                        fmt = "wav" if "wav" in ct else response_format
+                        return data, fmt, sample_rate
+            except Exception:
+                continue
+
+    if router_err:
+        raise router_err
+    raise RuntimeError("TTS servisine ulaşılamadı.")
 
 
