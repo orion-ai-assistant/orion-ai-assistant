@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // DOM Elemanları
     const modelNameText          = document.getElementById('modelNameText');
     const deviceBadge            = document.getElementById('deviceBadge');
+    const computeBadge           = document.getElementById('computeBadge');
     const languageSelect         = document.getElementById('languageSelect');
     const promptInput            = document.getElementById('promptInput');
 
@@ -99,6 +100,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (info.model && modelNameText) modelNameText.innerText = info.model;
                 if (info.device && deviceBadge) {
                     deviceBadge.innerText = info.device.toLowerCase() === 'cuda' ? 'GPU' : info.device.toUpperCase();
+                }
+                if (info.compute_type && computeBadge) {
+                    computeBadge.innerText = info.compute_type;
                 }
             }
         } catch (_) {}

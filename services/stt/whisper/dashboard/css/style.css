@@ -82,28 +82,16 @@ body {
     justify-content: center;
 }
 
-.brand-titles {
-    display: flex;
-    flex-direction: column;
-}
-
 .brand-title {
-    font-size: 1.1rem;
+    font-size: 1.15rem;
     font-weight: 700;
     color: var(--text-main);
-    line-height: 1.2;
-}
-
-.brand-subtitle {
-    font-size: 0.72rem;
-    font-weight: 500;
-    color: var(--text-subtle);
 }
 
 .header-model-badge {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     background: var(--card-inner);
     border: 1px solid var(--border);
     padding: 6px 14px;
@@ -115,6 +103,18 @@ body {
     font-size: 0.78rem;
     font-weight: 600;
     color: var(--text-muted);
+}
+
+.badge-compute {
+    background: rgba(16, 185, 129, 0.12);
+    color: var(--accent-emerald);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: lowercase;
 }
 
 /* =========================================================
@@ -241,6 +241,8 @@ body {
 textarea.form-control {
     resize: vertical;
     min-height: 80px;
+    max-height: 160px;
+    overflow-y: auto;
     line-height: 1.45;
 }
 
