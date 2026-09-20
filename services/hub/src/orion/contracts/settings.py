@@ -16,11 +16,11 @@ class AISettings(BaseModel):
     system_prompt: str = "You are Orion. Reply friendly and concisely. You MUST answer directly. Do NOT output your thinking process or explain your step-by-step reasoning. Just give the final answer."
     embed_timeout_seconds: int = 60
     
-    thinking_level: str = "default"
+    thinking_level: str = ""
     temperature: float = 0.7
     
     # Router Configuration
-    router_api_key: str = "sk-60f3eaf169d7c485-0icocf-0a3db541"
+    router_api_key: str = ""
     router_model_group: str = "local-model"
 
     # TTS Configuration

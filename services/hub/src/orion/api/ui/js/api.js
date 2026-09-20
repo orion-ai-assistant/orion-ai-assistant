@@ -152,15 +152,33 @@ const API = {
 
     async stopGeneration() {
         if (!AppState.currentChatId || !AppState.isAnyChatGenerating(AppState.currentChatId)) return;
-        
+        const targetChatId = AppState.currentChatId;
+
+        // Butonu "Durduruluyor..." moduna al ama ekran akışını hemen kesme
+        const stopBtn = document.getElementById('stop-btn');
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '<span class="stop-icon">⏳</span><span class="stop-text">Durduruluyor...</span>';
+        }
+
         try {
-            await this._fetch(`/api/v1/chats/${AppState.currentChatId}/stop`, {
+            await this._fetch(`/api/v1/chats/${targetChatId}/stop`, {
                 method: 'POST'
             });
-            AppState.stopGenerating(AppState.currentChatId);
-            UI.finishGeneration(AppState.currentChatId);
+
+            // Sunucu durdurma işlemini tamamlayıp SSE üzerinden 'done' yollayana kadar
+            // gelen son tokenlar normal şekilde ekrana akmaya devam eder.
+            // Emniyet süresi: 4 saniye içinde done gelmezse güvenli yedek olarak kapat
+            setTimeout(() => {
+                if (AppState.isAnyChatGenerating(targetChatId)) {
+                    AppState.stopGenerating(targetChatId);
+                    UI.finishGeneration(targetChatId);
+                }
+            }, 4000);
         } catch (error) {
             console.error("Durdurma hatası:", error);
+            AppState.stopGenerating(targetChatId);
+            UI.finishGeneration(targetChatId);
         }
     },
 

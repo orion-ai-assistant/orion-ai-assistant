@@ -101,6 +101,21 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
     };
 
+    const renderWelcomeHero = () => {
+        UI.chatArea.innerHTML = `
+            <div class="welcome-hero">
+                <div class="welcome-badge">✦ Orion AI Platform</div>
+                <h2 class="welcome-title">Nasıl yardımcı olabilirim?</h2>
+                <p class="welcome-desc">Aşağıdaki mesaj kutusuna yazabilir veya mikrofon butonuna basarak doğrudan konuşabilirsiniz.</p>
+                <div class="welcome-chips">
+                    <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bugün hava nasıl?'; document.getElementById('message-input').focus();">🌤️ Bugün hava nasıl?</button>
+                    <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bana Python ile ilgili bir örnek kod yaz.'; document.getElementById('message-input').focus();">💻 Python örnek kod</button>
+                    <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Orion Router nedir ve ne işe yarar?'; document.getElementById('message-input').focus();">⚡ Orion Router hakkında</button>
+                </div>
+            </div>
+        `;
+    };
+
     const initAuth = async () => {
         const token = Auth.getToken();
         if (!token) {
@@ -112,6 +127,16 @@ document.addEventListener("DOMContentLoaded", async () => {
             AppConfig.setUserId(user.username);
             document.getElementById("user-profile-badge").textContent = `Hoşgeldin, ${user.username}`;
             document.getElementById("auth-modal").classList.remove("show");
+            document.getElementById("auth-password").value = "";
+            const errEl = document.getElementById("auth-error");
+            if (errEl) errEl.style.display = "none";
+
+            // Oturum kapatıldıktan sonra tekrar giriş yapıldığında ekranı sıfırla
+            if (!AppState.currentChatId || (UI.chatArea && UI.chatArea.innerHTML.includes('Oturum kapatıldı'))) {
+                UI.clearChatArea();
+                renderWelcomeHero();
+            }
+
             SSE.connect();
             return true;
         } catch (error) {
@@ -138,6 +163,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             await Auth.login(user, pass);
             await initAuth();
             loadInitialSettings();
+            if (window.loadChats) window.loadChats();
         } catch (error) {
             showError(error.message);
         }
@@ -155,6 +181,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             await Auth.login(user, pass);
             await initAuth();
             loadInitialSettings();
+            if (window.loadChats) window.loadChats();
         } catch (error) {
             showError(error.message);
         }
@@ -164,15 +191,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     const isAuthenticated = await initAuth();
 
     // Initial UI state
-    UI.clearChatArea();
+    if (!AppState.currentChatId) {
+        UI.clearChatArea();
+        renderWelcomeHero();
+    }
     UI.setConnectionStatus(false, "connecting");
 
     // Event Listeners
     document.getElementById('new-chat-btn').addEventListener('click', () => {
         AppState.currentChatId = null;
         UI.clearChatArea();
-        UI.chatArea.innerHTML = '<div class="message bot">Yeni sohbet başlatıldı. Lütfen bir mesaj gönderin.</div>';
+        renderWelcomeHero();
         loadChats();
+        if (window.STT) window.STT.reset();
     });
 
     document.getElementById('logout-btn').addEventListener('click', () => {
@@ -193,6 +224,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById('send-btn').addEventListener('click', () => {
         const text = UI.messageInput.value.trim();
         API.sendMessage(text);
+        if (window.STT) {
+            if (window.STT.isStreaming) window.STT.stop();
+            window.STT.reset();
+        }
     });
 
     document.getElementById('stop-btn').addEventListener('click', () => {
@@ -203,6 +238,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (e.key === 'Enter') {
             const text = UI.messageInput.value.trim();
             API.sendMessage(text);
+            if (window.STT) {
+                if (window.STT.isStreaming) window.STT.stop();
+                window.STT.reset();
+            }
         }
     });
 
@@ -220,6 +259,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             const ttsEnabledInput = document.getElementById('setting-input-tts_enabled');
             if (ttsEnabledInput) {
                 ttsEnabledInput.value = isEnabled ? "true" : "false";
+                ttsEnabledInput.dataset.original = isEnabled ? "true" : "false";
             }
 
             // Sync with backend settings
@@ -234,14 +274,27 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Tab Switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
+            const targetBtn = e.target.closest('.tab-btn');
+            if (!targetBtn) return;
             // Remove active from all tabs and views
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
 
             // Add active to clicked tab and corresponding view
-            e.target.classList.add('active');
-            const targetId = e.target.getAttribute('data-target');
-            document.getElementById(targetId).classList.add('active');
+            targetBtn.classList.add('active');
+            const targetId = targetBtn.getAttribute('data-target');
+            const viewEl = document.getElementById(targetId);
+            if (viewEl) viewEl.classList.add('active');
+
+            // Sohbetler sadece Sohbet sekmesinde görünsün, diğer sayfalarda ilgili kutucuk aktif olsun
+            const chatsContainer = document.getElementById('sidebar-chats-container');
+            const settingsCard = document.getElementById('sidebar-settings-card');
+            const statusCard = document.getElementById('sidebar-status-card');
+
+            if (chatsContainer) chatsContainer.style.display = targetId === 'chat-view' ? 'flex' : 'none';
+            if (settingsCard) settingsCard.style.display = targetId === 'settings-view' ? 'flex' : 'none';
+            if (statusCard) statusCard.style.display = targetId === 'status-view' ? 'flex' : 'none';
+
             if (targetId === 'settings-view') {
                 loadInitialSettings();
             }
@@ -296,5 +349,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (isAuthenticated) {
         loadInitialSettings();
+    }
+
+    // STT Canlı Mikrofon Tetikleyici
+    const micBtn = document.getElementById('mic-btn');
+    if (micBtn) {
+        micBtn.addEventListener('click', () => {
+            if (window.STT) window.STT.toggle();
+        });
     }
 });

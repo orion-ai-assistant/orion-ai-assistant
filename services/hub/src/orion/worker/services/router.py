@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
+import os
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Awaitable
 from typing import Any
 
 import aiohttp
@@ -23,6 +24,16 @@ from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
 from services.shared.environment import get_router_base_urls, get_tts_base_urls
 from orion.contracts.settings import RuntimeSettings
+
+
+def _get_router_api_key(settings: RuntimeSettings) -> str:
+    """Orion Router ile iletişim için API anahtarını döner.
+    Kullanıcı özel bir anahtar tanımlamadıysa varsayılan 'orion' admin secret kullanılır.
+    """
+    key = (getattr(settings, "router_api_key", "") or "").strip()
+    if key and key != "sk-60f3eaf169d7c485-0icocf-0a3db541":
+        return key
+    return os.getenv("ROUTER_API_KEY", "").strip() or "orion"
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +100,9 @@ def _request_timeout(total_seconds: int | float) -> ClientTimeout:
 # ---------------------------------------------------------------------------
 
 async def llama_stream_chat_typed(
-    messages: list[dict[str, Any]], settings: RuntimeSettings
+    messages: list[dict[str, Any]],
+    settings: RuntimeSettings,
+    stop_checker: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar.
 
@@ -100,17 +113,21 @@ async def llama_stream_chat_typed(
     session = await get_session()
 
     urls = _router_urls("/v1/chat/completions")
+    api_key = _get_router_api_key(settings)
     headers = {
-        "x-orion-api-key": settings.router_api_key,
+        "Authorization": f"Bearer {api_key}",
+        "x-orion-api-key": api_key,
         "Content-Type": "application/json",
     }
-    payload = {
+    payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
         "stream": True,
         "temperature": settings.temperature,
-        "thinking_level": settings.thinking_level,
     }
+    thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
+    if thinking_level and thinking_level.lower() != "default":
+        payload["thinking_level"] = thinking_level
 
     timeout = _stream_timeout(settings)
 
@@ -166,6 +183,11 @@ async def llama_stream_chat_typed(
                             yielded_any = True
                             yield pair
 
+                    # Durdurma sinyali geldiyse Router HTTP soketini kapat ama mevcut tamponu kaybetmeden çık
+                    if stop_checker and await stop_checker():
+                        response.close()
+                        break
+
                 # Flush remaining buffer
                 if raw_buffer.strip():
                     async for pair in _parse_buffer(raw_buffer):
@@ -186,12 +208,16 @@ async def llama_stream_chat_typed(
     raise RuntimeError("No valid router URL found.")
 
 
-async def llama_stream_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) -> AsyncGenerator[str, None]:
+async def llama_stream_chat(
+    messages: list[dict[str, Any]],
+    settings: RuntimeSettings,
+    stop_checker: Callable[[], Awaitable[bool]] | None = None,
+) -> AsyncGenerator[str, None]:
     """Backward-compatible wrapper — yields only content tokens (thinking tokens are dropped).
 
     New code should prefer llama_stream_chat_typed().
     """
-    async for kind, token in llama_stream_chat_typed(messages, settings):
+    async for kind, token in llama_stream_chat_typed(messages, settings, stop_checker=stop_checker):
         if kind == "content":
             yield token
 
@@ -205,17 +231,21 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
     session = await get_session()
 
     urls = _router_urls("/v1/chat/completions")
+    api_key = _get_router_api_key(settings)
     headers = {
-        "x-orion-api-key": settings.router_api_key,
+        "Authorization": f"Bearer {api_key}",
+        "x-orion-api-key": api_key,
         "Content-Type": "application/json",
     }
-    payload = {
+    payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
         "stream": False,
         "temperature": settings.temperature,
-        "thinking_level": settings.thinking_level,
     }
+    thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
+    if thinking_level and thinking_level.lower() != "default":
+        payload["thinking_level"] = thinking_level
 
     timeout = _request_timeout(settings.llm_timeout_seconds)
 
@@ -250,8 +280,10 @@ async def generate_embeddings(text: str, settings: RuntimeSettings) -> list[floa
     session = await get_session()
 
     urls = _router_urls("/v1/embeddings")
+    api_key = _get_router_api_key(settings)
     headers = {
-        "x-orion-api-key": settings.router_api_key,
+        "Authorization": f"Bearer {api_key}",
+        "x-orion-api-key": api_key,
         "Content-Type": "application/json",
     }
     payload = {
@@ -336,7 +368,7 @@ async def generate_tts(
     elif provider == "local" and voice_name.lower() == "alloy":
         voice_name = None
 
-    api_key = getattr(settings, "router_api_key", None) or "orion"
+    api_key = _get_router_api_key(settings)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "x-orion-api-key": api_key,

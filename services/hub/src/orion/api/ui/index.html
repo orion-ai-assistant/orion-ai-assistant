@@ -3,18 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Orion Hub Test Client</title>
-    <link rel="stylesheet" href="css/styles.css">
+    <title>Orion Hub • AI Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css?v=2.0.0">
 </head>
 <body>
+    <!-- Auth Modal -->
     <div id="auth-modal" class="auth-modal">
         <div class="auth-card">
-            <h2>Orion Hub'a Giriş Yap</h2>
-            <p>Devam etmek için lütfen giriş yapın veya kayıt olun.</p>
-            <div id="auth-error" class="auth-error" style="display: none; color: #ef4444; margin-bottom: 15px; font-size: 0.9rem;"></div>
+            <div class="auth-brand">
+                <div class="auth-brand-icon">✦</div>
+                <h2>Orion Hub</h2>
+            </div>
+            <p>Devam etmek için hesabınıza giriş yapın veya yeni bir hesap oluşturun.</p>
+            <div id="auth-error" class="auth-error" style="display: none;"></div>
             <div class="auth-form">
-                <input type="text" id="auth-username" placeholder="Kullanıcı Adı" autocomplete="username">
-                <input type="password" id="auth-password" placeholder="Şifre" autocomplete="current-password">
+                <div class="auth-input-group">
+                    <input type="text" id="auth-username" placeholder="Kullanıcı Adı" autocomplete="username">
+                </div>
+                <div class="auth-input-group">
+                    <input type="password" id="auth-password" placeholder="Şifre" autocomplete="current-password">
+                </div>
                 <div class="auth-actions">
                     <button id="auth-login-btn" class="btn btn-primary">Giriş Yap</button>
                     <button id="auth-register-btn" class="btn btn-secondary">Kayıt Ol</button>
@@ -23,86 +34,226 @@
         </div>
     </div>
     
-    <div class="container">
-        <div class="header">
-            <h1>
-                <div class="status-indicator" id="status-indicator"></div>
-                Orion Hub Test
-                <span id="connection-status-text" class="connection-status-text">Bağlanıyor...</span>
-            </h1>
-            <div class="settings">
-                <span id="user-profile-badge" style="color: #94a3b8; font-size: 0.9rem; margin-right: 10px;"></span>
-                <button class="btn btn-danger" id="logout-btn" style="padding: 6px 12px; font-size: 0.9rem; margin-left: 5px;">Çıkış Yap</button>
-            </div>
-        </div>
-
-        <div class="tabs">
-            <button class="tab-btn active" data-target="chat-view">Sohbet</button>
-            <button class="tab-btn" data-target="settings-view">Ayarlar</button>
-            <button class="tab-btn" data-target="status-view">İş (Job) Durumu</button>
-        </div>
-
-        <div id="chat-view" class="view active chat-view-container">
-            <div class="chat-sidebar" id="chat-sidebar">
-                <button class="btn btn-primary" id="new-chat-btn" style="width: 100%; margin-bottom: 15px;">+ Yeni Sohbet</button>
-                <div class="chat-list" id="chat-list">
-                    <!-- JS ile doldurulacak -->
+    <!-- Main Application Layout -->
+    <div class="app-layout">
+        <!-- SOL PANEL: SIDEBAR (HER ZAMAN GÖRÜNÜR) -->
+        <aside class="sidebar" id="app-sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <div class="brand-logo">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                        </svg>
+                    </div>
+                    <div class="brand-info">
+                        <span class="brand-name">Orion Hub</span>
+                    </div>
+                </div>
+                <div class="connection-status-pill" title="Bağlantı Durumu">
+                    <span class="status-indicator" id="status-indicator"></span>
+                    <span id="connection-status-text" class="connection-status-text">Bağlanıyor...</span>
                 </div>
             </div>
-            
-            <div class="chat-main">
+
+            <!-- ORTA BÖLÜM: SOHBET LİSTESİ VE DİĞER SAYFALAR İÇİN AYRI KUTUCUK -->
+            <div class="sidebar-middle" id="sidebar-middle">
+                <div id="sidebar-chats-container" class="sidebar-chats-container">
+                    <div class="sidebar-actions">
+                        <button class="btn btn-new-chat" id="new-chat-btn">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"></line>
+                                <line x1="5" y1="12" x2="19" y2="12"></line>
+                            </svg>
+                            <span>Yeni Sohbet</span>
+                        </button>
+                    </div>
+
+                    <div class="sidebar-section-title">
+                        <span>SOHBETLER</span>
+                    </div>
+
+                    <div class="chat-list" id="chat-list">
+                        <!-- JS ile doldurulacak -->
+                    </div>
+                </div>
+
+                <!-- Ayarlar sayfasındayken orta kutucukta bilgi kartı -->
+                <div id="sidebar-settings-card" class="sidebar-panel-card" style="display: none;">
+                    <div class="panel-card-header">
+                        <span class="panel-card-icon">⚙️</span>
+                        <span class="panel-card-title">Ayarlar</span>
+                    </div>
+                    <p class="panel-card-text">Model parametreleri, TTS ses ayarları ve sistem yapılandırması.</p>
+                </div>
+
+                <!-- İş durumu sayfasındayken orta kutucukta bilgi kartı -->
+                <div id="sidebar-status-card" class="sidebar-panel-card" style="display: none;">
+                    <div class="panel-card-header">
+                        <span class="panel-card-icon">📊</span>
+                        <span class="panel-card-title">İş Durumu</span>
+                    </div>
+                    <p class="panel-card-text">Kuyruk durumu ve arka plan görevlerinin analizi.</p>
+                </div>
+            </div>
+
+            <!-- ALT BÖLÜM: NAVİGASYON & KULLANICI KARTI (SABİT ALT KUTUCUK) -->
+            <div class="sidebar-bottom">
+                <div class="sidebar-nav tabs">
+                    <button class="tab-btn active" data-target="chat-view">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                        <span>Sohbet</span>
+                    </button>
+                    <button class="tab-btn" data-target="settings-view">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                        </svg>
+                        <span>Ayarlar</span>
+                    </button>
+                    <button class="tab-btn" data-target="status-view">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                        </svg>
+                        <span>İş Durumu</span>
+                    </button>
+                </div>
+
+                <div class="sidebar-user">
+                    <div class="user-avatar">
+                        <span>👤</span>
+                    </div>
+                    <div class="user-info">
+                        <span id="user-profile-badge" class="user-name">Giriş Yapılmadı</span>
+                        <span class="user-role">Kullanıcı</span>
+                    </div>
+                    <button class="btn-logout" id="logout-btn" title="Çıkış Yap">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 17 21 12 16 7"></polyline>
+                            <line x1="21" y1="12" x2="9" y2="12"></line>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- SAĞ PANEL: ANA İÇERİK ALANI -->
+        <main class="main-content">
+            <!-- 1. SOHBET GÖRÜNÜMÜ -->
+            <div id="chat-view" class="view active chat-view">
                 <div class="chat-area" id="chat-area">
-                    <!-- JavaScript tarafından doldurulacak -->
+                    <div class="welcome-hero">
+                        <div class="welcome-badge">✦ Orion AI Platform</div>
+                        <h2 class="welcome-title">Nasıl yardımcı olabilirim?</h2>
+                        <p class="welcome-desc">Aşağıdaki mesaj kutusuna yazabilir veya mikrofon butonuna basarak doğrudan konuşabilirsiniz.</p>
+                        <div class="welcome-chips">
+                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bugün hava nasıl?'; document.getElementById('message-input').focus();">🌤️ Bugün hava nasıl?</button>
+                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bana Python ile ilgili bir örnek kod yaz.'; document.getElementById('message-input').focus();">💻 Python örnek kod</button>
+                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Orion Router nedir ve ne işe yarar?'; document.getElementById('message-input').focus();">⚡ Orion Router hakkında</button>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="input-area">
-                    <button class="btn btn-danger" id="stop-btn" style="display: none;">Durdur</button>
-                    <input type="text" id="message-input" placeholder="Mesajınızı yazın...">
-                    <label style="display: flex; align-items: center; gap: 5px; color: var(--text-color); font-size: 0.85rem; cursor: pointer; user-select: none; white-space: nowrap; margin: 0 4px;" title="Cevabı sesli olarak dinle (TTS)">
-                        <input type="checkbox" id="audio-toggle" checked style="cursor: pointer; accent-color: var(--primary-color);"> 🎙️ Ses
-                    </label>
-                    <button class="btn btn-primary" id="send-btn">Gönder</button>
-                </div>
+                <div class="input-dock-container">
+                    <div class="input-dock">
+                        <button class="btn btn-stop" id="stop-btn" style="display: none;" title="Yanıtı Durdur">
+                            <span class="stop-icon">■</span>
+                            <span class="stop-text">Durdur</span>
+                        </button>
+                        
+                        <div class="input-field-wrapper">
+                            <input type="text" id="message-input" placeholder="Mesajınızı yazın veya mikrofona konuşun..." autocomplete="off">
+                            
+                            <!-- Mikrofon Butonu -->
+                            <button id="mic-btn" class="mic-btn" title="Canlı Konuşma (Whisper STT)" type="button">
+                                <svg id="mic-icon-idle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                                    <line x1="12" x2="12" y1="19" y2="22"></line>
+                                </svg>
+                                <span id="mic-icon-recording" class="mic-recording-pulse" style="display: none;"></span>
+                            </button>
+                        </div>
 
+                        <div class="input-dock-actions">
+                            <label class="audio-toggle-switch" title="Cevabı sesli olarak dinle (TTS)">
+                                <input type="checkbox" id="audio-toggle" checked>
+                                <span class="toggle-pill">
+                                    <span class="toggle-icon">🎙️</span>
+                                    <span class="toggle-label">Ses</span>
+                                </span>
+                            </label>
+                            
+                            <button class="btn btn-send" id="send-btn" title="Gönder">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
-        </div>
 
-        <div id="settings-view" class="view">
-            <div style="padding: 20px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; overflow: hidden;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-shrink: 0;">
+            <!-- 2. AYARLAR GÖRÜNÜMÜ -->
+            <div id="settings-view" class="view settings-view">
+                <div class="view-header">
                     <div>
-                        <h2 style="margin: 0 0 5px 0;">Kullanıcı Ayarları (Ayarlar)</h2>
-                        <p style="margin: 0; color: #94a3b8; font-size: 0.9rem;">Kişisel model ve arayüz ayarlarınızı özelleştirin.</p>
+                        <h2>Kullanıcı Ayarları</h2>
+                        <p>Model parametreleri, TTS ve sistem ayarlarını özelleştirin.</p>
                     </div>
                 </div>
                 
-                <div id="settings-result" style="color: #22c55e; margin-bottom: 15px; font-weight: 500; min-height: 20px; flex-shrink: 0;"></div>
+                <div id="settings-result" class="settings-toast-banner" style="display: none;"></div>
 
-                <div id="settings-dashboard" style="display: flex; flex-direction: column; gap: 20px; overflow-y: auto; flex: 1; padding-right: 10px; padding-bottom: 40px;">
-                    <!-- JS ile dinamik doldurulacak -->
-                    <div style="text-align: center; padding: 40px; color: #94a3b8;">Ayarlar yükleniyor...</div>
+                <div id="settings-dashboard" class="settings-dashboard-grid">
+                    <div class="loading-spinner-state">Ayarlar yükleniyor...</div>
                 </div>
             </div>
-        </div>
 
-        <div id="status-view" class="view">
-            <div style="padding: 20px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; overflow: hidden;">
-                <h2 style="margin-top: 0; margin-bottom: 5px;">İş (Job) Durumu Sorgulama</h2>
-                <p style="margin: 0 0 15px 0; color: #94a3b8; font-size: 0.9rem;">Oluşturulan bir Chat ID'nin arka plandaki (Redis) durumunu sorgulayın.</p>
-                <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-shrink: 0;">
-                    <input type="text" id="query-chat-id" placeholder="Chat ID Girin" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--secondary-color); color: white; outline: none;">
-                    <button class="btn btn-primary" id="check-status-btn">Sorgula</button>
+            <!-- 3. İŞ (JOB) DURUMU GÖRÜNÜMÜ -->
+            <div id="status-view" class="view status-view">
+                <div class="view-header">
+                    <div>
+                        <h2>İş (Job) Durumu</h2>
+                        <p>Arka plandaki Redis işlerini ve chat oturum durumunu sorgulayın.</p>
+                    </div>
                 </div>
-                <pre id="status-result" style="background: var(--bg-color); padding: 15px; border-radius: 8px; overflow-y: auto; flex: 1; margin: 0; border: 1px solid var(--border-color); font-family: monospace; font-size: 0.9rem; padding-bottom: 35px;"></pre>
+
+                <div class="job-query-card">
+                    <div class="search-input-group">
+                        <input type="text" id="query-chat-id" placeholder="Sorgulanacak Chat ID girin...">
+                        <button class="btn btn-primary" id="check-status-btn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="8"></circle>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                            </svg>
+                            <span>Sorgula</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="terminal-card">
+                    <div class="terminal-header">
+                        <div class="terminal-dots">
+                            <span></span><span></span><span></span>
+                        </div>
+                        <span class="terminal-title">SONUÇ (JSON)</span>
+                    </div>
+                    <pre id="status-result" class="terminal-body">// Chat ID sorgu sonucu burada görüntülenecektir.</pre>
+                </div>
             </div>
-        </div>
+        </main>
     </div>
 
     <!-- Scripts split by modules -->
-    <script src="js/config.js?v=1.0.2"></script>
-    <script src="js/ui.js?v=1.0.2"></script>
-    <script src="js/api.js?v=1.0.2"></script>
-    <script src="js/sse.js?v=1.0.2"></script>
-    <script src="js/main.js?v=1.0.2"></script>
+    <script src="js/config.js?v=2.0.0"></script>
+    <script src="js/ui.js?v=2.0.0"></script>
+    <script src="js/api.js?v=2.0.0"></script>
+    <script src="js/stt.js?v=2.0.0"></script>
+    <script src="js/sse.js?v=2.0.0"></script>
+    <script src="js/main.js?v=2.0.0"></script>
 </body>
 </html>

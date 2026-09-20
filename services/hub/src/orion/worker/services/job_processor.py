@@ -280,19 +280,14 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             #   (llm_done=True), we never call aclose() — the stream is already exhausted.
             first_token = True
             stopped = False
-            llm_done = False  # Becomes True when the generator exhausts naturally
+            llm_done = False
 
             try:
-                stream = llama_stream_chat_typed(messages, settings)
-                async for kind, token in stream:
-                    # Check stop ONLY while LLM is still generating
-                    if await should_stop(redis, context.chat_id):
-                        # Close the HTTP connection → llama.cpp/router gets "cancel task"
-                        await stream.aclose()
-                        stopped = True
-                        logging.info("Worker %s: stop signal received, aborted LLM stream for chat %s", consumer_name, context.chat_id)
-                        break
+                async def _check_stop() -> bool:
+                    return await should_stop(redis, context.chat_id)
 
+                stream = llama_stream_chat_typed(messages, settings, stop_checker=_check_stop)
+                async for kind, token in stream:
                     # First token delay (optional artificial pre-roll)
                     if first_token and settings.first_token_delay_ms > 0:
                         await asyncio.sleep(settings.first_token_delay_ms / 1000)
@@ -309,19 +304,21 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token.rstrip())
                         # Flush partial text to Redis on every token for reconnect support
                         await redis.hset(state_key, "partial_text", "".join(output_tokens))
+
+                # Akış bittiğinde durdurma sinyali verilmiş miydi kontrol et
+                if await should_stop(redis, context.chat_id):
+                    stopped = True
+                    logging.info("Worker %s: LLM stream stopped upon user stop signal for chat %s", consumer_name, context.chat_id)
                 else:
-                    # for-else: loop completed without break → LLM finished naturally
                     llm_done = True
 
             except Exception as e:
-                logging.exception("LLM stream failed for chat %s; streaming error to user", context.chat_id)
+                logging.exception("LLM stream failed for chat %s; sending error to user", context.chat_id)
                 fallback_text = _format_router_fallback_message(e, settings)
-                for token in tokenize(fallback_text):
-                    output_tokens.append(token)
-                    await context.emit_token(token)
-                    logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, repr(token))
-                    if settings.token_delay_ms > 0:
-                        await asyncio.sleep(settings.token_delay_ms / 1000)
+                output_tokens.append(fallback_text)
+                await context.emit_token(fallback_text)
+                await redis.hset(state_key, "partial_text", "".join(output_tokens))
+                logging.info("Worker %s published error fallback immediately for chat %s", consumer_name, context.chat_id)
 
             final_text = "".join(output_tokens)
 

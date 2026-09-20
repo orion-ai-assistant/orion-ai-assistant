@@ -17,13 +17,21 @@ def is_protected_global_key(key: str) -> bool:
     return key.lower() in _allowed_keys
 
 
+def _clean_legacy_value(key: str, val: str) -> str:
+    if key == "router_api_key" and val == "sk-60f3eaf169d7c485-0icocf-0a3db541":
+        return ""
+    if key == "thinking_level" and val.lower() == "default":
+        return ""
+    return val
+
+
 def build_runtime_settings(overrides: Mapping[str, str] | None = None) -> RuntimeSettings:
     data = settings.model_dump()
     if overrides:
         for key, value in overrides.items():
             normalized_key = key.lower()
             if normalized_key in data:
-                data[normalized_key] = value
+                data[normalized_key] = _clean_legacy_value(normalized_key, str(value))
     return RuntimeSettings.model_validate(data)
 
 
@@ -32,7 +40,7 @@ def _normalize_overrides(overrides: Mapping[str, str]) -> dict[str, str]:
     for key, value in overrides.items():
         normalized_key = key.lower()
         if normalized_key in _allowed_keys:
-            normalized[normalized_key] = str(value)
+            normalized[normalized_key] = _clean_legacy_value(normalized_key, str(value))
     return normalized
 
 

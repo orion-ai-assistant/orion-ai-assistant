@@ -23,6 +23,9 @@ const UI = {
     },
 
     appendUserMessage(text) {
+        const hero = this.chatArea.querySelector('.welcome-hero');
+        if (hero) hero.remove();
+
         const div = document.createElement('div');
         div.className = 'message user';
         div.textContent = text;
@@ -31,6 +34,9 @@ const UI = {
     },
 
     appendStaticBotMessage(content, thinking = null) {
+        const hero = this.chatArea.querySelector('.welcome-hero');
+        if (hero) hero.remove();
+
         const div = document.createElement('div');
         div.className = 'message bot';
         
@@ -62,6 +68,8 @@ const UI = {
 
     createBotMessagePlaceholder(chatId, isWaiting = false) {
         if (!chatId) return;
+        const hero = this.chatArea.querySelector('.welcome-hero');
+        if (hero) hero.remove();
         const state = this._getOrCreateChatState(chatId);
 
         // If there's an existing typing placeholder for this chat, reuse it
@@ -262,32 +270,92 @@ const UI = {
     },
 
     setStopButtonVisible(isVisible) {
-        this.stopBtn.style.display = isVisible ? 'block' : 'none';
+        if (!this.stopBtn) return;
+        this.stopBtn.style.display = isVisible ? 'flex' : 'none';
+        if (isVisible) {
+            this.stopBtn.disabled = false;
+            this.stopBtn.innerHTML = '<span class="stop-icon">■</span><span class="stop-text">Durdur</span>';
+        }
     },
 
     clearInput() {
         this.messageInput.value = '';
     },
 
+    handleSettingChange(key) {
+        const input = document.getElementById('setting-input-' + key);
+        const saveBtn = document.getElementById('setting-save-' + key);
+        if (!input || !saveBtn) return;
+
+        const currentVal = input.value.trim();
+        const originalVal = (input.dataset.original !== undefined ? input.dataset.original : '').trim();
+
+        if (currentVal !== originalVal) {
+            saveBtn.style.display = 'inline-flex';
+            saveBtn.classList.add('visible');
+            input.classList.add('dirty');
+        } else {
+            saveBtn.style.display = 'none';
+            saveBtn.classList.remove('visible');
+            input.classList.remove('dirty');
+        }
+    },
+
     async saveSetting(key) {
         const input = document.getElementById('setting-input-' + key);
+        const saveBtn = document.getElementById('setting-save-' + key);
         if (!input) return;
         const val = input.value.trim();
 
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = `<span>⏳</span> Kaydediliyor...`;
+        }
+
         const resultBlock = document.getElementById('settings-result');
-        resultBlock.style.color = "var(--text-color)";
-        resultBlock.textContent = `${key} kaydediliyor...`;
+        if (resultBlock) {
+            resultBlock.style.display = 'block';
+            resultBlock.className = 'settings-toast-banner info';
+            resultBlock.textContent = `${key} güncelleniyor...`;
+        }
 
         const data = await API.saveSettings(key, val);
 
         if (data.error) {
-            resultBlock.style.color = "var(--danger-color)";
-            resultBlock.textContent = `Hata: ${data.error}`;
+            if (resultBlock) {
+                resultBlock.className = 'settings-toast-banner error';
+                resultBlock.textContent = `Hata: ${data.error}`;
+            }
+            if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Tekrar Dene';
+            }
         } else {
-            resultBlock.style.color = "#22c55e";
-            resultBlock.textContent = `${key} başarıyla kaydedildi!`;
-            input.style.borderColor = "#22c55e";
-            setTimeout(() => { input.style.borderColor = "var(--border-color)"; }, 2000);
+            input.dataset.original = val;
+            input.classList.remove('dirty');
+            input.classList.add('saved-flash');
+            setTimeout(() => input.classList.remove('saved-flash'), 1200);
+
+            if (resultBlock) {
+                resultBlock.className = 'settings-toast-banner success';
+                resultBlock.textContent = `✓ ${key} başarıyla kaydedildi!`;
+                setTimeout(() => {
+                    if (resultBlock.textContent.includes(key)) {
+                        resultBlock.style.display = 'none';
+                    }
+                }, 3000);
+            }
+
+            if (saveBtn) {
+                saveBtn.innerHTML = `<span>✓</span> Kaydedildi`;
+                saveBtn.classList.add('saved');
+                setTimeout(() => {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Kaydet';
+                    saveBtn.classList.remove('saved', 'visible');
+                    saveBtn.style.display = 'none';
+                }, 1200);
+            }
 
             if (key === 'tts_enabled') {
                 const isEnabled = String(val).toLowerCase() === 'true';
@@ -309,98 +377,173 @@ const UI = {
             return;
         }
 
-        // If user is currently typing/focused on an element inside dashboard, never wipe it
+        // Kullanıcı herhangi bir alana odaklanmışsa veya yazıyorsa DOM'u baştan oluşturup kullanıcının yazdığını ezme
         if (dashboard.contains(document.activeElement)) {
             return;
         }
 
-        // If already rendered (inputs exist), update values in-place without destroying DOM or interrupting user
+        // Eğer zaten render edilmişse sadece değişmemiş olan değerleri güncelle
         const alreadyRendered = Boolean(dashboard.querySelector('[id^="setting-input-"]'));
         if (alreadyRendered) {
             Object.keys(settings).forEach(key => {
                 const el = document.getElementById(`setting-input-${key}`);
-                if (el && document.activeElement !== el) {
+                const saveBtn = document.getElementById(`setting-save-${key}`);
+                if (el && document.activeElement !== el && !el.classList.contains('dirty')) {
+                    const serverVal = settings[key] !== undefined ? String(settings[key]) : '';
                     if (el.tagName === 'SELECT') {
                         el.value = String(settings[key]).toLowerCase() === 'true' ? 'true' : 'false';
-                    } else if (key === 'tts_voice' || key === 'tts_model') {
-                        el.value = settings[key] || '';
+                        el.dataset.original = el.value;
                     } else {
-                        el.value = settings[key] !== undefined ? settings[key] : '';
+                        el.value = serverVal;
+                        el.dataset.original = serverVal;
                     }
+                    if (saveBtn) saveBtn.style.display = 'none';
                 }
             });
             return;
         }
 
-        const categories = {
-            "Metin ve Ses (TTS) Ayarları": ["tts_enabled", "tts_voice", "tts_model", "tts_timeout_seconds"],
-            "Router Konfigürasyonu": ["router_api_key", "router_model_group"],
-            "Yapay Zeka (AI) Ayarları": ["system_prompt", "llm_timeout_seconds", "embed_timeout_seconds", "chat_history_max_messages", "first_token_delay_ms", "token_delay_ms", "thinking_level", "temperature"],
-            "Sistem Parametreleri": ["result_ttl_seconds", "sse_heartbeat_seconds", "worker_max_concurrency", "stop_key_ttl_seconds", "redis_cache_ttl_seconds"]
+        const categoryMeta = {
+            "Metin ve Ses (TTS) Ayarları": {
+                icon: "🎙️",
+                keys: ["tts_enabled", "tts_voice", "tts_model", "tts_timeout_seconds"],
+                desc: "Whisper STT ve ses sentezleme (TTS) motoru parametreleri"
+            },
+            "Router Konfigürasyonu": {
+                icon: "⚡",
+                keys: ["router_api_key", "router_model_group"],
+                desc: "Orion Router yönlendirme ve API güvenlik anahtarları"
+            },
+            "Yapay Zeka (AI) Ayarları": {
+                icon: "🧠",
+                keys: ["system_prompt", "llm_timeout_seconds", "embed_timeout_seconds", "chat_history_max_messages", "first_token_delay_ms", "token_delay_ms", "thinking_level", "temperature"],
+                desc: "Model zekası, sistem promptu, düşünme seviyesi ve token gecikmeleri"
+            },
+            "Sistem Parametreleri": {
+                icon: "⚙️",
+                keys: ["result_ttl_seconds", "sse_heartbeat_seconds", "worker_max_concurrency", "stop_key_ttl_seconds", "redis_cache_ttl_seconds"],
+                desc: "Redis önbellek süreleri, heartbeat ve eşzamanlı kuyruk yapılandırması"
+            }
         };
 
+        const keyHints = {
+            "tts_enabled": "TTS ses sentezleyici aktif olsun mu?",
+            "router_api_key": "Orion Router API Key",
+            "system_prompt": "Asistanın ana rolü ve sistem talimatı",
+            "temperature": "Yaratıcılık katsayısı (0.0 - 1.0)",
+            "chat_history_max_messages": "Hafızada tutulacak maksimum mesaj sayısı"
+        };
+
+        const keyPlaceholders = {
+            "router_api_key": "Orion Router API Key",
+            "system_prompt": "Sistem promptu...",
+            "tts_voice": "Ses adı...",
+            "tts_model": "Model adı...",
+            "thinking_level": "Düşünce seviyesi...",
+            "router_model_group": "Model grubu..."
+        };
 
         let html = '';
         const handledKeys = new Set();
 
-        Object.entries(categories).forEach(([categoryName, keys]) => {
-            let groupHtml = `<div style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px;">
-                <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1.05rem; color: var(--primary-color); border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">${categoryName}</h3>
-                <div style="display: flex; flex-direction: column; gap: 10px;">`;
-
+        Object.entries(categoryMeta).forEach(([categoryName, meta]) => {
             let hasKeys = false;
-            keys.forEach(key => {
+            let rowsHtml = '';
+
+            meta.keys.forEach(key => {
                 if (settings[key] !== undefined) {
                     hasKeys = true;
                     handledKeys.add(key);
+
+                    let val = settings[key] !== undefined ? String(settings[key]) : '';
+                    if (key === 'router_api_key' && val === 'sk-60f3eaf169d7c485-0icocf-0a3db541') {
+                        val = '';
+                    } else if (key === 'thinking_level' && val.toLowerCase() === 'default') {
+                        val = '';
+                    }
+                    const hint = keyHints[key] || '';
+                    const placeholder = keyPlaceholders[key] || key;
 
                     let inputHtml = '';
                     if (key === 'tts_enabled') {
                         const isChecked = String(settings[key]).toLowerCase() === 'true';
                         inputHtml = `
-                            <select id="setting-input-${key}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">
+                            <select id="setting-input-${key}" data-original="${isChecked ? 'true' : 'false'}" onchange="UI.handleSettingChange('${key}')" class="setting-select">
                                 <option value="true" ${isChecked ? 'selected' : ''}>Açık (True)</option>
                                 <option value="false" ${!isChecked ? 'selected' : ''}>Kapalı (False)</option>
                             </select>`;
-                    } else if (key === 'tts_voice') {
-                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key] || ''}" placeholder="(Boş: Modelin varsayılan sesi)" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
-                    } else if (key === 'tts_model') {
-                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key] || ''}" placeholder="voxcpm2, gemini-3.1-flash-tts-preview, tts-1..." style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
+                    } else if (key === 'system_prompt') {
+                        inputHtml = `<textarea id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-textarea" rows="4" placeholder="${placeholder}">${val}</textarea>`;
                     } else {
-                        inputHtml = `<input type="text" id="setting-input-${key}" value="${settings[key]}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">`;
+                        inputHtml = `<input type="text" id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" value="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-input" placeholder="${placeholder}">`;
                     }
 
-                    groupHtml += `
-                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 8px;">
-                        <label style="flex: 1; font-weight: 500; font-size: 0.9rem; color: var(--text-color);">${key}</label>
-                        <div style="flex: 2; display: flex; gap: 10px;">
+                    rowsHtml += `
+                    <div class="setting-row">
+                        <div class="setting-info">
+                            <label class="setting-label">${key}</label>
+                            ${hint ? `<span class="setting-hint">${hint}</span>` : ''}
+                        </div>
+                        <div class="setting-control">
                             ${inputHtml}
-                            <button class="btn btn-primary" onclick="window.saveSetting('${key}')" style="padding: 8px 16px; font-size: 0.85rem;">Kaydet</button>
+                            <button id="setting-save-${key}" class="btn btn-save setting-save-btn" onclick="window.saveSetting('${key}')" style="display: none;">
+                                <span>Kaydet</span>
+                            </button>
                         </div>
                     </div>`;
                 }
             });
-            groupHtml += `</div></div>`;
-            if (hasKeys) html += groupHtml;
+
+            if (hasKeys) {
+                html += `
+                <div class="settings-card">
+                    <div class="settings-card-header">
+                        <div class="settings-card-icon">${meta.icon}</div>
+                        <div>
+                            <h3>${categoryName}</h3>
+                            <p>${meta.desc}</p>
+                        </div>
+                    </div>
+                    <div class="settings-card-body">
+                        ${rowsHtml}
+                    </div>
+                </div>`;
+            }
         });
 
+        // Diğer kategorize edilmemiş ayarlar
         const unhandledKeys = Object.keys(settings).filter(k => !handledKeys.has(k)).sort();
         if (unhandledKeys.length > 0) {
-            let groupHtml = `<div style="background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px;">
-                <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 1.05rem; color: #94a3b8; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Diğer Ayarlar</h3>
-                <div style="display: flex; flex-direction: column; gap: 10px;">`;
+            let rowsHtml = '';
             unhandledKeys.forEach(key => {
-                groupHtml += `
-                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.02); padding-bottom: 8px;">
-                    <label style="flex: 1; font-weight: 500; font-size: 0.9rem; color: var(--text-color);">${key}</label>
-                    <div style="flex: 2; display: flex; gap: 10px;">
-                        <input type="text" id="setting-input-${key}" value="${settings[key]}" style="flex: 1; padding: 8px 12px; background: var(--secondary-color); border: 1px solid var(--border-color); color: white; border-radius: 6px; font-size: 0.9rem; outline: none; transition: border-color 0.2s;">
-                        <button class="btn btn-primary" onclick="window.saveSetting('${key}')" style="padding: 8px 16px; font-size: 0.85rem;">Kaydet</button>
+                const val = settings[key] !== undefined ? String(settings[key]) : '';
+                rowsHtml += `
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <label class="setting-label">${key}</label>
+                    </div>
+                    <div class="setting-control">
+                        <input type="text" id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" value="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-input">
+                        <button id="setting-save-${key}" class="btn btn-save setting-save-btn" onclick="window.saveSetting('${key}')" style="display: none;">
+                            <span>Kaydet</span>
+                        </button>
                     </div>
                 </div>`;
             });
-            groupHtml += `</div></div>`;
-            html += groupHtml;
+
+            html += `
+            <div class="settings-card">
+                <div class="settings-card-header">
+                    <div class="settings-card-icon">📦</div>
+                    <div>
+                        <h3>Diğer Parametreler</h3>
+                        <p>Ek konfigürasyon seçenekleri</p>
+                    </div>
+                </div>
+                <div class="settings-card-body">
+                    ${rowsHtml}
+                </div>
+            </div>`;
         }
 
         dashboard.innerHTML = html;
@@ -435,13 +578,22 @@ const UI = {
             const displayName = chat.name || `Sohbet ${chat.chat_id.substring(0, 8)}...`;
 
             item.innerHTML = `
-                <div class="chat-item-body" style="flex:1;min-width:0;cursor:pointer;">
-                    <div class="chat-item-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:0.9rem;">${displayName}</div>
-                    <small style="color:#94a3b8;font-size:0.75rem;">${dateStr}</small>
+                <div class="chat-item-icon">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                    </svg>
                 </div>
-                <div class="chat-item-actions" style="display:flex;gap:4px;flex-shrink:0;opacity:0;transition:opacity 0.15s;">
-                    <button class="chat-action-btn rename-btn" title="Yeniden Adlandır" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:2px 5px;font-size:0.8rem;border-radius:4px;">✏️</button>
-                    <button class="chat-action-btn delete-btn" title="Sil" style="background:none;border:none;cursor:pointer;color:#ef4444;padding:2px 5px;font-size:0.8rem;border-radius:4px;">🗑️</button>
+                <div class="chat-item-body">
+                    <div class="chat-item-name">${displayName}</div>
+                    <span class="chat-item-date">${dateStr}</span>
+                </div>
+                <div class="chat-item-actions">
+                    <button class="chat-action-btn rename-btn" title="Yeniden Adlandır">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                    </button>
+                    <button class="chat-action-btn delete-btn" title="Sil">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </button>
                 </div>
             `;
 
