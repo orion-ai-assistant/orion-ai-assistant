@@ -612,10 +612,48 @@ class VoiceRegistry:
     def __init__(self, storage_path="voices"):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(exist_ok=True)
-    
+        self.service_voices_path = Path(os.path.dirname(__file__)) / "voices"
+        self.service_voices_path.mkdir(exist_ok=True)
+
+    def _get_search_dirs(self) -> list[Path]:
+        dirs = []
+        if self.service_voices_path.exists():
+            dirs.append(self.service_voices_path)
+        if self.storage_path.exists() and self.storage_path.resolve() != self.service_voices_path.resolve():
+            dirs.append(self.storage_path)
+        return dirs
+
+    def _find_voice_file(self, name: str, engine_name: str) -> Path | None:
+        name_clean = str(name).strip().lower()
+        if not name_clean:
+            return None
+        
+        engines = [engine_name.lower().strip()]
+        if "omnivoice" in engine_name.lower():
+            if "omnivoice-gguf" not in engines:
+                engines.append("omnivoice-gguf")
+            if "omnivoice" not in engines:
+                engines.append("omnivoice")
+        elif "voxcpm" in engine_name.lower():
+            if "voxcpm2" not in engines:
+                engines.append("voxcpm2")
+            if "voxcpm" not in engines:
+                engines.append("voxcpm")
+
+        for d in self._get_search_dirs():
+            for eng in engines:
+                target = f"{name_clean}_{eng}.pt"
+                p = d / target
+                if p.exists():
+                    return p
+                for f in d.glob("*.pt"):
+                    if f.name.lower() == target:
+                        return f
+        return None
+
     def get_voice_cache(self, name: str, engine_name: str) -> Any:
-        path = self.storage_path / f"{name}_{engine_name}.pt"
-        if not os.path.exists(path):
+        path = self._find_voice_file(name, engine_name)
+        if not path or not path.exists():
             return None
         try:
             if TORCH_AVAILABLE:
@@ -629,18 +667,18 @@ class VoiceRegistry:
             return None
 
     def voice_exists(self, name: str, engine_name: str) -> bool:
-        path = self.storage_path / f"{name}_{engine_name}.pt"
-        return path.exists()
+        return self._find_voice_file(name, engine_name) is not None
 
     def delete_voice(self, name: str, engine_name: str) -> bool:
-        path = self.storage_path / f"{name}_{engine_name}.pt"
-        if path.exists():
+        path = self._find_voice_file(name, engine_name)
+        if path and path.exists():
             path.unlink()
             return True
         return False
 
     def save_voice_cache(self, name: str, cache_obj: Any, engine_name: str):
-        path = self.storage_path / f"{name}_{engine_name}.pt"
+        target_dir = self.service_voices_path if self.service_voices_path.exists() else self.storage_path
+        path = target_dir / f"{name}_{engine_name}.pt"
         if TORCH_AVAILABLE:
             torch.save(cache_obj, path)
         else:
@@ -650,5 +688,24 @@ class VoiceRegistry:
         return str(path)
 
     def list_voices(self, engine_name: str):
-        suffix = f"_{engine_name}.pt"
-        return [f.name[:-len(suffix)] for f in self.storage_path.glob(f"*{suffix}")]
+        engines = [engine_name.lower().strip()]
+        if "omnivoice" in engine_name.lower():
+            if "omnivoice-gguf" not in engines:
+                engines.append("omnivoice-gguf")
+            if "omnivoice" not in engines:
+                engines.append("omnivoice")
+        elif "voxcpm" in engine_name.lower():
+            if "voxcpm2" not in engines:
+                engines.append("voxcpm2")
+            if "voxcpm" not in engines:
+                engines.append("voxcpm")
+
+        names = set()
+        for d in self._get_search_dirs():
+            for eng in engines:
+                suffix = f"_{eng}.pt"
+                for f in d.glob("*.pt"):
+                    f_name_lower = f.name.lower()
+                    if f_name_lower.endswith(suffix):
+                        names.add(f_name_lower[:-len(suffix)])
+        return sorted(list(names))
