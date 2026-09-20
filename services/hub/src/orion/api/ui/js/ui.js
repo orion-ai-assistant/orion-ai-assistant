@@ -33,16 +33,16 @@ const UI = {
         const meta = document.createElement('div');
         meta.className = 'message-meta';
 
-        const fmtFirst = Number(firstTokenMs || 0).toLocaleString('tr-TR');
-        const fmtTotal = Number(totalMs || 0).toLocaleString('tr-TR');
+        const fmtFirst = Math.round(Number(firstTokenMs || 0));
+        const fmtTotal = Math.round(Number(totalMs || 0));
 
         meta.innerHTML = `
-            <span class="meta-item" title="İlk Token Süresi (TTFT)">
-                <span class="meta-icon">⚡</span> İlk token: <strong>${fmtFirst} ms</strong>
+            <span class="meta-item" title="İlk Token Süresi">
+                <span class="meta-icon">⚡</span> ilk token: <strong>${fmtFirst} ms</strong>
             </span>
             <span class="meta-sep">•</span>
             <span class="meta-item" title="Toplam Yanıt Süresi">
-                <span class="meta-icon">⏱️</span> Toplam: <strong>${fmtTotal} ms</strong>
+                <span class="meta-icon">⏱️</span> toplam: <strong>${fmtTotal} ms</strong>
             </span>
         `;
         return meta;
