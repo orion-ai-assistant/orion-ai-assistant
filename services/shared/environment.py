@@ -77,3 +77,14 @@ def get_router_base_urls() -> list[str]:
             host = "127.0.0.1"
         return [f"http://{host}:{port}"]
     raise RuntimeError("Missing ROUTER_HOST or ROUTER_PORT")
+
+
+def get_tts_base_urls() -> list[str]:
+    host = get_env("TTS_HOST", default="tts", required=False)
+    port = get_env("TTS_PORT", default=8810, required=False)
+    if host and port:
+        if not os.path.exists("/.dockerenv") and host == "tts":
+            host = "127.0.0.1"
+        return [f"http://{host}:{port}"]
+    return ["http://127.0.0.1:8810"]
+

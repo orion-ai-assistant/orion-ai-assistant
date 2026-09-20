@@ -94,6 +94,28 @@ def main():
         processes.append(redis_proc)
         all_pids.append(redis_proc.pid)
         threading.Thread(target=stream_logs, args=(redis_proc, "[REDIS]", log_file, log_lock), daemon=True).start()
+
+    # Portable PostgreSQL check & launch
+    pg_port = get_env("POSTGRES_PORT")
+    pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
+    pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
+    pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
+    if os.path.exists(pg_ctl) and os.path.exists(pg_data):
+        import socket
+        pg_running = False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                if s.connect_ex(("127.0.0.1", int(pg_port))) == 0:
+                    pg_running = True
+        except Exception:
+            pass
+
+        if not pg_running:
+            print(f"[*] Launching Portable PostgreSQL on port {pg_port}...")
+            pg_log = os.path.join(pg_data, "server.log")
+            pg_cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log, "-o", f"-F -p {pg_port}"]
+            subprocess.run(pg_cmd, creationflags=hide_flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
     print(f"[*] Launching API on port {hub_port}...")
     api_proc = subprocess.Popen(api_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)

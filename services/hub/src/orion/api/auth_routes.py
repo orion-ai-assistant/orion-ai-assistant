@@ -30,7 +30,7 @@ class UserProfile(BaseModel):
 
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> str:
     admin_key = get_env("ADMIN_API_KEY")
-    provided_admin_key = request.headers.get("X-Admin-Key")
+    provided_admin_key = request.headers.get("X-Admin-Key") or request.query_params.get("admin_key")
     
     if provided_admin_key is not None:
         if not admin_key or provided_admin_key == admin_key:

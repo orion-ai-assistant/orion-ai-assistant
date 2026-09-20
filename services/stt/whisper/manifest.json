@@ -7,9 +7,42 @@
   "vram_required_gb": 2,
   "parameters": {
     "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "GPUs to Use", "default": "all" },
-    "WHISPER_MODEL": {"default": "base", "label": "Whisper Model"},
-    "WHISPER_COMPUTE_TYPE": {"default": "float16", "label": "Compute Type"}
+    "WHISPER_COMPUTE_TYPE": {"default": "int8_float16", "label": "Compute Type"}
   },
+  "models_path": "models/",
+  "models_catalog": [
+    {
+      "id": "whisper-small-finetuned-tr",
+      "name": "Whisper Small (Turkish Finetuned)",
+      "folder": "whisper-small-finetuned-tr",
+      "description": "Özel Türkçe sesli asistan veri seti ile ince ayar (fine-tune) yapılmış CTranslate2 modeli.",
+      "size_mb": 485,
+      "files": [
+        "model.bin",
+        "config.json",
+        "vocabulary.json"
+      ],
+      "env": {
+        "WHISPER_MODEL": "whisper-small-finetuned-tr"
+      }
+    },
+    {
+      "id": "whisper-small-official",
+      "name": "Whisper Small (Official Systran)",
+      "folder": "whisper-small-official",
+      "description": "Resmi OpenAI Whisper Small CTranslate2 modeli.",
+      "download_url": "https://huggingface.co/Systran/faster-whisper-small/resolve/main/",
+      "size_mb": 484,
+      "files": [
+        "model.bin",
+        "config.json",
+        "vocabulary.json"
+      ],
+      "env": {
+        "WHISPER_MODEL": "whisper-small-official"
+      }
+    }
+  ],
   "supports": ["nvidia", "cpu"],
   "default_hardware": "nvidia",
   "supported_environments": [
@@ -34,5 +67,5 @@
     "style": "openai-compatible",
     "endpoint": "/v1/audio/transcriptions"
   },
-  "status": "disabled"
+  "status": "enabled"
 }

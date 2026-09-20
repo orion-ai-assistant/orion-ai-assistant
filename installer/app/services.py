@@ -135,7 +135,7 @@ def get_services() -> list[dict]:
             proc_running = False
             if os.name == 'nt':
                 if data.get("id") == "orion-router":
-                    if "manager.py prod" in local_processes_out:
+                    if "manager.py prod" in local_processes_out or "orion.py prod" in local_processes_out:
                         proc_running = True
                 else:
                     # Use s_dir with trailing slash to avoid matching llama-cpp with llama-cpp-embed
@@ -144,8 +144,9 @@ def get_services() -> list[dict]:
                         proc_running = True
             else:
                 if data.get("id") == "orion-router":
-                    if "manager.py prod" in local_processes_out:
+                    if "manager.py prod" in local_processes_out or "orion.py prod" in local_processes_out:
                         proc_running = True
+
                 else:
                     # In linux we check ps aux output
                     s_dir_slash = s_dir + os.sep
@@ -425,23 +426,25 @@ def _kill_local_service_procs(s_dir: str):
     s_dir_slash = s_dir + os.sep
 
     # 1) Try PID file first (fast, reliable)
-    pid_file = os.path.join(s_dir, ".service.pid")
-    if os.path.exists(pid_file):
-        try:
-            with open(pid_file, "r") as pf:
-                pid = pf.read().strip()
-            if pid.isdigit():
-                if os.name == 'nt':
-                    subprocess.run(["taskkill", "/T", "/F", "/PID", pid], capture_output=True)
-                else:
-                    subprocess.run(["kill", "-TERM", pid], capture_output=True)
-        except Exception:
-            pass
-        finally:
+    for p_name in [".service.pid", "hub.pid"]:
+        p_path = os.path.join(s_dir, p_name)
+        if os.path.exists(p_path):
             try:
-                os.remove(pid_file)
+                with open(p_path, "r") as pf:
+                    for line in pf:
+                        pid = line.strip()
+                        if pid.isdigit():
+                            if os.name == 'nt':
+                                subprocess.run(["taskkill", "/T", "/F", "/PID", pid], capture_output=True)
+                            else:
+                                subprocess.run(["kill", "-TERM", pid], capture_output=True)
             except Exception:
                 pass
+            finally:
+                try:
+                    os.remove(p_path)
+                except Exception:
+                    pass
 
     # 2) Fallback: scan all python processes
     if os.name == 'nt':
@@ -490,7 +493,10 @@ def stop_service(service_id: str) -> bool:
             pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
             pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
             if os.path.exists(pg_ctl) and os.path.exists(pg_data):
-                subprocess.run([pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"], capture_output=True)
+                subprocess.run(
+                    [pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
             return True
         else:
             # All other local services (tts, llm, embedding, vision etc.)
@@ -510,19 +516,149 @@ def stop_service(service_id: str) -> bool:
     if c_name: subprocess.run(["docker", "stop", c_name], capture_output=True)
     return bool(c_name)
 
+def _sync_router_config_and_dashboard(router_dir: str):
+    """Router .env dosyasındaki portları services/.env.global ile eşitler ve dashboard build'ini sağlar."""
+    try:
+        g_vars = config._load_global_env()
+        tts_port = g_vars.get("TTS_PORT", "8810")
+        llm_port = g_vars.get("LLM_PORT", "8085")
+        embed_port = g_vars.get("EMBED_PORT", "8086")
+
+        env_path = os.path.join(router_dir, ".env")
+        env_lines = []
+        existing_keys = set()
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped.startswith("TTS_PORT="):
+                        env_lines.append(f"TTS_PORT={tts_port}\n")
+                        existing_keys.add("TTS_PORT")
+                    elif stripped.startswith("LLM_PORT="):
+                        env_lines.append(f"LLM_PORT={llm_port}\n")
+                        existing_keys.add("LLM_PORT")
+                    elif stripped.startswith("EMBED_PORT="):
+                        env_lines.append(f"EMBED_PORT={embed_port}\n")
+                        existing_keys.add("EMBED_PORT")
+                    else:
+                        env_lines.append(line)
+                        if "=" in stripped and not stripped.startswith("#"):
+                            existing_keys.add(stripped.split("=")[0].strip())
+        if "TTS_PORT" not in existing_keys:
+            env_lines.append(f"TTS_PORT={tts_port}\n")
+        if "LLM_PORT" not in existing_keys:
+            env_lines.append(f"LLM_PORT={llm_port}\n")
+        if "EMBED_PORT" not in existing_keys:
+            env_lines.append(f"EMBED_PORT={embed_port}\n")
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(env_lines)
+    except Exception as e:
+        print(f"[WARN] _sync_router_config_and_dashboard .env update failed: {e}")
+
+    # Dashboard static build kontrolü (dashboard/out yoksa ilk başlangıçta derle)
+    try:
+        dash_out = os.path.join(router_dir, "dashboard", "out")
+        dash_dir = os.path.join(router_dir, "dashboard")
+        if not os.path.exists(dash_out) and os.path.exists(dash_dir):
+            cmd = ["npm.cmd", "run", "build"] if os.name == 'nt' else ["npm", "run", "build"]
+            subprocess.run(cmd, cwd=dash_dir, capture_output=True, timeout=180)
+    except Exception as e:
+        print(f"[WARN] _sync_router_config_and_dashboard npm build failed: {e}")
+
 def start_local_service(service_id: str) -> bool:
-    """Local modda tek bir servisi arka planda başlatır (api.py çalıştırır)."""
+    """Local modda tek bir servisi arka planda başlatır (api.py veya run_local.py çalıştırır)."""
     manifest, s_dir, _ = _get_context(service_id)
     if not manifest: return False
+
+    # Orion Router özel durumu (bağımsız orionrouter betiği üzerinden çalışır)
+    if service_id == "orion-router":
+        plat, path = find_orionrouter_script()
+        if not path:
+            return False
+        router_dir = os.path.dirname(path)
+        # Port konfigürasyonunu ve dashboard build'ini senkronize et
+        _sync_router_config_and_dashboard(router_dir)
+        # Varsa eski/artık kilit dosyalarını temizle
+        for lock_file in [".orion.prod.lock", ".orion.pid"]:
+            lock_path = os.path.join(router_dir, lock_file)
+            if os.path.exists(lock_path):
+                try:
+                    os.remove(lock_path)
+                except Exception:
+                    pass
+        try:
+            if plat == "win" or os.name == 'nt':
+                cmd_router = ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
+                cflags = 0x08000000  # CREATE_NO_WINDOW
+                subprocess.Popen(cmd_router, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
+            else:
+                cmd_router = [path, "start", "--silent"]
+                subprocess.Popen(cmd_router, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception as e:
+            print(f"[ERROR] start_local_service(orion-router): {e}")
+            return False
 
     venv_dir = os.path.join(s_dir, ".venv")
     py_exe = os.path.join(venv_dir, "Scripts", "python.exe") if os.name == 'nt' else os.path.join(venv_dir, "bin", "python")
     if not os.path.exists(py_exe):
         return False
 
-    api_script = os.path.join(s_dir, "api.py")
-    if not os.path.exists(api_script):
+
+    target_script = None
+    if service_id == "orion-hub":
+        candidate = os.path.join(s_dir, "run_local.py")
+        if os.path.exists(candidate):
+            target_script = candidate
+    elif os.path.exists(os.path.join(s_dir, "api.py")):
+        target_script = os.path.join(s_dir, "api.py")
+    elif os.path.exists(os.path.join(s_dir, "run_local.py")):
+        target_script = os.path.join(s_dir, "run_local.py")
+
+    if not target_script:
         return False
+
+    if service_id == "orion-hub":
+        base_dir = config.PROJECT_ROOT
+        pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
+        pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
+        pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
+        local_db_script = os.path.join(base_dir, "local_db_setup.py")
+
+        if os.path.exists(local_db_script):
+            if not os.path.exists(pg_ctl) or not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
+                try:
+                    subprocess.run([sys.executable, local_db_script], check=True)
+                except Exception as e:
+                    print(f"[ERROR] local_db_setup failed: {e}")
+
+        if os.path.exists(pg_ctl) and os.path.exists(pg_data):
+            postgres_port = 5445
+            g_env = config._load_global_env()
+            if "POSTGRES_PORT" in g_env:
+                try:
+                    postgres_port = int(g_env["POSTGRES_PORT"])
+                except ValueError:
+                    pass
+            import socket
+            pg_running = False
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.3)
+                    if s.connect_ex(("127.0.0.1", postgres_port)) == 0:
+                        pg_running = True
+            except Exception:
+                pass
+
+            if not pg_running:
+                pg_log = os.path.join(pg_data, "server.log")
+                hide_flags = 0x08000000 if os.name == 'nt' else 0
+                cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log, "-o", f"-F -p {postgres_port}"]
+                subprocess.run(
+                    cmd, creationflags=hide_flags if os.name == 'nt' else 0,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
 
     clean_env = os.environ.copy()
     clean_env.pop("VIRTUAL_ENV", None)
@@ -537,14 +673,15 @@ def start_local_service(service_id: str) -> bool:
                     k, _, v = line.partition("=")
                     clean_env.setdefault(k.strip(), v.strip())
 
-    log_path = os.path.join(s_dir, "service.log")
+    log_file_name = "hub.log" if service_id == "orion-hub" else "service.log"
+    log_path = os.path.join(s_dir, log_file_name)
     pid_file = os.path.join(s_dir, ".service.pid")
     try:
         if os.name == 'nt':
             cflags = 0x08000000  # CREATE_NO_WINDOW
             with open(log_path, "a") as log_file:
                 proc = subprocess.Popen(
-                    [py_exe, api_script],
+                    [py_exe, target_script],
                     cwd=s_dir, env=clean_env,
                     creationflags=cflags,
                     stdin=subprocess.DEVNULL,
@@ -553,7 +690,7 @@ def start_local_service(service_id: str) -> bool:
         else:
             with open(log_path, "a") as log_file:
                 proc = subprocess.Popen(
-                    [py_exe, api_script],
+                    [py_exe, target_script],
                     cwd=s_dir, env=clean_env,
                     start_new_session=True,
                     stdin=subprocess.DEVNULL,
@@ -831,8 +968,13 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
                             except: pass
                         shutil.rmtree(r_dir, onerror=on_rm_error)
                 subprocess.run(["powershell", "-c", "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) local -NoStart; exit 0"], check=True)
+                if appdata:
+                    _sync_router_config_and_dashboard(os.path.join(appdata, "OrionRouter"))
             else:
                 subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local --no-start"], check=True)
+                r_dir = os.path.expanduser("~/.local/share/OrionRouter")
+                if os.path.exists(r_dir):
+                    _sync_router_config_and_dashboard(r_dir)
             return
             
         setup_dir = service_dir
@@ -844,7 +986,7 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
         if not os.path.exists(venv_dir):
             try:
                 print(f"[*] Creating virtual environment for {service_id}...")
-                subprocess.run([sys.executable, "-m", "venv", ".venv"], cwd=setup_dir, check=True)
+                subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", ".venv"], cwd=setup_dir, check=True)
             except subprocess.CalledProcessError as e:
                 raise Exception(f"Venv Hatası: {e}")
             

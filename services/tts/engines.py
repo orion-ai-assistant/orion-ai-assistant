@@ -459,7 +459,8 @@ class OmniVoiceGGUFEngine(TTSEngine):
             }
             if target_voice:
                 payload["voice"] = target_voice
-            if instruct and instruct.strip():
+            generic_models = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+            if instruct and instruct.strip() and instruct.strip().lower() not in generic_models:
                 payload["instructions"] = instruct.strip()
             
             lang = language if (language and language not in ("Auto", "", "tr")) else None
@@ -546,7 +547,8 @@ class OmniVoiceGGUFEngine(TTSEngine):
         }
         if target_voice:
             payload["voice"] = target_voice
-        if instruct and instruct.strip():
+        generic_models = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+        if instruct and instruct.strip() and instruct.strip().lower() not in generic_models:
             payload["instructions"] = instruct.strip()
         
         lang = language if (language and language not in ("Auto", "", "tr")) else None

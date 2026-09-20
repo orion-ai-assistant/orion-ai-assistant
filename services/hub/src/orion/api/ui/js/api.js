@@ -107,16 +107,21 @@ const API = {
         UI.clearInput();
 
         try {
+            const audioEnabled = document.getElementById('audio-toggle')?.checked || false;
             const response = await this._fetch(`/api/v1/chats/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     user_id: AppConfig.getUserId(),
                     chat_id: chatId,
-                    input: { text: text },
+                    input: { 
+                        text: text,
+                        audio: audioEnabled
+                    },
                     stream_mode: "once"
                 })
             });
+
 
             if (response.status === 401) {
                 throw new Error("Oturum süresi doldu.");

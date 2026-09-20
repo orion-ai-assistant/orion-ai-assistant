@@ -11,6 +11,7 @@ class SpeechRequest(BaseModel):
     seed: Optional[int] = -1
     
     # Advanced Parameters
+    instructions: Optional[str] = None
     guidance_scale: Optional[float] = 2.0
     steps: Optional[int] = None
     stream: Optional[bool] = False

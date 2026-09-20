@@ -181,6 +181,11 @@ const SSE = {
         else if (data.type === "token") {
             UI.appendToken(chatId, data.data.token);
         }
+        else if (data.type === "audio") {
+            if (UI.appendAudio) {
+                UI.appendAudio(chatId, data.data);
+            }
+        }
         else if (data.type === "done" || data.type === "error") {
             AppState.stopGenerating(chatId);
             if (data.type === "error") {
@@ -188,9 +193,9 @@ const SSE = {
             }
             UI.finishGeneration(chatId);
             
-            // Reload the chat to show the final complete history
-            if (window.loadChat) {
-                window.loadChat(chatId);
+            // Sidebar sohbet listesini ve başlıklarını güncelle (aktif sohbet ekranını sıfırlama)
+            if (window.loadChats) {
+                window.loadChats();
             }
         }
     }

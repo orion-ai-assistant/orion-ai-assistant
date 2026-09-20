@@ -21,7 +21,7 @@ from typing import Any
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
-from services.shared.environment import get_router_base_urls
+from services.shared.environment import get_router_base_urls, get_tts_base_urls
 from orion.contracts.settings import RuntimeSettings
 
 
@@ -288,33 +288,62 @@ tei_embed = generate_embeddings
 #  TTS (Text-to-Speech)
 # ---------------------------------------------------------------------------
 
-async def generate_tts(text: str, settings: RuntimeSettings, voice: str = "alloy") -> bytes:
-    """TTS üretimi için seçilen sağlayıcıya göre istek atar ve ses verisini (bytes) döner."""
+def _tts_urls(path: str = "/v1/audio/speech") -> list[str]:
+    """TTS servis endpointleri (Router öncelikli, fallback olarak doğrudan TTS servisi)."""
+    urls: list[str] = []
+    for base in get_router_base_urls():
+        urls.append(f"{_base_url(base)}{path}")
+    for base in get_tts_base_urls():
+        urls.append(f"{_base_url(base)}{path}")
+    return urls
+
+
+async def generate_tts(
+    text: str,
+    settings: RuntimeSettings,
+    voice: str | None = None,
+    response_format: str = "wav",
+) -> tuple[bytes, str, int | None]:
+    """TTS üretimi için seçilen sağlayıcıya (öncelikle Orion Router) istek atar ve (audio_bytes, format, sample_rate) döner."""
     session = await get_session()
 
-    urls = _router_urls("/v1/audio/speech")
+    voice_name = voice or getattr(settings, "tts_voice", "") or ""
+    urls = _tts_urls("/v1/audio/speech")
+    api_key = getattr(settings, "router_api_key", None) or "orion"
     headers = {
-        "x-orion-api-key": settings.router_api_key,
+        "Authorization": f"Bearer {api_key}",
+        "x-orion-api-key": api_key,
+        "x-orion-provider": "local",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": settings.router_model_group,
+        "model": "local-model",
         "input": text,
-        "voice": voice,
-        "response_format": "mp3",
+        "voice": voice_name,
+        "response_format": response_format,
     }
-    timeout = _request_timeout(30)
+    timeout_sec = getattr(settings, "tts_timeout_seconds", 15)
+    timeout = _request_timeout(timeout_sec)
 
     last_error = None
     for url in urls:
         try:
             async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
-                response.raise_for_status()
-                return await response.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if response.status == 200:
+                    data = await response.read()
+                    sr_header = response.headers.get("X-Sample-Rate")
+                    sample_rate = int(sr_header) if sr_header and sr_header.isdigit() else None
+                    ct = response.headers.get("Content-Type", "")
+                    fmt = "wav" if "wav" in ct else response_format
+                    return data, fmt, sample_rate
+                else:
+                    last_error = RuntimeError(f"TTS endpoint {url} returned HTTP {response.status}")
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
             last_error = e
             continue
 
     if last_error:
         raise last_error
-    raise RuntimeError("No valid router URL found.")
+    raise RuntimeError("No valid TTS URL found.")
+
+

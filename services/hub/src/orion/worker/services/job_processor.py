@@ -1,8 +1,11 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
+
+import aiohttp
 
 from redis.asyncio import Redis
 
@@ -10,7 +13,7 @@ from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PR
 from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
-from orion.worker.services.router import llama_stream_chat_typed
+from orion.worker.services.router import llama_stream_chat_typed, generate_tts
 
 
 def utc_now() -> str:
@@ -18,16 +21,71 @@ def utc_now() -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    words = text.split()
-    if not words:
+    """Tokenize text preserving exact spaces and newlines."""
+    if not text:
         return []
-    tokens: list[str] = []
-    for index, word in enumerate(words):
-        if index == len(words) - 1:
-            tokens.append(word)
-        else:
-            tokens.append(f"{word} ")
-    return tokens
+    tokens = re.split(r'(\s+)', text)
+    return [t for t in tokens if t]
+
+
+def _clean_text_for_tts(text: str) -> str:
+    """Clean markdown and code blocks for more natural speech synthesis."""
+    if not text:
+        return ""
+    # Remove code blocks ```...```
+    cleaned = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove inline code `...`
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+    # Remove markdown headers (#, ##, etc.)
+    cleaned = re.sub(r'^\s*#+\s*', '', cleaned, flags=re.MULTILINE)
+    # Remove markdown bold/italic markers (*, _)
+    cleaned = re.sub(r'[*_]{1,3}', '', cleaned)
+    # Remove markdown links [text](url) -> text
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
+    # Clean excessive whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned or text.strip()
+
+
+
+def _format_router_fallback_message(error: Exception, settings: RuntimeSettings) -> str:
+    err_str = str(error)
+    err_lower = err_str.lower()
+
+    is_conn_error = (
+        isinstance(error, (aiohttp.ClientConnectorError, ConnectionRefusedError, OSError))
+        or "cannot connect" in err_lower
+        or "connection refused" in err_lower
+        or "no valid router url" in err_lower
+        or "connect call failed" in err_lower
+    )
+
+    if is_conn_error:
+        return (
+            "⚠️ **Yönlendirici (Router) veya AI Modeline Bağlanılamadı**\n\n"
+            "Orion Hub sisteminiz aktif ve mesajınızı kabul etti; ancak yanıt oluşturacak **Yönlendirici (Router)** veya **LLM** servisi şu anda çalışmıyor.\n\n"
+            "📊 **Servis Durumu:**\n"
+            "- **Orion Hub:** ✅ Çevrimiçi\n"
+            "- **Veritabanı / Redis:** ✅ Bağlı\n"
+            "- **AI Servisi (Router/LLM):** ❌ Kapalı / Çevrimdışı\n\n"
+            "💡 **Ne Yapabilirsiniz?**\n"
+            "1. Installer kontrol panelinden veya terminalden **LLM** veya **Router** servisini başlatın.\n"
+            "2. Servis aktif olduğunda mesajınızı tekrar iletebilirsiniz.\n\n"
+            f"> *Teknik Detay: {err_str}*"
+        )
+    elif isinstance(error, asyncio.TimeoutError) or "timeout" in err_lower:
+        return (
+            "⚠️ **Model Yanıt Zaman Aşımı**\n\n"
+            f"AI modeline bağlanıldı ancak belirlenen süre içinde ({settings.llm_timeout_seconds}s) yanıt alınamadı.\n"
+            "Model yüksek yük altında veya henüz hazır olmayabilir. Lütfen bir süre sonra tekrar deneyin.\n\n"
+            f"> *Teknik Detay: {err_str}*"
+        )
+    else:
+        return (
+            "⚠️ **Yönlendirici (Router) Hatası:**\n\n"
+            f"```text\n{err_str}\n```\n"
+            "Lütfen servis loglarını kontrol edin veya modeli yeniden başlatın."
+        )
 
 
 def fake_completion(prompt: str) -> str:
@@ -257,11 +315,11 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             except Exception as e:
                 logging.exception("LLM stream failed for chat %s; streaming error to user", context.chat_id)
-                fake_text = f"⚠️ **Yönlendirici (Router) Hatası:**\n```text\n{str(e)}\n```"
-                for token in tokenize(fake_text):
+                fallback_text = _format_router_fallback_message(e, settings)
+                for token in tokenize(fallback_text):
                     output_tokens.append(token)
                     await context.emit_token(token)
-                    logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token)
+                    logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, repr(token))
                     if settings.token_delay_ms > 0:
                         await asyncio.sleep(settings.token_delay_ms / 1000)
 
@@ -272,6 +330,39 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             #   (stop was pressed after LLM finished — nothing to abort, response is complete)
             # - stopped=True   → Stop pressed while LLM was mid-generation; treat as stopped
             is_completed = llm_done or not stopped
+
+            # --- Multimodal: Text-to-Speech (TTS) Integration ---
+            should_tts = (context.audio_requested or settings.tts_enabled) and bool(final_text.strip())
+            if should_tts and not stopped:
+                try:
+                    tts_text = _clean_text_for_tts(final_text)
+                    if tts_text:
+                        logging.info(
+                            "Worker %s generating TTS for chat %s (%d chars)",
+                            consumer_name, context.chat_id, len(tts_text),
+                        )
+                        audio_bytes, audio_fmt, sample_rate = await generate_tts(
+                            text=tts_text,
+                            settings=settings,
+                            voice=context.voice,
+                        )
+                        await context.emit_audio(
+                            audio_data=audio_bytes,
+                            format=audio_fmt,
+                            sample_rate=sample_rate,
+                            text=tts_text,
+                        )
+                        logging.info(
+                            "Worker %s successfully emitted audio for chat %s (%d bytes)",
+                            consumer_name, context.chat_id, len(audio_bytes),
+                        )
+                except Exception as tts_err:
+                    # Graceful degradation: never fail the chat stream if TTS is offline or fails
+                    logging.warning(
+                        "Worker %s: TTS generation skipped for chat %s (%s)",
+                        consumer_name, context.chat_id, tts_err,
+                    )
+
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text}

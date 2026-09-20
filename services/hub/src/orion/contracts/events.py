@@ -1,10 +1,11 @@
+import base64
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 class StreamEvent(BaseModel):
-    type: Literal["accepted", "token", "thinking", "done", "error", "user_message", "chat_rename", "chat_delete"]
+    type: Literal["accepted", "token", "thinking", "done", "error", "user_message", "chat_rename", "chat_delete", "audio"]
     chat_id: str
     data: dict[str, Any] = Field(default_factory=dict)
 
@@ -39,3 +40,29 @@ class StreamEvent(BaseModel):
     @classmethod
     def chat_delete(cls, chat_id: str) -> "StreamEvent":
         return cls(type="chat_delete", chat_id=chat_id, data={})
+
+    @classmethod
+    def audio(
+        cls,
+        chat_id: str,
+        audio_data: str | bytes,
+        format: str = "wav",
+        sample_rate: int | None = None,
+        text: str | None = None,
+    ) -> "StreamEvent":
+        if isinstance(audio_data, bytes):
+            encoded = base64.b64encode(audio_data).decode("utf-8")
+        else:
+            encoded = audio_data
+
+        payload: dict[str, Any] = {
+            "audio": encoded,
+            "format": format,
+        }
+        if sample_rate is not None:
+            payload["sample_rate"] = sample_rate
+        if text is not None:
+            payload["text"] = text
+
+        return cls(type="audio", chat_id=chat_id, data=payload)
+

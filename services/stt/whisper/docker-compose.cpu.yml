@@ -6,11 +6,19 @@ services:
     ports:
       - "${STT_PORT}:${STT_CONTAINER_PORT}"
     env_file:
-      - ../../../.env.global
+      - ../../.env.global
       - .env
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL}
-      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+      - WHISPER_COMPUTE_TYPE=int8
+      - WHISPER_DEVICE=cpu
+      - PORT=${STT_CONTAINER_PORT}
+      - UVICORN_PORT=${STT_CONTAINER_PORT}
+    volumes:
+      - .:/app
+      - ./models:/models
+    working_dir: /app
+    command: python api.py
     networks:
       - orion-network
 

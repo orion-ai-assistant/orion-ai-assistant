@@ -22,18 +22,29 @@ class SettingsUpdateRequest(BaseModel):
 
 
 
+from orion.kernel.registry import check_db_health
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "timestamp": utc_now()}
 
 @router.get("/ready")
-async def ready(request: Request) -> dict[str, str | bool]:
+async def ready(request: Request) -> dict[str, Any]:
     redis: Redis = request.app.state.redis
+    redis_ok = False
     try:
         await redis.ping()
-        return {"ready": True, "redis": "connected"}
+        redis_ok = True
     except Exception:
-        return {"ready": False, "redis": "disconnected"}
+        redis_ok = False
+
+    db_ok = await check_db_health(timeout=1.0)
+
+    return {
+        "ready": redis_ok,
+        "redis": "connected" if redis_ok else "disconnected",
+        "database": "connected" if db_ok else "disconnected",
+    }
 
 @router.post("/api/v1/chats/messages", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_chat_message_endpoint(payload: JobCreateRequest, request: Request, current_user: str = Depends(get_current_user)) -> JobCreateResponse:

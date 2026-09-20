@@ -9,6 +9,7 @@ const UI = {
 
     // Per-chat state: { chatId -> { botDiv, thinkDiv, thinkBody } }
     _chatDivs: {},
+    _chatAudios: {},
 
     _getOrCreateChatState(chatId) {
         if (!this._chatDivs[chatId]) {
@@ -142,6 +143,51 @@ const UI = {
         }
     },
 
+    appendAudio(chatId, audioData, autoPlay = true) {
+        if (!chatId || !audioData || !audioData.audio) return;
+        this._chatAudios[chatId] = audioData;
+        const state = this._getOrCreateChatState(chatId);
+
+        const botDiv = state.botDiv || (this.chatArea ? this.chatArea.querySelector('.message.bot:last-child') : null);
+        if (!botDiv) return;
+
+        // Tekrar aynı mesaja ikinci oynatıcı eklenmesini önle
+        if (botDiv.querySelector('.audio-player-container')) return;
+
+        const audioContainer = document.createElement('div');
+        audioContainer.className = 'audio-player-container';
+        audioContainer.style.marginTop = '10px';
+        audioContainer.style.display = 'flex';
+        audioContainer.style.alignItems = 'center';
+        audioContainer.style.gap = '8px';
+
+        const audioElement = document.createElement('audio');
+        audioElement.controls = true;
+        audioElement.autoplay = autoPlay;
+        const fmt = audioData.format || 'wav';
+        audioElement.src = `data:audio/${fmt};base64,${audioData.audio}`;
+        audioElement.style.width = '100%';
+        audioElement.style.maxWidth = '340px';
+        audioElement.style.height = '36px';
+
+        audioContainer.appendChild(audioElement);
+        botDiv.appendChild(audioContainer);
+
+        if (chatId === AppState.currentChatId) {
+            this.scrollToBottom();
+            if (autoPlay) {
+                // Tarayıcı autoplay politikası gereği promise yakalama
+                const playPromise = audioElement.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(err => {
+                        console.warn("Autoplay tarayıcı kullanıcı etkileşimi kuralı nedeniyle engellendi:", err);
+                    });
+                }
+            }
+        }
+    },
+
+
     finishGeneration(chatId, hasTokens = true) {
         if (!chatId) return;
         const state = this._chatDivs[chatId];
@@ -255,10 +301,12 @@ const UI = {
         }
 
         const categories = {
+            "Metin ve Ses (TTS) Ayarları": ["tts_enabled", "tts_voice", "tts_model", "tts_timeout_seconds"],
             "Router Konfigürasyonu": ["router_api_key", "router_model_group"],
             "Yapay Zeka (AI) Ayarları": ["system_prompt", "llm_timeout_seconds", "embed_timeout_seconds", "chat_history_max_messages", "first_token_delay_ms", "token_delay_ms", "thinking_level", "temperature"],
             "Sistem Parametreleri": ["result_ttl_seconds", "sse_heartbeat_seconds", "worker_max_concurrency", "stop_key_ttl_seconds", "redis_cache_ttl_seconds"]
         };
+
 
         let html = '';
         const handledKeys = new Set();

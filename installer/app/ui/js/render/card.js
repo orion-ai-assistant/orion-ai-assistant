@@ -161,7 +161,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
             btnClass = 'btn btn-primary';
             btnLabel = window.t('btn_install');
             btnAttr = '';
-        } else if (isLocalMode && !isCore) {
+        } else if (isLocalMode && (!isCore || ['orion-hub', 'orion-router'].includes(service.id))) {
             // Local mode installed: Başlat (if stopped) or Durdur (if running)
             btnClass = service.is_running ? 'btn btn-danger' : 'btn btn-primary';
             btnLabel = service.is_running ? window.t('btn_stop') : window.t('btn_start');
@@ -209,7 +209,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         const btn = document.getElementById(`btn-main-${service.id}`);
         if (isHardwareChanged) {
             handlers.onStart(service.id, btn);
-        } else if (isLocalMode && !isCoreService(service) && service.is_installed) {
+        } else if (isLocalMode && (!isCoreService(service) || ['orion-hub', 'orion-router'].includes(service.id)) && service.is_installed) {
             handlers.onLocalToggle(service.id, service.is_running, btn, isModelChanged);
         } else if (isModelChanged) {
             handlers.onReinstall(service.id, btn);

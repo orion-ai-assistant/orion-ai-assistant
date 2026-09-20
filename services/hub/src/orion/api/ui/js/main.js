@@ -82,7 +82,11 @@ document.addEventListener("DOMContentLoaded", async () => {
             UI.setStopButtonVisible(false);
         }
 
-        
+        // Eğer bu sohbete ait oluşturulmuş ses varsa tekrar oynatıcıyı yerleştir
+        if (UI._chatAudios && UI._chatAudios[chatId]) {
+            UI.appendAudio(chatId, UI._chatAudios[chatId], false);
+        }
+
         UI.scrollToBottom();
         loadChats();
 
@@ -201,6 +205,17 @@ document.addEventListener("DOMContentLoaded", async () => {
             API.sendMessage(text);
         }
     });
+
+    const audioToggle = document.getElementById('audio-toggle');
+    if (audioToggle) {
+        const savedAudio = localStorage.getItem("orion_tts_enabled");
+        if (savedAudio !== null) {
+            audioToggle.checked = savedAudio === "true";
+        }
+        audioToggle.addEventListener('change', () => {
+            localStorage.setItem("orion_tts_enabled", audioToggle.checked ? "true" : "false");
+        });
+    }
 
     // Tab Switching
     document.querySelectorAll('.tab-btn').forEach(btn => {

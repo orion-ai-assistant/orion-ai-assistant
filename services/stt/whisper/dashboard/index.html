@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orion STT (Whisper) Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1 style="margin-bottom: 5px;">Orion STT Dashboard</h1>
+        <p id="connectionStatus" style="text-align: center; color: var(--accent); margin-bottom: 30px; font-weight: 600;">Bağlanıyor...</p>
+
+        <div class="grid">
+            <!-- Ana Kontrol Paneli -->
+            <div>
+                <div class="tab-buttons">
+                    <button id="tab-live" class="tab-btn active">🎙️ Canlı Mikrofon</button>
+                    <button id="tab-batch" class="tab-btn">📁 Ses Dosyası Deşifre</button>
+                </div>
+
+                <!-- Canlı Mod -->
+                <div id="mode-live" class="tab-content active">
+                    <p class="section-title">Gerçek Zamanlı Dinleme</p>
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <button id="startRecordBtn" class="primary-btn" style="flex: 1;">Dinlemeyi Başlat</button>
+                        <button id="stopRecordBtn" class="danger-btn hidden" style="flex: 1;">Dinlemeyi Durdur</button>
+                    </div>
+                    <div class="metrics">
+                        <div class="metric">
+                            <span class="metric-label">Son Çıkarım (Latency)</span>
+                            <span class="metric-value" id="latencyLiveMs">0 ms</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Batch Mod -->
+                <div id="mode-batch" class="tab-content">
+                    <p class="section-title">Dosya Yükle</p>
+                    <div class="file-drop-area" id="fileDropArea">
+                        <span class="file-msg">Sürükle bırak veya bir ses dosyası (.wav, .mp3) seçin</span>
+                        <input type="file" id="audioFileInput" accept="audio/*">
+                    </div>
+                    <div style="margin-top: 15px;">
+                        <button id="uploadBtn" class="primary-btn w-full" disabled>Deşifre Et (Transcribe)</button>
+                    </div>
+                    
+                    <div class="metrics" style="margin-top: 15px;">
+                        <div class="metric">
+                            <span class="metric-label">İşlem Süresi</span>
+                            <span class="metric-value" id="latencyBatchMs">0 ms</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Dil Tespiti</span>
+                            <span class="metric-value" id="detectedLanguage">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sonuç Paneli -->
+            <div>
+                <p class="section-title">Deşifre Sonucu (Transcription)</p>
+                <div class="transcription-box" id="transcriptionBox">
+                    <div id="finalText" class="final-text"></div>
+                    <div id="liveText" class="live-text"></div>
+                </div>
+                
+                <div style="margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end;">
+                    <button id="playDebugAudioBtn" class="secondary-btn" style="flex: 1; border-color: var(--accent); color: var(--accent);">Dinle (Modele Giden)</button>
+                    <button id="clearBtn" class="secondary-btn" style="flex: 1;">Temizle</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/dashboard/js/app.js"></script>
+</body>
+</html>

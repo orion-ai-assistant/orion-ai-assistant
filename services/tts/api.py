@@ -165,6 +165,15 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         voice_cache = registry.get_voice_cache(speech_request.voice, engine_name_env)
         should_stream = speech_request.stream and not is_omnivoice
 
+        generic_model_names = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+        instruct_val = getattr(speech_request, "instructions", None)
+        if not instruct_val:
+            model_val = (speech_request.model or "").strip()
+            if model_val.lower() not in generic_model_names:
+                instruct_val = model_val
+            else:
+                instruct_val = ""
+
         if should_stream:
             await async_inference_lock.acquire()
             try:
@@ -173,7 +182,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     return JSONResponse({"status": "aborted"}, status_code=499)
 
                 stream_gen = tts.generate_stream(
-                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=speech_request.model or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event
@@ -197,7 +206,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             async with async_inference_lock:
                 if abort_event.is_set(): return JSONResponse({"status": "aborted"}, status_code=499)
                 sr, audio_data = tts.generate(
-                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=speech_request.model or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event

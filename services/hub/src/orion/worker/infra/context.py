@@ -41,6 +41,25 @@ class JobContext:
     def images(self) -> list[str] | None:
         return self.request.input.images
 
+    @property
+    def audio_requested(self) -> bool:
+        if self.request.input.audio is not None:
+            return bool(self.request.input.audio)
+        if self.request.input.metadata:
+            if "audio" in self.request.input.metadata:
+                return bool(self.request.input.metadata["audio"])
+            if "tts" in self.request.input.metadata:
+                return bool(self.request.input.metadata["tts"])
+        return False
+
+    @property
+    def voice(self) -> str | None:
+        if self.request.input.voice:
+            return self.request.input.voice
+        if self.request.input.metadata and "voice" in self.request.input.metadata:
+            return str(self.request.input.metadata["voice"])
+        return None
+
     async def _publish(self, event: StreamEvent) -> None:
         await self.redis.publish(self.channel, event.model_dump_json())
 
@@ -52,6 +71,22 @@ class JobContext:
         event = StreamEvent.token(self.chat_id, token)
         await self._publish(event)
 
+    async def emit_audio(
+        self,
+        audio_data: str | bytes,
+        format: str = "wav",
+        sample_rate: int | None = None,
+        text: str | None = None,
+    ) -> None:
+        event = StreamEvent.audio(
+            self.chat_id,
+            audio_data=audio_data,
+            format=format,
+            sample_rate=sample_rate,
+            text=text,
+        )
+        await self._publish(event)
+
     async def emit_done(self, status: str) -> None:
         event = StreamEvent.done(self.chat_id, status)
         await self._publish(event)
@@ -59,3 +94,4 @@ class JobContext:
     async def emit_error(self, message: str) -> None:
         event = StreamEvent.error(self.chat_id, message)
         await self._publish(event)
+

@@ -6,12 +6,20 @@ services:
     ports:
       - "${STT_PORT}:${STT_CONTAINER_PORT}"
     env_file:
-      - ../../../.env.global
+      - ../../.env.global
       - .env
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
+      - WHISPER_DEVICE=cuda
+      - PORT=${STT_CONTAINER_PORT}
+      - UVICORN_PORT=${STT_CONTAINER_PORT}
       - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_IDS:-all}
+    volumes:
+      - .:/app
+      - ./models:/models
+    working_dir: /app
+    command: python api.py
     deploy:
       resources:
         reservations:

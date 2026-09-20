@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 import asyncio
 
-async def _connect(retries: int = 15, delay: float = 2.0) -> asyncpg.Connection | None:
-    """Return an open asyncpg connection or None on failure, with retries."""
+async def _connect(retries: int = 3, delay: float = 0.5, timeout: float = 2.0) -> asyncpg.Connection | None:
+    """Return an open asyncpg connection or None on failure, with retries and timeout."""
     try:
         database_url = get_postgres_url()
     except RuntimeError as exc:
@@ -26,14 +26,28 @@ async def _connect(retries: int = 15, delay: float = 2.0) -> asyncpg.Connection 
 
     for attempt in range(retries):
         try:
-            return await asyncpg.connect(database_url)
+            return await asyncpg.connect(database_url, timeout=timeout)
         except Exception as e:
             if attempt == retries - 1:
-                logger.exception("Failed to connect to Postgres after %d attempts", retries)
+                logger.warning("Failed to connect to Postgres after %d attempts: %s", retries, e)
                 return None
-            logger.warning("Postgres connection failed (attempt %d/%d): %s. Retrying in %.1fs...", attempt + 1, retries, e, delay)
+            logger.debug("Postgres connection retry (%d/%d): %s. Waiting %.1fs...", attempt + 1, retries, e, delay)
             await asyncio.sleep(delay)
     return None
+
+
+async def check_db_health(timeout: float = 1.0) -> bool:
+    """Quick check if Postgres database is reachable and accepting queries."""
+    conn = await _connect(retries=1, delay=0.1, timeout=timeout)
+    if conn is None:
+        return False
+    try:
+        await conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+    finally:
+        await conn.close()
 
 
 async def _ensure_tables(conn: asyncpg.Connection) -> None:

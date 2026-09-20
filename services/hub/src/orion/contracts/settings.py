@@ -23,6 +23,13 @@ class AISettings(BaseModel):
     router_api_key: str = "sk-60f3eaf169d7c485-0icocf-0a3db541"
     router_model_group: str = "local-model"
 
+    # TTS Configuration
+    tts_enabled: bool = True
+    tts_voice: str = "alloy"
+    tts_model: str = "voxcpm2"
+    tts_timeout_seconds: int = 15
+
+
 class RuntimeSettings(SystemSettings, AISettings):
     """Sistem ve Yapay Zeka ayarlarını tek bir düz yapıda birleştiren
     nihai çalışma zamanı (runtime) konfigürasyon modeli.
