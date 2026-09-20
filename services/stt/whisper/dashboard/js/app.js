@@ -179,9 +179,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }[c]));
     }
 
-    function formatTime(s) {
-        const m = Math.floor(s / 60), sec = s % 60;
-        return `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
+    function formatTime(totalSec) {
+        const s = Math.floor(totalSec % 60);
+        const m = Math.floor((totalSec / 60) % 60);
+        const h = Math.floor((totalSec / 3600) % 24);
+        const d = Math.floor(totalSec / 86400);
+        const pad = n => (n < 10 ? '0' : '') + n;
+        if (d > 0) return `${d}g ${pad(h)}:${pad(m)}:${pad(s)}`;
+        if (h > 0) return `${pad(h)}:${pad(m)}:${pad(s)}`;
+        return `${pad(m)}:${pad(s)}`;
     }
 
     function encodeWav(samples, sr = 16000) {
