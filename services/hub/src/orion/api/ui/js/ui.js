@@ -16,9 +16,7 @@ const UI = {
             this._chatDivs[chatId] = {
                 botDiv: null,
                 thinkDiv: null,
-                thinkBody: null,
-                startTime: null,
-                firstTokenMs: null
+                thinkBody: null
             };
         }
         return this._chatDivs[chatId];
@@ -110,8 +108,6 @@ const UI = {
             return;
         }
 
-        state.startTime = performance.now();
-        state.firstTokenMs = null;
         state.thinkDiv = null;
         state.thinkBody = null;
         state.botDiv = document.createElement('div');
@@ -132,10 +128,6 @@ const UI = {
     appendThinkingToken(chatId, token) {
         if (!chatId) return;
         const state = this._getOrCreateChatState(chatId);
-
-        if (state.firstTokenMs === null && state.startTime) {
-            state.firstTokenMs = Math.max(1, Math.round(performance.now() - state.startTime));
-        }
 
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -171,10 +163,6 @@ const UI = {
     appendToken(chatId, token) {
         if (!chatId) return;
         const state = this._getOrCreateChatState(chatId);
-
-        if (state.firstTokenMs === null && state.startTime) {
-            state.firstTokenMs = Math.max(1, Math.round(performance.now() - state.startTime));
-        }
 
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -259,27 +247,15 @@ const UI = {
             botDivRef.classList.remove('typing');
         }
 
-        // Add metrics badge to the bot message
-        if (hasTokens && botDivRef) {
-            let firstMs = metrics?.first_token_ms;
-            let totalMs = metrics?.total_ms;
-            if (!totalMs && state.startTime) {
-                totalMs = Math.max(1, Math.round(performance.now() - state.startTime));
-            }
-            if (!firstMs && state.firstTokenMs) {
-                firstMs = state.firstTokenMs;
-            }
-            if (totalMs) {
-                const metaEl = this.createMetricsElement(firstMs, totalMs);
-                if (metaEl && !botDivRef.querySelector('.message-meta')) {
-                    botDivRef.appendChild(metaEl);
-                }
+        // Add metrics badge from Router to the bot message
+        if (hasTokens && botDivRef && metrics && (metrics.total_ms || metrics.first_token_ms)) {
+            const metaEl = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
+            if (metaEl && !botDivRef.querySelector('.message-meta')) {
+                botDivRef.appendChild(metaEl);
             }
         }
 
         state.botDiv = null;
-        state.startTime = null;
-        state.firstTokenMs = null;
 
         // Update stop button if this is the active chat
         if (chatId === AppState.currentChatId) {

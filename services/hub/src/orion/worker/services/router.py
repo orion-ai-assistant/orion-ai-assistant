@@ -147,6 +147,9 @@ async def llama_stream_chat_typed(
 
         if error := data.get("error"):
             raise RuntimeError(error)
+
+        if metrics := data.get("metrics"):
+            yield ("metrics", json.dumps(metrics))
             
         choices = data.get("choices") or []
         if not choices:
