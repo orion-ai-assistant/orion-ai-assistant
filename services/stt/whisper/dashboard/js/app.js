@@ -324,7 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             micMediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: 16000 }
+                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: 16000 }
             });
 
             micRecordedSamples = [];
@@ -461,7 +461,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         try {
             streamMediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1, sampleRate: 16000 },
+                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: 16000 },
                 video: false
             });
 

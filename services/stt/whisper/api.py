@@ -376,7 +376,7 @@ async def websocket_endpoint(
     last_infer_duration = 0.0
     context_text = ""
     
-    base_prompt = prompt.strip() if (prompt and prompt.strip()) else "Merhaba, nasılsın? Bugün hava durumu nasıl? Alarm kur."
+    base_prompt = prompt.strip() if (prompt and prompt.strip()) else ""
 
     try:
         while True:
@@ -396,7 +396,7 @@ async def websocket_endpoint(
             if context_text and (current_time - last_speech_time > 10.0):
                 context_text = ""
                 
-            # RMS and Silence detection
+            # RMS and Silence detection (Gürültü zemini takibi - streaming.py ile aynı)
             rms = np.sqrt(np.mean(chunk_data ** 2))
             if noise_ema is None:
                 noise_ema = rms
@@ -415,13 +415,6 @@ async def websocket_endpoint(
             accumulated_audio = np.concatenate((accumulated_audio, chunk_data))
             audio_duration = len(accumulated_audio) / RATE
 
-            # Konuşma henüz hiç başlamadıysa sessizlikte beklerken tamponu şişirme ve Whisper'ı boşuna çalıştırma
-            if speech_start_time is None:
-                if audio_duration > 0.4:
-                    # Konuşma başlangıcının kesilmemesi için son 0.2 saniyeyi pre-roll olarak tut
-                    accumulated_audio = accumulated_audio[-int(0.2 * RATE):]
-                continue
-            
             sentence_ended = (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
             
             now = time.perf_counter()
@@ -435,7 +428,14 @@ async def websocket_endpoint(
                 
             last_transcribe_time = now
             active_beam_size = FINAL_BEAM_SIZE if sentence_ended else LIVE_BEAM_SIZE
-            current_prompt = base_prompt + " " + (context_text[-200:] if context_text else "")
+            if base_prompt and context_text:
+                current_prompt = f"{base_prompt} {context_text[-200:]}"
+            elif base_prompt:
+                current_prompt = base_prompt
+            elif context_text:
+                current_prompt = context_text[-200:]
+            else:
+                current_prompt = None
             
             audio_to_process = accumulated_audio.copy()
             # Keep un-normalized copy for debug playback (sounds natural)
@@ -444,7 +444,7 @@ async def websocket_endpoint(
             if max_amp > 0.005:
                 audio_to_process = (audio_to_process * (0.35 / max_amp)).astype(np.float32)
                 
-            # Transcribe
+            # Transcribe (streaming.py parametreleri ile birebir)
             start_infer_time = time.perf_counter()
             segments, info = await asyncio.to_thread(
                 model.transcribe,
@@ -452,8 +452,13 @@ async def websocket_endpoint(
                 beam_size=active_beam_size,
                 language=lang_param,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=300, min_speech_duration_ms=200, threshold=0.55),
-                no_speech_threshold=0.5,
+                vad_parameters=dict(
+                    min_silence_duration_ms=500,
+                    speech_pad_ms=400,
+                    min_speech_duration_ms=150,
+                    threshold=0.5
+                ),
+                no_speech_threshold=0.6,
                 without_timestamps=True,
                 condition_on_previous_text=False,
                 initial_prompt=current_prompt,
@@ -464,28 +469,29 @@ async def websocket_endpoint(
             
             text = ""
             for segment in segments:
-                # no_speech_prob 0.5 eşiği altındakileri (konuşma ihtimali yüksek olanları) al
-                if segment.no_speech_prob < 0.5:
+                if segment.no_speech_prob < 0.6:
                     text += segment.text
             text = text.strip()
             
-            # Anti-hallucination filters
+            # Halüsinasyon Engelleyici (streaming.py ile birebir)
             if text:
+                # 1. Aynı harfin 5 kereden fazla tekrarı (örn: ıııııııı -> ıı)
                 text = re.sub(r'(.)\1{4,}', r'\1\1', text)
+                
+                # 2. Aynı kelimenin arka arkaya 3 kereden fazla tekrarı (örn: İyiyim. İyiyim. İyiyim. -> İyiyim.)
                 text = re.sub(r'\b(\w+)(?:[\s.,]+\1\b){3,}', r'\1', text, flags=re.IGNORECASE)
-                if len(text) > (audio_duration * 40): text = ""
+                
+                # 3. İmkansız konuşma hızı (Çok kısa seste çok fazla kelime uydurması)
+                if len(text) > (audio_duration * 40):
+                    text = ""
+                    
+                # 4. Yetersiz Net Konuşma Süresi
                 net_speech_duration = max(0.0, audio_duration - silence_duration)
-                if net_speech_duration < 0.35: text = ""
-                _clean = text.lower().replace(".", "").replace(",", "").replace("!", "").replace("?", "").strip()
-                if _clean in ["ııı", "sağol", "ııı sağol", "sağ ol", "teşekkürler", "tamam", "merhaba", "naber"] and audio_duration < 1.5:
+                if net_speech_duration < 0.4 and len(text) < 20:
                     text = ""
             
             last_infer_duration = time.perf_counter() - start_infer_time
             detected_lang = lang_param if lang_param else (getattr(info, "language", "unknown") if hasattr(info, "language") else "unknown")
-            
-            # Ensure text has actual letters, not just punctuation
-            if text and not re.search(r'[a-zA-Z0-9çğıöşüÇĞİÖŞÜ]', text):
-                text = ""
 
             if text:
                 if sentence_ended:
@@ -500,7 +506,8 @@ async def websocket_endpoint(
                         "language": detected_lang
                     })
                     context_text += " " + text
-                    if len(context_text) > 500: context_text = context_text[-500:]
+                    if len(context_text) > 500:
+                        context_text = context_text[-500:]
                     last_speech_time = time.perf_counter()
                 else:
                     await websocket.send_json({
