@@ -314,8 +314,9 @@ const UI = {
             return;
         }
 
-        // If already rendered, update values in-place without destroying DOM or interrupting user
-        if (dashboard.children.length > 0) {
+        // If already rendered (inputs exist), update values in-place without destroying DOM or interrupting user
+        const alreadyRendered = Boolean(dashboard.querySelector('[id^="setting-input-"]'));
+        if (alreadyRendered) {
             Object.keys(settings).forEach(key => {
                 const el = document.getElementById(`setting-input-${key}`);
                 if (el && document.activeElement !== el) {
