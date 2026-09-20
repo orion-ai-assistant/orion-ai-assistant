@@ -35,7 +35,7 @@ if DEVICE == "cpu":
     COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8", "float32"] else "int8"
     CPU_THREADS = os.cpu_count() or 4
 else:
-    COMPUTE_TYPE = compute_type_env if compute_type_env else "int8_float16"
+    COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8_float16", "int8", "float16", "float32"] else "int8_float16"
     CPU_THREADS = 0
 
 def resolve_model():

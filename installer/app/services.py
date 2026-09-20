@@ -171,16 +171,37 @@ def get_services() -> list[dict]:
             installed_model_path = ""
             installed_hardware = ""
             env_file_path = os.path.join(s_dir, ".env")
+            installed_env_vars = {}
             if os.path.exists(env_file_path):
                 with open(env_file_path, "r", encoding="utf-8") as ef:
                     for line in ef:
                         line = line.strip()
-                        if line.startswith("MODEL_FILE="):
-                            installed_model_path = line.split("=", 1)[1].strip()
-                        elif line.startswith("ORION_HW_ID="):
-                            installed_hardware = line.split("=", 1)[1].strip()
-                        elif line.startswith("COMPOSE_FILE=") and not installed_hardware:
-                            installed_hardware = line.split("=", 1)[1].strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        installed_env_vars[k] = v
+                        if k == "MODEL_FILE":
+                            installed_model_path = v
+                        elif k == "ORION_HW_ID":
+                            installed_hardware = v
+                        elif k == "COMPOSE_FILE" and not installed_hardware:
+                            installed_hardware = v
+
+            if "parameters" in data and isinstance(data["parameters"], dict) and installed_env_vars:
+                merged_params = {}
+                for p_id, p_val in data["parameters"].items():
+                    if p_id in installed_env_vars:
+                        val = installed_env_vars[p_id]
+                        if isinstance(p_val, dict):
+                            new_p = dict(p_val)
+                            new_p["default"] = val
+                            merged_params[p_id] = new_p
+                        else:
+                            merged_params[p_id] = val
+                    else:
+                        merged_params[p_id] = p_val
+                data["parameters"] = merged_params
 
             data.update({
                 "is_installed": is_installed,
@@ -198,16 +219,37 @@ def get_services() -> list[dict]:
             env_file_path = os.path.join(s_dir, ".env.install")
             if not os.path.exists(env_file_path):
                 env_file_path = os.path.join(s_dir, ".env")
+            installed_env_vars = {}
             if os.path.exists(env_file_path):
                 with open(env_file_path, "r", encoding="utf-8") as ef:
                     for line in ef:
                         line = line.strip()
-                        if line.startswith("MODEL_FILE="):
-                            installed_model_path = line.split("=", 1)[1].strip()
-                        elif line.startswith("ORION_HW_ID="):
-                            installed_hardware = line.split("=", 1)[1].strip()
-                        elif line.startswith("COMPOSE_FILE=") and not installed_hardware:
-                            installed_hardware = line.split("=", 1)[1].strip()
+                        if not line or line.startswith("#") or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        installed_env_vars[k] = v
+                        if k == "MODEL_FILE":
+                            installed_model_path = v
+                        elif k == "ORION_HW_ID":
+                            installed_hardware = v
+                        elif k == "COMPOSE_FILE" and not installed_hardware:
+                            installed_hardware = v
+
+            if "parameters" in data and isinstance(data["parameters"], dict) and installed_env_vars:
+                merged_params = {}
+                for p_id, p_val in data["parameters"].items():
+                    if p_id in installed_env_vars:
+                        val = installed_env_vars[p_id]
+                        if isinstance(p_val, dict):
+                            new_p = dict(p_val)
+                            new_p["default"] = val
+                            merged_params[p_id] = new_p
+                        else:
+                            merged_params[p_id] = val
+                    else:
+                        merged_params[p_id] = p_val
+                data["parameters"] = merged_params
 
             data.update({
                 "is_installed": c_name in containers,

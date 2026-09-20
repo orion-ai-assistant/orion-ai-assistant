@@ -167,5 +167,9 @@ window.orionLocales.en = {
     param_low_vram: "Low VRAM Mode (CPU)",
     param_idle_cleanup_mins: "Idle VRAM Cleanup (0=Disabled)",
     param_whisper_model: "Whisper Model",
-    param_whisper_compute_type: "Compute Type"
+    param_whisper_compute_type: "Compute Type",
+    param_opt_whisper_compute_type_int8_float16: "int8_float16 (GPU - Recommended)",
+    param_opt_whisper_compute_type_int8: "int8 (Fast / Low Memory)",
+    param_opt_whisper_compute_type_float16: "float16 (GPU - High Precision)",
+    param_opt_whisper_compute_type_float32: "float32 (Full Precision)"
 };

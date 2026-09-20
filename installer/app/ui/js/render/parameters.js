@@ -1,7 +1,9 @@
-export function renderParameters(service, isDisabled) {
+export function renderParameters(service, isDisabled, currentHardware = 'nvidia') {
+    const hw = (currentHardware || service.installed_hardware || 'nvidia').toLowerCase();
+
     return Object.entries(service.parameters || {}).map(([id, rawValue]) => {
         const isObj = typeof rawValue === 'object' && rawValue !== null && !Array.isArray(rawValue);
-        const defVal = isObj ? rawValue.default : rawValue;
+        let defVal = isObj ? rawValue.default : rawValue;
         const genericLabelKey = `param_${id}`.toLowerCase();
         const serviceLabelKey = `param_${service.id.replace(/-/g, '_')}_${id}`.toLowerCase();
 
@@ -54,6 +56,46 @@ export function renderParameters(service, isDisabled) {
                 <div class="field gpu-selector-field" id="gpu-selector-field-${service.id}">
                     <label class="field-label">${label}</label>
                     ${gpuContent}
+                </div>`;
+        }
+
+        // Dropdown / Select parametreleri (donanıma duyarlı seçenekler desteği)
+        if (isObj && (rawValue.type === 'select' || Array.isArray(rawValue.options) || rawValue.hardware_options)) {
+            let optList = [];
+            if (rawValue.hardware_options) {
+                optList = rawValue.hardware_options[hw] || (hw === 'cpu' ? rawValue.hardware_options.cpu : rawValue.hardware_options.nvidia) || [];
+            } else if (Array.isArray(rawValue.options)) {
+                optList = rawValue.options;
+            }
+
+            if (rawValue.hardware_defaults) {
+                const hwDef = rawValue.hardware_defaults[hw] || (hw === 'cpu' ? rawValue.hardware_defaults.cpu : rawValue.hardware_defaults.nvidia);
+                const optValues = optList.map(o => typeof o === 'object' && o !== null ? o.value : o);
+                if (hwDef && (!defVal || !optValues.includes(defVal))) {
+                    defVal = hwDef;
+                }
+            }
+
+            const optionsHtml = optList.map(opt => {
+                const val = typeof opt === 'object' && opt !== null ? opt.value : opt;
+                const optLabelKey = `param_opt_${id}_${val}`.toLowerCase();
+                let optLabel = typeof opt === 'object' && opt !== null ? (opt.label || val) : val;
+                if (window.t(optLabelKey) !== optLabelKey) {
+                    optLabel = window.t(optLabelKey);
+                }
+                const isSelected = String(val) === String(defVal) ? 'selected' : '';
+                return `<option value="${val}" ${isSelected}>${optLabel}</option>`;
+            }).join('');
+
+            const hwOptionsAttr = rawValue.hardware_options ? `data-hardware-options='${JSON.stringify(rawValue.hardware_options)}'` : '';
+            const hwDefaultsAttr = rawValue.hardware_defaults ? `data-hardware-defaults='${JSON.stringify(rawValue.hardware_defaults)}'` : '';
+
+            return `
+                <div class="field" id="field-${service.id}-${id}">
+                    <label class="field-label" for="p-${service.id}-${id}">${label}</label>
+                    <select id="p-${service.id}-${id}" class="dynamic-input field-input" data-param-id="${id}" data-type="select" ${hwOptionsAttr} ${hwDefaultsAttr} ${isDisabled ? 'disabled' : ''}>
+                        ${optionsHtml}
+                    </select>
                 </div>`;
         }
 

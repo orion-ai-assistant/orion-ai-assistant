@@ -10,7 +10,7 @@ services:
       - .env
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL}
-      - WHISPER_COMPUTE_TYPE=int8
+      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_DEVICE=cpu
       - PORT=${STT_CONTAINER_PORT}
       - UVICORN_PORT=${STT_CONTAINER_PORT}

@@ -7,7 +7,20 @@
   "vram_required_gb": 2,
   "parameters": {
     "GPU_DEVICE_IDS": { "type": "gpu_selector", "label": "GPUs to Use", "default": "all" },
-    "WHISPER_COMPUTE_TYPE": {"default": "int8_float16", "label": "Compute Type"}
+    "WHISPER_COMPUTE_TYPE": {
+      "type": "select",
+      "label": "Compute Type",
+      "default": "int8_float16",
+      "options": ["int8_float16", "int8", "float16", "float32"],
+      "hardware_options": {
+        "nvidia": ["int8_float16", "int8", "float16", "float32"],
+        "cpu": ["int8", "float32"]
+      },
+      "hardware_defaults": {
+        "nvidia": "int8_float16",
+        "cpu": "int8"
+      }
+    }
   },
   "models_path": "models/",
   "models_catalog": [

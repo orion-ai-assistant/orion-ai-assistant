@@ -50,7 +50,8 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
     }).join('');
 
     const installMode = viewMode === 'install';
-    const paramsHtml = renderParameters(service, isDisabled);
+    const initialHw = (service.installed_hardware || enabledEnvs.find(e => e.id === selectedId)?.hw || 'nvidia').toLowerCase();
+    const paramsHtml = renderParameters(service, isDisabled, initialHw);
     const envHtml = isCoreService(service) ? '' : `
         <div class="field">
             <label class="field-label" for="env-select-${service.id}">${window.t('lbl_hardware')}</label>
@@ -277,13 +278,45 @@ function setupCardInteractions(card, service, handlers) {
     const envSelect = card.querySelector(`#env-select-${service.id}`);
     const gpuField = card.querySelector(`#gpu-selector-field-${service.id}`);
     if (envSelect) {
-        const updateGpu = () => {
-            if (gpuField) gpuField.style.display = envSelect.options[envSelect.selectedIndex]?.getAttribute('data-hardware')?.toLowerCase() === 'cpu' ? 'none' : 'block';
+        const updateHardwareState = () => {
+            const selectedOpt = envSelect.options[envSelect.selectedIndex];
+            const hw = selectedOpt?.getAttribute('data-hardware')?.toLowerCase() || '';
+
+            if (gpuField) gpuField.style.display = hw === 'cpu' ? 'none' : 'block';
+
+            // Donanıma bağlı dinamik select alanlarını güncelle (Örn: WHISPER_COMPUTE_TYPE)
+            const dynamicSelects = card.querySelectorAll(`.dynamic-input[data-type="select"][data-hardware-options]`);
+            dynamicSelects.forEach(selectEl => {
+                try {
+                    const hwOptions = JSON.parse(selectEl.getAttribute('data-hardware-options') || '{}');
+                    const hwDefaults = JSON.parse(selectEl.getAttribute('data-hardware-defaults') || '{}');
+                    const paramId = selectEl.getAttribute('data-param-id');
+
+                    let opts = hwOptions[hw] || (hw === 'cpu' ? hwOptions.cpu : hwOptions.nvidia) || [];
+                    if (opts && opts.length > 0) {
+                        const targetDefault = hwDefaults[hw] || (hw === 'cpu' ? hwDefaults.cpu : hwDefaults.nvidia) || (typeof opts[0] === 'object' ? opts[0].value : opts[0]);
+                        selectEl.innerHTML = opts.map(opt => {
+                            const val = typeof opt === 'object' && opt !== null ? opt.value : opt;
+                            const optLabelKey = `param_opt_${paramId}_${val}`.toLowerCase();
+                            let optLabel = typeof opt === 'object' && opt !== null ? (opt.label || val) : val;
+                            if (window.t(optLabelKey) !== optLabelKey) {
+                                optLabel = window.t(optLabelKey);
+                            }
+                            const isSelected = String(val) === String(targetDefault) ? 'selected' : '';
+                            return `<option value="${val}" ${isSelected}>${optLabel}</option>`;
+                        }).join('');
+                        selectEl.value = targetDefault;
+                    }
+                } catch (e) {
+                    console.error('Error updating hardware-dependent select:', e);
+                }
+            });
+
             const latestService = handlers.getService ? (handlers.getService(service.id) || service) : service;
             updateCardDynamicContent(card, latestService, card.classList.contains('disabled-service'), handlers, card.dataset.viewMode);
         };
-        envSelect.addEventListener('change', updateGpu);
-        if (gpuField) updateGpu();
+        envSelect.addEventListener('change', updateHardwareState);
+        if (gpuField) updateHardwareState();
     }
 
     const gpuCheckboxes = card.querySelectorAll(`.dynamic-input[data-type="gpu_selector_multi"]`);
