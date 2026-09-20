@@ -14,8 +14,9 @@ export function renderParameters(service, isDisabled, currentHardware = 'nvidia'
             label = window.t(genericLabelKey);
         }
 
-        if (typeof defVal === 'boolean') {
-            const isChecked = defVal ? 'checked' : '';
+        const isBool = typeof defVal === 'boolean' || (isObj && (rawValue.type === 'checkbox' || typeof rawValue.default === 'boolean'));
+        if (isBool) {
+            const isChecked = (defVal === true || String(defVal).toLowerCase() === 'true' || String(defVal) === '1') ? 'checked' : '';
 
             return `
                 <div id="p-row-${service.id}-${id}" class="checkbox-row">
@@ -38,10 +39,12 @@ export function renderParameters(service, isDisabled, currentHardware = 'nvidia'
                     </div>`;
             } else {
                 // Birden fazla GPU varsa mini kutucuklar listesi
+                const savedGpus = String(defVal || 'all').split(',').map(s => s.trim());
                 const checkboxes = gpus.map(gpu => {
+                    const isGpuChecked = defVal === 'all' || savedGpus.includes(String(gpu.id));
                     return `
                         <div class="checkbox-row" style="margin-bottom: 4px;">
-                            <input type="checkbox" id="p-${service.id}-${id}-${gpu.id}" checked class="dynamic-input" data-param-id="${id}" data-type="gpu_selector_multi" value="${gpu.id}" ${isDisabled ? 'disabled' : ''}>
+                            <input type="checkbox" id="p-${service.id}-${id}-${gpu.id}" ${isGpuChecked ? 'checked' : ''} class="dynamic-input" data-param-id="${id}" data-type="gpu_selector_multi" value="${gpu.id}" ${isDisabled ? 'disabled' : ''}>
                             <label for="p-${service.id}-${id}-${gpu.id}" class="checkbox-label" style="font-size: 13px;">[GPU ${gpu.id}] ${gpu.name} (${gpu.vram}MB)</label>
                         </div>`;
                 }).join('');

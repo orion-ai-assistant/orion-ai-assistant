@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 # =========================================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+try:
+    from dotenv import load_dotenv
+    _local_env = os.path.join(CURRENT_DIR, ".env")
+    if os.path.exists(_local_env):
+        load_dotenv(_local_env, override=True)
+except ImportError:
+    pass
+
 # Determine device (CUDA if available or specified, fallback to CPU)
 hw_id = os.getenv("ORION_HW_ID", "").lower()
 env_device = os.getenv("DEVICE", "").lower()

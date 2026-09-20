@@ -4,6 +4,17 @@ export function updateModelSelect(serviceId, models, allServiceModels, installed
     const select = document.getElementById(`model-select-${serviceId}`);
     if (!select) return;
 
+    const isModelMatch = (modelItem, targetPath) => {
+        if (!targetPath) return false;
+        const p = (modelItem.rel_path || modelItem.id || '').replace(/\\/g, '/').toLowerCase();
+        const t = targetPath.replace(/\\/g, '/').replace(/^\/app\/models\//, '').toLowerCase();
+        const f = (modelItem.folder || '').toLowerCase();
+        const mid = (modelItem.id || '').toLowerCase();
+        return p === t || t.startsWith(p + '/') || p.startsWith(t + '/') ||
+               (f && (t === f || t.startsWith(f + '/') || f.startsWith(t + '/'))) ||
+               (mid && (t === mid || t.startsWith(mid + '/') || mid.startsWith(t + '/')));
+    };
+
     const currentVal = select.value;
     const installedModels = models.filter(m => m.is_installed && !(m.rel_path || "").toLowerCase().includes('mmproj'));
     const hasAnyInstalledModel = installedModels.length > 0;
@@ -14,7 +25,7 @@ export function updateModelSelect(serviceId, models, allServiceModels, installed
         autoSelectedPath = installedModels[0].rel_path || installedModels[0].id;
     }
 
-    const hasInstalledMatch = models.some(m => installedModelPath && ((m.rel_path || m.id) === installedModelPath || installedModelPath.startsWith((m.rel_path || m.id) + '/') || installedModelPath.startsWith((m.rel_path || m.id) + '\\')));
+    const hasInstalledMatch = models.some(m => isModelMatch(m, installedModelPath));
     const shouldSelectPlaceholder = !currentVal && !hasInstalledMatch && !autoSelectedPath;
     
     const placeholderText = hasAnyInstalledModel ? window.t('lbl_select_model') : (window.t('lbl_download_model') || 'Model Yükleyin');
@@ -23,8 +34,8 @@ export function updateModelSelect(serviceId, models, allServiceModels, installed
 
     installedModels.forEach(m => {
         const path = m.rel_path || m.id;
-        const isActive = installedModelPath && (path === installedModelPath || installedModelPath.startsWith(path + '/') || installedModelPath.startsWith(path + '\\'));
-        const isSelected = currentVal === path || (!currentVal && isActive) || (autoSelectedPath === path);
+        const isActive = isModelMatch(m, installedModelPath);
+        const isSelected = currentVal ? (currentVal === path) : (isActive || autoSelectedPath === path);
         newHtml += `<option value="${path}" ${isSelected ? 'selected' : ''}>${m.name}</option>`;
     });
 

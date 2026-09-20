@@ -38,7 +38,9 @@ export function renderCardSkeleton(card, service, isDisabled, handlers, viewMode
     });
 
     const enabledEnvs = processedEnvs.filter(e => !e.disabled);
-    let selectedId = enabledEnvs.find(e => e.hw === gpuVendor)?.id
+    const installedHw = (service.installed_hardware || '').toLowerCase();
+    let selectedId = (service.is_installed && installedHw ? enabledEnvs.find(e => e.hw === installedHw)?.id : null)
+        || enabledEnvs.find(e => e.hw === gpuVendor)?.id
         || (gpuVendor === 'amd' ? enabledEnvs.find(e => e.hw === 'vulkan')?.id : null)
         || enabledEnvs.find(e => e.hw === 'cpu')?.id
         || (enabledEnvs[0]?.id || '');
@@ -107,21 +109,103 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
     const selectedModel = modelSelect ? modelSelect.value : "";
     const envSelect = card.querySelector(`#env-select-${service.id}`);
     const selectedEnvOption = envSelect ? envSelect.options[envSelect.selectedIndex] : null;
-    const selectedHardware = selectedEnvOption ? selectedEnvOption.getAttribute('data-hardware') : "";
+    const selectedHardware = selectedEnvOption ? (selectedEnvOption.getAttribute('data-hardware') || "") : "";
     
     const isLocalMode = (window.orionInstallMode || 'docker') === 'local';
-    const isModelChanged = service.is_installed && selectedModel && service.installed_model && 
-                           selectedModel !== service.installed_model &&
-                           !service.installed_model.startsWith(selectedModel + '/') &&
-                           !service.installed_model.startsWith(selectedModel + '\\');
+    const isModelChanged = service.is_installed && !isCoreService(service) && selectedModel && (
+        !service.installed_model || (
+            selectedModel !== service.installed_model &&
+            !service.installed_model.startsWith(selectedModel + '/') &&
+            !service.installed_model.startsWith(selectedModel + '\\')
+        )
+    );
                            
-    const isHardwareChanged = isLocalMode && service.is_installed && selectedHardware && service.installed_hardware &&
-                              selectedHardware !== service.installed_hardware;
+    const isHardwareChanged = service.is_installed && selectedHardware && service.installed_hardware &&
+                              selectedHardware.toLowerCase() !== service.installed_hardware.toLowerCase();
+
+    // Multimodal / Vision MMPROJ kontrolü
+    const mmprojToggle = card.querySelector(`#mmproj-toggle-${service.id}`);
+    const mmprojSelected = mmprojToggle ? (mmprojToggle.checked ? (mmprojToggle.dataset.path || "") : "") : "";
+    const installedMmproj = service.installed_mmproj || "";
+    const isMmprojChanged = service.is_installed && (mmprojSelected !== installedMmproj);
+
+    // Parametrelerin (WHISPER_COMPUTE_TYPE, GPU_LAYERS, LOW_VRAM vb.) değişip değişmediğini kontrol et
+    let isParamsChanged = false;
+    let paramsStateFingerprint = '';
+    const dynamicInputs = card.querySelectorAll(`#dynamic-params-${service.id} .dynamic-input`);
+    const hw = (selectedHardware || service.installed_hardware || 'nvidia').toLowerCase();
+
+    if (dynamicInputs.length > 0) {
+        const currentVals = {};
+        dynamicInputs.forEach(input => {
+            const paramId = input.dataset.paramId;
+            const type = input.dataset.type;
+            if (!paramId) return;
+
+            if (type === 'checkbox') {
+                currentVals[paramId] = Boolean(input.checked);
+            } else if (type === 'gpu_selector_multi') {
+                if (!currentVals[paramId]) currentVals[paramId] = [];
+                if (input.checked) currentVals[paramId].push(input.value);
+            } else if (type === 'gpu_selector') {
+                currentVals[paramId] = input.checked ? (input.value || 'all') : '';
+            } else {
+                currentVals[paramId] = input.value;
+            }
+        });
+
+        paramsStateFingerprint = JSON.stringify(currentVals);
+
+        if (service.is_installed && service.parameters) {
+            for (const [paramId, val] of Object.entries(currentVals)) {
+                const rawParam = service.parameters[paramId];
+                if (rawParam === undefined) continue;
+
+                if (hw === 'cpu' && (paramId === 'GPU_DEVICE_IDS' || paramId === 'gpu_selector')) continue;
+
+                const savedVal = (typeof rawParam === 'object' && rawParam !== null && !Array.isArray(rawParam)) 
+                    ? rawParam.default 
+                    : rawParam;
+
+                if (typeof val === 'boolean') {
+                    const expectedBool = typeof savedVal === 'boolean' 
+                        ? savedVal 
+                        : String(savedVal).toLowerCase() === 'true';
+                    if (val !== expectedBool) {
+                        isParamsChanged = true;
+                        break;
+                    }
+                } else if (Array.isArray(val)) {
+                    const joined = val.join(',');
+                    if (joined !== String(savedVal ?? '')) {
+                        isParamsChanged = true;
+                        break;
+                    }
+                } else if (typeof rawParam === 'object' && (rawParam.type === 'int' || rawParam.type === 'number')) {
+                    const numVal = Number(val);
+                    const expectedNum = Number(savedVal);
+                    if (!isNaN(numVal) && !isNaN(expectedNum) && numVal !== expectedNum) {
+                        isParamsChanged = true;
+                        break;
+                    }
+                } else {
+                    const strVal = String(val ?? '').trim().toLowerCase();
+                    const expectedStr = String(savedVal ?? '').trim().toLowerCase();
+                    if (strVal !== expectedStr) {
+                        isParamsChanged = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    const isConfigChanged = isModelChanged || isHardwareChanged || isParamsChanged || isMmprojChanged;
 
     // In local mode, if installed and no model is selected, we still show Başlat (without model enforcement)
     const noModelSelected = !isCoreService(service) && !selectedModel;
 
-    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${service.is_starting}_${isDisabled}_${service.install_error || ''}_${window.orionLang || 'en'}_${isModelChanged}_${isHardwareChanged}_${selectedModel}_${selectedHardware}`;
+    const stateKey = `${service.is_installed}_${service.is_installing}_${service.autostart !== false}_${service.is_running}_${service.is_starting}_${isDisabled}_${service.install_error || ''}_${window.orionLang || 'en'}_${isConfigChanged}_${isModelChanged}_${isHardwareChanged}_${isParamsChanged}_${isMmprojChanged}_${selectedModel}_${selectedHardware}_${paramsStateFingerprint}_${mmprojSelected}`;
     if (footer.dataset.stateKey === stateKey) return;
     footer.dataset.stateKey = stateKey;
 
@@ -167,7 +251,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
             btnClass = service.is_running ? 'btn btn-danger' : 'btn btn-primary';
             btnLabel = service.is_running ? window.t('btn_stop') : window.t('btn_start');
             btnAttr = '';
-        } else if (isModelChanged) {
+        } else if (isConfigChanged) {
             btnClass = 'btn btn-primary';
             btnLabel = window.t('btn_reinstall');
             btnAttr = '';
@@ -178,7 +262,7 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         } else {
             btnClass = isCore ? 'btn btn-success' : (isAuto ? 'btn btn-danger' : 'btn btn-success');
             btnLabel = isCore ? window.t('status_active') : (isAuto ? window.t('btn_disable') : window.t('btn_enable'));
-            btnAttr = isCore && service.is_installed && !isModelChanged ? 'disabled style="cursor: default;"' : '';
+            btnAttr = isCore && service.is_installed && !isConfigChanged ? 'disabled style="cursor: default;"' : '';
         }
 
         const dropdownHtml = (service.is_installed && !isHardwareChanged) ? `
@@ -211,8 +295,8 @@ export function updateCardDynamicContent(card, service, isDisabled, handlers, vi
         if (isHardwareChanged) {
             handlers.onStart(service.id, btn);
         } else if (isLocalMode && (!isCoreService(service) || ['orion-hub', 'orion-router'].includes(service.id)) && service.is_installed) {
-            handlers.onLocalToggle(service.id, service.is_running, btn, isModelChanged);
-        } else if (isModelChanged) {
+            handlers.onLocalToggle(service.id, service.is_running, btn, isConfigChanged);
+        } else if (isConfigChanged) {
             handlers.onReinstall(service.id, btn);
         } else if (!service.is_installed) {
             handlers.onStart(service.id, btn);
@@ -295,6 +379,12 @@ function setupCardInteractions(card, service, handlers) {
                     let opts = hwOptions[hw] || (hw === 'cpu' ? hwOptions.cpu : hwOptions.nvidia) || [];
                     if (opts && opts.length > 0) {
                         const targetDefault = hwDefaults[hw] || (hw === 'cpu' ? hwDefaults.cpu : hwDefaults.nvidia) || (typeof opts[0] === 'object' ? opts[0].value : opts[0]);
+                        const optValues = opts.map(opt => typeof opt === 'object' && opt !== null ? String(opt.value) : String(opt));
+                        
+                        // Önceden seçili veya .env'den gelen değer bu donanımda geçerliyse koru, aksi halde varsayılana geç
+                        const currentVal = selectEl.value || (service.parameters?.[paramId] ? (typeof service.parameters[paramId] === 'object' ? service.parameters[paramId].default : service.parameters[paramId]) : null);
+                        const valueToSelect = (currentVal && optValues.includes(String(currentVal))) ? String(currentVal) : String(targetDefault);
+
                         selectEl.innerHTML = opts.map(opt => {
                             const val = typeof opt === 'object' && opt !== null ? opt.value : opt;
                             const optLabelKey = `param_opt_${paramId}_${val}`.toLowerCase();
@@ -302,10 +392,10 @@ function setupCardInteractions(card, service, handlers) {
                             if (window.t(optLabelKey) !== optLabelKey) {
                                 optLabel = window.t(optLabelKey);
                             }
-                            const isSelected = String(val) === String(targetDefault) ? 'selected' : '';
+                            const isSelected = String(val) === valueToSelect ? 'selected' : '';
                             return `<option value="${val}" ${isSelected}>${optLabel}</option>`;
                         }).join('');
-                        selectEl.value = targetDefault;
+                        selectEl.value = valueToSelect;
                     }
                 } catch (e) {
                     console.error('Error updating hardware-dependent select:', e);
@@ -323,4 +413,18 @@ function setupCardInteractions(card, service, handlers) {
     gpuCheckboxes.forEach(cb => cb.addEventListener('change', () => {
         if (!Array.from(gpuCheckboxes).some(c => c.checked)) cb.checked = true;
     }));
+
+    // Dinamik parametre ve mmproj değişikliklerini dinle
+    card.addEventListener('change', (e) => {
+        if (e.target.matches('.dynamic-input') || e.target.matches('.mmproj-checkbox')) {
+            const latestService = handlers.getService ? (handlers.getService(service.id) || service) : service;
+            updateCardDynamicContent(card, latestService, card.classList.contains('disabled-service'), handlers, card.dataset.viewMode);
+        }
+    });
+    card.addEventListener('input', (e) => {
+        if (e.target.matches('.dynamic-input[data-type="int"], .dynamic-input[data-type="number"], .dynamic-input:not([type="checkbox"])')) {
+            const latestService = handlers.getService ? (handlers.getService(service.id) || service) : service;
+            updateCardDynamicContent(card, latestService, card.classList.contains('disabled-service'), handlers, card.dataset.viewMode);
+        }
+    });
 }

@@ -75,21 +75,28 @@ def main():
                         break
     if not port: port = "8085"
     
+    ctx_size = env_vars.get("CONTEXT_SIZE", "8192")
+    batch_size = env_vars.get("BATCH_SIZE", "512")
+    n_parallel = env_vars.get("N_PARALLEL", "1")
+    gpu_layers = env_vars.get("GPU_LAYERS", "35")
+
     # Base command
     cmd = [
         exe_path,
         "-m", model_path,
         "--port", port,
         "--host", "0.0.0.0",
-        "-c", "8192"  # Context size, can be overridden by EXTRA_ARGS
+        "-c", str(ctx_size),
+        "-b", str(batch_size),
+        "-np", str(n_parallel)
     ]
     
     # GPU layers
     gpu_count = env_vars.get("GPU_COUNT", "0")
-    if str(gpu_count).isdigit() and int(gpu_count) > 0:
-        # User requested GPU offloading. 
-        # Typically -ngl 99 offloads all layers to GPU.
-        cmd.extend(["-ngl", "99"])
+    if str(gpu_count).isdigit() and int(gpu_count) > 0 and hw_type != "cpu":
+        cmd.extend(["-ngl", str(gpu_layers)])
+    else:
+        cmd.extend(["-ngl", "0"])
         
     # Multimodal / Vision
     mmproj_file = env_vars.get("MMPROJ_FILE", "")
@@ -103,14 +110,18 @@ def main():
     # Extra arguments defined by user
     extra_args = env_vars.get("EXTRA_ARGS", "")
     if extra_args:
-        # Basitçe parçala (tırnak işaretleri arası boşlukları vs. tam çözemez ama şimdilik yeterli)
         import shlex
         cmd.extend(shlex.split(extra_args))
         
     print(f"Starting Llama.cpp Server: {' '.join(cmd)}")
+
+    proc_env = os.environ.copy()
+    gpu_device_ids = env_vars.get("GPU_DEVICE_IDS", "all")
+    if gpu_device_ids and gpu_device_ids != "all" and hw_type != "cpu":
+        proc_env["CUDA_VISIBLE_DEVICES"] = gpu_device_ids
     
     # Start the process
-    process = subprocess.Popen(cmd)
+    process = subprocess.Popen(cmd, env=proc_env)
     
     # Handle graceful shutdown
     def handle_sigterm(signum, frame):

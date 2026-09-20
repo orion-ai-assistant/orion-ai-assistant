@@ -137,6 +137,18 @@ async function loadModelStatus(serviceId) {
         allServiceModels[serviceId] = models;
         uiRender.updateModelSelect(serviceId, models, allServiceModels, allServices[serviceId]?.installed_model);
         uiRender.renderModelList(serviceId, models, { onDownload: downloadModel, onDelete: deleteModel, onCancel: cancelDownload }, allServices[serviceId]?.status === 'disabled');
+        const card = document.getElementById(`service-card-${serviceId}`);
+        if (card && allServices[serviceId]) {
+            uiRender.updateCardDynamicContent(card, allServices[serviceId], card.classList.contains('disabled-service'), {
+                onStart: installService, onToggleAutostart: toggleAutostart,
+                onReinstall: reinstallService, onRemove: removeService,
+                onWipeData: wipeData, onLocalToggle: localToggleService,
+                onDeleteImage: deleteImage, onDownload: downloadModel,
+                onModelChange: (sid, path) => uiRender.filterVisionModels(sid, path, allServiceModels),
+                onTabModels: loadModelStatus,
+                getService: (sid) => allServices[sid]
+            }, card.dataset.viewMode);
+        }
     } catch (err) { console.error("Load models error:", err); }
 }
 
@@ -252,18 +264,18 @@ async function installService(id, btn) {
 
 const toggleAutostart = async (id, btn) => { btn.disabled = true; await handleAction(null, '', () => api.postToggleAutostart(id), fetchServices, () => { btn.disabled = false; }); };
 
-async function localToggleService(id, isRunning, btn, isModelChanged = false) {
+async function localToggleService(id, isRunning, btn, isConfigChanged = false) {
     if (isRunning) {
         // Durdur
         await handleAction(btn, '', () => api.postStopService(id), fetchServices, () => { if (btn) btn.disabled = false; });
     } else {
         // Başlat
         const startFn = async () => {
-            if (isModelChanged) {
-                // Modeli .env'ye kaydetmek için install API'sini çağır
+            if (isConfigChanged) {
+                // Modeli, donanımı ve parametreleri .env'ye kaydetmek ve servisi yeni ayarlarla kurup başlatmak için install API'sini çağır
                 const envId = document.getElementById(`env-select-${id}`)?.value || "";
                 const hw = document.getElementById(`env-select-${id}`)?.options[document.getElementById(`env-select-${id}`).selectedIndex]?.getAttribute('data-hardware') || "";
-                const modelFile = document.getElementById(`model-select-${id}`)?.value || "";
+                const modelFile = isCoreService(allServices[id]) ? "" : (document.getElementById(`model-select-${id}`)?.value || "");
                 const mmprojFile = document.getElementById(`mmproj-toggle-${id}`)?.checked ? document.getElementById(`mmproj-toggle-${id}`).dataset.path : "";
                 
                 const extraParams = Array.from(document.querySelectorAll(`#dynamic-params-${id} .dynamic-input`)).reduce((acc, input) => {
@@ -282,14 +294,13 @@ async function localToggleService(id, isRunning, btn, isModelChanged = false) {
                 for (let key in extraParams) if (Array.isArray(extraParams[key])) extraParams[key] = extraParams[key].join(',');
 
                 const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
-                const installRes = await api.postInstallService(id, query);
-                if (installRes.status !== 'success') return installRes;
+                return await api.postInstallService(id, query);
             }
             return await api.postStartLocalService(id);
         };
 
         await handleAction(btn, '', startFn, () => {
-            setTimeout(fetchServices, 1500);
+            setTimeout(fetchServices, 1000);
         }, () => { if (btn) btn.disabled = false; });
     }
 }

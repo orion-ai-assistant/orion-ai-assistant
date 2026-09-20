@@ -183,6 +183,8 @@ def get_services() -> list[dict]:
                         installed_env_vars[k] = v
                         if k == "MODEL_FILE":
                             installed_model_path = v
+                        elif k == "MMPROJ_FILE":
+                            installed_mmproj = v
                         elif k == "ORION_HW_ID":
                             installed_hardware = v
                         elif k == "COMPOSE_FILE" and not installed_hardware:
@@ -192,12 +194,31 @@ def get_services() -> list[dict]:
                 merged_params = {}
                 for p_id, p_val in data["parameters"].items():
                     if p_id in installed_env_vars:
-                        val = installed_env_vars[p_id]
+                        raw_val = installed_env_vars[p_id]
                         if isinstance(p_val, dict):
                             new_p = dict(p_val)
+                            p_type = new_p.get("type")
+                            p_def = new_p.get("default")
+                            if isinstance(p_def, bool) or p_type == "checkbox":
+                                val = str(raw_val).strip().lower() in ("true", "1", "yes")
+                            elif p_type == "int" or (isinstance(p_def, int) and not isinstance(p_def, bool)):
+                                try: val = int(raw_val)
+                                except: val = raw_val
+                            elif p_type == "number" or isinstance(p_def, float):
+                                try: val = float(raw_val)
+                                except: val = raw_val
+                            else:
+                                val = str(raw_val).strip()
                             new_p["default"] = val
                             merged_params[p_id] = new_p
                         else:
+                            if isinstance(p_val, bool):
+                                val = str(raw_val).strip().lower() in ("true", "1", "yes")
+                            elif isinstance(p_val, int):
+                                try: val = int(raw_val)
+                                except: val = raw_val
+                            else:
+                                val = str(raw_val).strip()
                             merged_params[p_id] = val
                     else:
                         merged_params[p_id] = p_val
@@ -211,6 +232,7 @@ def get_services() -> list[dict]:
                 "autostart": autostart,
                 "install_error": config.INSTALL_ERRORS.get(data["id"]),
                 "installed_model": installed_model_path,
+                "installed_mmproj": installed_env_vars.get("MMPROJ_FILE", ""),
                 "installed_hardware": installed_hardware
             })
         else:
@@ -231,6 +253,8 @@ def get_services() -> list[dict]:
                         installed_env_vars[k] = v
                         if k == "MODEL_FILE":
                             installed_model_path = v
+                        elif k == "MMPROJ_FILE":
+                            installed_mmproj = v
                         elif k == "ORION_HW_ID":
                             installed_hardware = v
                         elif k == "COMPOSE_FILE" and not installed_hardware:
@@ -240,12 +264,31 @@ def get_services() -> list[dict]:
                 merged_params = {}
                 for p_id, p_val in data["parameters"].items():
                     if p_id in installed_env_vars:
-                        val = installed_env_vars[p_id]
+                        raw_val = installed_env_vars[p_id]
                         if isinstance(p_val, dict):
                             new_p = dict(p_val)
+                            p_type = new_p.get("type")
+                            p_def = new_p.get("default")
+                            if isinstance(p_def, bool) or p_type == "checkbox":
+                                val = str(raw_val).strip().lower() in ("true", "1", "yes")
+                            elif p_type == "int" or (isinstance(p_def, int) and not isinstance(p_def, bool)):
+                                try: val = int(raw_val)
+                                except: val = raw_val
+                            elif p_type == "number" or isinstance(p_def, float):
+                                try: val = float(raw_val)
+                                except: val = raw_val
+                            else:
+                                val = str(raw_val).strip()
                             new_p["default"] = val
                             merged_params[p_id] = new_p
                         else:
+                            if isinstance(p_val, bool):
+                                val = str(raw_val).strip().lower() in ("true", "1", "yes")
+                            elif isinstance(p_val, int):
+                                try: val = int(raw_val)
+                                except: val = raw_val
+                            else:
+                                val = str(raw_val).strip()
                             merged_params[p_id] = val
                     else:
                         merged_params[p_id] = p_val
@@ -259,6 +302,7 @@ def get_services() -> list[dict]:
                 "autostart": autostart,
                 "install_error": config.INSTALL_ERRORS.get(data["id"]),
                 "installed_model": installed_model_path,
+                "installed_mmproj": installed_env_vars.get("MMPROJ_FILE", ""),
                 "installed_hardware": installed_hardware
             })
         services.append(data)
@@ -713,7 +757,7 @@ def start_local_service(service_id: str) -> bool:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
-                    clean_env.setdefault(k.strip(), v.strip())
+                    clean_env[k.strip()] = v.strip()
 
     log_file_name = "hub.log" if service_id == "orion-hub" else "service.log"
     log_path = os.path.join(s_dir, log_file_name)

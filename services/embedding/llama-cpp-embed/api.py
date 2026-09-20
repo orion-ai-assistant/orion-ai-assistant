@@ -73,20 +73,29 @@ def main():
                         break
     if not port: port = "8086"
     
+    ctx_size = env_vars.get("CONTEXT_SIZE", "8192")
+    batch_size = env_vars.get("BATCH_SIZE", "512")
+    n_parallel = env_vars.get("N_PARALLEL", "1")
+    gpu_layers = env_vars.get("GPU_LAYERS", "35")
+
     # Base command (embedding specific flags included)
     cmd = [
         exe_path,
         "-m", model_path,
         "--port", port,
         "--host", "0.0.0.0",
-        "-c", "8192", # Context size
+        "-c", str(ctx_size),
+        "-b", str(batch_size),
+        "-np", str(n_parallel),
         "--embedding" # ENABLE EMBEDDING MODE
     ]
     
     # GPU layers
     gpu_count = env_vars.get("GPU_COUNT", "0")
-    if str(gpu_count).isdigit() and int(gpu_count) > 0:
-        cmd.extend(["-ngl", "99"])
+    if str(gpu_count).isdigit() and int(gpu_count) > 0 and hw_type != "cpu":
+        cmd.extend(["-ngl", str(gpu_layers)])
+    else:
+        cmd.extend(["-ngl", "0"])
         
     # Extra arguments defined by user
     extra_args = env_vars.get("EXTRA_ARGS", "")
@@ -95,9 +104,14 @@ def main():
         cmd.extend(shlex.split(extra_args))
         
     print(f"Starting Llama.cpp Embedding Server: {' '.join(cmd)}")
+
+    proc_env = os.environ.copy()
+    gpu_device_ids = env_vars.get("GPU_DEVICE_IDS", "all")
+    if gpu_device_ids and gpu_device_ids != "all" and hw_type != "cpu":
+        proc_env["CUDA_VISIBLE_DEVICES"] = gpu_device_ids
     
     # Start the process
-    process = subprocess.Popen(cmd)
+    process = subprocess.Popen(cmd, env=proc_env)
     
     # Handle graceful shutdown
     def handle_sigterm(signum, frame):
