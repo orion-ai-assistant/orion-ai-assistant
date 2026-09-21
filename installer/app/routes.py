@@ -35,7 +35,7 @@ async def install_service(
     service_id: str, background_tasks: BackgroundTasks,
     hardware: str = None, env_id: str = None,
     model_file: str = None, mmproj_file: str = None,
-    extra_params: str = "{}"
+    extra_params: str = "{}", auto_start: bool = False
 ):
     import json
     try:
@@ -88,6 +88,7 @@ async def install_service(
         compose_file,
         build_env,
         env_file_keys,
+        auto_start,
     )
     return {"status": "success", "message": i18n.t("MSG_INSTALL_STARTED", kill_msg)}
 

@@ -213,7 +213,7 @@ async function deleteModel(sid, mid, btn) {
     }
 }
 
-async function installService(id, btn) {
+async function installService(id, btn, autoStart = false) {
     const originalHtml = btn ? btn.innerHTML : '';
     try {
         if (btn) {
@@ -242,7 +242,7 @@ async function installService(id, btn) {
 
         for (let key in extraParams) if (Array.isArray(extraParams[key])) extraParams[key] = extraParams[key].join(',');
 
-        const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}`;
+        const query = `hardware=${hw}&env_id=${envId}&model_file=${encodeURIComponent(modelFile)}&mmproj_file=${encodeURIComponent(mmprojFile)}&extra_params=${encodeURIComponent(JSON.stringify(extraParams))}&auto_start=${autoStart}`;
 
         const result = await api.postInstallService(id, query);
         showToast(result.message || (result.status === 'success' ? window.t('status_installing') : window.t('msg_error')), result.status);
@@ -349,7 +349,7 @@ async function reinstallService(id, btn) {
     const sName = allServices[id] ? window.t_service_name(allServices[id]) : '';
     if (await showConfirm(window.t('confirm_reinstall_service_title'), window.t('confirm_reinstall_service_msg', sName))) {
         if (await removeService(id, null, true, true)) {
-            await installService(id, document.getElementById(`btn-main-${id}`) || btn);
+            await installService(id, document.getElementById(`btn-main-${id}`) || btn, true);
             if (btn) btn.disabled = false;
         } else {
             if (btn) btn.disabled = false;

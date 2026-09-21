@@ -1061,6 +1061,7 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
                 r_dir = os.path.expanduser("~/.local/share/OrionRouter")
                 if os.path.exists(r_dir):
                     _sync_router_config_and_dashboard(r_dir)
+            start_local_service(service_id)
             return
             
         setup_dir = service_dir
@@ -1118,7 +1119,14 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
     finally:
         config.INSTALLING_SERVICES.discard(service_id)
 
-def run_installation(service_id: str, service_dir: str, compose_file: str, build_env: dict, env_file_keys: set[str]):
+def run_installation(
+    service_id: str,
+    service_dir: str,
+    compose_file: str,
+    build_env: dict,
+    env_file_keys: set[str],
+    auto_start: bool = False,
+):
     try:
         # Kurulumda `.env.global` ve `.env.global.local` referansı
         g_vars_global_only = system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global"))
@@ -1176,6 +1184,7 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
             
         process.wait()
         out = "".join(out_lines)
+        install_succeeded = process.returncode == 0
         
         if process.returncode != 0:
             conflicts = {n.lstrip("/") for n in _CONFLICT_PATTERN.findall(out)} 
@@ -1191,6 +1200,7 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
                 for line in retry_process.stdout:
                     print(line, end="", flush=True)
                 retry_process.wait()
+                install_succeeded = retry_process.returncode == 0
             else:
                 err_msg = out.strip()
                 if "error during connect" in err_msg and ("The system cannot find the file specified" in err_msg or "Is the docker daemon running" in err_msg):
@@ -1204,6 +1214,28 @@ def run_installation(service_id: str, service_dir: str, compose_file: str, build
                     err_msg = i18n.t("ERROR_INSTALL_PREFIX", short_err)
                 config.INSTALL_ERRORS[service_id] = err_msg
                 print(f"[INSTALL ERROR] {service_id}: {out}")
+
+        if install_succeeded and auto_start:
+            manifest, _, global_vars = _get_context(service_id)
+            if manifest:
+                category_upper = manifest.get("category", "misc").upper()
+                project_name = global_vars.get(
+                    f"{category_upper}_PROJECT_NAME",
+                    f"orion-{manifest.get('category', 'misc')}"
+                )
+                start_result = subprocess.run(
+                    ["docker-compose", "-p", project_name, "-f", compose_file, "up", "-d"],
+                    cwd=service_dir,
+                    env={**os.environ, **global_vars, **build_env},
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                )
+                if start_result.returncode != 0:
+                    config.INSTALL_ERRORS[service_id] = (
+                        "Kurulum tamamlandı ancak servis başlatılamadı: "
+                        f"{start_result.stderr[-200:]}"
+                    )
 
     except Exception as e:
         config.INSTALL_ERRORS[service_id] = f"Beklenmeyen Hata: {str(e)}"
