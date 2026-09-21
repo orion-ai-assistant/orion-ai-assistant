@@ -16,7 +16,8 @@ from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusR
 from orion.contracts.queue import JobQueueRecord
 from orion.kernel.config import get_runtime_settings
 from orion.kernel.registry import (
-    upsert_chat, get_user_chats_db, get_chat_db, get_chat_history_db, delete_chat_db
+    upsert_chat, rename_chat_db, touch_chat_db, get_user_chats_db, get_chat_db,
+    get_chat_history_db, delete_chat_db
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,11 @@ async def stop_job(redis: Redis, user_id: str, chat_id: str) -> JobStopResponse:
     pipe.hset(get_key(CHAT_STATE_KEY_PREFIX, chat_id), mapping={"updated_at": now})
     pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping={"updated_at": now})
     await pipe.execute()
+
+    try:
+        await touch_chat_db(chat_id, now)
+    except Exception:
+        logger.exception("Could not persist stop timestamp for chat %s", chat_id)
 
     return JobStopResponse(chat_id=chat_id, status="stopping", updated_at=now)
 
@@ -313,7 +319,14 @@ async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str
             raise HTTPException(status_code=404, detail="Chat not found")
         owner_id = raw.get("user_id")
 
-    await redis.hset(meta_key, mapping={"name": name, "updated_at": utc_now()})
+    updated_at = utc_now()
+    try:
+        await rename_chat_db(chat_id, name, updated_at)
+    except Exception as exc:
+        logger.exception("Could not persist chat rename for %s", chat_id)
+        raise HTTPException(status_code=503, detail="Sohbet adı kalıcı olarak kaydedilemedi.") from exc
+
+    await redis.hset(meta_key, mapping={"name": name, "updated_at": updated_at})
 
     # Broadcast to other devices
     if owner_id:
@@ -335,7 +348,13 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
             raise HTTPException(status_code=404, detail="Chat not found")
         owner_id = raw.get("user_id")
 
-    # Remove all Redis keys for this chat
+    try:
+        await delete_chat_db(chat_id)
+    except Exception as exc:
+        logger.exception("Could not delete chat %s from PostgreSQL", chat_id)
+        raise HTTPException(status_code=503, detail="Sohbet veritabanından silinemedi.") from exc
+
+    # Remove all Redis keys for this chat after durable deletion succeeds.
     pipe = redis.pipeline()
     pipe.delete(meta_key)
     pipe.delete(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
@@ -344,12 +363,6 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
     if owner_id:
         pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, owner_id), chat_id)
     await pipe.execute()
-
-    # Also permanently delete from PostgreSQL
-    try:
-        await delete_chat_db(chat_id)
-    except Exception:
-        logger.exception("delete_chat_db failed for chat %s — Redis keys already cleared", chat_id)
 
     # Broadcast to other devices
     if owner_id:

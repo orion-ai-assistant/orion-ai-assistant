@@ -69,6 +69,12 @@ async def _replace_overrides_in_redis(
         await redis.hset(key, mapping=overrides)
 
 
+async def _get_effective_overrides(user_id: str) -> dict[str, str]:
+    global_overrides = await fetch_setting_overrides(SETTINGS_DEFAULT_USER)
+    user_overrides = {} if user_id == SETTINGS_DEFAULT_USER else await fetch_setting_overrides(user_id)
+    return _normalize_overrides({**global_overrides, **user_overrides})
+
+
 async def get_runtime_settings(redis: Redis | None = None, user_id: str | None = None) -> RuntimeSettings:
     # 1. Base case: No user specified, return hardcoded env defaults
     if not user_id:
@@ -82,14 +88,7 @@ async def get_runtime_settings(redis: Redis | None = None, user_id: str | None =
 
     # 3. Cache Miss: Fetch from DB
     # Fetch global defaults and user-specific overrides from DB
-    global_overrides = await fetch_setting_overrides(SETTINGS_DEFAULT_USER)
-    user_overrides = {}
-    if user_id != SETTINGS_DEFAULT_USER:
-        user_overrides = await fetch_setting_overrides(user_id)
-    
-    # Merge: Global -> User
-    merged_overrides = {**global_overrides, **user_overrides}
-    normalized = _normalize_overrides(merged_overrides)
+    normalized = await _get_effective_overrides(user_id)
     
     runtime_settings = build_runtime_settings(normalized)
     
@@ -118,9 +117,7 @@ async def seed_database_settings(redis: Redis) -> None:
 
 
 async def refresh_runtime_settings(redis: Redis, user_id: str) -> RuntimeSettings:
-    overrides = _normalize_overrides(
-        await fetch_setting_overrides(user_id)
-    )
+    overrides = await _get_effective_overrides(user_id)
     runtime_settings = build_runtime_settings(overrides)
     key = _settings_key_for_user(user_id)
     await redis.delete(key)
@@ -144,11 +141,16 @@ async def update_runtime_settings(
     runtime_settings = RuntimeSettings.model_validate(data)
 
     await upsert_setting_overrides(user_id, normalized)
-    
+
+    effective_overrides = await _get_effective_overrides(user_id)
+    runtime_settings = build_runtime_settings(effective_overrides)
+
     key = _settings_key_for_user(user_id)
-    await redis.hset(key, mapping=normalized)
+    await redis.delete(key)
+    if effective_overrides:
+        await redis.hset(key, mapping=effective_overrides)
     await redis.expire(key, runtime_settings.redis_cache_ttl_seconds)
-    
+
     return runtime_settings
 
 async def get_all_users_settings() -> dict[str, dict[str, str]]:

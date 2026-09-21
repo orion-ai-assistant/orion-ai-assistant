@@ -252,6 +252,34 @@ async def upsert_chat(chat_id: str, user_id: str, title: str = "New Chat") -> No
         await conn.close()
 
 
+async def rename_chat_db(chat_id: str, title: str, updated_at: str) -> None:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        await conn.execute(
+            "update orion_chats set title = $2, updated_at = $3 where id = $1",
+            chat_id, title, updated_at,
+        )
+    finally:
+        await conn.close()
+
+
+async def touch_chat_db(chat_id: str, updated_at: str) -> None:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        await conn.execute(
+            "update orion_chats set updated_at = $2 where id = $1",
+            chat_id, updated_at,
+        )
+    finally:
+        await conn.close()
+
+
 async def insert_messages(chat_id: str, messages: list[dict]) -> None:
     """Persist a batch of message dicts (role + full content) to PostgreSQL.
 
@@ -374,7 +402,7 @@ async def delete_chat_db(chat_id: str) -> None:
     """
     conn = await _connect()
     if conn is None:
-        return
+        raise RuntimeError("Postgres is unavailable")
     try:
         await _ensure_tables(conn)
         await conn.execute("delete from orion_chats where id = $1", chat_id)
