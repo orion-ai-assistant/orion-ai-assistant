@@ -146,6 +146,7 @@ body {
     font-weight: 700;
     letter-spacing: -0.02em;
     background: linear-gradient(180deg, #ffffff 40%, #9ca3af 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
@@ -568,7 +569,7 @@ body {
     width: 100%;
     max-width: 920px;
     margin: 0 auto;
-    padding: 30px 24px 20px;
+    padding: 30px 24px 60px;
     display: flex;
     flex-direction: column;
     gap: 22px;
@@ -609,6 +610,7 @@ body {
     letter-spacing: -0.03em;
     margin: 0 0 10px 0;
     background: linear-gradient(180deg, #ffffff 40%, #9ca3af 100%);
+    background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
 }
