@@ -306,6 +306,34 @@ async def get_chat_history_db(chat_id: str) -> list[dict]:
         await conn.close()
 
 
+async def get_chat_db(chat_id: str) -> dict | None:
+    """Return persistent metadata for one chat, if it exists."""
+    conn = await _connect()
+    if conn is None:
+        return None
+    try:
+        await _ensure_tables(conn)
+        row = await conn.fetchrow(
+            """
+            select id as chat_id, user_id, title, created_at, updated_at
+            from orion_chats
+            where id = $1
+            """,
+            chat_id,
+        )
+        if row is None:
+            return None
+        return {
+            "chat_id": row["chat_id"],
+            "user_id": row["user_id"],
+            "name": row["title"],
+            "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat(),
+        }
+    finally:
+        await conn.close()
+
+
 async def get_user_chats_db(user_id: str) -> list[dict]:
     """Return a user's chat list (metadata only, no messages) ordered by
     most-recently-updated first.
@@ -328,7 +356,7 @@ async def get_user_chats_db(user_id: str) -> list[dict]:
             {
                 "chat_id": row["chat_id"],
                 "user_id": row["user_id"],
-                "title": row["title"],
+                "name": row["title"],
                 "created_at": row["created_at"].isoformat(),
                 "updated_at": row["updated_at"].isoformat(),
             }

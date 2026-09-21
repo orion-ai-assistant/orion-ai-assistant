@@ -109,6 +109,13 @@ const SSE = {
         const chatId = data.chat_id;
         console.log("Gelen olay:", data);
 
+        // A new chat has no id until the POST response returns. Keep its fast
+        // SSE events in order instead of rendering them into an orphan state.
+        if (!AppState.currentChatId && AppState.pendingNewChatRequest && chatId) {
+            AppState.pendingChatEvents.push(data);
+            return;
+        }
+
         // Real-time synchronization for chat modifications
         if (data.type === "chat_rename") {
             if (window.loadChats) window.loadChats();

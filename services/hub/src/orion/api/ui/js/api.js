@@ -96,6 +96,11 @@ const API = {
 
         // Determine chatId (may be null for new chat)
         const chatId = AppState.currentChatId;
+        const wasNewChat = !chatId;
+        if (wasNewChat) {
+            AppState.pendingNewChatRequest = true;
+            AppState.pendingChatEvents = [];
+        }
 
         // If this specific chat is already generating, block
         if (chatId && AppState.isAnyChatGenerating(chatId)) {
@@ -132,20 +137,29 @@ const API = {
             if (response.ok) {
                 if (data.status === "failed") {
                     // No generation started
+                    AppState.pendingNewChatRequest = false;
+                    AppState.pendingChatEvents = [];
                 } else {
-                    const wasNewChat = !AppState.currentChatId;
                     AppState.currentChatId = data.chat_id;
                     AppState.startGenerating(data.chat_id);
                     UI.createBotMessagePlaceholder(data.chat_id, true);
                     UI.setStopButtonVisible(true);
+                    const pendingEvents = AppState.pendingChatEvents;
+                    AppState.pendingChatEvents = [];
+                    AppState.pendingNewChatRequest = false;
+                    pendingEvents.forEach(eventData => SSE.processEvent(eventData));
                     if (wasNewChat && window.loadChats) {
                         window.loadChats();
                     }
                 }
             } else {
+                AppState.pendingNewChatRequest = false;
+                AppState.pendingChatEvents = [];
                 UI.appendToken(chatId || 'error', `\n[API Hatası: ${JSON.stringify(data)}]`);
             }
         } catch (error) {
+            AppState.pendingNewChatRequest = false;
+            AppState.pendingChatEvents = [];
             UI.appendToken(chatId || 'error', `\n[İstek Hatası: ${error.message}]`);
         }
     },
@@ -202,7 +216,9 @@ const API = {
         try {
             const response = await this._fetch(`/api/v1/chats`);
             if (response.status === 401) return { error: "Oturum süresi doldu." };
-            return await response.json();
+            const data = await response.json();
+            if (!response.ok) return { error: data.detail || data.error || "Sohbetler alınamadı." };
+            return data;
         } catch (error) {
             console.error("Chat listesi getirme hatası:", error);
             return { error: error.message };
@@ -214,7 +230,9 @@ const API = {
         try {
             const response = await this._fetch(`/api/v1/chats/${chatId}/history`);
             if (response.status === 401) return { error: "Oturum süresi doldu." };
-            return await response.json();
+            const data = await response.json();
+            if (!response.ok) return { error: data.detail || data.error || "Sohbet geçmişi alınamadı." };
+            return data;
         } catch (error) {
             console.error("Chat geçmişi getirme hatası:", error);
             return { error: error.message };

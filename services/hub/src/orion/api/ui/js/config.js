@@ -16,6 +16,8 @@ const AppState = {
     sseReconnectAttempt: 0,
     sseReconnectTimer: null,
     sseConnectTimer: null,
+    pendingNewChatRequest: false,
+    pendingChatEvents: [],
     generationStartedAt: new Map(),
     firstTokenAt: new Map(),
 

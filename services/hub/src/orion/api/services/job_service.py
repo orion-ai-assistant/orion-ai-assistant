@@ -16,7 +16,7 @@ from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusR
 from orion.contracts.queue import JobQueueRecord
 from orion.kernel.config import get_runtime_settings
 from orion.kernel.registry import (
-    upsert_chat, get_user_chats_db, get_chat_history_db, delete_chat_db
+    upsert_chat, get_user_chats_db, get_chat_db, get_chat_history_db, delete_chat_db
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,13 @@ def chat_access_message(state: str) -> str:
 async def check_chat_access(redis: Redis, user_id: str, chat_id: str) -> ChatAccessResult:
     raw = await redis.hgetall(get_key(CHAT_META_KEY_PREFIX, chat_id))
     if not raw:
-        return ChatAccessResult(state="not_found", meta={})
+        persistent = await get_chat_db(chat_id)
+        if persistent is None:
+            return ChatAccessResult(state="not_found", meta={})
+        if persistent["user_id"] != user_id:
+            return ChatAccessResult(state="forbidden", meta=persistent)
+        await redis.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping=persistent)
+        return ChatAccessResult(state="ok", meta=persistent)
     if raw.get("user_id") != user_id:
         return ChatAccessResult(state="forbidden", meta=raw)
     return ChatAccessResult(state="ok", meta=raw)
@@ -151,26 +157,46 @@ async def get_job(redis: Redis, user_id: str, chat_id: str) -> JobStatusResponse
 async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
     """Return the user's chat list.
 
-    PostgreSQL is the source of truth for the chat list. Redis ZSET is kept
-    for fast active-session lookups by the worker, but the API always reads
-    the list from the DB to avoid stale or incomplete data after TTL expiry.
+    Redis is the hot path. PostgreSQL is used only when the Redis index or
+    metadata has expired, then the recovered chats are hydrated back into Redis.
     """
+    chat_ids = await redis.zrevrange(get_key(CHAT_USER_INDEX_PREFIX, user_id), 0, -1)
+    if chat_ids:
+        pipe = redis.pipeline()
+        for chat_id in chat_ids:
+            pipe.hgetall(get_key(CHAT_META_KEY_PREFIX, chat_id))
+        cached_chats = [meta for meta in await pipe.execute() if meta]
+        if len(cached_chats) == len(chat_ids):
+            return cached_chats
+
+    # Redis cache miss or incomplete metadata: recover from durable storage.
     try:
-        return await get_user_chats_db(user_id)
+        db_chats = await get_user_chats_db(user_id)
     except Exception:
         logger.exception("get_user_chats_db failed for user %s, falling back to Redis ZSET", user_id)
+        return cached_chats if chat_ids else []
 
-    # Graceful fallback: read from Redis if DB is unavailable
-    chat_ids = await redis.zrevrange(get_key(CHAT_USER_INDEX_PREFIX, user_id), 0, -1)
-    if not chat_ids:
-        return []
+    if db_chats:
+        pipe = redis.pipeline()
+        for chat in db_chats:
+            chat_id = chat["chat_id"]
+            meta = {
+                "chat_id": chat_id,
+                "user_id": chat["user_id"],
+                "name": chat.get("name", "New Chat"),
+                "created_at": chat["created_at"],
+                "updated_at": chat["updated_at"],
+                "channel": get_key(ROOM_USER_PREFIX, user_id),
+            }
+            pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping=meta)
+            pipe.expire(get_key(CHAT_META_KEY_PREFIX, chat_id), HISTORY_CACHE_TTL)
+            pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, user_id), {chat_id: _chat_timestamp(chat["updated_at"])})
+        await pipe.execute()
+    return db_chats
 
-    pipe = redis.pipeline()
-    for cid in chat_ids:
-        pipe.hgetall(get_key(CHAT_META_KEY_PREFIX, cid))
 
-    results = await pipe.execute()
-    return [meta for meta in results if meta]
+def _chat_timestamp(value: str) -> float:
+    return datetime.fromisoformat(value).timestamp()
 
 # ---------------------------------------------------------------------------
 # Chat History — Cache-Aside with Hydration

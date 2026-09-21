@@ -31,7 +31,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         UI.clearChatArea();
         
         let hasPartial = false;
-        if (history && !history.error) {
+        if (Array.isArray(history)) {
             if (history.length === 0) {
                 UI.chatArea.innerHTML = '<div class="message bot">Geçmiş bulunamadı.</div>';
             }
