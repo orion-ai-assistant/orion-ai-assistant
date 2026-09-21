@@ -36,11 +36,11 @@ const UI = {
 
         meta.innerHTML = `
             <span class="meta-item" title="İlk Token Süresi">
-                <span class="meta-icon">⚡</span> ilk token: <strong>${fmtFirst} ms</strong>
+                <span class="meta-icon">⚡</span> <strong>${fmtFirst} ms</strong>
             </span>
-            <span class="meta-sep">•</span>
+            <span class="meta-sep" style="opacity: 0.3; font-weight: normal; margin: 0 4px;">|</span>
             <span class="meta-item" title="Toplam Yanıt Süresi">
-                <span class="meta-icon">⏱️</span> toplam: <strong>${fmtTotal} ms</strong>
+                <span class="meta-icon">⏱️</span> <strong>${fmtTotal} ms</strong>
             </span>
         `;
         return meta;
@@ -63,26 +63,26 @@ const UI = {
 
         const div = document.createElement('div');
         div.className = 'message bot';
-        
+
         if (thinking) {
             const thinkDiv = document.createElement('details');
             thinkDiv.className = 'think-block';
             thinkDiv.open = false;
-            
+
             const summary = document.createElement('summary');
             summary.className = 'think-summary';
             const charCount = thinking.length;
             summary.innerHTML = `<span class="think-icon">💭</span> Düşünce <span class="think-char-count">(${charCount} karakter)</span>`;
             thinkDiv.appendChild(summary);
-            
+
             const thinkBody = document.createElement('pre');
             thinkBody.className = 'think-body';
             thinkBody.textContent = thinking;
             thinkDiv.appendChild(thinkBody);
-            
+
             div.appendChild(thinkDiv);
         }
-        
+
         const textNode = document.createTextNode(content);
         div.appendChild(textNode);
 
@@ -90,7 +90,7 @@ const UI = {
             const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
             if (meta) div.appendChild(meta);
         }
-        
+
         this.chatArea.appendChild(div);
         this.scrollToBottom();
     },
@@ -248,7 +248,7 @@ const UI = {
         }
 
         // Add metrics badge from Router to the bot message
-        if (hasTokens && botDivRef && metrics && (metrics.total_ms || metrics.first_token_ms)) {
+        if (botDivRef && metrics && (metrics.total_ms || metrics.first_token_ms)) {
             const metaEl = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
             if (metaEl && !botDivRef.querySelector('.message-meta')) {
                 botDivRef.appendChild(metaEl);
@@ -613,7 +613,7 @@ const UI = {
             try {
                 const d = new Date(chat.updated_at);
                 dateStr = d.toLocaleDateString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-            } catch(e) {}
+            } catch (e) { }
 
             const displayName = chat.name || `Sohbet ${chat.chat_id.substring(0, 8)}...`;
 

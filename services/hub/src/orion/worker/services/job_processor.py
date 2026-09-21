@@ -283,6 +283,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             stopped = False
             llm_done = False
             router_metrics: dict[str, Any] | None = None
+            generation_started_at = time.perf_counter()
+            first_token_at: float | None = None
 
             try:
                 async def _check_stop() -> bool:
@@ -304,11 +306,15 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     first_token = False
 
                     if kind == "thinking":
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
                         thinking_tokens.append(token)
                         await context.emit_thinking(token)
                         logging.info("Worker %s thinking token for chat %s", consumer_name, context.chat_id)
                         await redis.hset(state_key, "partial_thinking", "".join(thinking_tokens))
                     elif kind == "content":
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
                         output_tokens.append(token)
                         await context.emit_token(token)
                         logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token.rstrip())
@@ -330,6 +336,9 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 await redis.hset(state_key, "partial_text", "".join(output_tokens))
                 logging.info("Worker %s published error fallback immediately for chat %s", consumer_name, context.chat_id)
 
+            fallback_total_ms = round((time.perf_counter() - generation_started_at) * 1000, 2)
+            fallback_ttft_ms = round((first_token_at - generation_started_at) * 1000, 2) if first_token_at else fallback_total_ms
+
             if router_metrics and ("ttft_ms" in router_metrics or "total_duration_ms" in router_metrics):
                 ttft = router_metrics.get("ttft_ms") or 0
                 total_dur = router_metrics.get("total_duration_ms") or 0
@@ -338,7 +347,10 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     "total_ms": max(1, int(round(total_dur))),
                 }
             else:
-                metrics = None
+                metrics = {
+                    "first_token_ms": max(1, int(round(fallback_ttft_ms))),
+                    "total_ms": max(1, int(round(fallback_total_ms))),
+                }
 
             final_text = "".join(output_tokens)
 

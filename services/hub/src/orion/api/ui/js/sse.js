@@ -152,7 +152,7 @@ const SSE = {
                 UI.appendThinkingToken(chatId, data.data.token);
             } else if (data.type === "done" || data.type === "error") {
                 AppState.stopGenerating(chatId);
-                UI.finishGeneration(chatId, data.type === "done", data.data?.metrics);
+                UI.finishGeneration(chatId, data.type === "done", data.data);
             }
             return;
         }
@@ -176,9 +176,11 @@ const SSE = {
             }
         }
         else if (data.type === "thinking") {
+            AppState.markFirstToken(chatId);
             UI.appendThinkingToken(chatId, data.data.token);
         }
         else if (data.type === "token") {
+            AppState.markFirstToken(chatId);
             UI.appendToken(chatId, data.data.token);
         }
         else if (data.type === "audio") {
@@ -191,7 +193,8 @@ const SSE = {
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
             }
-            UI.finishGeneration(chatId, data.type === "done", data.data?.metrics);
+            UI.finishGeneration(chatId, data.type === "done", data.data);
+            AppState.clearGenerationMetrics(chatId);
             
             // Sidebar sohbet listesini ve başlıklarını güncelle (aktif sohbet ekranını sıfırlama)
             if (window.loadChats) {

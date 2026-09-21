@@ -171,14 +171,18 @@ const API = {
             // Emniyet süresi: 4 saniye içinde done gelmezse güvenli yedek olarak kapat
             setTimeout(() => {
                 if (AppState.isAnyChatGenerating(targetChatId)) {
+                    const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
                     AppState.stopGenerating(targetChatId);
-                    UI.finishGeneration(targetChatId);
+                    UI.finishGeneration(targetChatId, true, fallbackMetrics);
+                    AppState.clearGenerationMetrics(targetChatId);
                 }
             }, 4000);
         } catch (error) {
             console.error("Durdurma hatası:", error);
+            const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
             AppState.stopGenerating(targetChatId);
-            UI.finishGeneration(targetChatId);
+            UI.finishGeneration(targetChatId, true, fallbackMetrics);
+            AppState.clearGenerationMetrics(targetChatId);
         }
     },
 
