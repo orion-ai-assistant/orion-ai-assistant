@@ -10,7 +10,7 @@ import aiohttp
 
 from redis.asyncio import Redis
 
-from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX, HISTORY_CACHE_TTL
+from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX
 from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
@@ -101,7 +101,12 @@ def _history_key(chat_id: str) -> str:
     return f"{CHAT_HISTORY_KEY_PREFIX}{chat_id}"
 
 
-async def load_history(redis: Redis, chat_id: str, max_messages: int) -> list[dict[str, Any]]:
+async def load_history(
+    redis: Redis,
+    chat_id: str,
+    max_messages: int,
+    cache_ttl_seconds: int,
+) -> list[dict[str, Any]]:
     """Return the recent message history for a chat, with Cache-Aside hydration.
 
     1. Try Redis first (fast path).
@@ -140,11 +145,11 @@ async def load_history(redis: Redis, chat_id: str, max_messages: int) -> list[di
         pipe = redis.pipeline()
         for msg in db_history:
             pipe.rpush(key, json.dumps(msg))
-        pipe.expire(key, HISTORY_CACHE_TTL)
+        pipe.expire(key, cache_ttl_seconds)
         await pipe.execute()
         logging.info(
             "Hydrated %d messages into Redis for chat %s (TTL=%ds)",
-            len(db_history), chat_id, HISTORY_CACHE_TTL,
+            len(db_history), chat_id, cache_ttl_seconds,
         )
 
     # Return only the last max_messages entries
@@ -170,13 +175,13 @@ async def append_history(
     if not messages or max_messages <= 0:
         return
 
-    # 1. Write to Redis (hot cache — 1-hour TTL for active sessions)
+    # 1. Write to Redis (hot cache)
     key = _history_key(chat_id)
     pipe = redis.pipeline()
     for message in messages:
         pipe.rpush(key, json.dumps(message))
     pipe.ltrim(key, -max_messages, -1)
-    pipe.expire(key, HISTORY_CACHE_TTL)
+    pipe.expire(key, settings.redis_cache_ttl_seconds)
     await pipe.execute()
 
     # 2. Write-Through: persist to PostgreSQL
@@ -253,7 +258,12 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         await asyncio.sleep(settings.token_delay_ms / 1000)
         else:
             # --- Single-shot mode: stream directly from LLM ---
-            history = await load_history(redis, context.chat_id, settings.chat_history_max_messages)
+            history = await load_history(
+                redis,
+                context.chat_id,
+                settings.chat_history_max_messages,
+                settings.redis_cache_ttl_seconds,
+            )
             messages: list[dict[str, Any]] = []
             if settings.system_prompt:
                 messages.append({"role": "system", "content": settings.system_prompt})

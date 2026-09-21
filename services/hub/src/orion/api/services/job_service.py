@@ -8,8 +8,7 @@ from redis.asyncio import Redis
 from orion.contracts.access import ChatAccessResult
 from orion.contracts.constants import (
     CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX,
-    ROOM_USER_PREFIX, STREAM_NAME, CHAT_USER_INDEX_PREFIX, CHAT_HISTORY_KEY_PREFIX,
-    HISTORY_CACHE_TTL
+    ROOM_USER_PREFIX, STREAM_NAME, CHAT_USER_INDEX_PREFIX, CHAT_HISTORY_KEY_PREFIX
 )
 from orion.contracts.events import StreamEvent
 from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusResponse, JobStopResponse
@@ -44,7 +43,12 @@ async def check_chat_access(redis: Redis, user_id: str, chat_id: str) -> ChatAcc
             return ChatAccessResult(state="not_found", meta={})
         if persistent["user_id"] != user_id:
             return ChatAccessResult(state="forbidden", meta=persistent)
-        await redis.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping=persistent)
+        settings = await get_runtime_settings(redis, user_id)
+        meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
+        pipe = redis.pipeline()
+        pipe.hset(meta_key, mapping=persistent)
+        pipe.expire(meta_key, settings.redis_cache_ttl_seconds)
+        await pipe.execute()
         return ChatAccessResult(state="ok", meta=persistent)
     if raw.get("user_id") != user_id:
         return ChatAccessResult(state="forbidden", meta=raw)
@@ -100,7 +104,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         meta_update.update({"chat_id": chat_id, "user_id": payload.user_id, "created_at": now})
 
     pipe.hset(meta_key, mapping=meta_update)
-    pipe.expire(meta_key, settings.result_ttl_seconds)
+    pipe.expire(meta_key, settings.redis_cache_ttl_seconds)
 
     # ZSET Update (Redis chat index — kept for fast active-session lookups)
     timestamp = datetime.now(timezone.utc).timestamp()
@@ -166,6 +170,8 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
     Redis is the hot path. PostgreSQL is used only when the Redis index or
     metadata has expired, then the recovered chats are hydrated back into Redis.
     """
+    settings = await get_runtime_settings(redis, user_id)
+    cache_ttl = settings.redis_cache_ttl_seconds
     chat_ids = await redis.zrevrange(get_key(CHAT_USER_INDEX_PREFIX, user_id), 0, -1)
     if chat_ids:
         pipe = redis.pipeline()
@@ -183,6 +189,7 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
         return cached_chats if chat_ids else []
 
     if db_chats:
+        hydrated_chats = []
         pipe = redis.pipeline()
         for chat in db_chats:
             chat_id = chat["chat_id"]
@@ -194,15 +201,46 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
                 "updated_at": chat["updated_at"],
                 "channel": get_key(ROOM_USER_PREFIX, user_id),
             }
+            hydrated_chats.append(meta)
             pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping=meta)
-            pipe.expire(get_key(CHAT_META_KEY_PREFIX, chat_id), HISTORY_CACHE_TTL)
+            pipe.expire(get_key(CHAT_META_KEY_PREFIX, chat_id), cache_ttl)
             pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, user_id), {chat_id: _chat_timestamp(chat["updated_at"])})
         await pipe.execute()
-    return db_chats
+        return hydrated_chats
+    return []
 
 
 def _chat_timestamp(value: str) -> float:
     return datetime.fromisoformat(value).timestamp()
+
+
+def _append_processing_state(history: list[dict], state: dict[str, str]) -> None:
+    current_prompt = state.get("current_prompt", "")
+    partial_text = state.get("partial_text", "")
+    partial_thinking = state.get("partial_thinking", "")
+
+    already_persisted = False
+    if current_prompt:
+        already_persisted = bool(
+            history
+            and history[-1].get("role") == "user"
+            and history[-1].get("content") == current_prompt
+        )
+        if history and history[-1].get("role") == "assistant":
+            previous = history[-2] if len(history) > 1 else None
+            already_persisted = bool(
+                previous
+                and previous.get("role") == "user"
+                and previous.get("content") == current_prompt
+            )
+        if not already_persisted:
+            history.append({"role": "user", "content": current_prompt})
+
+    if (partial_text or partial_thinking) and not already_persisted:
+        assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
+        if partial_thinking:
+            assistant_entry["thinking"] = partial_thinking
+        history.append(assistant_entry)
 
 # ---------------------------------------------------------------------------
 # Chat History — Cache-Aside with Hydration
@@ -221,28 +259,22 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str) -> list[dic
        UI always reflects the live generation.
     """
     await ensure_chat_access(redis, user_id, chat_id)
-    history = await _load_history_with_hydration(redis, chat_id)
+    settings = await get_runtime_settings(redis, user_id)
+    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
 
     # Append in-progress tokens for the currently streaming message (if any)
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     if state and state.get("status") == "processing":
-        current_prompt = state.get("current_prompt", "")
-        partial_text = state.get("partial_text", "")
-        partial_thinking = state.get("partial_thinking", "")
-
-        if current_prompt:
-            history.append({"role": "user", "content": current_prompt})
-
-        if partial_text or partial_thinking:
-            assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
-            if partial_thinking:
-                assistant_entry["thinking"] = partial_thinking
-            history.append(assistant_entry)
+        _append_processing_state(history, state)
 
     return history
 
 
-async def _load_history_with_hydration(redis: Redis, chat_id: str) -> list[dict]:
+async def _load_history_with_hydration(
+    redis: Redis,
+    chat_id: str,
+    cache_ttl_seconds: int,
+) -> list[dict]:
     """Core Cache-Aside logic shared between user and admin history reads."""
     history_key = get_key(CHAT_HISTORY_KEY_PREFIX, chat_id)
     raw_items = await redis.lrange(history_key, 0, -1)
@@ -269,9 +301,12 @@ async def _load_history_with_hydration(redis: Redis, chat_id: str) -> list[dict]
         pipe = redis.pipeline()
         for msg in db_history:
             pipe.rpush(history_key, json.dumps(msg))
-        pipe.expire(history_key, HISTORY_CACHE_TTL)
+        pipe.expire(history_key, cache_ttl_seconds)
         await pipe.execute()
-        logger.info("Hydrated %d messages into Redis for chat %s (TTL=%ds)", len(db_history), chat_id, HISTORY_CACHE_TTL)
+        logger.info(
+            "Hydrated %d messages into Redis for chat %s (TTL=%ds)",
+            len(db_history), chat_id, cache_ttl_seconds,
+        )
 
     return db_history
 
@@ -285,22 +320,12 @@ async def get_chat_history_admin(redis: Redis, chat_id: str) -> list[dict]:
             raise HTTPException(status_code=404, detail="Chat not found")
         return db_history
 
-    history = await _load_history_with_hydration(redis, chat_id)
+    settings = await get_runtime_settings(redis, "global")
+    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
 
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     if state and state.get("status") == "processing":
-        current_prompt = state.get("current_prompt", "")
-        partial_text = state.get("partial_text", "")
-        partial_thinking = state.get("partial_thinking", "")
-
-        if current_prompt:
-            history.append({"role": "user", "content": current_prompt})
-
-        if partial_text or partial_thinking:
-            assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
-            if partial_thinking:
-                assistant_entry["thinking"] = partial_thinking
-            history.append(assistant_entry)
+        _append_processing_state(history, state)
 
     return history
 
