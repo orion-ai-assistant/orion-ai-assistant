@@ -1,3 +1,5 @@
+from typing import Any
+
 from redis.asyncio import Redis
 
 from orion.contracts.events import StreamEvent
@@ -91,7 +93,7 @@ class JobContext:
         event = StreamEvent.done(self.chat_id, status, metrics=metrics)
         await self._publish(event)
 
-    async def emit_error(self, message: str) -> None:
-        event = StreamEvent.error(self.chat_id, message)
+    async def emit_error(self, message: str, metrics: dict[str, Any] | None = None) -> None:
+        event = StreamEvent.error(self.chat_id, message, metrics=metrics)
         await self._publish(event)
 

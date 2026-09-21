@@ -96,6 +96,8 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe = redis.pipeline()
     pipe.hset(state_key, mapping=status_mapping)
     pipe.expire(state_key, settings.result_ttl_seconds)
+    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text).model_dump_json())
+    pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued").model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
 
     # Meta Güncelleme: Yeni chat ise her şeyi yaz, mevcut ise sadece güncellenme zamanını.
@@ -119,9 +121,6 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         # Non-fatal: Redis already accepted the job; DB write failure must not block the user.
         logger.exception("Write-Through upsert_chat failed for chat %s — continuing", chat_id)
 
-    # 5. Notify
-    await redis.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text).model_dump_json())
-    await redis.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued").model_dump_json())
     return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now)
 
 

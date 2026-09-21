@@ -10,6 +10,7 @@ const AppConfig = {
 const AppState = {
     currentChatId: null,
     generatingChats: new Set(),  // chat_id'ler burada tutulur
+    closedGenerationChats: new Set(),
     eventSource: null,
     sseConnected: false,
     sseShouldReconnect: false,
@@ -25,13 +26,25 @@ const AppState = {
         return this.generatingChats.has(this.currentChatId);
     },
     startGenerating(chatId) {
+        if (this.closedGenerationChats.has(chatId)) return false;
         this.generatingChats.add(chatId);
         if (!this.generationStartedAt.has(chatId)) {
             this.generationStartedAt.set(chatId, performance.now());
         }
+        return true;
     },
     stopGenerating(chatId) {
         this.generatingChats.delete(chatId);
+    },
+    closeGeneration(chatId) {
+        this.closedGenerationChats.add(chatId);
+        this.stopGenerating(chatId);
+    },
+    reopenGeneration(chatId) {
+        this.closedGenerationChats.delete(chatId);
+    },
+    isGenerationClosed(chatId) {
+        return this.closedGenerationChats.has(chatId);
     },
     markFirstToken(chatId) {
         if (!this.firstTokenAt.has(chatId)) {

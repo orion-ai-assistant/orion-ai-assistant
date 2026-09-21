@@ -101,6 +101,28 @@ def _history_key(chat_id: str) -> str:
     return f"{CHAT_HISTORY_KEY_PREFIX}{chat_id}"
 
 
+def _remove_failed_turns(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Exclude persisted router fallback turns from the next model request."""
+    fallback_prefixes = (
+        "⚠️ **Yönlendirici (Router) veya AI Modeline Bağlanılamadı",
+        "⚠️ **Model Yanıt Zaman Aşımı**",
+        "⚠️ **Yönlendirici (Router) Hatası:**",
+    )
+    filtered: list[dict[str, Any]] = []
+    for message in history:
+        is_failed_assistant = (
+            message.get("role") == "assistant"
+            and isinstance(message.get("content"), str)
+            and message["content"].startswith(fallback_prefixes)
+        )
+        if is_failed_assistant:
+            if filtered and filtered[-1].get("role") == "user":
+                filtered.pop()
+            continue
+        filtered.append(message)
+    return filtered
+
+
 async def load_history(
     redis: Redis,
     chat_id: str,
@@ -131,7 +153,7 @@ async def load_history(
             content = data.get("content")
             if role and content:
                 history.append({"role": role, "content": content})
-        return history
+        return _remove_failed_turns(history)
 
     # Cache Miss — hydrate from PostgreSQL
     logging.info("Worker cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
@@ -153,10 +175,10 @@ async def load_history(
         )
 
     # Return only the last max_messages entries
-    return [
+    return _remove_failed_turns([
         msg for msg in db_history[-max_messages:]
         if msg.get("role") and msg.get("content")
-    ]
+    ])
 
 
 async def append_history(
@@ -341,10 +363,29 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             except Exception as e:
                 logging.exception("LLM stream failed for chat %s; sending error to user", context.chat_id)
                 fallback_text = _format_router_fallback_message(e, settings)
-                output_tokens.append(fallback_text)
-                await context.emit_token(fallback_text)
-                await redis.hset(state_key, "partial_text", "".join(output_tokens))
-                logging.info("Worker %s published error fallback immediately for chat %s", consumer_name, context.chat_id)
+                failure_total_ms = max(1, round((time.perf_counter() - generation_started_at) * 1000))
+                failure_metrics = {
+                    "first_token_ms": max(
+                        1,
+                        round((first_token_at - generation_started_at) * 1000)
+                        if first_token_at else failure_total_ms,
+                    ),
+                    "total_ms": failure_total_ms,
+                }
+                await redis.hset(
+                    state_key,
+                    mapping={
+                        "status": "failed",
+                        "updated_at": utc_now(),
+                        "error": fallback_text,
+                        "result_json": json.dumps({"error": fallback_text, "metrics": failure_metrics}),
+                    },
+                )
+                await redis.expire(state_key, settings.result_ttl_seconds)
+                await context.emit_error(fallback_text, metrics=failure_metrics)
+                await redis.delete(f"{CHAT_STOP_KEY_PREFIX}{context.chat_id}")
+                logging.info("Worker %s failed chat %s with terminal error event", consumer_name, context.chat_id)
+                return
 
             fallback_total_ms = round((time.perf_counter() - generation_started_at) * 1000, 2)
             fallback_ttft_ms = round((first_token_at - generation_started_at) * 1000, 2) if first_token_at else fallback_total_ms

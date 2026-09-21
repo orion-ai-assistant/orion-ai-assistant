@@ -29,8 +29,16 @@ class StreamEvent(BaseModel):
         return cls(type="done", chat_id=chat_id, data=data)
 
     @classmethod
-    def error(cls, chat_id: str, message: str) -> "StreamEvent":
-        return cls(type="error", chat_id=chat_id, data={"message": message})
+    def error(
+        cls,
+        chat_id: str,
+        message: str,
+        metrics: dict[str, Any] | None = None,
+    ) -> "StreamEvent":
+        data: dict[str, Any] = {"message": message, "status": "failed"}
+        if metrics:
+            data.update(metrics)
+        return cls(type="error", chat_id=chat_id, data=data)
         
     @classmethod
     def user_message(cls, chat_id: str, text: str) -> "StreamEvent":

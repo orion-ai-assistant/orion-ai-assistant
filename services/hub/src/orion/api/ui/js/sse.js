@@ -132,6 +132,13 @@ const SSE = {
             return;
         }
 
+        if (
+            AppState.isGenerationClosed(chatId)
+            && ["accepted", "user_message", "thinking", "token", "audio"].includes(data.type)
+        ) {
+            return;
+        }
+
         if (chatId && (data.type === "accepted" || data.type === "token" || data.type === "thinking")) {
             if (!AppState.isAnyChatGenerating(chatId)) {
                 AppState.startGenerating(chatId);
@@ -158,8 +165,8 @@ const SSE = {
             } else if (data.type === "thinking") {
                 UI.appendThinkingToken(chatId, data.data.token);
             } else if (data.type === "done" || data.type === "error") {
-                AppState.stopGenerating(chatId);
-                UI.finishGeneration(chatId, data.type === "done", data.data);
+                AppState.closeGeneration(chatId);
+                UI.finishGeneration(chatId, true, data.data);
             }
             return;
         }
@@ -169,18 +176,8 @@ const SSE = {
             UI.createBotMessagePlaceholder(chatId);
         }
         else if (data.type === "user_message") {
-            const messages = UI.chatArea.querySelectorAll('.message.user');
-            let alreadyAdded = false;
-            if (messages.length > 0) {
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg.textContent === data.data.text) {
-                    alreadyAdded = true;
-                }
-            }
-            if (!alreadyAdded) {
-                UI.appendUserMessage(data.data.text);
-                UI.createBotMessagePlaceholder(chatId, true);
-            }
+            UI.appendUserMessage(data.data.text);
+            UI.createBotMessagePlaceholder(chatId, true);
         }
         else if (data.type === "thinking") {
             AppState.markFirstToken(chatId);
@@ -196,11 +193,11 @@ const SSE = {
             }
         }
         else if (data.type === "done" || data.type === "error") {
-            AppState.stopGenerating(chatId);
+            AppState.closeGeneration(chatId);
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
             }
-            UI.finishGeneration(chatId, data.type === "done", data.data);
+            UI.finishGeneration(chatId, true, data.data);
             AppState.clearGenerationMetrics(chatId);
             
             // Sidebar sohbet listesini ve başlıklarını güncelle (aktif sohbet ekranını sıfırlama)

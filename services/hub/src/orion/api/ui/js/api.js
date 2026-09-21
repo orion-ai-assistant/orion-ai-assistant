@@ -97,14 +97,18 @@ const API = {
         // Determine chatId (may be null for new chat)
         const chatId = AppState.currentChatId;
         const wasNewChat = !chatId;
-        if (wasNewChat) {
-            AppState.pendingNewChatRequest = true;
-            AppState.pendingChatEvents = [];
-        }
 
         // If this specific chat is already generating, block
         if (chatId && AppState.isAnyChatGenerating(chatId)) {
             return;
+        }
+
+        if (chatId) {
+            AppState.reopenGeneration(chatId);
+        }
+        if (wasNewChat) {
+            AppState.pendingNewChatRequest = true;
+            AppState.pendingChatEvents = [];
         }
 
         // Update UI for sending
@@ -182,19 +186,19 @@ const API = {
 
             // Sunucu durdurma işlemini tamamlayıp SSE üzerinden 'done' yollayana kadar
             // gelen son tokenlar normal şekilde ekrana akmaya devam eder.
-            // Emniyet süresi: 4 saniye içinde done gelmezse güvenli yedek olarak kapat
+            // Emniyet süresi: 2 saniye içinde done gelmezse güvenli yedek olarak kapat
             setTimeout(() => {
                 if (AppState.isAnyChatGenerating(targetChatId)) {
                     const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
-                    AppState.stopGenerating(targetChatId);
+                    AppState.closeGeneration(targetChatId);
                     UI.finishGeneration(targetChatId, true, fallbackMetrics);
                     AppState.clearGenerationMetrics(targetChatId);
                 }
-            }, 4000);
+            }, 2000);
         } catch (error) {
             console.error("Durdurma hatası:", error);
             const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
-            AppState.stopGenerating(targetChatId);
+            AppState.closeGeneration(targetChatId);
             UI.finishGeneration(targetChatId, true, fallbackMetrics);
             AppState.clearGenerationMetrics(targetChatId);
         }
