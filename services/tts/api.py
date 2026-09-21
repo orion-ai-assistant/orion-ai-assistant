@@ -180,7 +180,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
 
-        generic_model_names = {"local-model", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+        generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
         instruct_val = getattr(speech_request, "instructions", None)
         if not instruct_val:
             model_val = (speech_request.model or "").strip()

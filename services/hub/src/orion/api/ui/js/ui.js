@@ -470,7 +470,7 @@ const UI = {
             "tts_enabled": "TTS ses sentezleyici aktif olsun mu?",
             "router_api_key": "Orion Router API Key",
             "system_prompt": "Asistanın ana rolü ve sistem talimatı",
-            "temperature": "Yaratıcılık katsayısı (0.0 - 1.0)",
+            "temperature": "Yaratıcılık katsayısı (0.0 - 2.0)",
             "chat_history_max_messages": "Hafızada tutulacak maksimum mesaj sayısı"
         };
 

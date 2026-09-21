@@ -346,7 +346,7 @@ async def generate_tts(
     lowered_model = raw_model.lower()
 
     if not raw_model:
-        tts_model = "voxcpm2"
+        tts_model = "local-tts"
         provider = "local"
     else:
         # Use exact model specified by the user without auto-correcting

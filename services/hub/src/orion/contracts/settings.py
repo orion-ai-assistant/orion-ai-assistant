@@ -17,7 +17,7 @@ class AISettings(BaseModel):
     embed_timeout_seconds: int = 60
     
     thinking_level: str = ""
-    temperature: float = 0.7
+    temperature: float = 0.9
     
     # Router Configuration
     router_api_key: str = ""
@@ -26,7 +26,7 @@ class AISettings(BaseModel):
     # TTS Configuration
     tts_enabled: bool = True
     tts_voice: str = ""
-    tts_model: str = "voxcpm2"
+    tts_model: str = "local-tts"
     tts_timeout_seconds: int = 15
 
 
