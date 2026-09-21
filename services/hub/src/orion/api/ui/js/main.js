@@ -125,7 +125,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         try {
             const user = await Auth.getMe();
             AppConfig.setUserId(user.username);
-            document.getElementById("user-profile-badge").textContent = `Hoşgeldin, ${user.username}`;
+            document.getElementById("user-profile-badge").textContent = user.username;
             document.getElementById("auth-modal").classList.remove("show");
             document.getElementById("auth-password").value = "";
             const errEl = document.getElementById("auth-error");
