@@ -114,8 +114,13 @@ async def seed_database_settings(redis: Redis) -> None:
         await upsert_setting_overrides(SETTINGS_DEFAULT_USER, overrides)
         # Also refresh Redis for global user
         await refresh_runtime_settings(redis, SETTINGS_DEFAULT_USER)
-    elif existing.get("temperature") == "0.7":
-        await upsert_setting_overrides(SETTINGS_DEFAULT_USER, {"temperature": "0.9"})
+    elif existing.get("temperature") == "0.7" or existing.get("router_model_group") == "local-model":
+        updates = {}
+        if existing.get("temperature") == "0.7":
+            updates["temperature"] = "0.9"
+        if existing.get("router_model_group") == "local-model":
+            updates["router_model_group"] = "local-chat"
+        await upsert_setting_overrides(SETTINGS_DEFAULT_USER, updates)
         await refresh_runtime_settings(redis, SETTINGS_DEFAULT_USER)
 
 

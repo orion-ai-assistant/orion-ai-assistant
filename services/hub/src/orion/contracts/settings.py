@@ -21,7 +21,7 @@ class AISettings(BaseModel):
     
     # Router Configuration
     router_api_key: str = ""
-    router_model_group: str = "local-model"
+    router_model_group: str = "local-chat"
 
     # TTS Configuration
     tts_enabled: bool = True
