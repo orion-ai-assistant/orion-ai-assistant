@@ -13,11 +13,11 @@ const STT = {
     _listenerAttached: false,
     
     // Router adresi ve portu (Router varsayılan portu 20128)
-    getRouterWsUrl(apiKey, language = 'tr') {
+    getRouterWsUrl(apiKey, language = 'tr', model = 'local-stt') {
         const host = window.location.hostname || 'localhost';
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const routerPort = 20128;
-        return `${protocol}//${host}:${routerPort}/v1/audio/transcriptions/stream?token=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(language)}`;
+        return `${protocol}//${host}:${routerPort}/v1/audio/transcriptions/stream?token=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`;
     },
 
     // Float32 Web Audio tamponunu 16kHz 16-bit Mono PCM'e dönüştürme
@@ -104,12 +104,24 @@ const STT = {
 
         // Router API Key'ini al
         let routerApiKey = '';
+        let sttModel = 'local-stt';
         try {
             const settings = await API.getSettings();
+            if (settings.error) throw new Error(settings.error);
+            if (settings.stt_enabled === false || settings.stt_enabled === 'false') {
+                alert('Canlı sesli yazma ayarlardan kapalı.');
+                return;
+            }
+            sttModel = settings.stt_model || 'local-stt';
+            if (sttModel !== 'local-stt') {
+                alert('Canlı sesli yazma yalnızca local-stt modelini destekliyor. Ayarlardan yerel modeli seçin.');
+                return;
+            }
             const rawKey = (settings?.router_api_key || '').trim();
             routerApiKey = (rawKey && rawKey !== 'sk-60f3eaf169d7c485-0icocf-0a3db541') ? rawKey : 'orion';
         } catch (e) {
-            routerApiKey = 'orion';
+            alert('Sesli yazma ayarları alınamadı: ' + e.message);
+            return;
         }
 
         const micBtn = document.getElementById('mic-btn');
@@ -145,7 +157,7 @@ const STT = {
             const inputSampleRate = this.audioCtx.sampleRate;
 
             // 3. WebSocket Bağlantısı
-            const wsUrl = this.getRouterWsUrl(routerApiKey, 'tr');
+            const wsUrl = this.getRouterWsUrl(routerApiKey, 'tr', sttModel);
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {

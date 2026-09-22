@@ -15,6 +15,7 @@ from orion.contracts.constants import ACTIVE_TURN_KEY_PREFIX, CHAT_HISTORY_KEY_P
 from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
+from orion.worker.services.chat_titles import generate_chat_title
 from orion.worker.services.router import llama_stream_chat_typed, generate_tts
 
 
@@ -649,6 +650,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 if not finalized:
                     return
                 await context.emit_done("completed", metrics=metrics)
+                if llm_done:
+                    await generate_chat_title(context, settings)
                 if metrics:
                     logging.info(
                         "Worker %s completed chat %s with Router metrics (TTFT: %s ms, Total: %dms)",

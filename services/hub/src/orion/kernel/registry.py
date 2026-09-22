@@ -408,3 +408,18 @@ async def delete_chat_db(chat_id: str) -> None:
         await conn.execute("delete from orion_chats where id = $1", chat_id)
     finally:
         await conn.close()
+
+
+async def replace_initial_chat_title(chat_id: str, expected: str, title: str) -> bool:
+    """Do not overwrite a title the user renamed while generation was running."""
+    conn = await _connect()
+    if conn is None:
+        return False
+    try:
+        result = await conn.execute(
+            "update orion_chats set title = $3 where id = $1 and title = $2",
+            chat_id, expected, title,
+        )
+        return result == "UPDATE 1"
+    finally:
+        await conn.close()

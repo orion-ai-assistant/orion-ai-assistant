@@ -208,3 +208,12 @@ async def delete_user_setting_endpoint(user_id: str, key: str, request: Request)
 @router.get("/api/v1/admin/settings/schema")
 async def get_settings_schema() -> list[str]:
     return list(_allowed_keys)
+
+
+@router.get("/api/v1/models")
+async def chat_models_endpoint(current_user: str = Depends(get_current_user)):
+    from orion.kernel.router_models import get_router_catalog
+    try:
+        return await get_router_catalog(force_refresh=True)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -14,6 +14,8 @@ from orion.contracts.constants import (
 from orion.contracts.events import StreamEvent
 from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusResponse, JobStopResponse
 from orion.contracts.queue import JobQueueRecord
+from orion.kernel.router_models import require_chat_model, ModelNotFoundError
+from orion.kernel.chat_titles import initial_chat_title
 from orion.kernel.config import get_runtime_settings
 from orion.kernel.registry import (
     upsert_chat, rename_chat_db, touch_chat_db, get_user_chats_db, get_chat_db,
@@ -68,6 +70,12 @@ async def ensure_chat_access(redis: Redis, user_id: str, chat_id: str) -> dict:
 
 async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateResponse:
     settings = await get_runtime_settings(redis, payload.user_id)
+    try:
+        await require_chat_model(settings.router_model_group)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     now = utc_now()
     turn_id = str(uuid4())
     chat_id = payload.chat_id or str(uuid4())
@@ -79,6 +87,8 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         if not access.allowed:
             await redis.publish(channel, StreamEvent.error(chat_id, chat_access_message(access.state)).model_dump_json())
             return JobCreateResponse(chat_id=chat_id, status="failed", created_at=now, turn_id=None, generation_id=None)
+
+    title = initial_chat_title(payload.input.text) if not payload.chat_id else access.meta.get("name", "Yeni sohbet")
 
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
@@ -113,7 +123,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     # Meta Güncelleme: Yeni chat ise her şeyi yaz, mevcut ise sadece güncellenme zamanını.
     meta_update = {"updated_at": now, "channel": channel}
     if not payload.chat_id:
-        meta_update.update({"chat_id": chat_id, "user_id": payload.user_id, "created_at": now})
+        meta_update.update({"chat_id": chat_id, "user_id": payload.user_id, "created_at": now, "name": title})
 
     pipe.hset(meta_key, mapping=meta_update)
     pipe.expire(meta_key, settings.redis_cache_ttl_seconds)
@@ -132,9 +142,9 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
 
     # 4. Write-Through: Persist chat metadata to PostgreSQL
     try:
-        await upsert_chat(chat_id=chat_id, user_id=payload.user_id)
+        await upsert_chat(chat_id=chat_id, user_id=payload.user_id, title=title)
     except Exception:
-        # Non-fatal: Redis already accepted the job; DB write failure must not block the user.
+        # Redis already accepted the job, so a temporary DB outage is non-fatal.
         logger.exception("Write-Through upsert_chat failed for chat %s — continuing", chat_id)
 
     return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id, generation_id=turn_id)

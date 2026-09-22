@@ -115,6 +115,16 @@ const SSE = {
             return;
         }
 
+        if (data.type === 'chat_title_warning') {
+            if (chatId === AppState.currentChatId) {
+                const notice = document.createElement('div');
+                notice.className = 'message bot';
+                notice.textContent = data.data?.message || 'Başlık güncellenemedi.';
+                UI.chatArea.appendChild(notice);
+            }
+            return;
+        }
+
         // Real-time synchronization for chat modifications
         if (data.type === "chat_rename") {
             if (window.loadChats) window.loadChats();

@@ -284,6 +284,16 @@ const API = {
         }
     },
 
+    async getChatModels() {
+        try {
+            const response = await this._fetch('/api/v1/models');
+            const data = await response.json();
+            return response.ok ? data : {error: data.detail || 'Model listesi alınamadı.'};
+        } catch (error) {
+            return {error: error.message};
+        }
+    },
+
     async getSettings() {
         try {
             const response = await this._fetch(`/api/v1/admin/settings`);

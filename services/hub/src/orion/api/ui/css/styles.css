@@ -1527,3 +1527,19 @@ details[open] > .think-summary::before {
     from { opacity: 0; }
     to { opacity: 1; }
 }
+
+/* Native option popups also need an explicit dark palette on Windows. */
+.setting-select {
+    color-scheme: dark;
+}
+.setting-select option, .setting-select optgroup {
+    background-color: #182124;
+    color: #f1f5f9;
+}
+.settings-catalog-toolbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}

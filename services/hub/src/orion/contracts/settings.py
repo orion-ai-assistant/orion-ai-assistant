@@ -9,6 +9,8 @@ class SystemSettings(BaseModel):
 
 
 class AISettings(BaseModel):
+    ai_chat_titles_enabled: bool = False
+    chat_title_model: str = ""
     first_token_delay_ms: int = 0
     token_delay_ms: int = 50
     chat_history_max_messages: int = 20
@@ -22,6 +24,9 @@ class AISettings(BaseModel):
     # Router Configuration
     router_api_key: str = ""
     router_model_group: str = "local-chat"
+
+    stt_enabled: bool = True
+    stt_model: str = "local-stt"
 
     # TTS Configuration
     tts_enabled: bool = True

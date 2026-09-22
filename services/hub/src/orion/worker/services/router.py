@@ -25,6 +25,7 @@ from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
 from services.shared.environment import get_router_base_urls, get_tts_base_urls
 from orion.contracts.settings import RuntimeSettings
+from orion.kernel.router_models import get_model_provider
 
 
 def _get_router_api_key(settings: RuntimeSettings) -> str:
@@ -89,6 +90,25 @@ def _chat_provider(model_group: str) -> str | None:
     return None
 
 
+async def _chat_headers(settings: RuntimeSettings) -> dict[str, str]:
+    """Use identical provider routing for streaming replies and title requests."""
+    api_key = _get_router_api_key(settings)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "x-orion-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    provider = _chat_provider(settings.router_model_group)
+    if provider is None:
+        try:
+            provider = await get_model_provider(settings.router_model_group, "chat")
+        except RuntimeError:
+            provider = None
+    if provider:
+        headers["x-orion-provider"] = provider
+    return headers
+
+
 # ---------------------------------------------------------------------------
 #  Timeout Helpers
 # ---------------------------------------------------------------------------
@@ -125,15 +145,7 @@ async def llama_stream_chat_typed(
     session = await get_session()
 
     urls = _router_urls("/v1/chat/completions")
-    api_key = _get_router_api_key(settings)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "x-orion-api-key": api_key,
-        "Content-Type": "application/json",
-    }
-    provider = _chat_provider(settings.router_model_group)
-    if provider:
-        headers["x-orion-provider"] = provider
+    headers = await _chat_headers(settings)
     payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
@@ -311,12 +323,7 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
     session = await get_session()
 
     urls = _router_urls("/v1/chat/completions")
-    api_key = _get_router_api_key(settings)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "x-orion-api-key": api_key,
-        "Content-Type": "application/json",
-    }
+    headers = await _chat_headers(settings)
     payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
@@ -426,19 +433,19 @@ async def generate_tts(
         tts_model = "local-tts"
         provider = "local"
     else:
-        # Use exact model specified by the user without auto-correcting
+        # Use exact model specified by the user without auto-correcting.
         tts_model = raw_model
-        if "gemini" in lowered_model:
-            provider = "gemini"
-        elif "openai" in lowered_model or "tts-1" in lowered_model:
-            provider = "openai"
-        elif lowered_model in ("voxcpm", "voxcpm2", "local", "local-model", "local-tts"):
-            provider = "local"
-        else:
-            raise ValueError(
-                f"Desteklenmeyen TTS modeli: {tts_model}. "
-                "Model adında gemini, openai veya local kullanın."
-            )
+        try:
+            provider = await get_model_provider(tts_model, "tts")
+        except RuntimeError:
+            if "gemini" in lowered_model:
+                provider = "gemini"
+            elif "openai" in lowered_model or "tts-1" in lowered_model:
+                provider = "openai"
+            elif lowered_model in ("voxcpm", "voxcpm2", "local", "local-model", "local-tts"):
+                provider = "local"
+            else:
+                raise
 
     raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
     voice_name = (raw_voice or "").strip()
