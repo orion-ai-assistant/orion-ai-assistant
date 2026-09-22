@@ -13,10 +13,17 @@ vm.runInContext(`${source}\nthis.testState = AppState;`, context);
 const state = context.testState;
 state.showOptimisticUserMessage('Merhaba', null);
 assert.strictEqual(state.claimOptimisticUserMessage('chat-1', 'Merhaba'), false);
-state.bindOptimisticUserMessage('chat-1');
+state.pendingNewChatRequest = true;
+assert.strictEqual(state.adoptPendingNewChat('chat-1'), true);
+assert.strictEqual(state.currentChatId, 'chat-1');
+assert.strictEqual(state.pendingNewChatRequest, false);
 assert.strictEqual(state.claimOptimisticUserMessage('chat-1', 'Başka mesaj'), false);
 assert.strictEqual(state.claimOptimisticUserMessage('chat-1', 'Merhaba'), true);
 assert.strictEqual(state.optimisticUserMessage, null);
+
+state.pendingNewChatRequest = true;
+assert.strictEqual(state.adoptPendingNewChat('chat-2'), false);
+state.pendingNewChatRequest = false;
 
 state.showOptimisticUserMessage('Tekrar', 'chat-2');
 state.clearOptimisticUserMessage();

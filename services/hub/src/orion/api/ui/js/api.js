@@ -151,11 +151,18 @@ const API = {
                     AppState.clearOptimisticUserMessage();
                     UI.setStopButtonVisible(false);
                 } else {
+                    const adoptedFromSse = Boolean(
+                        wasNewChat
+                        && AppState.currentChatId === data.chat_id
+                        && !AppState.pendingNewChatRequest
+                    );
                     AppState.currentChatId = data.chat_id;
                     AppState.bindOptimisticUserMessage(data.chat_id);
                     const turnId = data.turn_id || data.generation_id || null;
-                    AppState.startGenerating(data.chat_id, turnId);
-                    UI.setStopButtonVisible(true);
+                    if (!adoptedFromSse) {
+                        AppState.startGenerating(data.chat_id, turnId);
+                    }
+                    UI.setStopButtonVisible(AppState.isAnyChatGenerating(data.chat_id));
                     const pendingEvents = AppState.pendingChatEvents;
                     AppState.pendingChatEvents = [];
                     AppState.pendingNewChatRequest = false;

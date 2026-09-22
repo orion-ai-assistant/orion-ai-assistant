@@ -33,6 +33,15 @@ const AppState = {
             this.optimisticUserMessage.chatId = chatId;
         }
     },
+    adoptPendingNewChat(chatId) {
+        if (!this.pendingNewChatRequest || this.currentChatId || !chatId) {
+            return false;
+        }
+        this.currentChatId = chatId;
+        this.bindOptimisticUserMessage(chatId);
+        this.pendingNewChatRequest = false;
+        return true;
+    },
     claimOptimisticUserMessage(chatId, text) {
         const pending = this.optimisticUserMessage;
         const matches = Boolean(

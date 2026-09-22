@@ -6,12 +6,13 @@ from orion.api.services import job_service
 from orion.contracts.http import JobCreateRequest
 from orion.contracts.settings import RuntimeSettings
 from orion.kernel.chat_titles import initial_chat_title
+from orion.kernel import router_models
 from orion.worker.services import chat_titles, router
 
 
 class TitleTestBase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        for module, name, result in [(job_service, "require_chat_model", None), (chat_titles, "require_chat_model", None), (chat_titles, "get_chat_db", {"name": "hello"})]:
+        for module, name, result in [(chat_titles, "get_chat_db", {"name": "hello"})]:
             patcher = patch.object(module, name, AsyncMock(return_value=result))
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -108,12 +109,13 @@ class UpdatedTitleTests(TitleTestBase):
             await chat_titles.generate_chat_title(context, RuntimeSettings(ai_chat_titles_enabled=True))
         persist.assert_not_awaited()
 
-    async def test_missing_model_rejected_before_queue(self):
-        from orion.kernel.router_models import ModelNotFoundError
-        from fastapi import HTTPException
-        redis = AsyncMock()
-        with patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())), patch.object(job_service, "require_chat_model", AsyncMock(side_effect=ModelNotFoundError("Model bulunamadı. Orion Router’a ekleyin."))):
-            with self.assertRaises(HTTPException) as error:
-                await job_service.create_job(redis, JobCreateRequest(user_id="u", input={"text": "hello"}))
-        self.assertEqual(error.exception.status_code, 400)
-        redis.pipeline.assert_not_called()
+
+class ModelSettingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_model_is_validated_when_setting_is_saved(self):
+        with patch.object(
+            router_models, "get_model_provider", AsyncMock(return_value="gemini")
+        ) as provider:
+            await router_models.validate_model_updates(
+                {"router_model_group": "gemini-test", "temperature": "0.3"}
+            )
+        provider.assert_awaited_once_with("gemini-test", "chat")

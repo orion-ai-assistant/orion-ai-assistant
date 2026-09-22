@@ -7,7 +7,6 @@ from orion.contracts.constants import CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFI
 from orion.contracts.events import StreamEvent
 from orion.kernel.chat_titles import initial_chat_title
 from orion.kernel.registry import replace_initial_chat_title, get_chat_db
-from orion.kernel.router_models import require_chat_model
 from orion.worker.services.router import llama_chat
 
 
@@ -29,7 +28,6 @@ async def generate_chat_title(context, settings):
         if not meta:
             return
         previous_title = meta.get("name", "")
-        await require_chat_model(model)
         result = await asyncio.wait_for(llama_chat([
             {"role": "system", "content": (
                 "Write a specific conversation title of 3 to 6 words in the latest question's language. "

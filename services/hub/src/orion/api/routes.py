@@ -10,6 +10,7 @@ from orion.contracts.constants import ROOM_USER_PREFIX # Prefix'i direkt buradan
 from pydantic import BaseModel, Field
 
 from orion.kernel.config import RuntimeSettings, get_runtime_settings, update_runtime_settings, _allowed_keys, get_all_users_settings, delete_runtime_setting, is_protected_global_key
+from orion.kernel.router_models import validate_model_updates, ModelNotFoundError
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
 from orion.api.auth_routes import get_current_user
@@ -167,6 +168,13 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request, curr
     for key in payload.values.keys():
         if key.lower() not in _allowed_keys:
             raise HTTPException(status_code=400, detail=f"Geçersiz ayar anahtarı: {key}")
+
+    try:
+        await validate_model_updates(payload.values)
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # Global ayarları değiştirmek için Admin API Key zorunlu
     if payload.user_id == SETTINGS_DEFAULT_USER:

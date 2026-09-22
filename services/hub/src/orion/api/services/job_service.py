@@ -14,7 +14,6 @@ from orion.contracts.constants import (
 from orion.contracts.events import StreamEvent
 from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusResponse, JobStopResponse
 from orion.contracts.queue import JobQueueRecord
-from orion.kernel.router_models import require_chat_model, ModelNotFoundError
 from orion.kernel.chat_titles import initial_chat_title
 from orion.kernel.config import get_runtime_settings
 from orion.kernel.registry import (
@@ -70,12 +69,6 @@ async def ensure_chat_access(redis: Redis, user_id: str, chat_id: str) -> dict:
 
 async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateResponse:
     settings = await get_runtime_settings(redis, payload.user_id)
-    try:
-        await require_chat_model(settings.router_model_group)
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     now = utc_now()
     turn_id = str(uuid4())
     chat_id = payload.chat_id or str(uuid4())

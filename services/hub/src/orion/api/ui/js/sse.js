@@ -111,8 +111,13 @@ const SSE = {
         console.log("Gelen olay:", data);
 
         if (AppState.pendingNewChatRequest && chatId) {
-            AppState.pendingChatEvents.push(data);
-            return;
+            // The first server event already proves that the new chat was
+            // queued. Adopt its id immediately so tokens do not wait for the
+            // slower HTTP response and durable metadata write.
+            if (!AppState.adoptPendingNewChat(chatId)) {
+                AppState.pendingChatEvents.push(data);
+                return;
+            }
         }
 
         if (data.type === 'chat_title_warning') {

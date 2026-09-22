@@ -55,11 +55,6 @@ async def get_router_catalog(force_refresh: bool = False) -> dict:
     raise RuntimeError("Orion Router model listesi alınamadı. Router bağlantısını ve yönetim anahtarını kontrol edin.") from last_error
 
 
-async def get_chat_models() -> list[dict]:
-    catalog = await get_router_catalog()
-    return [m for m in catalog["models"] if m["capability"] == "chat"]
-
-
 async def get_model_provider(name: str, capability: str) -> str | None:
     catalog = await get_router_catalog()
     for model in catalog["models"]:
@@ -68,7 +63,16 @@ async def get_model_provider(name: str, capability: str) -> str | None:
     raise ModelNotFoundError(
         f"Model bulunamadı: {name}. Modeli Orion Router’a ekleyin ve etkinleştirin (Modeller sayfası)."
     )
-
-
-async def require_chat_model(name: str) -> None:
-    await get_model_provider(name, "chat")
+async def validate_model_updates(updates: dict[str, str]) -> None:
+    """Validate model settings when they change, outside the message hot path."""
+    model_capabilities = {
+        "router_model_group": "chat",
+        "chat_title_model": "chat",
+        "tts_model": "tts",
+        "stt_model": "stt",
+    }
+    for key, value in updates.items():
+        capability = model_capabilities.get(key.lower())
+        model_name = str(value).strip()
+        if capability and model_name:
+            await get_model_provider(model_name, capability)
