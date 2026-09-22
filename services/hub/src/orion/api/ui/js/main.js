@@ -16,7 +16,8 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     window.loadChat = async (chatId) => {
         if (!AppState.sseConnected) return;
-        AppState.currentChatId = chatId;
+        AppState.selectChat(chatId);
+        const selectionVersion = AppState.chatSelectionVersion;
         AppState._loadingHistory = true;
         AppState._sseBuffer = [];
         
@@ -26,7 +27,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const history = await API.getChatHistory(chatId);
         
         // If another loadChat was called while we were fetching, discard this one
-        if (currentSeq !== loadChatSeq) return;
+        if (currentSeq !== loadChatSeq || selectionVersion !== AppState.chatSelectionVersion) return;
 
         const cachedLiveState = AppState.getActiveTurn(chatId) ? UI._chatDivs[chatId] : null;
         const hasCachedLiveMessage = Boolean(cachedLiveState?.botDiv);
@@ -78,16 +79,13 @@ document.addEventListener("DOMContentLoaded", async () => {
             UI.chatArea.innerHTML = `<div class="message bot">Hata: ${history ? history.error : 'Geçmiş alınamadı.'}</div>`;
         }
         
-        if (!hasPartial) {
-            AppState.stopGenerating(chatId);
-        }
 
         // CRITICAL FIX: Only show stop button if chat is ACTIVELY generating in AppState
         // Do NOT rely solely on hasPartial flag from history, as it may be stale
         // when error event just arrived but history hasn't refreshed yet
         const isActivelyGenerating = AppState.isAnyChatGenerating(chatId);
         
-        if (isActivelyGenerating && hasPartial) {
+        if (isActivelyGenerating) {
             // Chat is generating live via SSE — re-attach the bot div if not already there
             const chatState = UI._chatDivs[chatId];
             if (chatState && chatState.botDiv && !UI.chatArea.contains(chatState.botDiv)) {
@@ -217,7 +215,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Event Listeners
     document.getElementById('new-chat-btn').addEventListener('click', () => {
-        AppState.currentChatId = null;
+        AppState.selectChat(null);
         UI.clearChatArea();
         renderWelcomeHero();
         loadChats();
@@ -228,7 +226,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         SSE.disconnect();
         if (window.stopUserPolling) window.stopUserPolling();
         // State temizliği
-        AppState.currentChatId = null;
+        AppState.selectChat(null);
         AppState.activeTurns.clear();
         
         // UI Temizliği
@@ -335,19 +333,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Event listener for dynamically rendered setting save buttons is handled globally via window.saveSetting
 
     // Load initial settings
+    let settingsLoading = false;
+    const settingsVisible = () => !document.hidden && document.getElementById('settings-view')?.classList.contains('active');
     const loadInitialSettings = async () => {
-        if (!Auth.getToken() || !AppState.sseConnected) return;
-        const data = await API.getSettings();
-        if (data && !data.error) {
-            UI.renderSettings(data);
-            if (audioToggle && data.tts_enabled !== undefined) {
-                const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
-                audioToggle.checked = isEnabled;
-                localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+        if (!settingsVisible() || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
+        settingsLoading = true;
+        try {
+            const data = await API.getSettings();
+            if (settingsVisible() && data && !data.error) {
+                UI.renderSettings(data);
+                await UI.loadModelChoices(data, true);
+                if (audioToggle && data.tts_enabled !== undefined) {
+                    const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
+                    audioToggle.checked = isEnabled;
+                    localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+                }
             }
+        } finally {
+            settingsLoading = false;
         }
     };
     window.loadInitialSettings = loadInitialSettings;
+    setInterval(loadInitialSettings, 5000);
+    document.addEventListener('visibilitychange', loadInitialSettings);
 
     let userPollTimer = null;
     const startUserPolling = () => {

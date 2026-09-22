@@ -106,6 +106,12 @@ class JobContext:
         event = StreamEvent.done(self.chat_id, status, metrics=metrics, turn_id=self.turn_id)
         await self._publish(event)
 
+    async def emit_text_done(self, metrics: dict[str, Any]) -> None:
+        await self._publish(StreamEvent(
+            type="text_done", chat_id=self.chat_id, turn_id=self.turn_id,
+            generation_id=self.turn_id, data=metrics,
+        ))
+
     async def emit_error(self, message: str, metrics: dict[str, Any] | None = None) -> None:
         event = StreamEvent.error(self.chat_id, message, metrics=metrics, turn_id=self.turn_id)
         await self._publish(event)

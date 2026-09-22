@@ -9,6 +9,7 @@ const AppConfig = {
 
 const AppState = {
     currentChatId: null,
+    chatSelectionVersion: 0,
     activeTurns: new Map(),
     eventSource: null,
     sseConnected: false,
@@ -25,12 +26,28 @@ const AppState = {
     isGenerating() {
         return this.isAnyChatGenerating(this.currentChatId);
     },
+    selectChat(chatId) {
+        this.chatSelectionVersion += 1;
+        this.currentChatId = chatId;
+        this.pendingNewChatRequest = false;
+        this._loadingHistory = false;
+        const buffered = [...(this._sseBuffer || []), ...this.pendingChatEvents];
+        this._sseBuffer = [];
+        this.pendingChatEvents = [];
+        buffered.forEach(event => SSE.processEvent(event));
+        UI.setStopButtonVisible(this.isGenerating());
+    },
     showOptimisticUserMessage(text, chatId = null) {
-        this.optimisticUserMessage = { text, chatId };
+        this.optimisticUserMessage = { text, chatId, startedAt: performance.now() };
+        if (chatId) {
+            this.clearGenerationMetrics(chatId);
+            this.generationStartedAt.set(chatId, this.optimisticUserMessage.startedAt);
+        }
     },
     bindOptimisticUserMessage(chatId) {
         if (this.optimisticUserMessage) {
             this.optimisticUserMessage.chatId = chatId;
+            this.generationStartedAt.set(chatId, this.optimisticUserMessage.startedAt);
         }
     },
     adoptPendingNewChat(chatId) {

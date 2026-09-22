@@ -580,6 +580,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             is_completed = llm_done or not stopped
 
             # --- Multimodal: Text-to-Speech (TTS) Integration ---
+            await context.emit_text_done(metrics)
             is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
             should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
             if should_tts and not stopped:

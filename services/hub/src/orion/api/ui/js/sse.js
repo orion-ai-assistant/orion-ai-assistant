@@ -138,7 +138,7 @@ const SSE = {
         if (data.type === "chat_delete") {
             if (window.loadChats) window.loadChats();
             if (chatId === AppState.currentChatId) {
-                AppState.currentChatId = null;
+                AppState.selectChat(null);
                 UI.clearChatArea();
                 UI.chatArea.innerHTML = '<div class="message bot">Bu sohbet başka bir cihazdan veya yöneticiden silindi.</div>';
                 UI.setStopButtonVisible(false);
@@ -161,7 +161,7 @@ const SSE = {
 
         if (
             chatId
-            && ["thinking", "token", "snapshot", "audio"].includes(data.type)
+            && ["thinking", "token", "snapshot", "audio", "text_done"].includes(data.type)
             && !AppState.isStreamingTurn(chatId, turnId)
         ) {
             return;
@@ -185,6 +185,15 @@ const SSE = {
         }
 
         // ---- Events for non-active chats: just refresh sidebar ----
+        if (data.type === 'text_done') {
+            UI.showTextMetrics(chatId, data.data);
+            return;
+        }
+        if (data.type === 'audio') {
+            const timing = AppState.getGenerationMetrics(chatId);
+            UI.appendAudio(chatId, { ...data.data, arrival_ms: timing?.total_ms }, chatId === AppState.currentChatId);
+            return;
+        }
         if (chatId && chatId !== AppState.currentChatId) {
             if (data.type === "user_message" || data.type === "accepted") {
                 if (window.loadChats) window.loadChats();
@@ -245,11 +254,6 @@ const SSE = {
             console.log(`[DEBUG] Final content snapshot received for ${chatId}`);
             AppState.markFirstToken(chatId);
             UI.replaceMessageContent(chatId, data.data.content);
-        }
-        else if (data.type === "audio") {
-            if (UI.appendAudio) {
-                UI.appendAudio(chatId, data.data);
-            }
         }
         else if (data.type === "done" || data.type === "error") {
             console.log(`Generation ${data.type} for chat ${chatId}. Ready for next message.`);

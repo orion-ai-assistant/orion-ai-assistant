@@ -31,16 +31,15 @@ const UI = {
         const meta = document.createElement('div');
         meta.className = 'message-meta';
 
-        const fmtFirst = firstTokenMs == null ? '-' : `${Math.round(Number(firstTokenMs))} ms`;
-        const fmtTotal = Math.round(Number(totalMs || 0));
+        const fmtFirst = firstTokenMs == null ? '—' : `${(Number(firstTokenMs) / 1000).toFixed(2)} sn`;
+        const fmtTotal = (Number(totalMs || 0) / 1000).toFixed(2);
 
         meta.innerHTML = `
             <span class="meta-item" title="İlk Token Süresi">
-                <span class="meta-icon">⚡</span> <strong>${fmtFirst}</strong>
+                <span class="meta-icon">⚡</span> İlk token <strong>${fmtFirst}</strong>
             </span>
-            <span class="meta-sep" style="opacity: 0.3; font-weight: normal; margin: 0 4px;">|</span>
-            <span class="meta-item" title="Toplam Yanıt Süresi">
-                <span class="meta-icon">⏱️</span> <strong>${fmtTotal} ms</strong>
+            <span class="meta-item" title="Metnin tamamlanma süresi; ses üretimi dahil değildir">
+                <span class="meta-icon">◷</span> Metin <strong>${fmtTotal} sn</strong>
             </span>
         `;
         return meta;
@@ -210,7 +209,7 @@ const UI = {
         this._chatAudios[chatId] = audioData;
         const state = this._getOrCreateChatState(chatId);
 
-        const botDiv = state.botDiv || (this.chatArea ? this.chatArea.querySelector('.message.bot:last-child') : null);
+        const botDiv = state.botDiv || (chatId === AppState.currentChatId && this.chatArea ? this.chatArea.querySelector('.message.bot:last-child') : null);
         if (!botDiv) return;
 
         // Tekrar aynı mesaja ikinci oynatıcı eklenmesini önle
@@ -218,19 +217,23 @@ const UI = {
 
         const audioContainer = document.createElement('div');
         audioContainer.className = 'audio-player-container';
-        audioContainer.style.marginTop = '10px';
-        audioContainer.style.display = 'flex';
-        audioContainer.style.alignItems = 'center';
-        audioContainer.style.gap = '8px';
+        const label = document.createElement('div');
+        label.className = 'audio-player-label';
+        label.textContent = '♫ Sesli yanıt';
+        if (audioData.arrival_ms != null) {
+            const timing = document.createElement('span');
+            timing.textContent = `${(audioData.arrival_ms / 1000).toFixed(2)} sn`;
+            timing.title = 'Mesaj gönderildikten sonra sesin ulaşma süresi';
+            label.appendChild(timing);
+        }
+        audioContainer.appendChild(label);
 
         const audioElement = document.createElement('audio');
         audioElement.controls = true;
-        audioElement.autoplay = autoPlay;
+        audioElement.autoplay = autoPlay && chatId === AppState.currentChatId;
+        audioElement.setAttribute('aria-label', 'Sesli yanıtı oynat');
         const fmt = audioData.format || 'wav';
         audioElement.src = `data:audio/${fmt};base64,${audioData.audio}`;
-        audioElement.style.width = '100%';
-        audioElement.style.maxWidth = '340px';
-        audioElement.style.height = '36px';
 
         audioContainer.appendChild(audioElement);
         botDiv.appendChild(audioContainer);
@@ -249,6 +252,15 @@ const UI = {
         }
     },
 
+    showTextMetrics(chatId, metrics) {
+        const botDiv = this._chatDivs[chatId]?.botDiv;
+        if (!botDiv) return;
+        const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
+        if (!meta) return;
+        const previous = botDiv.querySelector('.message-meta');
+        if (previous) previous.replaceWith(meta);
+        else botDiv.appendChild(meta);
+    },
 
     finishGeneration(chatId, hasTokens = true, metrics = null) {
         if (!chatId) return;
@@ -349,6 +361,7 @@ const UI = {
     },
 
     setStopButtonVisible(isVisible) {
+        isVisible = AppState.isGenerating();
         if (!this.stopBtn) return;
         this.stopBtn.style.display = isVisible ? 'flex' : 'none';
         if (isVisible && AppState.isStopping(AppState.currentChatId)) {
@@ -462,11 +475,6 @@ const UI = {
             return;
         }
 
-        // Kullanıcı herhangi bir alana odaklanmışsa veya yazıyorsa DOM'u baştan oluşturup kullanıcının yazdığını ezme
-        if (dashboard.contains(document.activeElement)) {
-            return;
-        }
-
         // Eğer zaten render edilmişse sadece değişmemiş olan değerleri güncelle
         const alreadyRendered = Boolean(dashboard.querySelector('[id^="setting-input-"]'));
         if (alreadyRendered) {
@@ -479,6 +487,9 @@ const UI = {
                         el.value = String(settings[key]).toLowerCase() === 'true' ? 'true' : 'false';
                         el.dataset.original = el.value;
                     } else {
+                        if (el.tagName === 'SELECT' && !Array.from(el.options).some(option => option.value === serverVal)) {
+                            el.add(new Option(serverVal, serverVal));
+                        }
                         el.value = serverVal;
                         el.dataset.original = serverVal;
                     }
@@ -637,17 +648,16 @@ const UI = {
             </div>`;
         }
 
-        dashboard.innerHTML = `<div class="settings-catalog-toolbar"><button class="btn" id="refresh-models" onclick="UI.loadModelChoices(UI.currentSettings)">Model ve ses listesini yenile</button><span id="catalog-status" role="status"></span></div>` + html;
-        this.loadModelChoices(settings);
+        dashboard.innerHTML = `<div class="settings-catalog-toolbar"><div><strong>Model ve sesler</strong><span id="catalog-status" role="status">Bu sayfa açıkken otomatik güncellenir</span></div><button type="button" class="catalog-refresh" id="refresh-models" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> Yenile</button></div>` + html;
 
     },
 
-    async loadModelChoices(settings) {
+    async loadModelChoices(settings, silent = false) {
         const button = document.getElementById('refresh-models');
         const status = document.getElementById('catalog-status');
         if (button?.disabled) return;
         if (button) button.disabled = true;
-        if (status) status.textContent = 'Listeler yükleniyor…';
+        if (status && !silent) status.textContent = 'Güncelleniyor…';
         const result = await API.getChatModels();
         if (button) button.disabled = false;
         if (result.error) {
@@ -658,6 +668,7 @@ const UI = {
         for (const key of ['router_model_group', 'chat_title_model', 'tts_model', 'stt_model']) {
             const select = document.getElementById(`setting-input-${key}`);
             if (!select) continue;
+            if (document.activeElement === select) continue;
             const current = select.options.length ? select.value : String(settings[key] || '');
             const original = select.dataset.original;
             const capability = key === 'tts_model' ? 'tts' : key === 'stt_model' ? 'stt' : 'chat';
@@ -667,8 +678,7 @@ const UI = {
             if (key === 'chat_title_model') select.add(new Option('Sohbet modelini kullan', ''));
             for (const model of models) select.add(new Option(model.name, model.name));
             if (current && !Array.from(select.options).some(option => option.value === current)) {
-                const missing = new Option(`${current} — kullanılamıyor`, current);
-                missing.disabled = true;
+                const missing = new Option(`${current} — listesi şu an alınamıyor`, current);
                 select.add(missing);
             }
             select.value = current;
@@ -680,24 +690,34 @@ const UI = {
             UI.loadVoiceChoices(true);
         };
         this.loadVoiceChoices(false);
-        if (status) status.textContent = 'Model ve ses listeleri güncellendi.';
+        if (status) status.textContent = 'Güncel · 5 saniyede bir kontrol edilir';
     },
 
     loadVoiceChoices(modelChanged) {
         const select = document.getElementById('setting-input-tts_voice');
         const model = document.getElementById('setting-input-tts_model')?.value;
         if (!select || !this.routerCatalog) return;
+        if (document.activeElement === select) return;
         const provider = this.routerCatalog.models.find(item => item.name === model)?.provider;
         const voices = this.routerCatalog.voices[provider] || [];
         const current = select.options.length ? select.value : String(this.currentSettings.tts_voice || '');
         select.replaceChildren(new Option('Varsayılan ses', ''));
         for (const voice of voices) select.add(new Option(voice, voice));
-        if (current && !voices.includes(current) && !modelChanged) {
-            const missing = new Option(`${current} — bu modelde kullanılamıyor`, current);
-            missing.disabled = true;
+        if (current && !voices.includes(current) && (!modelChanged || !voices.length)) {
+            const missing = new Option(`${current} — ${voices.length ? 'listede bulunamadı' : 'ses listesine şu an erişilemiyor'}`, current);
             select.add(missing);
         }
-        select.value = modelChanged && !voices.includes(current) ? '' : current;
+        select.value = modelChanged && voices.length && !voices.includes(current) ? '' : current;
+        let notice = document.getElementById('tts-availability');
+        if (!notice) {
+            notice = document.createElement('span');
+            notice.id = 'tts-availability';
+            notice.className = 'setting-hint tts-availability';
+            select.parentElement.appendChild(notice);
+        }
+        notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
+            ? 'Seslendirme kapalı. Kayıtlı ses tercihiniz korunuyor.'
+            : !voices.length ? 'TTS ses listesine şu an erişilemiyor. Servis kapalı veya bağlantısı kesilmiş olabilir; kayıtlı tercihiniz korunuyor.' : '';
         if (modelChanged) this.handleSettingChange('tts_voice');
     },
 
@@ -787,7 +807,7 @@ const UI = {
                 if (result && !result.error) {
                     item.remove();
                     if (chat.chat_id === AppState.currentChatId) {
-                        AppState.currentChatId = null;
+                        AppState.selectChat(null);
                         UI.clearChatArea();
                         UI.chatArea.innerHTML = '<div class="message bot">Sohbet silindi. Yeni bir sohbet başlatın.</div>';
                     }

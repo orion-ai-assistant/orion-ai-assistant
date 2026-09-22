@@ -102,6 +102,7 @@ const API = {
 
         // Determine chatId (may be null for new chat)
         const chatId = AppState.currentChatId;
+        const selectionVersion = AppState.chatSelectionVersion;
         const wasNewChat = !chatId;
 
         // If this specific chat is already generating, block
@@ -156,7 +157,9 @@ const API = {
                         && AppState.currentChatId === data.chat_id
                         && !AppState.pendingNewChatRequest
                     );
-                    AppState.currentChatId = data.chat_id;
+                    if (selectionVersion === AppState.chatSelectionVersion) {
+                        AppState.currentChatId = data.chat_id;
+                    }
                     AppState.bindOptimisticUserMessage(data.chat_id);
                     const turnId = data.turn_id || data.generation_id || null;
                     if (!adoptedFromSse) {
