@@ -22,6 +22,7 @@ ui.loadVoiceChoices(false);
 assert.equal(voice.value, 'zephyr2');
 assert.match(voice.options[1].text, /erişilemiyor/);
 assert.notEqual(voice.options[1].disabled, true);
+assert.equal(elements['tts-availability'].textContent, 'Orion TTS’ye erişilemiyor.');
 ui.loadVoiceChoices(true);
 assert.equal(voice.value, 'zephyr2', 'Missing catalog must not erase a saved voice');
 ui.routerCatalog.voices.local = ['zephyr2', 'new-voice'];

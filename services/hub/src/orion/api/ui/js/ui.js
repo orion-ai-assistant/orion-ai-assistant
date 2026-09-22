@@ -717,7 +717,9 @@ const UI = {
         }
         notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
             ? 'Seslendirme kapalı. Kayıtlı ses tercihiniz korunuyor.'
-            : inaccessible || !voices.length ? 'TTS’ye şu an erişilemiyor. Servis kapalı veya bağlantısı kesilmiş olabilir; önceki sesler korunuyor.' : '';
+            : inaccessible || !voices.length
+                ? (provider === 'local' ? 'Orion TTS’ye erişilemiyor.' : 'Ses listesine erişilemiyor.')
+                : '';
         if (modelChanged) this.handleSettingChange('tts_voice');
     },
 
