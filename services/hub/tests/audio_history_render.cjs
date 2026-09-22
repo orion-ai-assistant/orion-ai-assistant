@@ -30,14 +30,16 @@ const context = vm.createContext({ window: {}, AppState: { currentChatId: 'chat'
 }});
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
 const history = [
-    { content: 'first', audio: { audio: 'Zmlyc3Q=', arrival_ms: 1200 } },
-    { content: 'second', audio: { audio: 'c2Vjb25k', arrival_ms: 2300 } },
+    { content: 'first', metrics: { first_token_ms: 300, total_ms: 800 }, audio: { audio: 'Zmlyc3Q=', arrival_ms: 1200 } },
+    { content: 'second', metrics: { first_token_ms: 400, total_ms: 900 }, audio: { audio: 'c2Vjb25k', arrival_ms: 2300 } },
     { content: 'text only' },
 ];
-for (const message of history) context.ui.appendStaticBotMessage(message.content, null, null, message.audio);
+for (const message of history) context.ui.appendStaticBotMessage(message.content, null, message.metrics, message.audio);
 assert.equal(chatArea.children[0].querySelector('audio').src, 'data:audio/wav;base64,Zmlyc3Q=');
 assert.equal(chatArea.children[1].querySelector('audio').src, 'data:audio/wav;base64,c2Vjb25k');
 assert.equal(chatArea.children[1].querySelector('audio').autoplay, false);
 assert.equal(chatArea.children[1].querySelector('.audio-arrival-time').textContent, '♫ 2.30 sn');
+assert.equal(chatArea.children[1].children[1].className, 'message-meta');
+assert.equal(chatArea.children[1].children[2].className, 'audio-player-container');
 assert.equal(chatArea.children[2].querySelector('audio'), null);
 console.log('History restores each message audio without autoplay or duplicates');

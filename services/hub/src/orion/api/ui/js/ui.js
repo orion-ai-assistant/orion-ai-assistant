@@ -83,12 +83,12 @@ const UI = {
 
         const textNode = document.createTextNode(content);
         div.appendChild(textNode);
-        if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
 
         if (metrics && (metrics.total_ms || metrics.first_token_ms)) {
             const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
             if (meta) div.appendChild(meta);
         }
+        if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
 
         this.chatArea.appendChild(div);
         this.scrollToBottom();
@@ -232,7 +232,7 @@ const UI = {
             timing.title = 'Mesaj gönderildikten sonra sesin ulaşma süresi';
             audioContainer.appendChild(timing);
         }
-        botDiv.insertBefore(audioContainer, botDiv.querySelector('.message-meta'));
+        botDiv.appendChild(audioContainer);
 
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
@@ -651,11 +651,11 @@ const UI = {
     async loadModelChoices(settings, silent = false) {
         const button = document.getElementById('refresh-models');
         const status = document.getElementById('catalog-status');
-        if (button?.disabled) return;
-        if (button) button.disabled = true;
+        if (!silent && button?.disabled) return;
+        if (button && !silent) button.disabled = true;
         if (status && !silent) status.textContent = 'Güncelleniyor…';
         const result = await API.getChatModels();
-        if (button) button.disabled = false;
+        if (button && !silent) button.disabled = false;
         if (result.error) {
             if (status) status.textContent = result.error;
             return;
@@ -686,7 +686,7 @@ const UI = {
             UI.loadVoiceChoices(true);
         };
         this.loadVoiceChoices(false);
-        if (status) status.textContent = result.unavailable?.length
+        if (status && !silent) status.textContent = result.unavailable?.length
             ? 'Erişilebilen listeler güncellendi · Diğerleri tekrar kontrol edilecek'
             : 'Güncel · Bu sayfa açıkken otomatik kontrol edilir';
     },
