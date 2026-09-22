@@ -216,7 +216,10 @@ const SSE = {
             if (activeState && activeState.botDiv) {
                 UI.finishGeneration(chatId, true, { status: "stopped" });
             }
-            UI.appendUserMessage(data.data.text);
+            const alreadyRendered = AppState.claimOptimisticUserMessage(chatId, data.data.text);
+            if (!alreadyRendered) {
+                UI.appendUserMessage(data.data.text);
+            }
             // CRITICAL FIX: Don't create duplicate placeholder if already generating
             const currentState = UI._chatDivs[chatId];
             if (!currentState || !currentState.botDiv) {

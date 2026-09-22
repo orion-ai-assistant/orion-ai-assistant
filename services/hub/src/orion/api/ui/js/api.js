@@ -114,7 +114,10 @@ const API = {
         AppState.pendingNewChatRequest = true;
         AppState.pendingChatEvents = [];
 
-        // The SSE user_message event is the single source of truth for rendering.
+        // Render immediately. The matching SSE user_message event is claimed
+        // later so slow chat creation never leaves the conversation area blank.
+        AppState.showOptimisticUserMessage(text, chatId);
+        UI.appendUserMessage(text);
         UI.clearInput();
 
         try {
@@ -145,9 +148,11 @@ const API = {
                     // No generation started
                     AppState.pendingNewChatRequest = false;
                     AppState.pendingChatEvents = [];
+                    AppState.clearOptimisticUserMessage();
                     UI.setStopButtonVisible(false);
                 } else {
                     AppState.currentChatId = data.chat_id;
+                    AppState.bindOptimisticUserMessage(data.chat_id);
                     const turnId = data.turn_id || data.generation_id || null;
                     AppState.startGenerating(data.chat_id, turnId);
                     UI.setStopButtonVisible(true);
@@ -162,24 +167,30 @@ const API = {
             } else {
                 AppState.pendingNewChatRequest = false;
                 AppState.pendingChatEvents = [];
+                AppState.clearOptimisticUserMessage();
                 if (chatId) {
                     AppState.stopGenerating(chatId);
                     UI.finishGeneration(chatId, false);
                     AppState.clearGenerationMetrics(chatId);
                 }
                 UI.setStopButtonVisible(false);
-                UI.appendToken(chatId || 'error', `\n[API Hatası: ${JSON.stringify(data)}]`);
+                const message = `[API Hatası: ${JSON.stringify(data)}]`;
+                if (chatId) UI.appendToken(chatId, `\n${message}`);
+                else UI.appendStaticBotMessage(message);
             }
         } catch (error) {
             AppState.pendingNewChatRequest = false;
             AppState.pendingChatEvents = [];
+            AppState.clearOptimisticUserMessage();
             if (chatId) {
                 AppState.stopGenerating(chatId);
                 UI.finishGeneration(chatId, false);
                 AppState.clearGenerationMetrics(chatId);
             }
             UI.setStopButtonVisible(false);
-            UI.appendToken(chatId || 'error', `\n[İstek Hatası: ${error.message}]`);
+            const message = `[İstek Hatası: ${error.message}]`;
+            if (chatId) UI.appendToken(chatId, `\n${message}`);
+            else UI.appendStaticBotMessage(message);
         } finally {
             this.sendInFlight = false;
         }

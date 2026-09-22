@@ -18,11 +18,33 @@ const AppState = {
     sseConnectTimer: null,
     pendingNewChatRequest: false,
     pendingChatEvents: [],
+    optimisticUserMessage: null,
     generationStartedAt: new Map(),
     firstTokenAt: new Map(),
 
     isGenerating() {
         return this.isAnyChatGenerating(this.currentChatId);
+    },
+    showOptimisticUserMessage(text, chatId = null) {
+        this.optimisticUserMessage = { text, chatId };
+    },
+    bindOptimisticUserMessage(chatId) {
+        if (this.optimisticUserMessage) {
+            this.optimisticUserMessage.chatId = chatId;
+        }
+    },
+    claimOptimisticUserMessage(chatId, text) {
+        const pending = this.optimisticUserMessage;
+        const matches = Boolean(
+            pending
+            && pending.chatId === chatId
+            && pending.text === text
+        );
+        if (matches) this.optimisticUserMessage = null;
+        return matches;
+    },
+    clearOptimisticUserMessage() {
+        this.optimisticUserMessage = null;
     },
     getEventTurnId(data) {
         return data?.turn_id || data?.generation_id || null;
