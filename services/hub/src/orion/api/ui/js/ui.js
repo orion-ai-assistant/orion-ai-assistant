@@ -9,7 +9,6 @@ const UI = {
 
     // Per-chat state: { chatId -> { botDiv, thinkDiv, thinkBody } }
     _chatDivs: {},
-    _chatAudios: {},
 
     _getOrCreateChatState(chatId) {
         if (!this._chatDivs[chatId]) {
@@ -36,10 +35,10 @@ const UI = {
 
         meta.innerHTML = `
             <span class="meta-item" title="İlk Token Süresi">
-                <span class="meta-icon">⚡</span> İlk token <strong>${fmtFirst}</strong>
+                <span class="meta-icon" aria-hidden="true">⚡</span> <strong>${fmtFirst}</strong>
             </span>
             <span class="meta-item" title="Metnin tamamlanma süresi; ses üretimi dahil değildir">
-                <span class="meta-icon">◷</span> Metin <strong>${fmtTotal} sn</strong>
+                <span class="meta-icon" aria-hidden="true">◷</span> <strong>${fmtTotal} sn</strong>
             </span>
         `;
         return meta;
@@ -56,7 +55,7 @@ const UI = {
         this.scrollToBottom();
     },
 
-    appendStaticBotMessage(content, thinking = null, metrics = null) {
+    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null) {
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
 
@@ -84,6 +83,7 @@ const UI = {
 
         const textNode = document.createTextNode(content);
         div.appendChild(textNode);
+        if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
 
         if (metrics && (metrics.total_ms || metrics.first_token_ms)) {
             const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
@@ -204,12 +204,11 @@ const UI = {
         }
     },
 
-    appendAudio(chatId, audioData, autoPlay = true) {
+    appendAudio(chatId, audioData, autoPlay = true, targetDiv = null) {
         if (!chatId || !audioData || !audioData.audio) return;
-        this._chatAudios[chatId] = audioData;
         const state = this._getOrCreateChatState(chatId);
 
-        const botDiv = state.botDiv || (chatId === AppState.currentChatId && this.chatArea ? this.chatArea.querySelector('.message.bot:last-child') : null);
+        const botDiv = targetDiv || state.botDiv;
         if (!botDiv) return;
 
         // Tekrar aynı mesaja ikinci oynatıcı eklenmesini önle
@@ -217,16 +216,6 @@ const UI = {
 
         const audioContainer = document.createElement('div');
         audioContainer.className = 'audio-player-container';
-        const label = document.createElement('div');
-        label.className = 'audio-player-label';
-        label.textContent = '♫ Sesli yanıt';
-        if (audioData.arrival_ms != null) {
-            const timing = document.createElement('span');
-            timing.textContent = `${(audioData.arrival_ms / 1000).toFixed(2)} sn`;
-            timing.title = 'Mesaj gönderildikten sonra sesin ulaşma süresi';
-            label.appendChild(timing);
-        }
-        audioContainer.appendChild(label);
 
         const audioElement = document.createElement('audio');
         audioElement.controls = true;
@@ -236,7 +225,14 @@ const UI = {
         audioElement.src = `data:audio/${fmt};base64,${audioData.audio}`;
 
         audioContainer.appendChild(audioElement);
-        botDiv.appendChild(audioContainer);
+        if (audioData.arrival_ms != null) {
+            const timing = document.createElement('div');
+            timing.className = 'audio-arrival-time';
+            timing.textContent = `♫ ${(audioData.arrival_ms / 1000).toFixed(2)} sn`;
+            timing.title = 'Mesaj gönderildikten sonra sesin ulaşma süresi';
+            audioContainer.appendChild(timing);
+        }
+        botDiv.insertBefore(audioContainer, botDiv.querySelector('.message-meta'));
 
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
@@ -690,7 +686,9 @@ const UI = {
             UI.loadVoiceChoices(true);
         };
         this.loadVoiceChoices(false);
-        if (status) status.textContent = 'Güncel · 5 saniyede bir kontrol edilir';
+        if (status) status.textContent = result.unavailable?.length
+            ? 'Erişilebilen listeler güncellendi · Diğerleri tekrar kontrol edilecek'
+            : 'Güncel · Bu sayfa açıkken otomatik kontrol edilir';
     },
 
     loadVoiceChoices(modelChanged) {
@@ -700,6 +698,8 @@ const UI = {
         if (document.activeElement === select) return;
         const provider = this.routerCatalog.models.find(item => item.name === model)?.provider;
         const voices = this.routerCatalog.voices[provider] || [];
+        const unavailable = this.routerCatalog.unavailable || [];
+        const inaccessible = unavailable.includes('voices') || (provider === 'local' && unavailable.includes('local-tts-info'));
         const current = select.options.length ? select.value : String(this.currentSettings.tts_voice || '');
         select.replaceChildren(new Option('Varsayılan ses', ''));
         for (const voice of voices) select.add(new Option(voice, voice));
@@ -717,7 +717,7 @@ const UI = {
         }
         notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
             ? 'Seslendirme kapalı. Kayıtlı ses tercihiniz korunuyor.'
-            : !voices.length ? 'TTS ses listesine şu an erişilemiyor. Servis kapalı veya bağlantısı kesilmiş olabilir; kayıtlı tercihiniz korunuyor.' : '';
+            : inaccessible || !voices.length ? 'TTS’ye şu an erişilemiyor. Servis kapalı veya bağlantısı kesilmiş olabilir; önceki sesler korunuyor.' : '';
         if (modelChanged) this.handleSettingChange('tts_voice');
     },
 

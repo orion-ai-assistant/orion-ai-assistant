@@ -178,7 +178,7 @@ async def load_history(
 
     # Return only the last max_messages entries
     return _remove_failed_turns([
-        msg for msg in db_history[-max_messages:]
+        {"role": msg["role"], "content": msg["content"]} for msg in db_history[-max_messages:]
         if msg.get("role") and msg.get("content")
     ])
 
@@ -581,6 +581,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             # --- Multimodal: Text-to-Speech (TTS) Integration ---
             await context.emit_text_done(metrics)
+            audio_entry = None
             is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
             should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
             if should_tts and not stopped:
@@ -596,11 +597,16 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             settings=settings,
                             voice=context.voice,
                         )
-                        await context.emit_audio(
+                        requested_at = datetime.fromisoformat(context.record.created_at)
+                        if requested_at.tzinfo is None:
+                            requested_at = requested_at.replace(tzinfo=timezone.utc)
+                        audio_arrival_ms = max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
+                        audio_entry = await context.emit_audio(
                             audio_data=audio_bytes,
                             format=audio_fmt,
                             sample_rate=sample_rate,
                             text=tts_text,
+                            arrival_ms=audio_arrival_ms,
                         )
                         logging.info(
                             "Worker %s successfully emitted audio for chat %s (%d bytes)",
@@ -619,6 +625,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text}
+            if audio_entry:
+                assistant_entry["audio"] = audio_entry
             if metrics:
                 assistant_entry["metrics"] = metrics
             if thinking_text:

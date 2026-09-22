@@ -91,7 +91,8 @@ class JobContext:
         format: str = "wav",
         sample_rate: int | None = None,
         text: str | None = None,
-    ) -> None:
+        arrival_ms: int | None = None,
+    ) -> dict[str, Any]:
         event = StreamEvent.audio(
             self.chat_id,
             audio_data=audio_data,
@@ -100,7 +101,10 @@ class JobContext:
             text=text,
             turn_id=self.turn_id,
         )
+        if arrival_ms is not None:
+            event.data['arrival_ms'] = arrival_ms
         await self._publish(event)
+        return event.data
 
     async def emit_done(self, status: str, metrics: dict[str, Any] | None = None) -> None:
         event = StreamEvent.done(self.chat_id, status, metrics=metrics, turn_id=self.turn_id)

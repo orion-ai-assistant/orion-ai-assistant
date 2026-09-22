@@ -191,7 +191,7 @@ const SSE = {
         }
         if (data.type === 'audio') {
             const timing = AppState.getGenerationMetrics(chatId);
-            UI.appendAudio(chatId, { ...data.data, arrival_ms: timing?.total_ms }, chatId === AppState.currentChatId);
+            UI.appendAudio(chatId, { ...data.data, arrival_ms: data.data.arrival_ms ?? timing?.total_ms }, chatId === AppState.currentChatId);
             return;
         }
         if (chatId && chatId !== AppState.currentChatId) {

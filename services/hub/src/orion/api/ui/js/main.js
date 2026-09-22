@@ -71,7 +71,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                             UI.appendToken(chatId, msg.content);
                         }
                     } else {
-                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics);
+                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio);
                     }
                 }
             });
@@ -98,10 +98,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             console.log(`loadChat: Stop button hidden for chat ${chatId} (generating=${isActivelyGenerating}, partial=${hasPartial})`);
         }
 
-        // Eğer bu sohbete ait oluşturulmuş ses varsa tekrar oynatıcıyı yerleştir
-        if (UI._chatAudios && UI._chatAudios[chatId]) {
-            UI.appendAudio(chatId, UI._chatAudios[chatId], false);
-        }
 
         UI.scrollToBottom();
         loadChats();
@@ -225,6 +221,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById('logout-btn').addEventListener('click', () => {
         SSE.disconnect();
         if (window.stopUserPolling) window.stopUserPolling();
+        settingsInitialRequested = false;
         // State temizliği
         AppState.selectChat(null);
         AppState.activeTurns.clear();
@@ -334,13 +331,16 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Load initial settings
     let settingsLoading = false;
+    let settingsInitialRequested = false;
     const settingsVisible = () => !document.hidden && document.getElementById('settings-view')?.classList.contains('active');
-    const loadInitialSettings = async () => {
-        if (!settingsVisible() || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
+    const loadInitialSettings = async (initial = false) => {
+        const initialLoad = initial === true && !settingsInitialRequested;
+        if ((!settingsVisible() && !initialLoad) || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
+        if (initialLoad) settingsInitialRequested = true;
         settingsLoading = true;
         try {
             const data = await API.getSettings();
-            if (settingsVisible() && data && !data.error) {
+            if ((initialLoad || settingsVisible()) && data && !data.error) {
                 UI.renderSettings(data);
                 await UI.loadModelChoices(data, true);
                 if (audioToggle && data.tts_enabled !== undefined) {
@@ -353,9 +353,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             settingsLoading = false;
         }
     };
-    window.loadInitialSettings = loadInitialSettings;
-    setInterval(loadInitialSettings, 5000);
-    document.addEventListener('visibilitychange', loadInitialSettings);
+    window.loadInitialSettings = () => loadInitialSettings(true);
+    setInterval(() => loadInitialSettings(), 5000);
+    document.addEventListener('visibilitychange', () => loadInitialSettings());
 
     let userPollTimer = null;
     const startUserPolling = () => {
@@ -374,7 +374,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.stopUserPolling = stopUserPolling;
 
     if (isAuthenticated) {
-        loadInitialSettings();
+        loadInitialSettings(true);
     }
 
     // STT Canlı Mikrofon Tetikleyici

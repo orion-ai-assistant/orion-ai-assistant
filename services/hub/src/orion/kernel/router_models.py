@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 
@@ -12,6 +13,37 @@ class ModelNotFoundError(ValueError):
 _catalog_cache: dict | None = None
 _catalog_cached_at = 0.0
 _CATALOG_TTL_SECONDS = 15.0
+_catalog_sections: dict[str, dict] = {}
+_SECTION_TIMEOUT_SECONDS = 1.0
+_LOCAL_TTS_TIMEOUT_SECONDS = 0.6
+
+
+async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict | None:
+    async def fetch():
+        for base in bases:
+            url = base.rstrip('/').removesuffix('/v1') + '/dashboard/api/' + name
+            try:
+                async with session.get(url, headers={'x-admin-key': key}) as response:
+                    response.raise_for_status()
+                    data = await response.json()
+                    if not isinstance(data, dict) or data.get('error'):
+                        return None
+                    field = {'models': 'models', 'model-groups': 'groups', 'voices': 'voices', 'local-tts-info': 'voices'}[name]
+                    expected = dict if name == 'voices' else list
+                    if name == 'local-tts-info' and not data.get('voices'):
+                        return None
+                    return data if isinstance(data.get(field), expected) else None
+            except (aiohttp.ClientError, ValueError):
+                # Optional local TTS is checked once per refresh, without retries.
+                if name == 'local-tts-info':
+                    return None
+        return None
+
+    timeout = _LOCAL_TTS_TIMEOUT_SECONDS if name == 'local-tts-info' else _SECTION_TIMEOUT_SECONDS
+    try:
+        return await asyncio.wait_for(fetch(), timeout=timeout)
+    except TimeoutError:
+        return None
 
 
 async def get_router_catalog(force_refresh: bool = False) -> dict:
@@ -22,37 +54,31 @@ async def get_router_catalog(force_refresh: bool = False) -> dict:
             return _catalog_cache
 
     key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
-    last_error = None
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-        for base in get_router_base_urls():
-            base = base.rstrip("/").removesuffix("/v1")
-            try:
-                async with session.get(base + "/dashboard/api/models", headers={"x-admin-key": key}) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                async with session.get(base + "/dashboard/api/model-groups", headers={"x-admin-key": key}) as response:
-                    response.raise_for_status()
-                    groups = await response.json()
-                async with session.get(base + "/dashboard/api/voices", headers={"x-admin-key": key}) as response:
-                    response.raise_for_status()
-                    voices = await response.json()
-                async with session.get(base + "/dashboard/api/local-tts-info", headers={"x-admin-key": key}) as response:
-                    response.raise_for_status()
-                    local_tts = await response.json()
-                models = [{"name": m["name"], "provider": m.get("provider"), "capability": m.get("capability")} for m in data["models"]
-                          if m.get("is_active", True)]
-                models.extend({"name": g["name"], "provider": None, "capability": g.get("capability", "chat")} for g in groups["groups"]
-                              if g.get("capability", "chat") == "chat" and g.get("is_active", True))
-                voice_catalog = voices.get("voices", {})
-                local_voices = local_tts.get("voices", [])
-                if local_voices:
-                    voice_catalog["local"] = local_voices
-                _catalog_cache = {"models": models, "voices": voice_catalog}
-                _catalog_cached_at = time.monotonic()
-                return _catalog_cache
-            except (aiohttp.ClientError, TimeoutError, KeyError, TypeError) as exc:
-                last_error = exc
-    raise RuntimeError("Orion Router model listesi alınamadı. Router bağlantısını ve yönetim anahtarını kontrol edin.") from last_error
+    names = ['models', 'model-groups', 'voices', 'local-tts-info']
+    bases = get_router_base_urls()
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(*(_fetch_section(session, bases, name, key) for name in names))
+    unavailable = []
+    for name, result in zip(names, results):
+        if result is None:
+            unavailable.append(name)
+        else:
+            _catalog_sections[name] = result
+    if not _catalog_sections:
+        raise RuntimeError('Model listelerine şu an erişilemiyor. Sonraki kontrolde tekrar denenecek.')
+    data = _catalog_sections.get('models', {})
+    groups = _catalog_sections.get('model-groups', {})
+    models = [{"name": m["name"], "provider": m.get("provider"), "capability": m.get("capability")}
+              for m in data.get('models', []) if m.get('is_active', True)]
+    models.extend({"name": g["name"], "provider": None, "capability": g.get("capability", "chat")}
+                  for g in groups.get('groups', []) if g.get('capability', 'chat') == 'chat' and g.get('is_active', True))
+    voices = dict(_catalog_sections.get('voices', {}).get('voices', {}))
+    local_voices = _catalog_sections.get('local-tts-info', {}).get('voices', [])
+    if local_voices:
+        voices['local'] = local_voices
+    _catalog_cache = {'models': models, 'voices': voices, 'unavailable': unavailable}
+    _catalog_cached_at = time.monotonic()
+    return _catalog_cache
 
 
 async def get_model_provider(name: str, capability: str) -> str | None:

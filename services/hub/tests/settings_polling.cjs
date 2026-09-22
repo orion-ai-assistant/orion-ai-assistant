@@ -13,28 +13,37 @@ const context = vm.createContext({
     setInterval: (_, delay) => assert.equal(delay, 5000),
 });
 vm.runInContext(source.slice(source.indexOf('    let settingsLoading'), source.indexOf('    let userPollTimer')), context);
+vm.runInContext('globalThis.poll = loadInitialSettings;', context);
 async function run() {
-    const poll = context.window.loadInitialSettings;
+    const poll = context.poll;
     await poll();
     assert.equal(requests, 0, 'No settings requests outside settings');
+    const initial = context.window.loadInitialSettings();
+    assert.equal(requests, 1, 'Initial load runs even outside settings');
+    resolve({ tts_enabled: true });
+    await initial;
+    assert.equal(renders, 1);
+    await context.window.loadInitialSettings();
+    await poll();
+    assert.equal(requests, 1, 'Initial background load runs only once');
     visible = true;
     const pending = poll();
     await poll();
-    assert.equal(requests, 1, 'Do not overlap requests');
+    assert.equal(requests, 2, 'Do not overlap requests');
     visible = false;
     resolve({ tts_enabled: true });
     await pending;
-    assert.equal(renders, 0, 'Discard response after leaving settings');
-    assert.equal(catalogs, 0);
+    assert.equal(renders, 1, 'Discard response after leaving settings');
+    assert.equal(catalogs, 1);
     visible = true;
     const refresh = poll();
     resolve({ tts_enabled: true });
     await refresh;
-    assert.equal(renders, 1);
-    assert.equal(catalogs, 1);
+    assert.equal(renders, 2);
+    assert.equal(catalogs, 2);
     context.document.hidden = true;
     await poll();
-    assert.equal(requests, 2, 'Hidden browser tabs do not poll');
+    assert.equal(requests, 3, 'Hidden browser tabs do not poll');
     console.log('Settings polling visibility and overlap tests passed');
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
