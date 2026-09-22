@@ -32,6 +32,14 @@ class JobContext:
         return self.record.channel
 
     @property
+    def turn_id(self) -> str:
+        return self.record.turn_id or self.record.created_at
+
+    @property
+    def generation_id(self) -> str:
+        return self.turn_id
+
+    @property
     def prompt(self) -> str:
         return self.request.input.text
 
@@ -66,11 +74,15 @@ class JobContext:
         await self.redis.publish(self.channel, event.model_dump_json())
 
     async def emit_thinking(self, token: str) -> None:
-        event = StreamEvent.thinking(self.chat_id, token)
+        event = StreamEvent.thinking(self.chat_id, token, turn_id=self.turn_id)
         await self._publish(event)
 
     async def emit_token(self, token: str) -> None:
-        event = StreamEvent.token(self.chat_id, token)
+        event = StreamEvent.token(self.chat_id, token, turn_id=self.turn_id)
+        await self._publish(event)
+
+    async def emit_snapshot(self, content: str) -> None:
+        event = StreamEvent.snapshot(self.chat_id, content, turn_id=self.turn_id)
         await self._publish(event)
 
     async def emit_audio(
@@ -86,14 +98,14 @@ class JobContext:
             format=format,
             sample_rate=sample_rate,
             text=text,
+            turn_id=self.turn_id,
         )
         await self._publish(event)
 
     async def emit_done(self, status: str, metrics: dict[str, Any] | None = None) -> None:
-        event = StreamEvent.done(self.chat_id, status, metrics=metrics)
+        event = StreamEvent.done(self.chat_id, status, metrics=metrics, turn_id=self.turn_id)
         await self._publish(event)
 
     async def emit_error(self, message: str, metrics: dict[str, Any] | None = None) -> None:
-        event = StreamEvent.error(self.chat_id, message, metrics=metrics)
+        event = StreamEvent.error(self.chat_id, message, metrics=metrics, turn_id=self.turn_id)
         await self._publish(event)
-

@@ -9,8 +9,9 @@ from typing import Any
 import aiohttp
 
 from redis.asyncio import Redis
+from redis.exceptions import WatchError
 
-from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX
+from orion.contracts.constants import ACTIVE_TURN_KEY_PREFIX, CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, TURN_STOP_KEY_PREFIX
 from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
@@ -218,9 +219,74 @@ async def append_history(
         )
 
 
-async def should_stop(redis: Redis, chat_id: str) -> bool:
-    stop_key = f"{CHAT_STOP_KEY_PREFIX}{chat_id}"
+def _redis_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
+def _active_turn_key(chat_id: str) -> str:
+    return f"{ACTIVE_TURN_KEY_PREFIX}{chat_id}"
+
+
+def _turn_stop_key(turn_id: str) -> str:
+    return f"{TURN_STOP_KEY_PREFIX}{turn_id}"
+
+
+async def is_active_turn(redis: Redis, chat_id: str, turn_id: str) -> bool:
+    current = _redis_text(await redis.get(_active_turn_key(chat_id)))
+    return current == turn_id
+
+
+async def should_stop(redis: Redis, turn_id: str) -> bool:
+    stop_key = _turn_stop_key(turn_id)
     return bool(await redis.exists(stop_key))
+
+
+async def hset_if_active(redis: Redis, chat_id: str, turn_id: str, state_key: str, field: str, value: str) -> bool:
+    active_key = _active_turn_key(chat_id)
+    async with redis.pipeline() as pipe:
+        try:
+            await pipe.watch(active_key)
+            current = _redis_text(await pipe.get(active_key))
+            if current != turn_id:
+                await pipe.reset()
+                return False
+            pipe.multi()
+            pipe.hset(state_key, field, value)
+            await pipe.execute()
+            return True
+        except WatchError:
+            return False
+
+
+async def finalize_state_if_active(
+    redis: Redis,
+    chat_id: str,
+    turn_id: str,
+    state_key: str,
+    mapping: dict[str, Any],
+    ttl_seconds: int,
+) -> bool:
+    active_key = _active_turn_key(chat_id)
+    async with redis.pipeline() as pipe:
+        try:
+            await pipe.watch(active_key)
+            current = _redis_text(await pipe.get(active_key))
+            if current != turn_id:
+                await pipe.reset()
+                return False
+            pipe.multi()
+            pipe.hset(state_key, mapping=mapping)
+            pipe.expire(state_key, ttl_seconds)
+            pipe.delete(active_key)
+            pipe.delete(_turn_stop_key(turn_id))
+            await pipe.execute()
+            return True
+        except WatchError:
+            return False
 
 
 async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], consumer_name: str) -> None:
@@ -228,14 +294,24 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
     settings = await get_runtime_settings(redis, context.user_id)
 
     logging.info(
-        "Worker %s picked chat %s channel=%s prompt=%s",
+        "Worker %s picked chat %s turn=%s channel=%s prompt=%s",
         consumer_name,
         context.chat_id,
+        context.turn_id,
         context.channel,
         context.prompt[:60],
     )
 
     state_key = f"{CHAT_STATE_KEY_PREFIX}{context.chat_id}"
+
+    if not await is_active_turn(redis, context.chat_id, context.turn_id):
+        logging.info(
+            "Worker %s skipping stale turn %s for chat %s",
+            consumer_name,
+            context.turn_id,
+            context.chat_id,
+        )
+        return
 
     await redis.hset(
         state_key,
@@ -243,6 +319,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             "status": "processing",
             "updated_at": utc_now(),
             "worker_id": consumer_name,
+            "active_turn_id": context.turn_id,
             "current_prompt": context.prompt,
             "partial_text": "",
             "partial_thinking": "",
@@ -257,22 +334,31 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             # --- Continuous (demo) mode ---
             iteration = 0
             while True:
-                if await should_stop(redis, context.chat_id):
-                    await redis.hset(
+                is_stopped = await should_stop(redis, context.turn_id)
+                is_active = await is_active_turn(redis, context.chat_id, context.turn_id)
+                if is_stopped or not is_active:
+                    finalized = await finalize_state_if_active(
+                        redis,
+                        context.chat_id,
+                        context.turn_id,
                         state_key,
                         mapping={
                             "status": "stopped",
                             "updated_at": utc_now(),
                             "result_json": json.dumps({"text": "".join(output_tokens), "stopped": True}),
                         },
+                        ttl_seconds=settings.result_ttl_seconds,
                     )
-                    await context.emit_done("stopped")
-                    logging.info("Worker %s stopped continuous chat %s", consumer_name, context.chat_id)
+                    if finalized:
+                        await context.emit_done("stopped")
+                    logging.info("Worker %s stopped continuous chat %s turn %s", consumer_name, context.chat_id, context.turn_id)
                     break
 
                 iteration += 1
                 text = f"continuous stream item {iteration} from prompt: {context.prompt}"
                 for token in tokenize(text):
+                    if await should_stop(redis, context.turn_id) or not await is_active_turn(redis, context.chat_id, context.turn_id):
+                        break
                     output_tokens.append(token)
                     await context.emit_token(token)
                     logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token)
@@ -320,10 +406,19 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             try:
                 async def _check_stop() -> bool:
-                    return await should_stop(redis, context.chat_id)
+                    return (
+                        await should_stop(redis, context.turn_id)
+                        or not await is_active_turn(redis, context.chat_id, context.turn_id)
+                    )
 
                 stream = llama_stream_chat_typed(messages, settings, stop_checker=_check_stop)
+                token_count = 0
+                thinking_token_count = 0
+                content_token_count = 0
+                
+                logging.info("Worker %s: starting stream for chat %s", consumer_name, context.chat_id)
                 async for kind, token in stream:
+                    token_count += 1
                     if kind == "metrics":
                         try:
                             router_metrics = json.loads(token)
@@ -331,6 +426,16 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         except Exception:
                             pass
                         continue
+
+                    if not await is_active_turn(redis, context.chat_id, context.turn_id):
+                        stopped = True
+                        logging.info(
+                            "Worker %s: stopping stream for chat %s turn %s",
+                            consumer_name,
+                            context.chat_id,
+                            context.turn_id,
+                        )
+                        break
 
                     # First token delay (optional artificial pre-roll)
                     if first_token and settings.first_token_delay_ms > 0:
@@ -340,25 +445,73 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     if kind == "thinking":
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
+                        thinking_token_count += 1
                         thinking_tokens.append(token)
                         await context.emit_thinking(token)
-                        logging.info("Worker %s thinking token for chat %s", consumer_name, context.chat_id)
-                        await redis.hset(state_key, "partial_thinking", "".join(thinking_tokens))
+                        # Log only first thinking token to avoid spam
+                        if thinking_token_count == 1:
+                            logging.info("Worker %s: first thinking token for chat %s", consumer_name, context.chat_id)
+                        await hset_if_active(
+                            redis,
+                            context.chat_id,
+                            context.turn_id,
+                            state_key,
+                            "partial_thinking",
+                            "".join(thinking_tokens),
+                        )
                     elif kind == "content":
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
+                        content_token_count += 1
                         output_tokens.append(token)
                         await context.emit_token(token)
-                        logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token.rstrip())
+                        # Log only first content token to avoid spam
+                        if content_token_count == 1:
+                            logging.info("Worker %s: first content token for chat %s", consumer_name, context.chat_id)
                         # Flush partial text to Redis on every token for reconnect support
-                        await redis.hset(state_key, "partial_text", "".join(output_tokens))
+                        await hset_if_active(
+                            redis,
+                            context.chat_id,
+                            context.turn_id,
+                            state_key,
+                            "partial_text",
+                            "".join(output_tokens),
+                        )
+                    elif kind == "content_snapshot":
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                        output_tokens[:] = [token]
+                        await context.emit_snapshot(token)
+                        await hset_if_active(
+                            redis,
+                            context.chat_id,
+                            context.turn_id,
+                            state_key,
+                            "partial_text",
+                            token,
+                        )
 
+                # Stream ended naturally — log final statistics
+                logging.info(
+                    "Worker %s: stream finished for chat %s — total_chunks=%d thinking_tokens=%d output_tokens=%d",
+                    consumer_name, context.chat_id, token_count, len(thinking_tokens), len(output_tokens)
+                )
+                
                 # Akış bittiğinde durdurma sinyali verilmiş miydi kontrol et
-                if await should_stop(redis, context.chat_id):
+                stop_exists_after = await should_stop(redis, context.turn_id)
+                active_after = await is_active_turn(redis, context.chat_id, context.turn_id)
+                if stop_exists_after or not active_after:
                     stopped = True
-                    logging.info("Worker %s: LLM stream stopped upon user stop signal for chat %s", consumer_name, context.chat_id)
+                    logging.info(
+                        "Worker %s: stop key PRESENT after stream for chat %s — treating as stopped",
+                        consumer_name, context.chat_id
+                    )
                 else:
                     llm_done = True
+                    logging.info(
+                        "Worker %s: stream completed naturally for chat %s — no stop key",
+                        consumer_name, context.chat_id
+                    )
 
             except Exception as e:
                 logging.exception("LLM stream failed for chat %s; sending error to user", context.chat_id)
@@ -367,12 +520,14 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 failure_metrics = {
                     "first_token_ms": max(
                         1,
-                        round((first_token_at - generation_started_at) * 1000)
-                        if first_token_at else failure_total_ms,
-                    ),
+                        round((first_token_at - generation_started_at) * 1000),
+                    ) if first_token_at is not None else None,
                     "total_ms": failure_total_ms,
                 }
-                await redis.hset(
+                finalized = await finalize_state_if_active(
+                    redis,
+                    context.chat_id,
+                    context.turn_id,
                     state_key,
                     mapping={
                         "status": "failed",
@@ -380,10 +535,10 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         "error": fallback_text,
                         "result_json": json.dumps({"error": fallback_text, "metrics": failure_metrics}),
                     },
+                    ttl_seconds=settings.result_ttl_seconds,
                 )
-                await redis.expire(state_key, settings.result_ttl_seconds)
-                await context.emit_error(fallback_text, metrics=failure_metrics)
-                await redis.delete(f"{CHAT_STOP_KEY_PREFIX}{context.chat_id}")
+                if finalized:
+                    await context.emit_error(fallback_text, metrics=failure_metrics)
                 logging.info("Worker %s failed chat %s with terminal error event", consumer_name, context.chat_id)
                 return
 
@@ -403,7 +558,19 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     "total_ms": max(1, int(round(fallback_total_ms))),
                 }
 
+            if first_token_at is None:
+                metrics["first_token_ms"] = None
+
             final_text = "".join(output_tokens)
+
+            if not await is_active_turn(redis, context.chat_id, context.turn_id):
+                logging.info(
+                    "Worker %s dropping stale finalization for chat %s turn %s",
+                    consumer_name,
+                    context.chat_id,
+                    context.turn_id,
+                )
+                return
 
             # Determine final status:
             # - llm_done=True  → LLM exhausted naturally; treat as completed regardless of stop key
@@ -467,19 +634,24 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 res_dict: dict[str, Any] = {"text": final_text}
                 if metrics:
                     res_dict["metrics"] = metrics
-                await redis.hset(
+                finalized = await finalize_state_if_active(
+                    redis,
+                    context.chat_id,
+                    context.turn_id,
                     state_key,
                     mapping={
                         "status": "completed",
                         "updated_at": utc_now(),
                         "result_json": json.dumps(res_dict),
                     },
+                    ttl_seconds=settings.result_ttl_seconds,
                 )
-                await redis.expire(state_key, settings.result_ttl_seconds)
+                if not finalized:
+                    return
                 await context.emit_done("completed", metrics=metrics)
                 if metrics:
                     logging.info(
-                        "Worker %s completed chat %s with Router metrics (TTFT: %dms, Total: %dms)",
+                        "Worker %s completed chat %s with Router metrics (TTFT: %s ms, Total: %dms)",
                         consumer_name, context.chat_id, metrics["first_token_ms"], metrics["total_ms"]
                     )
                 else:
@@ -488,19 +660,24 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 res_dict = {"text": final_text, "stopped": True}
                 if metrics:
                     res_dict["metrics"] = metrics
-                await redis.hset(
+                finalized = await finalize_state_if_active(
+                    redis,
+                    context.chat_id,
+                    context.turn_id,
                     state_key,
                     mapping={
                         "status": "stopped",
                         "updated_at": utc_now(),
                         "result_json": json.dumps(res_dict),
                     },
+                    ttl_seconds=settings.result_ttl_seconds,
                 )
-                await redis.expire(state_key, settings.result_ttl_seconds)
+                if not finalized:
+                    return
                 await context.emit_done("stopped", metrics=metrics)
                 if metrics:
                     logging.info(
-                        "Worker %s stopped (mid-generation) chat %s with Router metrics (TTFT: %dms, Total: %dms)",
+                        "Worker %s stopped (mid-generation) chat %s with Router metrics (TTFT: %s ms, Total: %dms)",
                         consumer_name, context.chat_id, metrics["first_token_ms"], metrics["total_ms"]
                     )
                 else:
@@ -509,17 +686,22 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
         if context.stream_mode == "continuous":
             await redis.expire(state_key, settings.result_ttl_seconds)
 
-        stop_key = f"{CHAT_STOP_KEY_PREFIX}{context.chat_id}"
+        stop_key = _turn_stop_key(context.turn_id)
         await redis.delete(stop_key)
 
     except Exception as exc:
-        await redis.hset(
+        finalized = await finalize_state_if_active(
+            redis,
+            context.chat_id,
+            context.turn_id,
             state_key,
             mapping={
                 "status": "failed",
                 "updated_at": utc_now(),
                 "error": str(exc),
             },
+            ttl_seconds=settings.result_ttl_seconds,
         )
-        await context.emit_error(str(exc))
+        if finalized:
+            await context.emit_error(str(exc))
         logging.exception("Worker %s failed chat %s", consumer_name, context.chat_id)

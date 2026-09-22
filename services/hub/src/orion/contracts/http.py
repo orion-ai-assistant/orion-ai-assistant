@@ -23,6 +23,8 @@ class JobCreateResponse(BaseModel):
     chat_id: str
     status: Literal["queued", "failed"]
     created_at: str
+    turn_id: str | None = None
+    generation_id: str | None = None
 
 
 class JobStatusResponse(BaseModel):
@@ -36,5 +38,6 @@ class JobStatusResponse(BaseModel):
 
 class JobStopResponse(BaseModel):
     chat_id: str
+    turn_id: str | None = None
     status: Literal["stopping"]
     updated_at: str

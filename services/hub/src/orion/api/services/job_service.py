@@ -7,8 +7,9 @@ from redis.asyncio import Redis
 
 from orion.contracts.access import ChatAccessResult
 from orion.contracts.constants import (
-    CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX,
-    ROOM_USER_PREFIX, STREAM_NAME, CHAT_USER_INDEX_PREFIX, CHAT_HISTORY_KEY_PREFIX
+    ACTIVE_TURN_KEY_PREFIX, CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX,
+    ROOM_USER_PREFIX, STREAM_NAME, CHAT_USER_INDEX_PREFIX, CHAT_HISTORY_KEY_PREFIX,
+    TURN_STOP_KEY_PREFIX,
 )
 from orion.contracts.events import StreamEvent
 from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusResponse, JobStopResponse
@@ -68,6 +69,7 @@ async def ensure_chat_access(redis: Redis, user_id: str, chat_id: str) -> dict:
 async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateResponse:
     settings = await get_runtime_settings(redis, payload.user_id)
     now = utc_now()
+    turn_id = str(uuid4())
     chat_id = payload.chat_id or str(uuid4())
     channel = get_key(ROOM_USER_PREFIX, payload.user_id)
 
@@ -76,7 +78,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         access = await check_chat_access(redis, payload.user_id, chat_id)
         if not access.allowed:
             await redis.publish(channel, StreamEvent.error(chat_id, chat_access_message(access.state)).model_dump_json())
-            return JobCreateResponse(chat_id=chat_id, status="failed", created_at=now)
+            return JobCreateResponse(chat_id=chat_id, status="failed", created_at=now, turn_id=None, generation_id=None)
 
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
@@ -84,20 +86,28 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
 
     status_mapping = {
         "chat_id": chat_id, "status": "queued", "user_id": payload.user_id,
-        "stream_mode": payload.stream_mode, "created_at": now, "updated_at": now, "channel": channel
+        "stream_mode": payload.stream_mode, "created_at": now, "updated_at": now, "channel": channel,
+        "active_turn_id": turn_id,
     }
 
     queue_record = JobQueueRecord(
-        user_id=payload.user_id, chat_id=chat_id, channel=channel,
+        user_id=payload.user_id, chat_id=chat_id, turn_id=turn_id, channel=channel,
         created_at=now, stream_mode=payload.stream_mode, payload=payload.model_dump_json()
     )
 
     # 3. Atomic Execution (Pipeline)
     pipe = redis.pipeline()
+    # CRITICAL: Delete any previous stop key BEFORE queueing the new generation.
+    # This ensures the new worker starts with a clean slate.
+    stop_key = get_key(CHAT_STOP_KEY_PREFIX, chat_id)
+    active_turn_key = get_key(ACTIVE_TURN_KEY_PREFIX, chat_id)
+    active_turn_ttl = max(settings.llm_timeout_seconds + settings.stop_key_ttl_seconds, 120)
+    pipe.delete(stop_key)
+    pipe.set(active_turn_key, turn_id, ex=active_turn_ttl)
     pipe.hset(state_key, mapping=status_mapping)
     pipe.expire(state_key, settings.result_ttl_seconds)
-    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text).model_dump_json())
-    pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued").model_dump_json())
+    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id).model_dump_json())
+    pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued", turn_id=turn_id).model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
 
     # Meta Güncelleme: Yeni chat ise her şeyi yaz, mevcut ise sadece güncellenme zamanını.
@@ -113,6 +123,12 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, payload.user_id), {chat_id: timestamp})
 
     await pipe.execute()
+    
+    # Verify stop key was deleted (for debugging)
+    stop_key_exists = await redis.exists(stop_key)
+    if stop_key_exists:
+        logger.warning("create_job: stop_key still exists after delete for chat %s — cleaning up explicitly", chat_id)
+        await redis.delete(stop_key)
 
     # 4. Write-Through: Persist chat metadata to PostgreSQL
     try:
@@ -121,16 +137,25 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         # Non-fatal: Redis already accepted the job; DB write failure must not block the user.
         logger.exception("Write-Through upsert_chat failed for chat %s — continuing", chat_id)
 
-    return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now)
+    return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id, generation_id=turn_id)
 
 
-async def stop_job(redis: Redis, user_id: str, chat_id: str) -> JobStopResponse:
+async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None = None) -> JobStopResponse:
     settings = await get_runtime_settings(redis, user_id)
     await ensure_chat_access(redis, user_id, chat_id)
     now = utc_now()
+    resolved_turn_id = turn_id
+    if not resolved_turn_id:
+        resolved_turn_id = await redis.get(get_key(ACTIVE_TURN_KEY_PREFIX, chat_id))
+    if not resolved_turn_id:
+        state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
+        resolved_turn_id = state.get("active_turn_id")
+
+    if not resolved_turn_id:
+        return JobStopResponse(chat_id=chat_id, turn_id=None, status="stopping", updated_at=now)
 
     pipe = redis.pipeline()
-    pipe.set(get_key(CHAT_STOP_KEY_PREFIX, chat_id), "1", ex=settings.stop_key_ttl_seconds)
+    pipe.set(get_key(TURN_STOP_KEY_PREFIX, resolved_turn_id), "1", ex=settings.stop_key_ttl_seconds)
     pipe.hset(get_key(CHAT_STATE_KEY_PREFIX, chat_id), mapping={"updated_at": now})
     pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping={"updated_at": now})
     await pipe.execute()
@@ -140,7 +165,7 @@ async def stop_job(redis: Redis, user_id: str, chat_id: str) -> JobStopResponse:
     except Exception:
         logger.exception("Could not persist stop timestamp for chat %s", chat_id)
 
-    return JobStopResponse(chat_id=chat_id, status="stopping", updated_at=now)
+    return JobStopResponse(chat_id=chat_id, turn_id=resolved_turn_id, status="stopping", updated_at=now)
 
 
 async def get_job(redis: Redis, user_id: str, chat_id: str) -> JobStatusResponse:
@@ -217,29 +242,33 @@ def _append_processing_state(history: list[dict], state: dict[str, str]) -> None
     current_prompt = state.get("current_prompt", "")
     partial_text = state.get("partial_text", "")
     partial_thinking = state.get("partial_thinking", "")
+    active_turn_id = state.get("active_turn_id")
 
-    already_persisted = False
+    prompt_already_persisted = False
     if current_prompt:
-        already_persisted = bool(
+        prompt_already_persisted = bool(
             history
             and history[-1].get("role") == "user"
             and history[-1].get("content") == current_prompt
         )
         if history and history[-1].get("role") == "assistant":
             previous = history[-2] if len(history) > 1 else None
-            already_persisted = bool(
+            prompt_already_persisted = bool(
                 previous
                 and previous.get("role") == "user"
                 and previous.get("content") == current_prompt
             )
-        if not already_persisted:
+        if not prompt_already_persisted:
             history.append({"role": "user", "content": current_prompt})
 
-    if (partial_text or partial_thinking) and not already_persisted:
-        assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
-        if partial_thinking:
-            assistant_entry["thinking"] = partial_thinking
-        history.append(assistant_entry)
+    # Keep an explicit in-progress item even before the first token. The UI
+    # uses it to preserve/rehydrate the active turn across chat navigation.
+    assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
+    if active_turn_id:
+        assistant_entry["turn_id"] = active_turn_id
+    if partial_thinking:
+        assistant_entry["thinking"] = partial_thinking
+    history.append(assistant_entry)
 
 # ---------------------------------------------------------------------------
 # Chat History — Cache-Aside with Hydration
@@ -384,6 +413,7 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
     pipe.delete(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     pipe.delete(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id))
     pipe.delete(get_key(CHAT_STOP_KEY_PREFIX, chat_id))
+    pipe.delete(get_key(ACTIVE_TURN_KEY_PREFIX, chat_id))
     if owner_id:
         pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, owner_id), chat_id)
     await pipe.execute()

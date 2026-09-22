@@ -9,8 +9,7 @@ const AppConfig = {
 
 const AppState = {
     currentChatId: null,
-    generatingChats: new Set(),  // chat_id'ler burada tutulur
-    closedGenerationChats: new Set(),
+    activeTurns: new Map(),
     eventSource: null,
     sseConnected: false,
     sseShouldReconnect: false,
@@ -23,28 +22,67 @@ const AppState = {
     firstTokenAt: new Map(),
 
     isGenerating() {
-        return this.generatingChats.has(this.currentChatId);
+        return this.isAnyChatGenerating(this.currentChatId);
     },
-    startGenerating(chatId) {
-        if (this.closedGenerationChats.has(chatId)) return false;
-        this.generatingChats.add(chatId);
+    getEventTurnId(data) {
+        return data?.turn_id || data?.generation_id || null;
+    },
+    getActiveTurn(chatId) {
+        return chatId ? this.activeTurns.get(chatId) || null : null;
+    },
+    startGenerating(chatId, turnId = null) {
+        if (!chatId) return false;
+        const existing = this.activeTurns.get(chatId);
+        if (existing && turnId && existing.turnId === turnId) {
+            existing.status = "generating";
+            return true;
+        }
+        this.activeTurns.set(chatId, {
+            turnId,
+            status: "generating",
+            startedAt: performance.now(),
+            firstTokenAt: null,
+        });
         if (!this.generationStartedAt.has(chatId)) {
             this.generationStartedAt.set(chatId, performance.now());
         }
         return true;
     },
-    stopGenerating(chatId) {
-        this.generatingChats.delete(chatId);
+    stopGenerating(chatId, turnId = null) {
+        const active = this.getActiveTurn(chatId);
+        if (!active) return;
+        if (turnId && active.turnId && active.turnId !== turnId) return;
+        this.activeTurns.delete(chatId);
     },
-    closeGeneration(chatId) {
-        this.closedGenerationChats.add(chatId);
+    beginStopping(chatId, turnId = null) {
+        const active = this.getActiveTurn(chatId);
+        if (!active) return false;
+        if (active.status === "stopping") return false;
+        if (turnId && active.turnId && active.turnId !== turnId) return false;
+        active.status = "stopping";
+        return true;
+    },
+    finishStopping(chatId) {
         this.stopGenerating(chatId);
     },
+    isStopping(chatId) {
+        return this.getActiveTurn(chatId)?.status === "stopping";
+    },
     reopenGeneration(chatId) {
-        this.closedGenerationChats.delete(chatId);
+        return true;
     },
     isGenerationClosed(chatId) {
-        return this.closedGenerationChats.has(chatId);
+        return false;
+    },
+    isKnownTurn(chatId, turnId) {
+        const active = this.getActiveTurn(chatId);
+        if (!active) return false;
+        return !turnId || !active.turnId || active.turnId === turnId;
+    },
+    isStreamingTurn(chatId, turnId) {
+        const active = this.getActiveTurn(chatId);
+        if (!active || !["generating", "stopping"].includes(active.status)) return false;
+        return !turnId || !active.turnId || active.turnId === turnId;
     },
     markFirstToken(chatId) {
         if (!this.firstTokenAt.has(chatId)) {
@@ -57,7 +95,7 @@ const AppState = {
         const now = performance.now();
         const firstTokenAt = this.firstTokenAt.get(chatId);
         return {
-            first_token_ms: Math.max(1, Math.round((firstTokenAt ?? now) - startedAt)),
+            first_token_ms: firstTokenAt === undefined ? null : Math.max(1, Math.round(firstTokenAt - startedAt)),
             total_ms: Math.max(1, Math.round(now - startedAt)),
         };
     },
@@ -66,6 +104,6 @@ const AppState = {
         this.firstTokenAt.delete(chatId);
     },
     isAnyChatGenerating(chatId) {
-        return this.generatingChats.has(chatId);
+        return this.activeTurns.has(chatId);
     }
 };

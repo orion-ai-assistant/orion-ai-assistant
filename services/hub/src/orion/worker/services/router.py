@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Awaitable
 from typing import Any
@@ -77,6 +78,17 @@ def _router_urls(path: str) -> list[str]:
     return [f"{_base_url(url)}{path}" for url in get_router_base_urls()]
 
 
+def _chat_provider(model_group: str) -> str | None:
+    lowered_model = (model_group or "").strip().lower()
+    if lowered_model in ("", "none", "null", "default", "local", "local-chat", "local-model"):
+        return "local"
+    if "gemini" in lowered_model:
+        return "gemini"
+    if "openai" in lowered_model or "gpt" in lowered_model:
+        return "openai"
+    return None
+
+
 # ---------------------------------------------------------------------------
 #  Timeout Helpers
 # ---------------------------------------------------------------------------
@@ -119,6 +131,9 @@ async def llama_stream_chat_typed(
         "x-orion-api-key": api_key,
         "Content-Type": "application/json",
     }
+    provider = _chat_provider(settings.router_model_group)
+    if provider:
+        headers["x-orion-provider"] = provider
     payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
@@ -131,8 +146,12 @@ async def llama_stream_chat_typed(
 
     timeout = _stream_timeout(settings)
 
+    streamed_content = ""
+    streamed_thinking = ""
+
     async def _parse_buffer(buf: bytes) -> AsyncIterator[tuple[str, str]]:
         """Parse a single SSE line buffer and yield typed tokens."""
+        nonlocal streamed_content, streamed_thinking
         line = buf.strip()
         if not line:
             return
@@ -146,7 +165,12 @@ async def llama_stream_chat_typed(
             return
 
         if error := data.get("error"):
-            raise RuntimeError(error)
+            # Router error can be a string or a dict with detailed info
+            if isinstance(error, dict):
+                error_msg = error.get("message") or error.get("detail") or str(error)
+            else:
+                error_msg = str(error)
+            raise RuntimeError(error_msg)
 
         if metrics := data.get("metrics"):
             yield ("metrics", json.dumps(metrics))
@@ -159,14 +183,72 @@ async def llama_stream_chat_typed(
         # 1. API-level reasoning_content (DeepSeek / OpenRouter thinking models)
         reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
         if reasoning:
+            streamed_thinking += reasoning
             yield ("thinking", reasoning)
 
         # 2. Normal content
         content = delta.get("content") or ""
         if content:
+            streamed_content += content
             yield ("content", content)
 
+        # Some Router providers finish a streamed response with an aggregate
+        # message instead of one last delta. Emit only its missing suffix.
+        message = choices[0].get("message") or {}
+        final_reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if final_reasoning:
+            if final_reasoning.startswith(streamed_thinking):
+                reasoning_suffix = final_reasoning[len(streamed_thinking):]
+                if reasoning_suffix:
+                    streamed_thinking = final_reasoning
+                    yield ("thinking", reasoning_suffix)
+            elif not streamed_thinking:
+                streamed_thinking = final_reasoning
+                yield ("thinking", final_reasoning)
+
+        final_content = message.get("content") or ""
+        if final_content:
+            # Treat the Router's aggregate message as authoritative. Chunked
+            # deltas can end on a partial token or differ slightly after
+            # provider normalization, so suffix matching alone is not enough.
+            streamed_content = final_content
+            yield ("content_snapshot", final_content)
+
     last_error = None
+    async def _chunks_until_stopped(response):
+        iterator = response.content.iter_any().__aiter__()
+        pending = None
+        try:
+            while True:
+                pending = asyncio.create_task(anext(iterator))
+                while True:
+                    ready, _ = await asyncio.wait({pending}, timeout=0.05)
+                    if ready:
+                        break
+                    if stop_checker and await stop_checker():
+                        # Drain a read that completed during the cancellation check.
+                        if pending.done():
+                            try:
+                                yield pending.result()
+                            except StopAsyncIteration:
+                                pass
+                        response.close()
+                        return
+                try:
+                    chunk = pending.result()
+                except StopAsyncIteration:
+                    return
+                yield chunk
+                # The entire received chunk is parsed before closing upstream.
+                if stop_checker and await stop_checker():
+                    response.close()
+                    return
+        finally:
+            if pending is not None:
+                if not pending.done():
+                    pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+
     for url in urls:
         yielded_any = False
         try:
@@ -176,7 +258,7 @@ async def llama_stream_chat_typed(
                     raise RuntimeError(f"HTTP {response.status} - {error_text}")
                 
                 raw_buffer = b""
-                async for chunk in response.content.iter_any():
+                async for chunk in _chunks_until_stopped(response):
                     if not chunk:
                         continue
                     raw_buffer += chunk
@@ -186,11 +268,6 @@ async def llama_stream_chat_typed(
                             yielded_any = True
                             yield pair
 
-                    # Durdurma sinyali geldiyse Router HTTP soketini kapat ama mevcut tamponu kaybetmeden çık
-                    if stop_checker and await stop_checker():
-                        response.close()
-                        break
-
                 # Flush remaining buffer
                 if raw_buffer.strip():
                     async for pair in _parse_buffer(raw_buffer):
@@ -199,7 +276,7 @@ async def llama_stream_chat_typed(
                         
                 return  # Başarılı olduğunda tamamen çık
                 
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:
             if yielded_any:
                 # Veri göndermeye başladıktan sonra hata aldıysak fallback yapamayız, hatayı fırlat.
                 raise
@@ -345,7 +422,7 @@ async def generate_tts(
     raw_model = (getattr(settings, "tts_model", "") or "").strip()
     lowered_model = raw_model.lower()
 
-    if not raw_model:
+    if lowered_model in ("", "none", "null", "default"):
         tts_model = "local-tts"
         provider = "local"
     else:
@@ -358,7 +435,10 @@ async def generate_tts(
         elif lowered_model in ("voxcpm", "voxcpm2", "local", "local-model", "local-tts"):
             provider = "local"
         else:
-            provider = None
+            raise ValueError(
+                f"Desteklenmeyen TTS modeli: {tts_model}. "
+                "Model adında gemini, openai veya local kullanın."
+            )
 
     raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
     voice_name = (raw_voice or "").strip()

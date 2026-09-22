@@ -5,28 +5,75 @@ from pydantic import BaseModel, Field
 
 
 class StreamEvent(BaseModel):
-    type: Literal["accepted", "token", "thinking", "done", "error", "user_message", "chat_rename", "chat_delete", "audio"]
+    type: Literal["accepted", "token", "snapshot", "thinking", "done", "error", "user_message", "chat_rename", "chat_delete", "audio"]
     chat_id: str
+    turn_id: str | None = None
+    generation_id: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
-    def accepted(cls, chat_id: str, status: str = "queued") -> "StreamEvent":
-        return cls(type="accepted", chat_id=chat_id, data={"status": status})
+    def _turn_kwargs(cls, turn_id: str | None = None, generation_id: str | None = None) -> dict[str, str | None]:
+        resolved_turn_id = turn_id or generation_id
+        return {"turn_id": resolved_turn_id, "generation_id": resolved_turn_id}
 
     @classmethod
-    def thinking(cls, chat_id: str, token: str) -> "StreamEvent":
-        return cls(type="thinking", chat_id=chat_id, data={"token": token})
+    def accepted(
+        cls,
+        chat_id: str,
+        status: str = "queued",
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
+        return cls(type="accepted", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"status": status})
 
     @classmethod
-    def token(cls, chat_id: str, token: str) -> "StreamEvent":
-        return cls(type="token", chat_id=chat_id, data={"token": token})
+    def thinking(
+        cls,
+        chat_id: str,
+        token: str,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
+        return cls(type="thinking", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"token": token})
 
     @classmethod
-    def done(cls, chat_id: str, status: str, metrics: dict[str, Any] | None = None) -> "StreamEvent":
+    def token(
+        cls,
+        chat_id: str,
+        token: str,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
+        return cls(type="token", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"token": token})
+
+    @classmethod
+    def snapshot(
+        cls,
+        chat_id: str,
+        content: str,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
+        return cls(
+            type="snapshot",
+            chat_id=chat_id,
+            **cls._turn_kwargs(turn_id, generation_id),
+            data={"content": content},
+        )
+
+    @classmethod
+    def done(
+        cls,
+        chat_id: str,
+        status: str,
+        metrics: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
         data: dict[str, Any] = {"status": status}
         if metrics:
             data.update(metrics)
-        return cls(type="done", chat_id=chat_id, data=data)
+        return cls(type="done", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data=data)
 
     @classmethod
     def error(
@@ -34,15 +81,23 @@ class StreamEvent(BaseModel):
         chat_id: str,
         message: str,
         metrics: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
     ) -> "StreamEvent":
         data: dict[str, Any] = {"message": message, "status": "failed"}
         if metrics:
             data.update(metrics)
-        return cls(type="error", chat_id=chat_id, data=data)
+        return cls(type="error", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data=data)
         
     @classmethod
-    def user_message(cls, chat_id: str, text: str) -> "StreamEvent":
-        return cls(type="user_message", chat_id=chat_id, data={"text": text})
+    def user_message(
+        cls,
+        chat_id: str,
+        text: str,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
+    ) -> "StreamEvent":
+        return cls(type="user_message", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"text": text})
 
     @classmethod
     def chat_rename(cls, chat_id: str, name: str) -> "StreamEvent":
@@ -60,6 +115,8 @@ class StreamEvent(BaseModel):
         format: str = "wav",
         sample_rate: int | None = None,
         text: str | None = None,
+        turn_id: str | None = None,
+        generation_id: str | None = None,
     ) -> "StreamEvent":
         if isinstance(audio_data, bytes):
             encoded = base64.b64encode(audio_data).decode("utf-8")
@@ -75,5 +132,4 @@ class StreamEvent(BaseModel):
         if text is not None:
             payload["text"] = text
 
-        return cls(type="audio", chat_id=chat_id, data=payload)
-
+        return cls(type="audio", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data=payload)

@@ -8,6 +8,7 @@ from orion.contracts.http import JobCreateRequest
 class JobQueueRecord(BaseModel):
     user_id: str
     chat_id: str
+    turn_id: str | None = None
     channel: str
     created_at: str
     stream_mode: Literal["once", "continuous"] = "once"

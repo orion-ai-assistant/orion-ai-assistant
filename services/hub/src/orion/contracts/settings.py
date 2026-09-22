@@ -4,7 +4,7 @@ class SystemSettings(BaseModel):
     result_ttl_seconds: int = 86400
     sse_heartbeat_seconds: int = 15
     worker_max_concurrency: int = 250
-    stop_key_ttl_seconds: int = 3600
+    stop_key_ttl_seconds: int = 60  # Shortened from 3600 to prevent old stop signals from affecting new generations
     redis_cache_ttl_seconds: int = 3600
 
 

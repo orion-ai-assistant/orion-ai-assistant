@@ -107,11 +107,10 @@ const SSE = {
 
     processEvent(data) {
         const chatId = data.chat_id;
+        const turnId = AppState.getEventTurnId(data);
         console.log("Gelen olay:", data);
 
-        // A new chat has no id until the POST response returns. Keep its fast
-        // SSE events in order instead of rendering them into an orphan state.
-        if (!AppState.currentChatId && AppState.pendingNewChatRequest && chatId) {
+        if (AppState.pendingNewChatRequest && chatId) {
             AppState.pendingChatEvents.push(data);
             return;
         }
@@ -132,23 +131,38 @@ const SSE = {
             return;
         }
 
+        if (chatId && (data.type === "accepted" || data.type === "user_message")) {
+            const activeTurn = AppState.getActiveTurn(chatId);
+            if (activeTurn?.status === "stopping" && AppState.isKnownTurn(chatId, turnId)) {
+                return;
+            }
+            if (!AppState.isKnownTurn(chatId, turnId)) {
+                AppState.startGenerating(chatId, turnId);
+            }
+            if (chatId === AppState.currentChatId) {
+                UI.setStopButtonVisible(true);
+            }
+        }
+
         if (
-            AppState.isGenerationClosed(chatId)
-            && ["accepted", "user_message", "thinking", "token", "audio"].includes(data.type)
+            chatId
+            && ["thinking", "token", "snapshot", "audio"].includes(data.type)
+            && !AppState.isStreamingTurn(chatId, turnId)
         ) {
             return;
         }
 
-        if (chatId && (data.type === "accepted" || data.type === "token" || data.type === "thinking")) {
-            if (!AppState.isAnyChatGenerating(chatId)) {
-                AppState.startGenerating(chatId);
-                if (chatId === AppState.currentChatId) {
-                    UI.setStopButtonVisible(true);
-                }
-            }
+        if (
+            chatId
+            && ["done", "error"].includes(data.type)
+            && !AppState.isKnownTurn(chatId, turnId)
+        ) {
+            return;
         }
 
-        // If we are currently loading the history for this chat, buffer the live events
+        // Preserve event order while a history snapshot is loading. This must
+        // include terminal events: otherwise a fast `done` can be processed
+        // before an older partial snapshot is rendered, reopening stale text.
         if (AppState._loadingHistory && chatId === AppState.currentChatId) {
             if (!AppState._sseBuffer) AppState._sseBuffer = [];
             AppState._sseBuffer.push(data);
@@ -161,31 +175,58 @@ const SSE = {
                 if (window.loadChats) window.loadChats();
             }
             if (data.type === "token") {
+                AppState.markFirstToken(chatId);
                 UI.appendToken(chatId, data.data.token);
+            } else if (data.type === "snapshot") {
+                AppState.markFirstToken(chatId);
+                UI.replaceMessageContent(chatId, data.data.content);
             } else if (data.type === "thinking") {
+                AppState.markFirstToken(chatId);
                 UI.appendThinkingToken(chatId, data.data.token);
             } else if (data.type === "done" || data.type === "error") {
-                AppState.closeGeneration(chatId);
+                AppState.stopGenerating(chatId, turnId);
                 UI.finishGeneration(chatId, true, data.data);
+                AppState.clearGenerationMetrics(chatId);
             }
             return;
         }
 
         // ---- Events for the active chat ----
         if (data.type === "accepted") {
-            UI.createBotMessagePlaceholder(chatId);
+            // CRITICAL FIX: Don't create duplicate placeholder if already generating
+            const activeState = UI._chatDivs[chatId];
+            if (!activeState || !activeState.botDiv) {
+                UI.createBotMessagePlaceholder(chatId);
+            }
         }
         else if (data.type === "user_message") {
+            // A new turn must never reuse a leftover live bot element from a
+            // stopped generation.
+            const activeState = UI._chatDivs[chatId];
+            if (activeState && activeState.botDiv) {
+                UI.finishGeneration(chatId, true, { status: "stopped" });
+            }
             UI.appendUserMessage(data.data.text);
-            UI.createBotMessagePlaceholder(chatId, true);
+            // CRITICAL FIX: Don't create duplicate placeholder if already generating
+            const currentState = UI._chatDivs[chatId];
+            if (!currentState || !currentState.botDiv) {
+                UI.createBotMessagePlaceholder(chatId, true);
+            }
         }
         else if (data.type === "thinking") {
+            console.log(`[DEBUG] Thinking token received for ${chatId}`);
             AppState.markFirstToken(chatId);
             UI.appendThinkingToken(chatId, data.data.token);
         }
         else if (data.type === "token") {
+            console.log(`[DEBUG] Content token received for ${chatId}`);
             AppState.markFirstToken(chatId);
             UI.appendToken(chatId, data.data.token);
+        }
+        else if (data.type === "snapshot") {
+            console.log(`[DEBUG] Final content snapshot received for ${chatId}`);
+            AppState.markFirstToken(chatId);
+            UI.replaceMessageContent(chatId, data.data.content);
         }
         else if (data.type === "audio") {
             if (UI.appendAudio) {
@@ -193,12 +234,22 @@ const SSE = {
             }
         }
         else if (data.type === "done" || data.type === "error") {
-            AppState.closeGeneration(chatId);
+            console.log(`Generation ${data.type} for chat ${chatId}. Ready for next message.`);
+            
+            AppState.stopGenerating(chatId, turnId);
+            
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
             }
             UI.finishGeneration(chatId, true, data.data);
             AppState.clearGenerationMetrics(chatId);
+            console.log(`Chat ${chatId} ready for next message`);
+            
+            // CRITICAL: Always hide stop button when done/error arrives
+            if (chatId === AppState.currentChatId) {
+                UI.setStopButtonVisible(false);
+                console.log(`Stop button hidden for active chat ${chatId}`);
+            }
             
             // Sidebar sohbet listesini ve başlıklarını güncelle (aktif sohbet ekranını sıfırlama)
             if (window.loadChats) {

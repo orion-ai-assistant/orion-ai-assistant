@@ -31,12 +31,12 @@ const UI = {
         const meta = document.createElement('div');
         meta.className = 'message-meta';
 
-        const fmtFirst = Math.round(Number(firstTokenMs || 0));
+        const fmtFirst = firstTokenMs == null ? '-' : `${Math.round(Number(firstTokenMs))} ms`;
         const fmtTotal = Math.round(Number(totalMs || 0));
 
         meta.innerHTML = `
             <span class="meta-item" title="İlk Token Süresi">
-                <span class="meta-icon">⚡</span> <strong>${fmtFirst} ms</strong>
+                <span class="meta-icon">⚡</span> <strong>${fmtFirst}</strong>
             </span>
             <span class="meta-sep" style="opacity: 0.3; font-weight: normal; margin: 0 4px;">|</span>
             <span class="meta-item" title="Toplam Yanıt Süresi">
@@ -180,6 +180,31 @@ const UI = {
         }
     },
 
+    replaceMessageContent(chatId, content) {
+        if (!chatId) return;
+        const state = this._getOrCreateChatState(chatId);
+        if (!state.botDiv) {
+            this.createBotMessagePlaceholder(chatId);
+        }
+        if (state.botDiv.classList.contains('typing')) {
+            state.botDiv.innerHTML = '';
+            state.botDiv.classList.remove('typing');
+            state.thinkDiv = null;
+            state.thinkBody = null;
+        }
+
+        Array.from(state.botDiv.childNodes).forEach(node => {
+            if (node.nodeType === Node.TEXT_NODE) node.remove();
+        });
+
+        const contentNode = document.createTextNode(content || '');
+        const trailingElement = state.botDiv.querySelector('.audio-player-container, .message-meta');
+        state.botDiv.insertBefore(contentNode, trailingElement || null);
+        if (chatId === AppState.currentChatId) {
+            this.scrollToBottom();
+        }
+    },
+
     appendAudio(chatId, audioData, autoPlay = true) {
         if (!chatId || !audioData || !audioData.audio) return;
         this._chatAudios[chatId] = audioData;
@@ -227,8 +252,22 @@ const UI = {
 
     finishGeneration(chatId, hasTokens = true, metrics = null) {
         if (!chatId) return;
+        const fallback = AppState.getGenerationMetrics(chatId);
+        metrics = { ...metrics };
+        for (const key of ['first_token_ms', 'total_ms']) {
+            if (metrics[key] === undefined) metrics[key] = fallback?.[key];
+        }
         const state = this._chatDivs[chatId];
-        if (!state) return;
+        const staleTypingDivs = this.chatArea.querySelectorAll(
+            `.message.typing[data-chat-id="${CSS.escape(String(chatId))}"]`
+        );
+        staleTypingDivs.forEach(div => {
+            if (!state || div !== state.botDiv) div.remove();
+        });
+        if (!state) {
+            if (chatId === AppState.currentChatId) this.setStopButtonVisible(false);
+            return;
+        }
 
         const botDivRef = state.botDiv;
 
@@ -248,7 +287,7 @@ const UI = {
         }
 
         // Add metrics badge from Router to the bot message
-        if (botDivRef && metrics && (metrics.total_ms || metrics.first_token_ms)) {
+        if (botDivRef && (metrics.total_ms || metrics.first_token_ms)) {
             const metaEl = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
             if (metaEl && !botDivRef.querySelector('.message-meta')) {
                 botDivRef.appendChild(metaEl);
@@ -312,6 +351,11 @@ const UI = {
     setStopButtonVisible(isVisible) {
         if (!this.stopBtn) return;
         this.stopBtn.style.display = isVisible ? 'flex' : 'none';
+        if (isVisible && AppState.isStopping(AppState.currentChatId)) {
+            this.stopBtn.disabled = true;
+            this.stopBtn.textContent = 'Durduruluyor...';
+            return;
+        }
         if (isVisible) {
             this.stopBtn.disabled = false;
             this.stopBtn.innerHTML = '<span class="stop-icon">■</span><span class="stop-text">Durdur</span>';
@@ -646,7 +690,8 @@ const UI = {
             });
 
             // Click body → load chat
-            item.querySelector('.chat-item-body').addEventListener('click', () => {
+            item.addEventListener('click', (event) => {
+                if (event.target.closest('.chat-item-actions')) return;
                 if (window.loadChat) window.loadChat(chat.chat_id);
             });
 

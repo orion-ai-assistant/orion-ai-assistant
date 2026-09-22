@@ -57,6 +57,15 @@ async def create_chat_message_endpoint(payload: JobCreateRequest, request: Reque
 async def stop_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)) -> JobStopResponse:
     return await stop_job(request.app.state.redis, current_user, chat_id)
 
+@router.post("/api/v1/chats/{chat_id}/turns/{turn_id}/stop", response_model=JobStopResponse)
+async def stop_chat_turn_endpoint(
+    chat_id: str,
+    turn_id: str,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+) -> JobStopResponse:
+    return await stop_job(request.app.state.redis, current_user, chat_id, turn_id)
+
 @router.get("/api/v1/chats/{chat_id}", response_model=JobStatusResponse)
 async def get_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)) -> JobStatusResponse:
     return await get_job(request.app.state.redis, current_user, chat_id)
@@ -120,17 +129,19 @@ async def chat_stream(
         try:
             while not await request.is_disconnected():
                 try:
-                    # Heartbeat ve mesaj bekleme mantığı
+                    # Heartbeat ile mesajları ayır - timeout'u kaldırdık
                     message = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        pubsub.get_message(ignore_subscribe_messages=True),
                         timeout=settings.sse_heartbeat_seconds,
                     )
                     
                     if message and message.get("type") == "message":
                         yield f"event: message\ndata: {message['data']}\n\n"
                     else:
+                        # Mesaj yoksa heartbeat gönder
                         yield ": heartbeat\n\n"
                 except asyncio.TimeoutError:
+                    # Heartbeat timeout'u - normal durum
                     yield ": heartbeat\n\n"
         finally:
             await pubsub.unsubscribe(channel)

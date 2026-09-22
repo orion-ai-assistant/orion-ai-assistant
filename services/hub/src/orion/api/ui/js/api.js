@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API Request Handlers and Authentication
  */
 const Auth = {
@@ -70,6 +70,8 @@ const Auth = {
 };
 
 const API = {
+    sendInFlight: false,
+
     async _fetch(url, options = {}) {
         if (!url.startsWith("/api/v1/auth") && !AppState.sseConnected) {
             return new Response(JSON.stringify({ detail: "Bağlantı yok. Yeniden bağlanılıyor." }), {
@@ -88,6 +90,10 @@ const API = {
     async sendMessage(text) {
         if (!text) return;
 
+        // Prevent rapid Enter/click events from creating duplicate jobs before
+        // the first POST response marks the chat as generating.
+        if (this.sendInFlight) return;
+
         // Check if connected
         if (!AppState.sseConnected) {
             alert("Bağlantı yok. Yeniden bağlanmayı bekleyin.");
@@ -99,20 +105,16 @@ const API = {
         const wasNewChat = !chatId;
 
         // If this specific chat is already generating, block
-        if (chatId && AppState.isAnyChatGenerating(chatId)) {
+        if (chatId && (AppState.isAnyChatGenerating(chatId) || AppState.isStopping(chatId))) {
             return;
         }
 
-        if (chatId) {
-            AppState.reopenGeneration(chatId);
-        }
-        if (wasNewChat) {
-            AppState.pendingNewChatRequest = true;
-            AppState.pendingChatEvents = [];
-        }
+        this.sendInFlight = true;
 
-        // Update UI for sending
-        UI.appendUserMessage(text);
+        AppState.pendingNewChatRequest = true;
+        AppState.pendingChatEvents = [];
+
+        // The SSE user_message event is the single source of truth for rendering.
         UI.clearInput();
 
         try {
@@ -143,10 +145,11 @@ const API = {
                     // No generation started
                     AppState.pendingNewChatRequest = false;
                     AppState.pendingChatEvents = [];
+                    UI.setStopButtonVisible(false);
                 } else {
                     AppState.currentChatId = data.chat_id;
-                    AppState.startGenerating(data.chat_id);
-                    UI.createBotMessagePlaceholder(data.chat_id, true);
+                    const turnId = data.turn_id || data.generation_id || null;
+                    AppState.startGenerating(data.chat_id, turnId);
                     UI.setStopButtonVisible(true);
                     const pendingEvents = AppState.pendingChatEvents;
                     AppState.pendingChatEvents = [];
@@ -159,48 +162,60 @@ const API = {
             } else {
                 AppState.pendingNewChatRequest = false;
                 AppState.pendingChatEvents = [];
+                if (chatId) {
+                    AppState.stopGenerating(chatId);
+                    UI.finishGeneration(chatId, false);
+                    AppState.clearGenerationMetrics(chatId);
+                }
+                UI.setStopButtonVisible(false);
                 UI.appendToken(chatId || 'error', `\n[API Hatası: ${JSON.stringify(data)}]`);
             }
         } catch (error) {
             AppState.pendingNewChatRequest = false;
             AppState.pendingChatEvents = [];
+            if (chatId) {
+                AppState.stopGenerating(chatId);
+                UI.finishGeneration(chatId, false);
+                AppState.clearGenerationMetrics(chatId);
+            }
+            UI.setStopButtonVisible(false);
             UI.appendToken(chatId || 'error', `\n[İstek Hatası: ${error.message}]`);
+        } finally {
+            this.sendInFlight = false;
         }
     },
 
     async stopGeneration() {
         if (!AppState.currentChatId || !AppState.isAnyChatGenerating(AppState.currentChatId)) return;
-        const targetChatId = AppState.currentChatId;
 
-        // Butonu "Durduruluyor..." moduna al ama ekran akışını hemen kesme
+        const targetChatId = AppState.currentChatId;
+        const activeTurn = AppState.getActiveTurn(targetChatId);
+        const targetTurnId = activeTurn?.turnId || null;
+
+        // Keep accepting this turn until the worker sends its terminal event.
+        if (!AppState.beginStopping(targetChatId, targetTurnId)) return;
+
+        // Update stop button to indicate the request is in flight.
         const stopBtn = document.getElementById('stop-btn');
         if (stopBtn) {
             stopBtn.disabled = true;
-            stopBtn.innerHTML = '<span class="stop-icon">⏳</span><span class="stop-text">Durduruluyor...</span>';
+            stopBtn.innerHTML = '<span class="stop-icon">\u23F3</span><span class="stop-text">Durduruluyor...</span>';
         }
 
         try {
-            await this._fetch(`/api/v1/chats/${targetChatId}/stop`, {
-                method: 'POST'
-            });
-
-            // Sunucu durdurma işlemini tamamlayıp SSE üzerinden 'done' yollayana kadar
-            // gelen son tokenlar normal şekilde ekrana akmaya devam eder.
-            // Emniyet süresi: 2 saniye içinde done gelmezse güvenli yedek olarak kapat
-            setTimeout(() => {
-                if (AppState.isAnyChatGenerating(targetChatId)) {
-                    const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
-                    AppState.closeGeneration(targetChatId);
-                    UI.finishGeneration(targetChatId, true, fallbackMetrics);
-                    AppState.clearGenerationMetrics(targetChatId);
-                }
-            }, 2000);
+            // Prefer the turn-scoped endpoint; fall back to chat-scoped for older backend.
+            const stopPath = targetTurnId
+                ? `/api/v1/chats/${targetChatId}/turns/${targetTurnId}/stop`
+                : `/api/v1/chats/${targetChatId}/stop`;
+            const response = await this._fetch(stopPath, { method: 'POST' });
+            if (!response.ok) throw new Error(`Stop HTTP ${response.status}`);
         } catch (error) {
-            console.error("Durdurma hatası:", error);
-            const fallbackMetrics = AppState.getGenerationMetrics(targetChatId);
-            AppState.closeGeneration(targetChatId);
-            UI.finishGeneration(targetChatId, true, fallbackMetrics);
-            AppState.clearGenerationMetrics(targetChatId);
+            console.error("Durdurma iste\u011Fi ba\u015Far\u0131s\u0131z:", error);
+            const current = AppState.getActiveTurn(targetChatId);
+            if (current === activeTurn && current.status === "stopping") {
+                current.status = "generating";
+                if (AppState.currentChatId === targetChatId) UI.setStopButtonVisible(true);
+            }
         }
     },
 

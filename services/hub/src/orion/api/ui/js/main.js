@@ -27,7 +27,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         
         // If another loadChat was called while we were fetching, discard this one
         if (currentSeq !== loadChatSeq) return;
-        
+
+        const cachedLiveState = AppState.getActiveTurn(chatId) ? UI._chatDivs[chatId] : null;
+        const hasCachedLiveMessage = Boolean(cachedLiveState?.botDiv);
+
         UI.clearChatArea();
         
         let hasPartial = false;
@@ -47,17 +50,25 @@ document.addEventListener("DOMContentLoaded", async () => {
                     if (msg.partial) {
                         // In-progress message from server — set up the live botDiv for this chat
                         hasPartial = true;
-                        
-                        // Clear any old live state that might have been carried over
-                        if (UI._chatDivs[chatId]) {
-                            UI._chatDivs[chatId] = { botDiv: null, thinkDiv: null, thinkBody: null };
+                        const activeTurn = AppState.getActiveTurn(chatId);
+                        if (!activeTurn || (msg.turn_id && activeTurn.turnId !== msg.turn_id)) {
+                            AppState.startGenerating(chatId, msg.turn_id || null);
                         }
                         
-                        UI.createBotMessagePlaceholder(chatId);
-                        if (msg.thinking) {
-                            UI.appendThinkingToken(chatId, msg.thinking);
+                        // When navigating back, the detached live element already
+                        // contains every SSE token received in the background.
+                        // Keep it; use the Redis snapshot only after reload/reconnect.
+                        if (!hasCachedLiveMessage) {
+                            if (UI._chatDivs[chatId]) {
+                                UI._chatDivs[chatId] = { botDiv: null, thinkDiv: null, thinkBody: null };
+                            }
+
+                            UI.createBotMessagePlaceholder(chatId);
+                            if (msg.thinking) {
+                                UI.appendThinkingToken(chatId, msg.thinking);
+                            }
+                            UI.appendToken(chatId, msg.content);
                         }
-                        UI.appendToken(chatId, msg.content);
                     } else {
                         UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics);
                     }
@@ -71,15 +82,22 @@ document.addEventListener("DOMContentLoaded", async () => {
             AppState.stopGenerating(chatId);
         }
 
-        if (hasPartial || AppState.isAnyChatGenerating(chatId)) {
+        // CRITICAL FIX: Only show stop button if chat is ACTIVELY generating in AppState
+        // Do NOT rely solely on hasPartial flag from history, as it may be stale
+        // when error event just arrived but history hasn't refreshed yet
+        const isActivelyGenerating = AppState.isAnyChatGenerating(chatId);
+        
+        if (isActivelyGenerating && hasPartial) {
             // Chat is generating live via SSE — re-attach the bot div if not already there
             const chatState = UI._chatDivs[chatId];
             if (chatState && chatState.botDiv && !UI.chatArea.contains(chatState.botDiv)) {
                 UI.chatArea.appendChild(chatState.botDiv);
             }
             UI.setStopButtonVisible(true);
+            console.log(`loadChat: Stop button shown for actively generating chat ${chatId}`);
         } else {
             UI.setStopButtonVisible(false);
+            console.log(`loadChat: Stop button hidden for chat ${chatId} (generating=${isActivelyGenerating}, partial=${hasPartial})`);
         }
 
         // Eğer bu sohbete ait oluşturulmuş ses varsa tekrar oynatıcıyı yerleştir
@@ -211,7 +229,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (window.stopUserPolling) window.stopUserPolling();
         // State temizliği
         AppState.currentChatId = null;
-        AppState.generatingChats.clear();
+        AppState.activeTurns.clear();
         
         // UI Temizliği
         UI.setConnectionStatus(false, "disconnected");
