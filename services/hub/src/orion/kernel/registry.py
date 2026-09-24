@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 
 import asyncpg
 
@@ -151,6 +152,28 @@ async def upsert_setting_overrides(user_id: str, overrides: dict[str, str]) -> N
         await conn.close()
 
 
+async def insert_missing_setting_overrides(user_id: str, defaults: dict[str, str]) -> None:
+    """Add newly introduced defaults without replacing administrator values."""
+    if not defaults:
+        return
+    conn = await _connect()
+    if conn is None:
+        return
+    try:
+        await _ensure_tables(conn)
+        records = [(user_id, key, value) for key, value in defaults.items()]
+        await conn.executemany(
+            """
+            insert into orion_settings (user_id, key, value)
+            values ($1, $2, $3)
+            on conflict (user_id, key) do nothing
+            """,
+            records,
+        )
+    finally:
+        await conn.close()
+
+
 async def fetch_all_settings() -> dict[str, dict[str, str]]:
     conn = await _connect()
     if conn is None:
@@ -252,15 +275,18 @@ async def upsert_chat(chat_id: str, user_id: str, title: str = "New Chat") -> No
         await conn.close()
 
 
-async def rename_chat_db(chat_id: str, title: str, updated_at: str) -> None:
+async def rename_chat_db(chat_id: str, title: str, updated_at: str, owner_id: str) -> None:
     conn = await _connect()
     if conn is None:
         raise RuntimeError("Postgres is unavailable")
     try:
         await _ensure_tables(conn)
         await conn.execute(
-            "update orion_chats set title = $2, updated_at = $3 where id = $1",
-            chat_id, title, updated_at,
+            """insert into orion_chats (id, user_id, title, updated_at)
+            values ($1, $2, $3, $4)
+            on conflict (id) do update
+            set title = excluded.title, updated_at = excluded.updated_at""",
+            chat_id, owner_id, title, datetime.fromisoformat(updated_at),
         )
     finally:
         await conn.close()
@@ -274,7 +300,7 @@ async def touch_chat_db(chat_id: str, updated_at: str) -> None:
         await _ensure_tables(conn)
         await conn.execute(
             "update orion_chats set updated_at = $2 where id = $1",
-            chat_id, updated_at,
+            chat_id, datetime.fromisoformat(updated_at),
         )
     finally:
         await conn.close()

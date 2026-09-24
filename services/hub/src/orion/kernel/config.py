@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
+from pydantic import ValidationError
 from redis.asyncio import Redis
 
 from orion.contracts.constants import SETTINGS_HASH_KEY_PREFIX, SETTINGS_DEFAULT_USER
 from orion.contracts.settings import RuntimeSettings
-from orion.kernel.registry import fetch_setting_overrides, upsert_setting_overrides, fetch_all_settings, delete_setting_override
+from orion.kernel.registry import fetch_setting_overrides, upsert_setting_overrides, insert_missing_setting_overrides, fetch_all_settings, delete_setting_override
 
 settings = RuntimeSettings()
 _allowed_keys = set(settings.model_dump().keys())
+logger = logging.getLogger(__name__)
 
 
 def is_protected_global_key(key: str) -> bool:
@@ -26,13 +29,24 @@ def _clean_legacy_value(key: str, val: str) -> str:
 
 
 def build_runtime_settings(overrides: Mapping[str, str] | None = None) -> RuntimeSettings:
-    data = settings.model_dump()
+    defaults = settings.model_dump()
+    data = defaults.copy()
     if overrides:
         for key, value in overrides.items():
             normalized_key = key.lower()
             if normalized_key in data:
                 data[normalized_key] = _clean_legacy_value(normalized_key, str(value))
-    return RuntimeSettings.model_validate(data)
+    try:
+        return RuntimeSettings.model_validate(data)
+    except ValidationError as exc:
+        # Older database rows may predate the constraints. Keep the service usable
+        # while the administrator corrects those rows in the panel.
+        for error in exc.errors():
+            key = error["loc"][0]
+            if key in defaults:
+                logger.warning("Ignoring invalid stored setting: %s", key)
+                data[key] = defaults[key]
+        return RuntimeSettings.model_validate(data)
 
 
 def _normalize_overrides(overrides: Mapping[str, str]) -> dict[str, str]:
@@ -103,24 +117,22 @@ async def get_runtime_settings(redis: Redis | None = None, user_id: str | None =
     return runtime_settings
 
 async def seed_database_settings(redis: Redis) -> None:
-    """Ensure database has global defaults from .env if not present."""
-    # Check if global settings exist in DB
+    """Add missing schema defaults to the global settings on every startup."""
     existing = await fetch_setting_overrides(SETTINGS_DEFAULT_USER)
-    if not existing:
-        # Seed from .env
-        defaults = settings.model_dump()
-        # Convert all to string for storage
-        overrides = {k: str(v) for k, v in defaults.items()}
-        await upsert_setting_overrides(SETTINGS_DEFAULT_USER, overrides)
-        # Also refresh Redis for global user
-        await refresh_runtime_settings(redis, SETTINGS_DEFAULT_USER)
-    elif existing.get("temperature") == "0.7" or existing.get("router_model_group") == "local-model":
-        updates = {}
-        if existing.get("temperature") == "0.7":
-            updates["temperature"] = "0.9"
-        if existing.get("router_model_group") == "local-model":
-            updates["router_model_group"] = "local-chat"
+    defaults = {key: str(value) for key, value in settings.model_dump().items()}
+    missing = {key: value for key, value in defaults.items() if key not in existing}
+    if missing:
+        await insert_missing_setting_overrides(SETTINGS_DEFAULT_USER, missing)
+
+    updates = {}
+    if existing.get("temperature") == "0.7":
+        updates["temperature"] = "0.9"
+    if existing.get("router_model_group") == "local-model":
+        updates["router_model_group"] = "local-chat"
+    if updates:
         await upsert_setting_overrides(SETTINGS_DEFAULT_USER, updates)
+
+    if missing or updates:
         await refresh_runtime_settings(redis, SETTINGS_DEFAULT_USER)
 
 

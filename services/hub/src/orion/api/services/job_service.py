@@ -377,7 +377,7 @@ async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str
 
     updated_at = utc_now()
     try:
-        await rename_chat_db(chat_id, name, updated_at)
+        await rename_chat_db(chat_id, name, updated_at, owner_id)
     except Exception as exc:
         logger.exception("Could not persist chat rename for %s", chat_id)
         raise HTTPException(status_code=503, detail="Sohbet adı kalıcı olarak kaydedilemedi.") from exc

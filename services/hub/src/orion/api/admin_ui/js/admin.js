@@ -6,6 +6,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const historyOverlay = document.getElementById("chat-history-overlay");
     const historyClose = document.getElementById("chat-history-close");
     const connectionStatusEl = document.getElementById("admin-connection-status");
+    const settingsSearch = document.getElementById("settings-search");
     const pollIntervalMs = 5000;
     let pollTimer = null;
     let adminConnected = false;
@@ -14,16 +15,49 @@ document.addEventListener("DOMContentLoaded", () => {
     let usersSignature = "";
     let chatsSignature = "";
     let historyModalOpen = false;
+    let chatRenameInProgress = false;
 
     // --- Default Keys (from Python schema) ---
     let defaultKeys = [];
+    let defaultValues = {};
+    let settingConstraints = {};
+    let routerCatalog = null;
+    let catalogError = "";
+    let catalogCheckedAt = 0;
+    let catalogSignature = "";
     const fetchDefaultKeys = async () => {
         try {
             const res = await fetch("/api/v1/admin/settings/schema");
             if (res.ok) defaultKeys = await res.json();
         } catch { /* ignore */ }
     };
-    fetchDefaultKeys();
+    const defaultKeysPromise = fetchDefaultKeys();
+    const fetchDefaultValues = async () => {
+        const res = await fetch("/api/v1/admin/settings/defaults", { headers: getHeaders() });
+        if (res.ok) defaultValues = await res.json();
+    };
+    const fetchSettingConstraints = async () => {
+        const res = await fetch("/api/v1/admin/settings/constraints", { headers: getHeaders() });
+        if (res.ok) settingConstraints = await res.json();
+    };
+    const fetchRouterCatalog = async () => {
+        if (Date.now() - catalogCheckedAt < 15000) return false;
+        catalogCheckedAt = Date.now();
+        try {
+            const res = await fetch("/api/v1/admin/models", { headers: getHeaders() });
+            if (!res.ok) throw new Error("Router model listesi alınamadı");
+            const catalog = await res.json();
+            const signature = JSON.stringify(catalog);
+            const changed = signature !== catalogSignature;
+            catalogSignature = signature;
+            routerCatalog = catalog;
+            catalogError = "";
+            return changed;
+        } catch (err) {
+            catalogError = err.message;
+            return false;
+        }
+    };
 
 
     const showError = (msg) => {
@@ -40,9 +74,13 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.forEach((el) => {
             if (el.id === "admin-key" || el.classList.contains("admin-tab-btn")) return;
             if (disabled) {
-                el.setAttribute("disabled", "true");
-            } else {
-                el.removeAttribute("disabled");
+                if (!el.disabled) {
+                    el.disabled = true;
+                    el.dataset.disconnectedDisabled = "true";
+                }
+            } else if (el.dataset.disconnectedDisabled === "true") {
+                el.disabled = false;
+                delete el.dataset.disconnectedDisabled;
             }
         });
     };
@@ -106,12 +144,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const buildUsersSignature = (usersData) => {
         const keys = Object.keys(usersData || {}).sort();
-        return keys.map((key) => `${key}:${JSON.stringify(usersData[key])}`).join("|");
+        return keys.map(userId => {
+            const settings = usersData[userId] || {};
+            return [userId, Object.keys(settings).sort().map(key => [key, settings[key]])];
+        }).map(JSON.stringify).join("|");
     };
 
     const buildChatsSignature = (chats) => JSON.stringify(chats || []);
 
-    const loadData = async (silent = false) => {
+    const loadData = async (silent = false, force = false) => {
         hideError();
         const key = adminKeyInput.value.trim();
         if (!key) {
@@ -121,8 +162,8 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
-        if (!silent) {
-            usersContainer.innerHTML = '<p class="placeholder">Loading...</p>';
+        if (!silent && !usersSignature) {
+            usersContainer.innerHTML = '<p class="placeholder">Ayarlar yükleniyor…</p>';
         }
 
         try {
@@ -140,13 +181,21 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             const data = await response.json();
+            await defaultKeysPromise;
+            if (!Object.keys(defaultValues).length) await fetchDefaultValues();
+            if (!Object.keys(settingConstraints).length) await fetchSettingConstraints();
+            const catalogChanged = await fetchRouterCatalog();
+            if (!defaultKeys.length && Object.keys(defaultValues).length) {
+                defaultKeys = Object.keys(defaultValues).sort();
+            }
             const nextSignature = buildUsersSignature(data);
-            if (silent && nextSignature === usersSignature) {
+            if (silent && !force && !catalogChanged && nextSignature === usersSignature) {
                 setAdminConnection(true);
                 return;
             }
-            usersSignature = nextSignature;
             setAdminConnection(true);
+            if (silent && !force && usersContainer.querySelector(".edit-input:focus")) return;
+            usersSignature = nextSignature;
             renderUsers(data);
         } catch (err) {
             if (!silent) {
@@ -162,12 +211,12 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Bağlantı yok. Yeniden bağlanılıyor.", true);
             return;
         }
-        if (!confirm(`'${userId}' kullanıcısının '${key}' ayarını silmek istediğinize emin misiniz?`)) {
+        if (!confirm(`${userId} kullanıcısının ${key} ayarı kaldırılsın mı? Bundan sonra global değer kullanılacak.`)) {
             return;
         }
 
         try {
-            const response = await fetch(`/api/v1/admin/users/${userId}/settings/${key}`, {
+            const response = await fetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/settings/${encodeURIComponent(key)}`, {
                 method: "DELETE",
                 headers: getHeaders()
             });
@@ -177,8 +226,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(body.detail || "Ayar silinemedi");
             }
 
-            showToast(`'${key}' başarıyla silindi.`);
-            await loadData();
+            showToast(`${key} kullanıcı ayarı kaldırıldı.`);
+            await loadData(true, true);
         } catch (err) {
             showToast(err.message, true);
         }
@@ -189,6 +238,11 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Bağlantı yok. Yeniden bağlanılıyor.", true);
             return;
         }
+        const validationError = validateSettingValue(key, value);
+        if (validationError) {
+            showToast(validationError, true);
+            return;
+        }
         try {
             const payload = {
                 user_id: userId,
@@ -196,7 +250,7 @@ document.addEventListener("DOMContentLoaded", () => {
             };
             payload.values[key] = value;
 
-            const response = await fetch("/api/v1/admin/settings", {
+            const response = await fetch("/api/v1/admin/users/settings", {
                 method: "POST",
                 headers: getHeaders(),
                 body: JSON.stringify(payload)
@@ -207,134 +261,374 @@ document.addEventListener("DOMContentLoaded", () => {
                 throw new Error(body.detail || "Ayar kaydedilemedi");
             }
 
-            showToast(`'${key}' başarıyla kaydedildi.`);
-            await loadData();
+            showToast(`${key} kaydedildi.`);
+            await loadData(true, true);
         } catch (err) {
             showToast(err.message, true);
         }
     };
 
-    const renderUsers = (usersData) => {
-        usersContainer.innerHTML = '';
+    const resetGlobalSetting = async (key) => {
+        if (!adminConnected) return;
+        if (!confirm(`${key} fabrika varsayılanına sıfırlansın mı?`)) return;
+        try {
+            const response = await fetch(`/api/v1/admin/settings/global/${encodeURIComponent(key)}/reset`, {
+                method: "POST",
+                headers: getHeaders()
+            });
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.detail || "Ayar sıfırlanamadı");
+            }
+            showToast(`${key} varsayılan değerine döndü.`);
+            await loadData(true, true);
+        } catch (err) {
+            showToast(err.message, true);
+        }
+    };
 
-        const userIds = Object.keys(usersData);
-        if (userIds.length === 0) {
-            usersContainer.innerHTML = '<p class="placeholder">No user settings found in the database.</p>';
+    const makeAction = (label, className, onClick) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `action-btn ${className}`;
+        button.textContent = label;
+        button.addEventListener("click", onClick);
+        return button;
+    };
+
+    const isFactoryValue = (key, value) => {
+        const factory = defaultValues[key];
+        if (factory === undefined) return false;
+        if (factory === "True" || factory === "False") {
+            return String(value).toLowerCase() === factory.toLowerCase();
+        }
+        return String(value) === factory;
+    };
+
+    const modelCapabilities = {
+        router_model_group: "chat",
+        chat_title_model: "chat",
+        tts_model: "tts",
+        stt_model: "stt"
+    };
+    const isChoiceSetting = key => key in modelCapabilities || key === "tts_voice";
+    const getSettingChoices = (key, effectiveSettings) => {
+        if (!routerCatalog) return [];
+        if (key === "tts_voice") {
+            const provider = routerCatalog.models.find(model => model.name === effectiveSettings.tts_model)?.provider;
+            return [...new Set(routerCatalog.voices[provider] || [])].sort();
+        }
+        return [...new Set(routerCatalog.models
+            .filter(model => model.capability === modelCapabilities[key] &&
+                (key !== "stt_model" || (model.provider === "local" && model.name === "local-stt")))
+            .map(model => model.name))].sort();
+    };
+    const populateChoiceSelect = (select, key, current, effectiveSettings) => {
+        const choices = getSettingChoices(key, effectiveSettings);
+        select.replaceChildren();
+        if (key === "chat_title_model" || key === "tts_voice") {
+            select.add(new Option(key === "chat_title_model" ? "Sohbet modelini kullan" : "Varsayılan ses", ""));
+        }
+        choices.forEach(choice => select.add(new Option(choice, choice)));
+        if (current && !choices.includes(current)) {
+            select.add(new Option(`${current} · listede yok`, current));
+        }
+        if (!select.options.length) select.add(new Option("Router seçenekleri alınamadı", ""));
+        select.value = current;
+        select.disabled = !choices.length && !["chat_title_model", "tts_voice"].includes(key);
+    };
+    const getRangeText = key => {
+        const constraint = settingConstraints[key];
+        if (!constraint || !["integer", "number"].includes(constraint.type)) return "";
+        return `${constraint.minimum}-${constraint.maximum}`;
+    };
+    const validateSettingValue = (key, value) => {
+        const constraint = settingConstraints[key];
+        if (!constraint || !["integer", "number"].includes(constraint.type)) return "";
+        const number = Number(value);
+        if (!String(value).trim() || !Number.isFinite(number) ||
+            (constraint.type === "integer" && !Number.isInteger(number)) ||
+            number < constraint.minimum || number > constraint.maximum) {
+            return `${key} için geçerli aralık: ${getRangeText(key)}.`;
+        }
+        return "";
+    };
+
+    const applySettingsFilter = () => {
+        const query = settingsSearch?.value.trim().toLocaleLowerCase("tr-TR") || "";
+        let visibleCards = 0;
+        usersContainer.querySelectorAll(".user-card").forEach(card => {
+            const userMatches = card.dataset.userId.toLocaleLowerCase("tr-TR").includes(query);
+            let visible = 0;
+            card.querySelectorAll(".setting-row").forEach(row => {
+                const matches = !query || userMatches || row.dataset.settingKey.toLocaleLowerCase("tr-TR").includes(query);
+                row.hidden = !matches;
+                if (matches) visible++;
+            });
+            card.hidden = !!query && !userMatches && visible === 0;
+            if (!card.hidden) visibleCards++;
+            const addRow = card.querySelector(".add-row");
+            if (addRow) addRow.hidden = !!query && !userMatches;
+        });
+        let empty = usersContainer.querySelector(".filter-empty");
+        if (query && !visibleCards) {
+            if (!empty) {
+                empty = document.createElement("p");
+                empty.className = "placeholder filter-empty";
+                empty.textContent = "Aramanızla eşleşen ayar bulunamadı.";
+                usersContainer.appendChild(empty);
+            }
+        } else if (empty) {
+            empty.remove();
+        }
+    };
+    settingsSearch?.addEventListener("input", applySettingsFilter);
+
+    const renderUsers = (usersData) => {
+        usersContainer.innerHTML = "";
+        const userIds = Object.keys(usersData).sort((a, b) =>
+            a === "global" ? -1 : b === "global" ? 1 : a.localeCompare(b, "tr")
+        );
+        if (!userIds.length) {
+            usersContainer.innerHTML = '<p class="placeholder">Henüz kayıtlı ayar bulunamadı.</p>';
             return;
         }
 
         const template = document.getElementById("user-card-template");
-
-        // Sort: global first, then alphabetical
-        userIds.sort((a, b) => {
-            if (a === "global") return -1;
-            if (b === "global") return 1;
-            return a.localeCompare(b);
-        });
-
         userIds.forEach(userId => {
             const clone = template.content.cloneNode(true);
-            const userIdEl = clone.querySelector(".user-id");
-            userIdEl.textContent = `User: ${userId}`;
-            if (userId === "global") {
-                userIdEl.innerHTML = `User: ${userId} <span class="badge-global">GLOBAL DEFAULTS</span>`;
-            }
-
-            const tbody = clone.querySelector(".settings-tbody");
-            const settings = usersData[userId];
+            const card = clone.querySelector(".user-card");
             const isGlobal = userId === "global";
+            const settings = usersData[userId] || {};
+            const effectiveSettings = { ...(usersData.global || {}), ...settings };
+            card.dataset.userId = userId;
+            if (isGlobal) card.classList.add("global-card");
+            clone.querySelector(".user-id").textContent = isGlobal ? "Global varsayılanlar" : userId;
+            clone.querySelector(".user-description").textContent = isGlobal
+                ? "Yeni kullanıcılar ve kişisel ayarı olmayanlar için geçerlidir."
+                : "Bu kullanıcıya özel ayarlar, global değerlerin üzerine yazılır.";
+            clone.querySelector(".setting-count").textContent = `${Object.keys(settings).length} ayar`;
+            const tbody = clone.querySelector(".settings-tbody");
 
-            if (Object.keys(settings).length === 0) {
-                const tr = document.createElement("tr");
-                tr.innerHTML = `<td colspan="3" class="placeholder" style="padding: 10px;">No specific settings overrides for this user.</td>`;
-                tbody.appendChild(tr);
-            } else {
-                Object.entries(settings).forEach(([key, val]) => {
-                    const isProtected = isGlobal && defaultKeys.includes(key);
+            Object.entries(settings)
+                .sort(([a], [b]) => a.localeCompare(b, "en"))
+                .forEach(([key, val]) => {
+                    const known = defaultKeys.includes(key);
                     const tr = document.createElement("tr");
+                    tr.className = "setting-row";
+                    tr.dataset.settingKey = key;
 
-                    // Key column
                     const tdKey = document.createElement("td");
+                    tdKey.className = "setting-key";
                     tdKey.textContent = key;
-                    if (!defaultKeys.includes(key)) {
-                        const legacyBadge = document.createElement("span");
-                        legacyBadge.className = "badge-legacy";
-                        legacyBadge.textContent = "LEGACY";
-                        tdKey.appendChild(document.createTextNode(" "));
-                        tdKey.appendChild(legacyBadge);
+                    if (!known) {
+                        const badge = document.createElement("span");
+                        badge.className = "badge-legacy";
+                        badge.textContent = "ESKİ";
+                        tdKey.appendChild(badge);
                     }
 
-                    // Value column (editable)
                     const tdVal = document.createElement("td");
-                    const valInput = document.createElement("input");
-                    valInput.type = "text";
+                    const valueWrap = document.createElement("div");
+                    valueWrap.className = "setting-value-wrap";
+                    const isBoolean = defaultValues[key] === "True" || defaultValues[key] === "False";
+                    const isChoice = known && isChoiceSetting(key);
+                    const constraint = settingConstraints[key];
+                    const valInput = document.createElement(isBoolean || isChoice ? "select" : "input");
+                    if (isBoolean) {
+                        ["True", "False"].forEach(value => {
+                            const option = document.createElement("option");
+                            option.value = value;
+                            option.textContent = value === "True" ? "Açık" : "Kapalı";
+                            valInput.appendChild(option);
+                        });
+                    } else if (isChoice) {
+                        populateChoiceSelect(valInput, key, String(val), effectiveSettings);
+                    } else {
+                        valInput.type = key.endsWith("_api_key") ? "password" :
+                            ["integer", "number"].includes(constraint?.type) ? "number" : "text";
+                        if (valInput.type === "number") {
+                            valInput.min = constraint.minimum;
+                            valInput.max = constraint.maximum;
+                            valInput.step = constraint.type === "integer" ? "1" : "any";
+                        }
+                    }
                     valInput.className = "edit-input";
-                    valInput.value = val;
-                    valInput.dataset.originalValue = val;
-                    tdVal.appendChild(valInput);
+                    valInput.value = isBoolean ? (String(val).toLowerCase() === "true" ? "True" : "False") : val;
+                    valInput.dataset.originalValue = valInput.value;
+                    valInput.setAttribute("aria-label", `${key} değeri`);
+                    if (!known) {
+                        valInput.readOnly = true;
+                        valInput.title = "Bu ayar güncel şemada bulunmuyor";
+                    }
+                    valueWrap.appendChild(valInput);
+                    if (valInput.type === "password") {
+                        const visibility = makeAction("Göster", "btn-visibility", () => {
+                            valInput.type = valInput.type === "password" ? "text" : "password";
+                            visibility.textContent = valInput.type === "password" ? "Göster" : "Gizle";
+                        });
+                        visibility.setAttribute("aria-label", `${key} değerini göster veya gizle`);
+                        valueWrap.appendChild(visibility);
+                    }
+                    tdVal.appendChild(valueWrap);
+                    const rangeText = getRangeText(key);
+                    if (rangeText) {
+                        valueWrap.classList.add("has-range");
+                        const badge = document.createElement("span");
+                        badge.className = "range-badge";
+                        badge.textContent = rangeText;
+                        badge.setAttribute("aria-hidden", "true");
+                        valInput.title = `İzin verilen aralık: ${rangeText}`;
+                        valueWrap.appendChild(badge);
+                    } else if (isChoice && !routerCatalog) {
+                        const hint = document.createElement("small");
+                        hint.className = "value-hint value-warning";
+                        hint.textContent = catalogError || "Router seçenekleri alınamadı";
+                        tdVal.appendChild(hint);
+                    }
 
-                    // Actions column
                     const tdActions = document.createElement("td");
                     tdActions.className = "actions-cell";
-
-                    // Save button (hidden until value changes)
-                    const saveBtn = document.createElement("button");
-                    saveBtn.className = "btn-save";
-                    saveBtn.textContent = "Kaydet";
-                    saveBtn.style.display = "none";
-                    saveBtn.onclick = () => saveSetting(userId, key, valInput.value);
-                    tdActions.appendChild(saveBtn);
-
-                    // Show save button when value changes
-                    valInput.addEventListener("input", () => {
-                        saveBtn.style.display = valInput.value !== valInput.dataset.originalValue ? "inline-block" : "none";
-                    });
-
-                    // Delete button (disabled for protected global keys)
-                    const delBtn = document.createElement("button");
-                    delBtn.className = "btn-danger";
-                    delBtn.textContent = "Sil";
-                    if (isProtected) {
-                        delBtn.disabled = true;
-                        delBtn.title = "Global varsayılan ayarlar silinemez";
-                        delBtn.classList.add("btn-disabled");
-                    } else {
-                        delBtn.onclick = () => deleteSetting(userId, key);
+                    const actions = document.createElement("div");
+                    actions.className = "row-actions";
+                    if (known) {
+                        const saveBtn = makeAction("Kaydet", "btn-save", () => saveSetting(userId, key, valInput.value));
+                        const revertBtn = makeAction("Vazgeç", "btn-revert", () => {
+                            valInput.value = valInput.dataset.originalValue;
+                            updateActions();
+                        });
+                        saveBtn.hidden = true;
+                        revertBtn.hidden = true;
+                        actions.append(saveBtn, revertBtn);
+                        valInput.addEventListener("input", updateActions);
+                        valInput.addEventListener("keydown", event => {
+                            if (event.key === "Enter" && !saveBtn.hidden) saveBtn.click();
+                            if (event.key === "Escape") revertBtn.click();
+                        });
+                        function updateActions() {
+                            const changed = valInput.value !== valInput.dataset.originalValue;
+                            saveBtn.hidden = !changed;
+                            revertBtn.hidden = !changed;
+                            const secondary = actions.querySelector(".btn-reset, .btn-remove");
+                            if (secondary) secondary.hidden = changed;
+                        }
                     }
-                    tdActions.appendChild(delBtn);
-
-                    tr.appendChild(tdKey);
-                    tr.appendChild(tdVal);
-                    tr.appendChild(tdActions);
+                    if (isGlobal && known && defaultValues[key] !== undefined && !isFactoryValue(key, val)) {
+                        const resetBtn = makeAction("Sıfırla", "btn-reset", () => resetGlobalSetting(key));
+                        resetBtn.title = "Fabrika varsayılanına dön";
+                        actions.appendChild(resetBtn);
+                    } else if (!isGlobal) {
+                        const removeBtn = makeAction("Kaldır", "btn-remove", () => deleteSetting(userId, key));
+                        removeBtn.title = "Kullanıcı ayarını kaldır ve global değeri kullan";
+                        actions.appendChild(removeBtn);
+                    }
+                    tdActions.appendChild(actions);
+                    tr.append(tdKey, tdVal, tdActions);
                     tbody.appendChild(tr);
                 });
+
+            if (!Object.keys(settings).length) {
+                const empty = document.createElement("tr");
+                empty.className = "empty-row";
+                empty.innerHTML = '<td colspan="3">Bu kullanıcı için özel ayar yok.</td>';
+                tbody.appendChild(empty);
             }
 
-            // Add Setting Row
-            const addRow = document.createElement("tr");
-            addRow.className = "add-row";
-            addRow.innerHTML = `
-                <td><input type="text" class="edit-input add-key-input" placeholder="Anahtar adı (örn: system_prompt)"></td>
-                <td><input type="text" class="edit-input add-val-input" placeholder="Değer"></td>
-                <td class="actions-cell">
-                    <button class="btn-add">+ Ekle</button>
-                </td>
-            `;
-            tbody.appendChild(addRow);
-
-            const addKeyInput = addRow.querySelector(".add-key-input");
-            const addValInput = addRow.querySelector(".add-val-input");
-            const addBtn = addRow.querySelector(".btn-add");
-            addBtn.onclick = () => {
-                const k = addKeyInput.value.trim();
-                const v = addValInput.value.trim();
-                if (!k) { showToast("Anahtar adı boş olamaz", true); return; }
-                if (!v) { showToast("Değer boş olamaz", true); return; }
-                saveSetting(userId, k, v);
-            };
-
+            if (!isGlobal) {
+                const available = defaultKeys.filter(key => !(key in settings));
+                if (available.length) {
+                    const addRow = document.createElement("tr");
+                    addRow.className = "add-row";
+                    const keyCell = document.createElement("td");
+                    const keySelect = document.createElement("select");
+                    keySelect.className = "edit-input";
+                    available.forEach(key => {
+                        const option = document.createElement("option");
+                        option.value = key;
+                        option.textContent = key;
+                        keySelect.appendChild(option);
+                    });
+                    keyCell.appendChild(keySelect);
+                    const valueCell = document.createElement("td");
+                    const valueInput = document.createElement("input");
+                    valueInput.className = "edit-input";
+                    valueInput.placeholder = "Yeni değer";
+                    valueInput.setAttribute("aria-label", "Yeni ayar değeri");
+                    const boolSelect = document.createElement("select");
+                    boolSelect.className = "edit-input";
+                    boolSelect.setAttribute("aria-label", "Yeni ayar değeri");
+                    ["True", "False"].forEach(value => {
+                        const option = document.createElement("option");
+                        option.value = value;
+                        option.textContent = value === "True" ? "Açık" : "Kapalı";
+                        boolSelect.appendChild(option);
+                    });
+                    const choiceSelect = document.createElement("select");
+                    choiceSelect.className = "edit-input";
+                    choiceSelect.setAttribute("aria-label", "Yeni ayar değeri");
+                    const inputWrap = document.createElement("div");
+                    inputWrap.className = "setting-value-wrap";
+                    const rangeBadge = document.createElement("span");
+                    rangeBadge.className = "range-badge";
+                    rangeBadge.setAttribute("aria-hidden", "true");
+                    inputWrap.append(valueInput, rangeBadge);
+                    const choiceHint = document.createElement("small");
+                    choiceHint.className = "value-hint value-warning";
+                    const actionCell = document.createElement("td");
+                    actionCell.className = "actions-cell";
+                    const actionWrap = document.createElement("div");
+                    actionWrap.className = "row-actions";
+                    const addButton = makeAction("+ Ayar ekle", "btn-add", () => {
+                        const value = !boolSelect.hidden ? boolSelect.value :
+                            !choiceSelect.hidden ? choiceSelect.value : valueInput.value;
+                        if (!value.trim() && !["chat_title_model", "tts_voice"].includes(keySelect.value)) {
+                            showToast("Bir değer girin.", true);
+                            return;
+                        }
+                        saveSetting(userId, keySelect.value, value);
+                    });
+                    const updateValueControl = () => {
+                        const selectedKey = keySelect.value;
+                        const isBoolean = ["True", "False"].includes(defaultValues[selectedKey]);
+                        const isChoice = isChoiceSetting(selectedKey);
+                        inputWrap.hidden = isBoolean || isChoice;
+                        valueInput.hidden = isBoolean || isChoice;
+                        boolSelect.hidden = !isBoolean;
+                        if (isBoolean) boolSelect.value = defaultValues[keySelect.value];
+                        choiceSelect.hidden = !isChoice;
+                        if (isChoice) {
+                            const choices = getSettingChoices(selectedKey, effectiveSettings);
+                            populateChoiceSelect(choiceSelect, selectedKey,
+                                ["chat_title_model", "tts_voice"].includes(selectedKey) ? "" : (choices[0] || ""),
+                                effectiveSettings);
+                        }
+                        addButton.disabled = isChoice && choiceSelect.disabled;
+                        const constraint = settingConstraints[selectedKey];
+                        valueInput.type = ["integer", "number"].includes(constraint?.type) ? "number" : "text";
+                        if (valueInput.type === "number") {
+                            valueInput.min = constraint.minimum;
+                            valueInput.max = constraint.maximum;
+                            valueInput.step = constraint.type === "integer" ? "1" : "any";
+                        }
+                        rangeBadge.textContent = getRangeText(selectedKey);
+                        rangeBadge.hidden = !rangeBadge.textContent;
+                        inputWrap.classList.toggle("has-range", !rangeBadge.hidden);
+                        valueInput.title = rangeBadge.hidden ? "" : `İzin verilen aralık: ${rangeBadge.textContent}`;
+                        choiceHint.textContent = isChoice && !routerCatalog ? catalogError || "Router seçenekleri alınamadı" : "";
+                        choiceHint.hidden = !choiceHint.textContent;
+                    };
+                    keySelect.addEventListener("change", updateValueControl);
+                    valueCell.append(inputWrap, boolSelect, choiceSelect, choiceHint);
+                    updateValueControl();
+                    actionWrap.appendChild(addButton);
+                    actionCell.appendChild(actionWrap);
+                    addRow.append(keyCell, valueCell, actionCell);
+                    tbody.appendChild(addRow);
+                }
+            }
             usersContainer.appendChild(clone);
         });
+        applySettingsFilter();
     };
 
     let keyDebounceId = null;
@@ -405,7 +699,7 @@ document.addEventListener("DOMContentLoaded", () => {
             document.querySelectorAll(".admin-tab-panel").forEach(p => p.classList.remove("active"));
             btn.classList.add("active");
             document.getElementById(btn.dataset.tab).classList.add("active");
-            if (btn.dataset.tab === "tab-chats") loadChats();
+            loadActiveTab();
         });
     });
 
@@ -438,6 +732,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const key = adminKeyInput.value.trim();
         if (!key) { showError("Please enter the Admin API Key."); return; }
         const chatsContainer = document.getElementById("chats-container");
+        if (silent && (chatRenameInProgress || chatsContainer.querySelector(".inline-name-input:not([hidden])"))) return;
         if (!silent) {
             chatsContainer.innerHTML = '<p class="placeholder">Yükleniyor...</p>';
         }
@@ -456,8 +751,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 setAdminConnection(true);
                 return;
             }
-            chatsSignature = nextSignature;
             setAdminConnection(true);
+            if (silent && (chatRenameInProgress || chatsContainer.querySelector(".inline-name-input:not([hidden])"))) return;
+            chatsSignature = nextSignature;
             applyChatFilter();
         } catch (err) {
             if (!silent) {
@@ -493,14 +789,14 @@ document.addEventListener("DOMContentLoaded", () => {
             showHistoryModal();
         }
         if (!silent) {
-            historyPanel.innerHTML = '<p class="placeholder">Sohbet gecmisi yukleniyor...</p>';
+            historyPanel.innerHTML = '<p class="placeholder">Sohbet geçmişi yükleniyor…</p>';
         }
 
         const listEl = historyPanel.querySelector(".chat-history-list");
         const previousScroll = silent && listEl ? listEl.scrollTop : 0;
 
         try {
-            const res = await fetch(`/api/v1/admin/chats/${chat.chat_id}/history`, { headers: getHeaders() });
+            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chat.chat_id)}/history`, { headers: getHeaders() });
             if (res.status === 401) {
                 setAdminConnection(false, "Yetkilendirme gerekli.");
                 throw new Error("Unauthorized: Invalid Admin API Key");
@@ -611,7 +907,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (!confirm(`"${chatId}" sohbetini kalıcı olarak silmek istediğinize emin misiniz?`)) return;
         try {
-            const res = await fetch(`/api/v1/admin/chats/${chatId}`, { method: "DELETE", headers: getHeaders() });
+            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}`, { method: "DELETE", headers: getHeaders() });
             if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Silinemedi");
             rowEl.remove();
             allChatsData = allChatsData.filter(c => c.chat_id !== chatId);
@@ -627,8 +923,9 @@ document.addEventListener("DOMContentLoaded", () => {
             showToast("Bağlantı yok. Yeniden bağlanılıyor.", true);
             return;
         }
+        chatRenameInProgress = true;
         try {
-            const res = await fetch(`/api/v1/admin/chats/${chatId}/rename`, {
+            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}/rename`, {
                 method: "PATCH",
                 headers: getHeaders(),
                 body: JSON.stringify({ name: newName })
@@ -638,8 +935,12 @@ document.addEventListener("DOMContentLoaded", () => {
             const chat = allChatsData.find(c => c.chat_id === chatId);
             if (chat) chat.name = newName;
             showToast("Yeniden adlandırıldı.");
+            return true;
         } catch (err) {
             showToast(err.message, true);
+            return false;
+        } finally {
+            chatRenameInProgress = false;
         }
     }
 
@@ -673,48 +974,79 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Name cell
             const tdName = document.createElement("td");
-            tdName.innerHTML = `
-                <div class="chat-name-cell">
-                    <span class="chat-display-name" style="cursor:pointer;" title="${chat.chat_id}">${displayName}</span>
-                    <input class="inline-name-input" type="text" value="${chat.name || ''}" placeholder="Yeni ad..." style="display:none;">
-                    <button class="btn-sm btn-save-name">💾</button>
-                </div>
-                <small style="color:#4b5563;font-size:0.72rem;">${chat.chat_id}</small>
-            `;
-            const nameSpan = tdName.querySelector(".chat-display-name");
-            const nameInput = tdName.querySelector(".inline-name-input");
-            const saveNameBtn = tdName.querySelector(".btn-save-name");
+            const nameWrap = document.createElement("div");
+            nameWrap.className = "chat-name-cell";
+            const nameSpan = document.createElement("span");
+            nameSpan.className = "chat-display-name";
+            nameSpan.title = chat.chat_id;
+            nameSpan.textContent = displayName;
+            const editNameBtn = document.createElement("button");
+            editNameBtn.type = "button";
+            editNameBtn.className = "btn-chat-edit";
+            editNameBtn.textContent = "Düzenle";
+            editNameBtn.setAttribute("aria-label", `${displayName} sohbet adını düzenle`);
+            const nameInput = document.createElement("input");
+            nameInput.className = "inline-name-input";
+            nameInput.value = chat.name || "";
+            nameInput.maxLength = 200;
+            nameInput.placeholder = "Yeni ad…";
+            nameInput.hidden = true;
+            const saveNameBtn = document.createElement("button");
+            saveNameBtn.type = "button";
+            saveNameBtn.className = "btn-sm btn-save-name";
+            saveNameBtn.textContent = "Kaydet";
+            saveNameBtn.hidden = true;
+            const chatIdLabel = document.createElement("small");
+            chatIdLabel.className = "chat-id";
+            chatIdLabel.textContent = chat.chat_id;
+            nameWrap.append(nameSpan, editNameBtn, nameInput, saveNameBtn);
+            tdName.append(nameWrap, chatIdLabel);
 
-            nameSpan.addEventListener("click", () => {
-                nameSpan.style.display = "none";
-                nameInput.style.display = "inline-block";
-                saveNameBtn.style.display = "inline-block";
+            const openNameEditor = () => {
+                nameInput.value = chat.name || "";
+                nameSpan.hidden = true;
+                editNameBtn.hidden = true;
+                nameInput.hidden = false;
+                saveNameBtn.hidden = false;
                 nameInput.focus();
-            });
+            };
+            nameSpan.addEventListener("click", openNameEditor);
+            editNameBtn.addEventListener("click", openNameEditor);
             saveNameBtn.addEventListener("click", async () => {
                 const newName = nameInput.value.trim();
-                await renameAdminChat(chat.chat_id, newName, tdName);
-                nameInput.style.display = "none";
-                saveNameBtn.style.display = "none";
-                nameSpan.style.display = "inline";
+                if (!newName) { showToast("Sohbet adı boş olamaz.", true); return; }
+                if (!await renameAdminChat(chat.chat_id, newName, tdName)) return;
+                editNameBtn.setAttribute("aria-label", `${newName} sohbet adını düzenle`);
+                nameInput.hidden = true;
+                saveNameBtn.hidden = true;
+                nameSpan.hidden = false;
+                editNameBtn.hidden = false;
             });
             nameInput.addEventListener("keydown", async (e) => {
                 if (e.key === "Enter") saveNameBtn.click();
                 if (e.key === "Escape") {
-                    nameInput.style.display = "none";
-                    saveNameBtn.style.display = "none";
-                    nameSpan.style.display = "inline";
+                    nameInput.hidden = true;
+                    saveNameBtn.hidden = true;
+                    nameSpan.hidden = false;
+                    editNameBtn.hidden = false;
                 }
             });
 
             // Other cells
             const tdUser = document.createElement("td");
-            tdUser.innerHTML = `<span class="user-badge">${chat.user_id || "-"}</span>`;
+            const userBadge = document.createElement("span");
+            userBadge.className = "user-badge";
+            userBadge.textContent = chat.user_id || "-";
+            tdUser.appendChild(userBadge);
 
             const tdStatus = document.createElement("td");
             const statusColors = { completed: "#22c55e", processing: "#f59e0b", stopped: "#94a3b8", queued: "#3b82f6", failed: "#ef4444" };
             const sc = statusColors[chat.status] || "#94a3b8";
-            tdStatus.innerHTML = `<span style="color:${sc};font-weight:500;">${chat.status || "-"}</span>`;
+            const statusBadge = document.createElement("span");
+            statusBadge.className = "chat-status";
+            statusBadge.style.color = sc;
+            statusBadge.textContent = chat.status || "-";
+            tdStatus.appendChild(statusBadge);
 
             const tdDate = document.createElement("td");
             tdDate.textContent = dateStr;
@@ -722,20 +1054,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
             // Actions cell
             const tdActions = document.createElement("td");
-            tdActions.style.display = "flex";
-            tdActions.style.gap = "6px";
+            tdActions.className = "chat-actions-cell";
+            const chatActions = document.createElement("div");
+            chatActions.className = "chat-actions";
 
             const viewBtn = document.createElement("button");
-            viewBtn.className = "btn-sm btn-view";
-            viewBtn.textContent = "Goruntule";
+            viewBtn.type = "button";
+            viewBtn.className = "btn-chat-view";
+            viewBtn.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg><span>Görüntüle</span>';
             viewBtn.addEventListener("click", () => loadChatHistory(chat));
-            tdActions.appendChild(viewBtn);
+            chatActions.appendChild(viewBtn);
 
             const delBtn = document.createElement("button");
+            delBtn.type = "button";
             delBtn.className = "btn-sm btn-del";
             delBtn.textContent = "Sil";
             delBtn.addEventListener("click", () => deleteAdminChat(chat.chat_id, tr));
-            tdActions.appendChild(delBtn);
+            chatActions.appendChild(delBtn);
+            tdActions.appendChild(chatActions);
 
             tr.appendChild(tdName);
             tr.appendChild(tdUser);

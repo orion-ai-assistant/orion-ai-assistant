@@ -1,25 +1,25 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class SystemSettings(BaseModel):
-    result_ttl_seconds: int = 86400
-    sse_heartbeat_seconds: int = 15
-    worker_max_concurrency: int = 250
-    stop_key_ttl_seconds: int = 60  # Shortened from 3600 to prevent old stop signals from affecting new generations
-    redis_cache_ttl_seconds: int = 3600
+    result_ttl_seconds: int = Field(default=86400, ge=1, le=2592000)
+    sse_heartbeat_seconds: int = Field(default=15, ge=1, le=300)
+    worker_max_concurrency: int = Field(default=250, ge=1, le=10000)
+    stop_key_ttl_seconds: int = Field(default=60, ge=1, le=3600)
+    redis_cache_ttl_seconds: int = Field(default=3600, ge=1, le=86400)
 
 
 class AISettings(BaseModel):
     ai_chat_titles_enabled: bool = False
     chat_title_model: str = ""
-    first_token_delay_ms: int = 0
-    token_delay_ms: int = 50
-    chat_history_max_messages: int = 20
-    llm_timeout_seconds: int = 120
+    first_token_delay_ms: int = Field(default=0, ge=0, le=60000)
+    token_delay_ms: int = Field(default=50, ge=0, le=10000)
+    chat_history_max_messages: int = Field(default=20, ge=1, le=1000)
+    llm_timeout_seconds: int = Field(default=120, ge=1, le=3600)
     system_prompt: str = "You are Orion. Reply friendly and concisely. You MUST answer directly. Do NOT output your thinking process or explain your step-by-step reasoning. Just give the final answer."
-    embed_timeout_seconds: int = 60
+    embed_timeout_seconds: int = Field(default=60, ge=1, le=3600)
     
     thinking_level: str = ""
-    temperature: float = 0.9
+    temperature: float = Field(default=0.9, ge=0, le=2)
     
     # Router Configuration
     router_api_key: str = ""
@@ -32,7 +32,7 @@ class AISettings(BaseModel):
     tts_enabled: bool = True
     tts_voice: str = ""
     tts_model: str = "local-tts"
-    tts_timeout_seconds: int = 15
+    tts_timeout_seconds: int = Field(default=15, ge=1, le=300)
 
 
 class RuntimeSettings(SystemSettings, AISettings):
