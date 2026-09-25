@@ -483,10 +483,59 @@ const UI = {
             return;
         }
         this.settingSaveStatus(key, '');
+        if (key === 'tts_voice') {
+            const model = document.getElementById('setting-input-tts_model')?.value || this.currentSettings?.tts_model;
+            if (model) this.rememberVoice(model, input.value);
+        }
         if (input.tagName === 'SELECT') {
             this.saveSetting(key);
         } else {
             this._settingTimers[key] = setTimeout(() => this.saveSetting(key), 650);
+        }
+    },
+
+    getRememberedVoices() {
+        let fromSettings = {};
+        if (this.currentSettings?.tts_model_voices) {
+            let s = this.currentSettings.tts_model_voices;
+            if (typeof s === 'string') {
+                try { s = JSON.parse(s); } catch {}
+            }
+            if (s && typeof s === 'object') fromSettings = s;
+        }
+        return fromSettings;
+    },
+
+    getRememberedVoice(model) {
+        if (!model) return '';
+        const map = this.getRememberedVoices();
+        if (map && map[model]) {
+            return String(map[model]).split(' — ')[0].trim();
+        }
+        if (this.currentSettings?.tts_model === model && this.currentSettings?.tts_voice) {
+            return String(this.currentSettings.tts_voice).split(' — ')[0].trim();
+        }
+        return '';
+    },
+
+    rememberVoice(model, voice, persistRemote = true) {
+        if (!model) return;
+        const map = this.getRememberedVoices();
+        const raw = voice !== undefined && voice !== null ? String(voice).trim() : '';
+        const cleanVoice = raw.split(' — ')[0].trim();
+        map[model] = cleanVoice;
+
+        if (this.currentSettings) {
+            this.currentSettings.tts_model_voices = map;
+            if (this.currentSettings.tts_model === model) {
+                this.currentSettings.tts_voice = cleanVoice;
+            }
+        }
+        
+        if (persistRemote && typeof API !== 'undefined' && API.saveSettings) {
+            API.saveSettings('tts_model_voices', JSON.stringify(map)).catch(err => {
+                console.warn('Could not sync tts_model_voices to backend:', err);
+            });
         }
     },
 
@@ -506,6 +555,10 @@ const UI = {
                 if (data.error) throw new Error(typeof data.error === 'string' ? data.error : 'Değer kabul edilmedi.');
                 input.dataset.original = val;
                 if (this.currentSettings) this.currentSettings[key] = data[key] ?? val;
+                if (key === 'tts_voice') {
+                    const model = document.getElementById('setting-input-tts_model')?.value || this.currentSettings?.tts_model;
+                    if (model) this.rememberVoice(model, val);
+                }
                 const changed = input.value.trim() !== val;
                 input.classList.toggle('dirty', changed);
                 this.settingSaveStatus(key, '');
@@ -536,6 +589,13 @@ const UI = {
 
     renderSettings(settings) {
         this.currentSettings = settings;
+        if (settings?.tts_model && settings?.tts_voice) {
+            const cleanVoice = String(settings.tts_voice).split(' — ')[0].trim();
+            const remembered = this.getRememberedVoices();
+            if (cleanVoice && !remembered[settings.tts_model]) {
+                this.rememberVoice(settings.tts_model, cleanVoice, false);
+            }
+        }
         const dashboard = document.getElementById('settings-dashboard');
         if (!dashboard) return;
 
@@ -547,15 +607,17 @@ const UI = {
         // Eğer zaten render edilmişse sadece değişmemiş olan değerleri güncelle
         const alreadyRendered = Boolean(dashboard.querySelector('[id^="setting-input-"]'));
         if (alreadyRendered) {
+            const oldTtsModel = document.getElementById('setting-input-tts_model')?.value;
             Object.keys(settings).forEach(key => {
+                if (key === 'tts_voice') return;
                 const el = document.getElementById(`setting-input-${key}`);
-                if (el && document.activeElement !== el && !el.classList.contains('dirty')) {
+                if (el && document.activeElement !== el && !el.classList?.contains('dirty')) {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
                     if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled') {
                         el.value = String(settings[key] ?? '').toLowerCase() === 'true' ? 'true' : 'false';
                         el.dataset.original = el.value;
                     } else {
-                        if (el.tagName === 'SELECT' && !Array.from(el.options).some(option => option.value === serverVal)) {
+                        if (el.tagName === 'SELECT' && !Array.from(el.options || []).some(option => option.value === serverVal)) {
                             el.add(new Option(serverVal, serverVal));
                         }
                         el.value = serverVal;
@@ -563,6 +625,17 @@ const UI = {
                     }
                 }
             });
+            const newTtsModel = document.getElementById('setting-input-tts_model')?.value;
+            if (oldTtsModel && newTtsModel && oldTtsModel !== newTtsModel) {
+                const ttsModelEl = document.getElementById('setting-input-tts_model');
+                if (ttsModelEl) ttsModelEl.dataset.lastModel = newTtsModel;
+            }
+            const voiceSelect = document.getElementById('setting-input-tts_voice');
+            if (voiceSelect && !voiceSelect.classList?.contains('dirty') && settings.tts_voice !== undefined) {
+                if (!voiceSelect.dataset) voiceSelect.dataset = {};
+                voiceSelect.dataset.original = String(settings.tts_voice ?? '');
+            }
+            this.loadVoiceChoices(false);
             return;
         }
 
@@ -619,7 +692,7 @@ const UI = {
 
         const escapeSetting = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         const sections = {general: '', advanced: ''};
-        const handledKeys = new Set(['tool_selection']);
+        const handledKeys = new Set(['tool_selection', 'tts_model_voices']);
 
         Object.entries(categoryMeta).forEach(([categoryName, meta]) => {
             let hasKeys = false;
@@ -749,6 +822,8 @@ const UI = {
             return;
         }
         this.routerCatalog = result;
+        let ttsModelChangedInCatalog = false;
+        const prevTtsModel = document.getElementById('setting-input-tts_model')?.value;
         for (const key of ['router_model_group', 'chat_title_model', 'tts_model', 'stt_model']) {
             const select = document.getElementById(`setting-input-${key}`);
             if (!select) continue;
@@ -769,33 +844,49 @@ const UI = {
             select.dataset.original = original;
         }
         const ttsModel = document.getElementById('setting-input-tts_model');
-        if (ttsModel) ttsModel.onchange = () => {
-            UI.handleSettingChange('tts_model');
-            UI.loadVoiceChoices(true);
-        };
+        if (ttsModel) {
+            ttsModel.onchange = () => {
+                UI.handleSettingChange('tts_model');
+                UI.loadVoiceChoices(true);
+            };
+        }
         this.loadVoiceChoices(false);
         if (button && !silent) button.title = result.unavailable?.length
             ? 'Bazı listelere erişilemiyor.'
             : 'Model ve ses listesini yenile';
     },
 
-    loadVoiceChoices(modelChanged) {
+    loadVoiceChoices(userInitiated = false) {
         const select = document.getElementById('setting-input-tts_voice');
-        const model = document.getElementById('setting-input-tts_model')?.value;
-        if (!select || !this.routerCatalog) return;
-        if (document.activeElement === select) return;
-        const provider = this.routerCatalog.models.find(item => item.name === model)?.provider;
-        const voices = this.routerCatalog.voices[provider] || [];
+        const modelEl = document.getElementById('setting-input-tts_model');
+        const model = modelEl?.value || this.currentSettings?.tts_model || '';
+        
+        if (!select || !this.routerCatalog || !model) return;
+
+        const provider = this.routerCatalog.models?.find(item => item.name === model)?.provider;
+        const voices = this.routerCatalog.voices?.[provider] || [];
         const unavailable = this.routerCatalog.unavailable || [];
         const inaccessible = unavailable.includes('voices') || (provider === 'local' && unavailable.includes('local-tts-info'));
-        const current = select.options.length ? select.value : String(this.currentSettings.tts_voice || '');
+
+        let targetVoice = this.getRememberedVoice(model);
+
         select.replaceChildren(new Option('Varsayılan ses', ''));
         for (const voice of voices) select.add(new Option(voice, voice));
-        if (current && !voices.includes(current) && (!modelChanged || !voices.length)) {
-            const missing = new Option(`${current} — ${voices.length ? 'listede bulunamadı' : 'ses listesine şu an erişilemiyor'}`, current);
-            select.add(missing);
+
+        if (targetVoice) {
+            const matched = voices.find(v => v.toLowerCase() === targetVoice.toLowerCase());
+            if (matched) {
+                select.value = matched;
+            } else {
+                const label = `${targetVoice} — ${voices.length ? 'listede bulunamadı' : 'ses listesine şu an erişilemiyor'}`;
+                const missing = new Option(label, targetVoice);
+                select.add(missing);
+                select.value = targetVoice;
+            }
+        } else {
+            select.value = '';
         }
-        select.value = modelChanged && voices.length && !voices.includes(current) ? '' : current;
+
         let notice = document.getElementById('tts-availability');
         if (!notice) {
             notice = document.createElement('span');
@@ -803,12 +894,15 @@ const UI = {
             notice.className = 'setting-hint tts-availability';
             select.parentElement.appendChild(notice);
         }
-        notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
+        notice.textContent = String(this.currentSettings?.tts_enabled).toLowerCase() === 'false'
             ? 'Seslendirme kapalı.'
             : model === 'local-tts' && (inaccessible || !voices.length)
                 ? 'Orion TTS’ye erişilemiyor.'
                 : '';
-        if (modelChanged) this.handleSettingChange('tts_voice');
+
+        if (userInitiated) {
+            this.handleSettingChange('tts_voice');
+        }
     },
 
     clearChatArea() {

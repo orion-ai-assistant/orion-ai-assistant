@@ -49,7 +49,25 @@ class AISettings(BaseModel):
     tts_enabled: bool = True
     tts_voice: str = ""
     tts_model: str = "local-tts"
+    tts_model_voices: dict[str, str] = Field(default_factory=dict)
     tts_timeout_seconds: int = Field(default=15, ge=1, le=300)
+
+    @field_validator("tts_model_voices", mode="before")
+    @classmethod
+    def parse_tts_model_voices(cls, value):
+        if isinstance(value, str):
+            if not value.strip():
+                return {}
+            import json
+            try:
+                data = json.loads(value)
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+            except Exception:
+                return {}
+        if isinstance(value, dict):
+            return {str(k): str(v) for k, v in value.items()}
+        return {}
 
 
 class RuntimeSettings(SystemSettings, AISettings):

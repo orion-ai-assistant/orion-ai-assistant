@@ -52,3 +52,11 @@ class ModelDefaultsTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(routes, "_check_admin_key"):
             constraints = await routes.get_settings_constraints(object())
         self.assertEqual(constraints["temperature"], {"type": "number", "minimum": 0, "maximum": 2, "nullable": True})
+
+    def test_tts_model_voices_parsing_and_persistence(self):
+        settings = RuntimeSettings(tts_model_voices='{"gemini-tts": "zephyr", "local-tts": "local-voice-1"}')
+        self.assertEqual(settings.tts_model_voices, {"gemini-tts": "zephyr", "local-tts": "local-voice-1"})
+        from_dict = RuntimeSettings(tts_model_voices={"gemini-tts": "zephyr"})
+        self.assertEqual(from_dict.tts_model_voices, {"gemini-tts": "zephyr"})
+        built = config.build_runtime_settings({"tts_model_voices": '{"gemini-tts": "zephyr"}'})
+        self.assertEqual(built.tts_model_voices, {"gemini-tts": "zephyr"})

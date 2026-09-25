@@ -464,6 +464,8 @@ async def generate_tts(
                 raise
 
     raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
+    if not raw_voice and hasattr(settings, "tts_model_voices"):
+        raw_voice = (getattr(settings, "tts_model_voices", {}) or {}).get(tts_model, "")
     voice_name = (raw_voice or "").strip()
 
     # Normalize voice: if empty, default, or mismatched cross-provider leftover (e.g. alloy on Gemini)
