@@ -11,6 +11,37 @@ from services.shared.environment import get_postgres_url
 logger = logging.getLogger(__name__)
 
 
+async def get_chat_tool_selection(chat_id: str, user_id: str):
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Database unavailable; cannot resolve chat tools")
+    try:
+        await _ensure_tables(conn)
+        row = await conn.fetchrow("select tool_selection from orion_chats where id=$1 and user_id=$2", chat_id, user_id)
+        if row is None:
+            raise RuntimeError("Chat not found in durable storage")
+        value = row["tool_selection"]
+        return json.loads(value) if isinstance(value, str) else value
+    finally:
+        await conn.close()
+
+
+async def set_chat_tool_selection(chat_id: str, user_id: str, selection):
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Database unavailable; tools were not saved")
+    try:
+        await _ensure_tables(conn)
+        result = await conn.execute(
+            "update orion_chats set tool_selection=$3::jsonb where id=$1 and user_id=$2",
+            chat_id, user_id, json.dumps(selection) if selection is not None else None,
+        )
+        if result != "UPDATE 1":
+            raise RuntimeError("Chat not found; tools were not saved")
+    finally:
+        await conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -92,6 +123,7 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
             "create index if not exists idx_orion_chats_user_id on orion_chats (user_id, updated_at desc);"
         )
         # --- Chat Messages ---
+        await conn.execute("alter table orion_chats add column if not exists tool_selection jsonb")
         await conn.execute(
             """
             create table if not exists orion_chat_messages (
@@ -130,11 +162,13 @@ async def fetch_setting_overrides(user_id: str) -> dict[str, str]:
         await conn.close()
 
 
-async def upsert_setting_overrides(user_id: str, overrides: dict[str, str]) -> None:
+async def upsert_setting_overrides(user_id: str, overrides: dict[str, str], require_db: bool = False) -> None:
     if not overrides:
         return
     conn = await _connect()
     if conn is None:
+        if require_db:
+            raise RuntimeError("Database unavailable; settings were not saved")
         return
     try:
         await _ensure_tables(conn)

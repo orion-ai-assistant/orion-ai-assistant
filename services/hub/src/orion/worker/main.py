@@ -23,6 +23,8 @@ async def ensure_consumer_group(redis: Redis) -> None:
 
 
 async def run() -> None:
+    from orion.worker.tools._registry import get_registry
+    get_registry()
     redis = Redis.from_url(get_redis_url(), decode_responses=True, protocol=2)
     settings = await get_runtime_settings(redis, SETTINGS_DEFAULT_USER)
     consumer_name = socket.gethostname()

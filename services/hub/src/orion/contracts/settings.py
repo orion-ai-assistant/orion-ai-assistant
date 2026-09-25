@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from orion.contracts.tools import ToolSelection, default_tool_selection
 
 class SystemSettings(BaseModel):
     result_ttl_seconds: int = Field(default=86400, ge=1, le=2592000)
@@ -9,6 +10,15 @@ class SystemSettings(BaseModel):
 
 
 class AISettings(BaseModel):
+    tool_selection: ToolSelection = Field(default_factory=default_tool_selection)
+
+    @field_validator("tool_selection", mode="before")
+    @classmethod
+    def parse_tool_selection(cls, value):
+        if isinstance(value, str):
+            return ToolSelection.model_validate_json(value)
+        return value
+
     ai_chat_titles_enabled: bool = False
     chat_title_model: str = ""
     first_token_delay_ms: int = Field(default=0, ge=0, le=60000)

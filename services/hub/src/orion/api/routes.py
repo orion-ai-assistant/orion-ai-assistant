@@ -11,11 +11,43 @@ from pydantic import BaseModel, Field, ValidationError
 
 from orion.kernel.config import RuntimeSettings, settings as factory_settings, get_runtime_settings, update_runtime_settings, _allowed_keys, get_all_users_settings, delete_runtime_setting, is_protected_global_key
 from orion.kernel.router_models import validate_model_updates, ModelNotFoundError
+from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
 from orion.api.auth_routes import get_current_user
 
 router = APIRouter()
+
+from orion.contracts.tools import ToolSelection
+from orion.api.services.tool_service import read_selection, save_selection
+from orion.api.services.job_service import ensure_chat_access
+from orion.worker.tools._registry import get_registry
+
+
+@router.get("/api/v1/tools")
+async def tool_catalog(current_user: str = Depends(get_current_user)):
+    return get_registry().catalog()
+
+
+@router.get("/api/v1/chats/{chat_id}/tools")
+async def get_chat_tools(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    try:
+        return await read_selection(request.app.state.redis, current_user, chat_id)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.put("/api/v1/chats/{chat_id}/tools")
+async def put_chat_tools(chat_id: str, payload: ToolSelection, request: Request, current_user: str = Depends(get_current_user)):
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    return await save_selection(request.app.state.redis, current_user, chat_id, payload)
+
+
+@router.delete("/api/v1/chats/{chat_id}/tools")
+async def reset_chat_tools(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    return await save_selection(request.app.state.redis, current_user, chat_id, None)
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -41,6 +73,10 @@ async def _save_settings_update(redis: Redis, payload: SettingsUpdateRequest) ->
     except ValidationError as exc:
         error = exc.errors()[0]
         raise HTTPException(status_code=422, detail=f"{error['loc'][0]}: {error['msg']}") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 
@@ -237,7 +273,7 @@ async def get_settings_schema() -> list[str]:
 @router.get("/api/v1/admin/settings/defaults")
 async def get_global_factory_defaults(request: Request) -> dict[str, str]:
     _check_admin_key(request)
-    return {key: str(value) for key, value in factory_settings.model_dump().items()}
+    return {key: serialize_setting(value) for key, value in factory_settings.model_dump().items()}
 
 
 @router.get("/api/v1/admin/settings/constraints")
@@ -269,7 +305,7 @@ async def reset_global_setting(key: str, request: Request) -> RuntimeSettings:
         raise HTTPException(status_code=400, detail=f"Geçersiz ayar anahtarı: {key}")
     redis: Redis = request.app.state.redis
     return await update_runtime_settings(
-        redis, {normalized_key: str(defaults[normalized_key])}, SETTINGS_DEFAULT_USER
+        redis, {normalized_key: serialize_setting(defaults[normalized_key])}, SETTINGS_DEFAULT_USER
     )
 
 

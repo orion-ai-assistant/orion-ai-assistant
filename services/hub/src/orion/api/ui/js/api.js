@@ -129,6 +129,7 @@ const API = {
                 body: JSON.stringify({
                     user_id: AppConfig.getUserId(),
                     chat_id: chatId,
+                    ...(!chatId && window.ToolsUI?.draftPayload() ? {tool_selection: window.ToolsUI.draftPayload()} : {}),
                     input: { 
                         text: text,
                         audio: audioEnabled
@@ -171,6 +172,7 @@ const API = {
                     AppState.pendingNewChatRequest = false;
                     pendingEvents.forEach(eventData => SSE.processEvent(eventData));
                     if (wasNewChat && window.loadChats) {
+                        if (window.ToolsUI) window.ToolsUI.draft = null;
                         window.loadChats();
                     }
                 }

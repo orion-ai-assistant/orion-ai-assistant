@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class StreamEvent(BaseModel):
-    type: Literal["accepted", "token", "snapshot", "thinking", "text_done", "done", "error", "user_message", "chat_rename", "chat_delete", "audio", "chat_title_warning"]
+    type: Literal["accepted", "token", "snapshot", "thinking", "text_done", "done", "error", "user_message", "chat_rename", "chat_delete", "audio", "chat_title_warning", "tool_call", "tool_result"]
     chat_id: str
     turn_id: str | None = None
     generation_id: str | None = None

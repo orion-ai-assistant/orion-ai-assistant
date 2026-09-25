@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/styles.css?v=2.0.7">
+    <link rel="stylesheet" href="css/tools.css?v=5">
 </head>
 <body>
     <!-- Auth Modal -->
@@ -157,6 +158,13 @@
 
                 <div class="input-dock-container">
                     <div class="input-dock">
+                        <div class="composer-add">
+                            <button type="button" class="btn" id="composer-plus" aria-label="Ekle" aria-expanded="false" aria-controls="composer-menu">+</button>
+                            <div id="composer-menu" hidden>
+                                <button type="button" disabled>Görsel ekle — Yakında</button>
+                                <button type="button" id="composer-tools">Fonksiyonlar</button>
+                            </div>
+                        </div>
                         <button class="btn btn-stop" id="stop-btn" style="display: none;" title="Yanıtı Durdur">
                             <span class="stop-icon">■</span>
                             <span class="stop-text">Durdur</span>
@@ -251,6 +259,7 @@
     <script src="js/config.js?v=2.0.7"></script>
     <script src="js/ui.js?v=2.0.7"></script>
     <script src="js/api.js?v=2.0.7"></script>
+    <script src="js/tools.js?v=4"></script>
     <script src="js/stt.js?v=2.0.7"></script>
     <script src="js/sse.js?v=2.0.7"></script>
     <script src="js/main.js?v=2.0.7"></script>

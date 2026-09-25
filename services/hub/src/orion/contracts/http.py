@@ -1,6 +1,7 @@
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from orion.contracts.tools import ToolSelection
 
 
 class JobInput(BaseModel):
@@ -13,6 +14,7 @@ class JobInput(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
+    tool_selection: ToolSelection | None = None
     user_id: str = Field(min_length=1, max_length=120)
     chat_id: str | None = Field(default=None, max_length=120)
     input: JobInput

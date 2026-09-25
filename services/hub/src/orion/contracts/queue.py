@@ -6,6 +6,7 @@ from orion.contracts.http import JobCreateRequest
 
 
 class JobQueueRecord(BaseModel):
+    enabled_tools: str = "[]"
     user_id: str
     chat_id: str
     turn_id: str | None = None

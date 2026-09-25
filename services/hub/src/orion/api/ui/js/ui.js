@@ -15,7 +15,9 @@ const UI = {
             this._chatDivs[chatId] = {
                 botDiv: null,
                 thinkDiv: null,
-                thinkBody: null
+                thinkBody: null,
+                contentNodes: [],
+                currentContentNode: null
             };
         }
         return this._chatDivs[chatId];
@@ -55,14 +57,28 @@ const UI = {
         this.scrollToBottom();
     },
 
-    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null) {
+    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null, toolActivity = [], displayParts = null) {
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
 
         const div = document.createElement('div');
         div.className = 'message bot';
 
-        if (thinking) {
+        if (Array.isArray(displayParts) && displayParts.length) {
+            for (const part of displayParts) {
+                if (part.type === 'thinking') {
+                    const block = this._createThinkingBlock(false);
+                    block.body.textContent = part.content || '';
+                    this._closeThinkingBlock(block.details, block.body);
+                    div.appendChild(block.details);
+                } else if (part.type === 'content') {
+                    div.appendChild(document.createTextNode(part.content || ''));
+                } else if (part.type === 'tool') {
+                    const item = toolActivity.find(entry => entry.call_id === part.call_id);
+                    if (item) window.ToolsUI?.renderActivity(div, item);
+                }
+            }
+        } else if (thinking) {
             const thinkDiv = document.createElement('details');
             thinkDiv.className = 'think-block';
             thinkDiv.open = false;
@@ -81,8 +97,10 @@ const UI = {
             div.appendChild(thinkDiv);
         }
 
-        const textNode = document.createTextNode(content);
-        div.appendChild(textNode);
+        if (!Array.isArray(displayParts) || !displayParts.length) {
+            for (const item of toolActivity) window.ToolsUI?.renderActivity(div, item);
+            div.appendChild(document.createTextNode(content || ''));
+        }
 
         if (metrics && (metrics.total_ms || metrics.first_token_ms)) {
             const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
@@ -109,6 +127,8 @@ const UI = {
 
         state.thinkDiv = null;
         state.thinkBody = null;
+        state.contentNodes = [];
+        state.currentContentNode = null;
         state.botDiv = document.createElement('div');
         state.botDiv.className = 'message bot typing';
         state.botDiv.setAttribute('data-chat-id', chatId);
@@ -124,9 +144,38 @@ const UI = {
         }
     },
 
+    _createThinkingBlock(open = true) {
+        const details = document.createElement('details');
+        details.className = 'think-block';
+        details.open = open;
+        const summary = document.createElement('summary');
+        summary.className = 'think-summary';
+        summary.textContent = '💭 Düşünülüyor...';
+        const body = document.createElement('pre');
+        body.className = 'think-body';
+        details.append(summary, body);
+        return { details, body };
+    },
+
+    _closeThinkingBlock(details, body) {
+        if (!details) return;
+        details.open = false;
+        const summary = details.querySelector('.think-summary');
+        if (summary) summary.textContent = `💭 Düşünce (${(body?.textContent || '').length} karakter)`;
+    },
+
+    finishThinking(chatId) {
+        const state = this._chatDivs[chatId];
+        if (!state?.thinkDiv) return;
+        this._closeThinkingBlock(state.thinkDiv, state.thinkBody);
+        state.thinkDiv = null;
+        state.thinkBody = null;
+    },
+
     appendThinkingToken(chatId, token) {
         if (!chatId) return;
         const state = this._getOrCreateChatState(chatId);
+        state.currentContentNode = null;
 
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -161,6 +210,7 @@ const UI = {
 
     appendToken(chatId, token) {
         if (!chatId) return;
+        this.finishThinking(chatId);
         const state = this._getOrCreateChatState(chatId);
 
         if (!state.botDiv) {
@@ -172,8 +222,13 @@ const UI = {
             state.botDiv.classList.remove('typing');
         }
 
-        const textNode = document.createTextNode(token);
-        state.botDiv.appendChild(textNode);
+        if (!state.currentContentNode) {
+            state.currentContentNode = document.createTextNode('');
+            state.contentNodes ||= [];
+            state.contentNodes.push(state.currentContentNode);
+            state.botDiv.appendChild(state.currentContentNode);
+        }
+        state.currentContentNode.textContent += token;
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
         }
@@ -181,6 +236,7 @@ const UI = {
 
     replaceMessageContent(chatId, content) {
         if (!chatId) return;
+        this.finishThinking(chatId);
         const state = this._getOrCreateChatState(chatId);
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
@@ -192,13 +248,16 @@ const UI = {
             state.thinkBody = null;
         }
 
-        Array.from(state.botDiv.childNodes).forEach(node => {
-            if (node.nodeType === Node.TEXT_NODE) node.remove();
-        });
-
-        const contentNode = document.createTextNode(content || '');
-        const trailingElement = state.botDiv.querySelector('.audio-player-container, .message-meta');
-        state.botDiv.insertBefore(contentNode, trailingElement || null);
+        const nodes = state.contentNodes ||= [];
+        const earlierLength = nodes.reduce((sum, node) => sum + node.textContent.length, 0) -
+            (state.currentContentNode?.textContent.length || 0);
+        if (!state.currentContentNode) {
+            state.currentContentNode = document.createTextNode('');
+            nodes.push(state.currentContentNode);
+            const trailingElement = state.botDiv.querySelector('.audio-player-container, .message-meta');
+            state.botDiv.insertBefore(state.currentContentNode, trailingElement || null);
+        }
+        state.currentContentNode.textContent = (content || '').slice(earlierLength);
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
         }
@@ -540,7 +599,7 @@ const UI = {
         };
 
         let html = '';
-        const handledKeys = new Set();
+        const handledKeys = new Set(['tool_selection']);
 
         Object.entries(categoryMeta).forEach(([categoryName, meta]) => {
             let hasKeys = false;
@@ -649,6 +708,7 @@ const UI = {
     },
 
     async loadModelChoices(settings, silent = false) {
+        window.ToolsUI?.renderSettings();
         const button = document.getElementById('refresh-models');
         const status = document.getElementById('catalog-status');
         if (!silent && button?.disabled) return;

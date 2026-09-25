@@ -14,7 +14,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.loadChats = loadChats;
     let loadChatSeq = 0;
 
-    window.loadChat = async (chatId) => {
+    window.loadChat = async (chatId, forceSnapshot = false) => {
+        window.ToolsUI?.dialog?.close();
         if (!AppState.sseConnected) return;
         AppState.selectChat(chatId);
         const selectionVersion = AppState.chatSelectionVersion;
@@ -29,7 +30,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         // If another loadChat was called while we were fetching, discard this one
         if (currentSeq !== loadChatSeq || selectionVersion !== AppState.chatSelectionVersion) return;
 
-        const cachedLiveState = AppState.getActiveTurn(chatId) ? UI._chatDivs[chatId] : null;
+        const cachedLiveState = !forceSnapshot && AppState.getActiveTurn(chatId) ? UI._chatDivs[chatId] : null;
         const hasCachedLiveMessage = Boolean(cachedLiveState?.botDiv);
 
         UI.clearChatArea();
@@ -48,6 +49,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         UI.appendUserMessage(msg.content);
                     }
                 } else if (msg.role === 'assistant') {
+                    if (msg.tool_calls) return;
                     if (msg.partial) {
                         // In-progress message from server — set up the live botDiv for this chat
                         hasPartial = true;
@@ -61,17 +63,28 @@ document.addEventListener("DOMContentLoaded", async () => {
                         // Keep it; use the Redis snapshot only after reload/reconnect.
                         if (!hasCachedLiveMessage) {
                             if (UI._chatDivs[chatId]) {
-                                UI._chatDivs[chatId] = { botDiv: null, thinkDiv: null, thinkBody: null };
+                                UI._chatDivs[chatId] = { botDiv: null, thinkDiv: null, thinkBody: null, contentNodes: [], currentContentNode: null };
                             }
 
                             UI.createBotMessagePlaceholder(chatId);
-                            if (msg.thinking) {
-                                UI.appendThinkingToken(chatId, msg.thinking);
+                            if (Array.isArray(msg.display_parts) && msg.display_parts.length) {
+                                for (const part of msg.display_parts) {
+                                    if (part.type === 'thinking') UI.appendThinkingToken(chatId, part.content || '');
+                                    else if (part.type === 'content') UI.appendToken(chatId, part.content || '');
+                                    else if (part.type === 'tool') {
+                                        const item = (msg.tool_activity || []).find(entry => entry.call_id === part.call_id);
+                                        if (item) window.ToolsUI?.liveActivity(chatId, item);
+                                    }
+                                }
+                            } else {
+                                if (msg.thinking) UI.appendThinkingToken(chatId, msg.thinking);
+                                UI.appendToken(chatId, msg.content);
+                                for (const item of msg.tool_activity || []) window.ToolsUI?.liveActivity(chatId, item);
                             }
-                            UI.appendToken(chatId, msg.content);
                         }
                     } else {
-                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio);
+                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio,
+                            msg.tool_activity || [], msg.display_parts);
                     }
                 }
             });
@@ -211,6 +224,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Event Listeners
     document.getElementById('new-chat-btn').addEventListener('click', () => {
+        window.ToolsUI?.resetDraft();
         AppState.selectChat(null);
         UI.clearChatArea();
         renderWelcomeHero();
@@ -219,6 +233,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     document.getElementById('logout-btn').addEventListener('click', () => {
+        window.ToolsUI?.resetDraft();
         SSE.disconnect();
         if (window.stopUserPolling) window.stopUserPolling();
         settingsInitialRequested = false;

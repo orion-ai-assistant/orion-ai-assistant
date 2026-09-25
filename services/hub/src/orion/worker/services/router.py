@@ -135,6 +135,7 @@ async def llama_stream_chat_typed(
     messages: list[dict[str, Any]],
     settings: RuntimeSettings,
     stop_checker: Callable[[], Awaitable[bool]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar.
 
@@ -153,6 +154,9 @@ async def llama_stream_chat_typed(
         "temperature": settings.temperature,
     }
     thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     if thinking_level and thinking_level.lower() != "default":
         payload["thinking_level"] = thinking_level
 
@@ -160,6 +164,8 @@ async def llama_stream_chat_typed(
 
     streamed_content = ""
     streamed_thinking = ""
+    from orion.worker.services.tool_stream import ToolCallAccumulator
+    tool_accumulator = ToolCallAccumulator()
 
     async def _parse_buffer(buf: bytes) -> AsyncIterator[tuple[str, str]]:
         """Parse a single SSE line buffer and yield typed tokens."""
@@ -170,6 +176,7 @@ async def llama_stream_chat_typed(
         if line.startswith(b"data:"):
             line = line[len(b"data:"):].strip()
         if line == b"[DONE]":
+            tool_accumulator.done = True
             return
         try:
             data = json.loads(line)
@@ -191,6 +198,9 @@ async def llama_stream_chat_typed(
         if not choices:
             return
         delta = choices[0].get("delta") or {}
+        if tool_accumulator.feed(choices[0]):
+            # Marks upstream progress too: never retry another provider after a call fragment.
+            yield ("tool_delta", "")
 
         # 1. API-level reasoning_content (DeepSeek / OpenRouter thinking models)
         reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
@@ -286,6 +296,10 @@ async def llama_stream_chat_typed(
                         yielded_any = True
                         yield pair
                         
+                if not stop_checker or not await stop_checker():
+                    calls = tool_accumulator.complete()
+                    if calls:
+                        yield ("tool_calls", json.dumps(calls))
                 return  # Başarılı olduğunda tamamen çık
                 
         except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as e:

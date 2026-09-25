@@ -17,6 +17,10 @@ from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
 from orion.worker.services.chat_titles import generate_chat_title
 from orion.worker.services.router import llama_stream_chat_typed, generate_tts
+from orion.worker.services.tool_runner import ToolConversation
+from orion.worker.services.tool_history import model_history
+from orion.worker.services.tool_display import DisplayTimeline
+from orion.contracts.events import StreamEvent
 
 
 def utc_now() -> str:
@@ -141,7 +145,7 @@ async def load_history(
         return []
 
     key = _history_key(chat_id)
-    raw_items = await redis.lrange(key, -max_messages, -1)
+    raw_items = await redis.lrange(key, 0, -1)
 
     # Cache Hit
     if raw_items:
@@ -153,9 +157,9 @@ async def load_history(
                 continue
             role = data.get("role")
             content = data.get("content")
-            if role and content:
-                history.append({"role": role, "content": content})
-        return _remove_failed_turns(history)
+            if role:
+                history.append(data)
+        return model_history(_remove_failed_turns(history), max_messages)
 
     # Cache Miss — hydrate from PostgreSQL
     logging.info("Worker cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
@@ -177,10 +181,7 @@ async def load_history(
         )
 
     # Return only the last max_messages entries
-    return _remove_failed_turns([
-        {"role": msg["role"], "content": msg["content"]} for msg in db_history[-max_messages:]
-        if msg.get("role") and msg.get("content")
-    ])
+    return model_history(_remove_failed_turns(db_history), max_messages)
 
 
 async def append_history(
@@ -204,7 +205,7 @@ async def append_history(
     pipe = redis.pipeline()
     for message in messages:
         pipe.rpush(key, json.dumps(message))
-    pipe.ltrim(key, -max_messages, -1)
+    # Cache full UI history; model_history applies a turn-safe context boundary.
     pipe.expire(key, settings.redis_cache_ttl_seconds)
     await pipe.execute()
 
@@ -324,12 +325,17 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             "current_prompt": context.prompt,
             "partial_text": "",
             "partial_thinking": "",
+            "partial_tools": "[]",
+            "partial_display": "[]",
         },
     )
 
     try:
         output_tokens: list[str] = []
         thinking_tokens: list[str] = []
+        timeline = DisplayTimeline()
+        display_parts = timeline.parts
+        add_display = timeline.add
 
         if context.stream_mode == "continuous":
             # --- Continuous (demo) mode ---
@@ -392,6 +398,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 messages.append({"role": "user", "content": context.prompt})
 
             user_message = messages[-1]
+            conversation = ToolConversation(context, json.loads(context.record.enabled_tools))
 
             # Stream tokens from LLM.
             # - token_delay_ms intentionally NOT applied here: LLM already provides natural pacing.
@@ -405,20 +412,45 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             generation_started_at = time.perf_counter()
             first_token_at: float | None = None
 
+            next_renewal = 0.0
             try:
                 async def _check_stop() -> bool:
+                    nonlocal next_renewal
+                    if time.monotonic() >= next_renewal:
+                        active_key = _active_turn_key(context.chat_id)
+                        async with redis.pipeline() as pipe:
+                            try:
+                                await pipe.watch(active_key)
+                                if _redis_text(await pipe.get(active_key)) != context.turn_id:
+                                    return True
+                                pipe.multi()
+                                pipe.expire(active_key, max(settings.llm_timeout_seconds + settings.stop_key_ttl_seconds, 120))
+                                await pipe.execute()
+                            except WatchError:
+                                return True
+                        next_renewal = time.monotonic() + 30
                     return (
                         await should_stop(redis, context.turn_id)
                         or not await is_active_turn(redis, context.chat_id, context.turn_id)
                     )
 
-                stream = llama_stream_chat_typed(messages, settings, stop_checker=_check_stop)
+                stream = conversation.stream(messages, settings, _check_stop, llama_stream_chat_typed)
                 token_count = 0
                 thinking_token_count = 0
                 content_token_count = 0
                 
                 logging.info("Worker %s: starting stream for chat %s", consumer_name, context.chat_id)
                 async for kind, token in stream:
+                    if kind in ("tool_call", "tool_result"):
+                        if kind == "tool_call":
+                            add_display("tool_call", json.loads(token)["call_id"])
+                        if await hset_if_active(redis, context.chat_id, context.turn_id, state_key,
+                                                "partial_tools", json.dumps(conversation.activity)):
+                            await context._publish(StreamEvent(type=kind, chat_id=context.chat_id,
+                                turn_id=context.turn_id, generation_id=context.turn_id, data=json.loads(token)))
+                        await hset_if_active(redis, context.chat_id, context.turn_id, state_key,
+                                             "partial_display", json.dumps(display_parts))
+                        continue
                     token_count += 1
                     if kind == "metrics":
                         try:
@@ -444,6 +476,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     first_token = False
 
                     if kind == "thinking":
+                        add_display("thinking", token)
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                         thinking_token_count += 1
@@ -461,6 +494,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             "".join(thinking_tokens),
                         )
                     elif kind == "content":
+                        add_display("content", token)
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                         content_token_count += 1
@@ -479,6 +513,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             "".join(output_tokens),
                         )
                     elif kind == "content_snapshot":
+                        add_display("snapshot", token)
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                         output_tokens[:] = [token]
@@ -491,6 +526,10 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             "partial_text",
                             token,
                         )
+
+                    if kind in ("thinking", "content", "content_snapshot"):
+                        await hset_if_active(redis, context.chat_id, context.turn_id, state_key,
+                                             "partial_display", json.dumps(display_parts))
 
                 # Stream ended naturally — log final statistics
                 logging.info(
@@ -516,6 +555,11 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             except Exception as e:
                 logging.exception("LLM stream failed for chat %s; sending error to user", context.chat_id)
+                if conversation.activity and await is_active_turn(redis, context.chat_id, context.turn_id):
+                    await append_history(redis, context.chat_id,
+                        [{**user_message, "failed_turn": True}, *conversation.transcript,
+                         {"role": "assistant", "content": "".join(output_tokens), "tool_activity": conversation.activity}],
+                        settings.chat_history_max_messages, settings)
                 fallback_text = _format_router_fallback_message(e, settings)
                 failure_total_ms = max(1, round((time.perf_counter() - generation_started_at) * 1000))
                 failure_metrics = {
@@ -546,7 +590,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             fallback_total_ms = round((time.perf_counter() - generation_started_at) * 1000, 2)
             fallback_ttft_ms = round((first_token_at - generation_started_at) * 1000, 2) if first_token_at else fallback_total_ms
 
-            if router_metrics and ("ttft_ms" in router_metrics or "total_duration_ms" in router_metrics):
+            if not conversation.rounds and router_metrics and ("ttft_ms" in router_metrics or "total_duration_ms" in router_metrics):
                 ttft = router_metrics.get("ttft_ms") or 0
                 total_dur = router_metrics.get("total_duration_ms") or 0
                 metrics = {
@@ -625,17 +669,22 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text}
+            if conversation.activity:
+                assistant_entry["tool_activity"] = conversation.activity
+                assistant_entry["model_content"] = conversation.final_content
             if audio_entry:
                 assistant_entry["audio"] = audio_entry
             if metrics:
                 assistant_entry["metrics"] = metrics
             if thinking_text:
                 assistant_entry["thinking"] = thinking_text
+            if display_parts:
+                assistant_entry["display_parts"] = display_parts
 
             await append_history(
                 redis,
                 context.chat_id,
-                [user_message, assistant_entry],
+                [user_message, *conversation.transcript, assistant_entry],
                 settings.chat_history_max_messages,
                 settings,
             )

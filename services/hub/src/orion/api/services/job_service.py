@@ -68,6 +68,12 @@ async def ensure_chat_access(redis: Redis, user_id: str, chat_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateResponse:
+    from orion.api.services.tool_service import read_selection, save_selection, validate_selection
+    from orion.worker.tools._registry import get_registry
+    if payload.chat_id and payload.tool_selection is not None:
+        raise HTTPException(422, "Use the chat tools endpoint to change an existing chat")
+    if payload.tool_selection is not None:
+        validate_selection(payload.tool_selection)
     settings = await get_runtime_settings(redis, payload.user_id)
     now = utc_now()
     turn_id = str(uuid4())
@@ -83,6 +89,17 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
 
     title = initial_chat_title(payload.input.text) if not payload.chat_id else access.meta.get("name", "Yeni sohbet")
 
+    try:
+        if payload.chat_id:
+            enabled_tools = (await read_selection(redis, payload.user_id, chat_id))["enabled_tools"]
+        else:
+            enabled_tools = get_registry().enabled(payload.tool_selection if payload.tool_selection is not None else settings.tool_selection)
+            if payload.tool_selection is not None:
+                await upsert_chat(chat_id=chat_id, user_id=payload.user_id, title=title)
+                await save_selection(redis, payload.user_id, chat_id, payload.tool_selection)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
     meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
@@ -94,6 +111,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     }
 
     queue_record = JobQueueRecord(
+        enabled_tools=json.dumps(enabled_tools),
         user_id=payload.user_id, chat_id=chat_id, turn_id=turn_id, channel=channel,
         created_at=now, stream_mode=payload.stream_mode, payload=payload.model_dump_json()
     )
@@ -267,6 +285,8 @@ def _append_processing_state(history: list[dict], state: dict[str, str]) -> None
     # Keep an explicit in-progress item even before the first token. The UI
     # uses it to preserve/rehydrate the active turn across chat navigation.
     assistant_entry = {"role": "assistant", "content": partial_text, "partial": True}
+    assistant_entry["tool_activity"] = json.loads(state.get("partial_tools", "[]"))
+    assistant_entry["display_parts"] = json.loads(state.get("partial_display", "[]"))
     if active_turn_id:
         assistant_entry["turn_id"] = active_turn_id
     if partial_thinking:

@@ -44,7 +44,7 @@ const SSE = {
             if (window.startUserPolling) window.startUserPolling();
             // Mevcut sohbeti yeniden yükle (geçmişi + devam eden tokenları göster)
             if (AppState.currentChatId && window.loadChat) {
-                window.loadChat(AppState.currentChatId);
+                window.loadChat(AppState.currentChatId, true);
             }
             if (AppState.sseConnectTimer) {
                 clearTimeout(AppState.sseConnectTimer);
@@ -161,7 +161,7 @@ const SSE = {
 
         if (
             chatId
-            && ["thinking", "token", "snapshot", "audio", "text_done"].includes(data.type)
+            && ["thinking", "token", "snapshot", "audio", "text_done", "tool_call", "tool_result"].includes(data.type)
             && !AppState.isStreamingTurn(chatId, turnId)
         ) {
             return;
@@ -185,6 +185,10 @@ const SSE = {
         }
 
         // ---- Events for non-active chats: just refresh sidebar ----
+        if (data.type === 'tool_call' || data.type === 'tool_result') {
+            window.ToolsUI?.liveActivity(chatId, data.data);
+            return;
+        }
         if (data.type === 'text_done') {
             UI.showTextMetrics(chatId, data.data);
             return;
