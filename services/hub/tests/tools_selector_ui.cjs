@@ -145,6 +145,10 @@ tools.request = async url => url === '/api/v1/tools'
     settingsSwitch.checked = true; settingsSwitch.onchange();
     assert.equal(tools.saving, true);
     assert.equal(nodes['tools-save'].disabled, false, 'Done does not flash while autosaving');
+    assert.equal(nodes['tools-reset'].disabled, false, 'Reset does not flash while autosaving');
+    assert.equal(nodes['tools-close'].disabled, undefined, 'Close does not flash while autosaving');
+    await nodes['tools-reset'].onclick();
+    assert.equal(settingWrites.length, 1, 'Reset waits for the current write');
     nodes['tools-save'].onclick();
     assert.equal(dialog.open, true, 'Done cannot close during a write');
     finishWrite({}); await new Promise(setImmediate);

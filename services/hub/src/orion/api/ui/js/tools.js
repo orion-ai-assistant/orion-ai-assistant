@@ -22,7 +22,7 @@ const ToolsUI = {
             <p id="tools-error" role="status" aria-live="polite"></p>
             <footer class="tools-footer"><button type="button" id="tools-reset" class="tools-button tools-button-ghost">Sıfırla</button><button type="button" id="tools-save" class="tools-button tools-button-primary">Tamam</button></footer>`;
         document.body.appendChild(this.dialog);
-        this.dialog.querySelector('.tools-close').onclick = () => this.dialog.close();
+        this.dialog.querySelector('.tools-close').onclick = () => { if (!this.saving) this.dialog.close(); };
         this.dialog.addEventListener('click', event => { if (event.target === this.dialog && !this.saving) this.dialog.close(); });
         this.dialog.addEventListener('close', () => { this.revision++; });
         this.dialog.addEventListener('cancel', event => { if (this.saving) event.preventDefault(); });
@@ -94,8 +94,6 @@ const ToolsUI = {
             };
             const setSaving = saving => {
                 this.saving = saving;
-                reset.disabled = saving;
-                this.dialog.querySelector('.tools-close').disabled = saving;
                 for (const entry of switches) entry.input.disabled = saving ||
                     (entry.kind === 'functions' && !selected.categories[entry.categoryId]);
             };
@@ -188,9 +186,11 @@ const ToolsUI = {
                 categoryRows.set(cat.id, card); updateCategoryBadge(cat);
             }
             save.disabled = false;
+            reset.disabled = false;
             setSaving(false);
             save.onclick = () => { if (!this.saving) this.dialog.close(); };
             reset.onclick = async () => {
+                if (this.saving) return;
                 selected = structuredClone(resetSelection);
                 refresh();
                 await persist(true);
