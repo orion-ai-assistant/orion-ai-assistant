@@ -131,14 +131,18 @@ const ToolsUI = {
                 button.setAttribute('aria-controls', `tools-category-content-${cat.id}`);
                 button.setAttribute('aria-label', `${cat.name} fonksiyonları`);
                 const icon = document.createElement('span'); icon.className = 'tool-category-icon';
-                icon.textContent = ({datetime: '◷', text: '≡'})[cat.id] || '✦';
+                icon.innerHTML = ({
+                    datetime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3.5 2"/></svg>',
+                    text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 7h14M5 12h14M5 17h14"/></svg>'
+                })[cat.id] || '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/></svg>';
                 icon.setAttribute('aria-hidden', 'true');
                 const copy = document.createElement('span'); copy.className = 'tool-category-copy';
                 const name = document.createElement('strong'); name.textContent = cat.name;
                 const status = document.createElement('span'); status.className = 'tool-category-status';
                 copy.append(name, status);
                 const chevron = document.createElement('span'); chevron.className = 'tool-category-chevron';
-                chevron.textContent = '›'; chevron.setAttribute('aria-hidden', 'true');
+                chevron.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 5 5 5-5 5"/></svg>';
+                chevron.setAttribute('aria-hidden', 'true');
                 button.append(icon, chevron, copy);
                 const reveal = document.createElement('div'); reveal.className = 'tool-category-reveal';
                 reveal.id = `tools-category-content-${cat.id}`;

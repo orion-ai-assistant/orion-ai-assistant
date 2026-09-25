@@ -65,6 +65,8 @@ tools.request = async url => url === '/api/v1/tools'
     assert.equal(categories[0].classList.contains('is-expanded'), false, 'Every category starts collapsed');
     assert.equal(categories[1].classList.contains('is-expanded'), false, 'Other categories stay collapsed');
     assert.equal(categories[0].querySelector('.tool-category-reveal').inert, true);
+    assert.match(categories[1].querySelector('.tool-category-icon').innerHTML, /M5 7h14M5 12h14M5 17h14/);
+    assert.match(categories[0].querySelector('.tool-category-chevron').innerHTML, /m7 5 5 5-5 5/);
     assert.equal(categories[1].querySelector('.tool-category-reveal').inert, true);
     assert.equal(categories[0].querySelectorAll('.tool-row').length, 1);
     assert.equal(categories[1].querySelectorAll('.tool-row').length, 3);
