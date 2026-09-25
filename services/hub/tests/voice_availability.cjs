@@ -30,15 +30,16 @@ ui.loadVoiceChoices(false);
 ui.routerCatalog.voices.google = ['gemini-voice-1', 'gemini-voice-2'];
 ui.loadVoiceChoices(false);
 assert.equal(elements['tts-availability'].textContent, '', 'Local TTS outage is hidden for gemini model with voices');
-// Any model with no voices shows the notice regardless of provider
+// Non-local models do not show Orion TTS outage notice
 elements['setting-input-tts_model'].value = 'gemini-tts-no-voices';
 ui.routerCatalog.models.push({ name: 'gemini-tts-no-voices', provider: 'google-beta' });
 ui.loadVoiceChoices(false);
-assert.equal(elements['tts-availability'].textContent, 'Orion TTS\u2019ye eri\u015filemiyor.', 'Any provider with no voices shows notice');
+assert.equal(elements['tts-availability'].textContent, '', 'Non-local model without voices does not show Orion TTS notice');
 elements['setting-input-tts_model'].value = 'local-tts';
 ui.loadVoiceChoices(true);
 assert.equal(voice.value, 'zephyr2', 'Missing catalog must not erase a saved voice');
 ui.routerCatalog.voices.local = ['zephyr2', 'new-voice'];
+ui.routerCatalog.unavailable = [];
 ui.loadVoiceChoices(false);
 assert.equal(voice.options[1].text, 'zephyr2');
 assert.equal(voice.options[2].value, 'new-voice');

@@ -805,7 +805,7 @@ const UI = {
         }
         notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
             ? 'Seslendirme kapalı.'
-            : !voices.length
+            : model === 'local-tts' && (inaccessible || !voices.length)
                 ? 'Orion TTS’ye erişilemiyor.'
                 : '';
         if (modelChanged) this.handleSettingChange('tts_voice');

@@ -14,8 +14,8 @@ _catalog_cache: dict | None = None
 _catalog_cached_at = 0.0
 _CATALOG_TTL_SECONDS = 15.0
 _catalog_sections: dict[str, dict] = {}
-_SECTION_TIMEOUT_SECONDS = 1.0
-_LOCAL_TTS_TIMEOUT_SECONDS = 0.6
+_SECTION_TIMEOUT_SECONDS = 5.0
+_LOCAL_TTS_TIMEOUT_SECONDS = 4.0
 
 
 async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict | None:
