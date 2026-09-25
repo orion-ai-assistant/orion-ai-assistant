@@ -17,7 +17,7 @@ const ToolsUI = {
         this.dialog = document.createElement('dialog');
         this.dialog.className = 'tools-dialog';
         this.dialog.setAttribute('aria-labelledby', 'tools-title');
-        this.dialog.innerHTML = `<header class="tools-header"><div><h2 id="tools-title">Fonksiyonlar</h2><p id="tools-source"></p></div><button type="button" class="tools-close" aria-label="Kapat">×</button></header>
+        this.dialog.innerHTML = `<header class="tools-header"><div><h2 id="tools-title">Fonksiyonlar</h2><p id="tools-source"></p></div><button type="button" class="tools-close" aria-label="Kapat"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 5l10 10M15 5 5 15"/></svg></button></header>
             <div class="tools-layout"><div id="tools-list" class="tools-list" aria-label="Fonksiyon kategorileri"></div></div>
             <p id="tools-error" role="status" aria-live="polite"></p>
             <footer class="tools-footer"><button type="button" id="tools-reset" class="tools-button tools-button-ghost">Sıfırla</button><button type="button" id="tools-save" class="tools-button tools-button-primary">Tamam</button></footer>`;
@@ -58,13 +58,14 @@ const ToolsUI = {
         this.dialog.querySelector('#tools-title').textContent = defaults ? 'Varsayılan fonksiyonlar' : 'Sohbet fonksiyonları';
         const source = this.dialog.querySelector('#tools-source');
         source.textContent = 'Yükleniyor…'; list.replaceChildren(); error.textContent = '';
-        save.disabled = true; reset.hidden = defaults; reset.disabled = true;
+        save.disabled = true; reset.hidden = false; reset.disabled = true;
         this.dialog.showModal();
         const current = () => revision === this.revision && userId === AppConfig.getUserId();
         try {
-            const [catalog, settings, chat] = await Promise.all([
+            const [catalog, settings, chat, factory] = await Promise.all([
                 this.request('/api/v1/tools'), this.request('/api/v1/admin/settings'),
-                !defaults && chatId ? this.request(`/api/v1/chats/${encodeURIComponent(chatId)}/tools`) : null
+                !defaults && chatId ? this.request(`/api/v1/chats/${encodeURIComponent(chatId)}/tools`) : null,
+                defaults ? this.request('/api/v1/tools/default-selection') : null
             ]);
             if (!current()) return;
             const normalize = value => ({
@@ -72,6 +73,7 @@ const ToolsUI = {
                 functions: Object.fromEntries(catalog.flatMap(cat => cat.functions.map(fn => [fn.id, value?.functions?.[fn.id] === true])))
             });
             const defaultSelection = normalize(settings.tool_selection);
+            const resetSelection = defaults ? normalize(factory) : defaultSelection;
             let selected = normalize(defaults ? settings.tool_selection : chat ? chat.selection : this.draft || settings.tool_selection);
             let savedSelection = structuredClone(selected);
             source.textContent = defaults ? 'Yeni sohbetlerde kullanılacak fonksiyonları seçin.' :
@@ -92,7 +94,6 @@ const ToolsUI = {
             };
             const setSaving = saving => {
                 this.saving = saving;
-                save.disabled = saving;
                 reset.disabled = saving;
                 this.dialog.querySelector('.tools-close').disabled = saving;
                 for (const entry of switches) entry.input.disabled = saving ||
@@ -186,10 +187,11 @@ const ToolsUI = {
                 row.append(button, toggle); card.append(row, reveal); list.appendChild(card);
                 categoryRows.set(cat.id, card); updateCategoryBadge(cat);
             }
+            save.disabled = false;
             setSaving(false);
-            save.onclick = () => this.dialog.close();
+            save.onclick = () => { if (!this.saving) this.dialog.close(); };
             reset.onclick = async () => {
-                selected = structuredClone(defaultSelection);
+                selected = structuredClone(resetSelection);
                 refresh();
                 await persist(true);
             };

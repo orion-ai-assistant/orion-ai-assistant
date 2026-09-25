@@ -38,8 +38,9 @@
     display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px;
     padding: 0; border: 1px solid transparent; border-radius: 9px;
     background: rgba(255, 255, 255, .055); color: var(--text-secondary);
-    font: 25px/1 var(--font-sans); cursor: pointer;
+    cursor: pointer;
 }
+.tools-close svg { display: block; width: 16px; height: 16px; }
 .tools-close:hover { background: rgba(255, 255, 255, .1); color: var(--text-primary); }
 .tools-layout { max-height: min(58vh, 470px); overflow-y: auto; padding: 0 30px 20px; }
 .tools-list { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
@@ -112,6 +113,7 @@
     display: flex; justify-content: space-between; align-items: center; gap: 12px;
     padding: 17px 30px 23px; border-top: 1px solid var(--border-subtle);
 }
+.tools-footer #tools-save { margin-left: auto; }
 .tools-button {
     min-height: 40px; padding: 0 17px; border: 1px solid transparent; border-radius: 10px;
     font: 700 12px var(--font-sans); cursor: pointer; transition: background .18s, border-color .18s, transform .18s;

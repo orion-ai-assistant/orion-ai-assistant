@@ -18,7 +18,7 @@ from orion.api.auth_routes import get_current_user
 
 router = APIRouter()
 
-from orion.contracts.tools import ToolSelection
+from orion.contracts.tools import ToolSelection, default_tool_selection
 from orion.api.services.tool_service import read_selection, save_selection
 from orion.api.services.job_service import ensure_chat_access
 from orion.worker.tools._registry import get_registry
@@ -27,6 +27,11 @@ from orion.worker.tools._registry import get_registry
 @router.get("/api/v1/tools")
 async def tool_catalog(current_user: str = Depends(get_current_user)):
     return get_registry().catalog()
+
+
+@router.get("/api/v1/tools/default-selection", response_model=ToolSelection)
+async def tool_default_selection(current_user: str = Depends(get_current_user)):
+    return default_tool_selection()
 
 
 @router.get("/api/v1/chats/{chat_id}/tools")

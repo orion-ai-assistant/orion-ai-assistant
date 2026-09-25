@@ -126,5 +126,34 @@ tools.request = async url => url === '/api/v1/tools'
     assert.equal(writes.at(-1).method, 'DELETE', 'Reset clears chat override');
     assert.equal(dialog.open, true);
     assert.equal(chatSwitch.checked, true);
+    dialog.close();
+    context.AppState.currentChatId = null;
+    let finishWrite;
+    const settingWrites = [];
+    tools.request = async (url, method = 'GET', body) => {
+        if (url === '/api/v1/tools') return catalog;
+        if (url === '/api/v1/admin/settings' && method === 'GET')
+            return {tool_selection: {categories: {datetime: false}, functions: {get_current_time: false}}};
+        if (url === '/api/v1/tools/default-selection')
+            return {categories: {datetime: true}, functions: {get_current_time: true}};
+        settingWrites.push(body);
+        return new Promise(resolve => { finishWrite = resolve; });
+    };
+    await tools.open(true);
+    assert.equal(nodes['tools-reset'].hidden, false, 'Settings shows reset');
+    const settingsSwitch = nodes['tools-list'].querySelector('.tool-category-row').querySelector('.tool-switch');
+    settingsSwitch.checked = true; settingsSwitch.onchange();
+    assert.equal(tools.saving, true);
+    assert.equal(nodes['tools-save'].disabled, false, 'Done does not flash while autosaving');
+    nodes['tools-save'].onclick();
+    assert.equal(dialog.open, true, 'Done cannot close during a write');
+    finishWrite({}); await new Promise(setImmediate);
+    settingsSwitch.checked = false; settingsSwitch.onchange();
+    finishWrite({}); await new Promise(setImmediate);
+    const resetPromise = nodes['tools-reset'].onclick();
+    assert.equal(settingsSwitch.checked, true, 'Settings reset restores factory selection');
+    finishWrite({}); await resetPromise;
+    assert.equal(JSON.parse(settingWrites.at(-1).values.tool_selection).categories.datetime, true);
+    assert.equal(dialog.open, true, 'Settings reset keeps the dialog open');
     console.log('Collapsed categories autosave and reset without closing');
 })().catch(error => { console.error(error); process.exitCode = 1; });
