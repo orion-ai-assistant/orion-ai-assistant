@@ -61,9 +61,8 @@
 .tool-category-button {
     display: flex; align-items: center; gap: 15px; min-width: 0; flex: 1;
     padding: 4px 6px; border: 0; background: transparent; color: inherit;
-    font: inherit; text-align: left; cursor: pointer; transition: opacity .12s;
+    font: inherit; text-align: left; cursor: pointer;
 }
-.tool-category-button:active { opacity: .65; }
 .tool-category-icon {
     display: grid; place-items: center; flex: 0 0 auto; width: 38px; height: 38px;
     border: 1px solid rgba(16, 185, 129, .16); border-radius: 11px;
@@ -109,7 +108,6 @@
 .tool-switch:checked { background: var(--primary); border-color: var(--primary); }
 .tool-switch:checked::after { transform: translateX(15px); }
 .tool-switch:disabled { cursor: not-allowed; }
-.tool-switch:active:not(:disabled) { transform: scale(.93); }
 .tools-dialog button:focus-visible, .tools-dialog input:focus-visible, #composer-plus:focus-visible {
     outline: 2px solid var(--primary-light); outline-offset: 3px;
 }
