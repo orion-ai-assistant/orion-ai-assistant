@@ -38,7 +38,7 @@ class AdminSettingConstraintTests(unittest.IsolatedAsyncioTestCase):
             "token_delay_ms": "80",
         })
         self.assertEqual(settings.first_token_delay_ms, 0)
-        self.assertEqual(settings.temperature, 0.9)
+        self.assertIsNone(settings.temperature)
         self.assertEqual(settings.token_delay_ms, 80)
 
     async def test_chat_rename_sends_datetime_to_postgres(self):

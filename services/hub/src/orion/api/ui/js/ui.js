@@ -434,90 +434,104 @@ const UI = {
         this.messageInput.value = '';
     },
 
+    showToast(message = 'Kaydedildi') {
+        if (!this._toast) {
+            this._toast = document.createElement('div');
+            this._toast.className = 'app-toast';
+            this._toast.setAttribute('role', 'status');
+            this._toast.setAttribute('aria-live', 'polite');
+            this._toast.setAttribute('popover', 'manual');
+            document.body.appendChild(this._toast);
+        }
+        const toast = this._toast;
+        clearTimeout(this._toastTimer);
+        if (toast.hidePopover) toast.hidePopover();
+        toast.textContent = message;
+        toast.hidden = false;
+        if (toast.showPopover) toast.showPopover();
+        this._toastTimer = setTimeout(() => {
+            if (toast.hidePopover) toast.hidePopover();
+            toast.hidden = true;
+        }, 1600);
+    },
+
+    _settingTimers: {},
+    _settingSaveQueue: Promise.resolve(),
+
+    settingSaveStatus(key, message, failed = false) {
+        const status = document.getElementById(`setting-status-${key}`);
+        if (status) {
+            status.textContent = message;
+            status.classList.toggle('error', failed);
+        }
+        const retry = document.getElementById(`setting-retry-${key}`);
+        if (retry) retry.hidden = !failed;
+    },
+
     handleSettingChange(key) {
-        const input = document.getElementById('setting-input-' + key);
-        const saveBtn = document.getElementById('setting-save-' + key);
-        if (!input || !saveBtn) return;
-
-        const currentVal = input.value.trim();
-        const originalVal = (input.dataset.original !== undefined ? input.dataset.original : '').trim();
-
-        if (currentVal !== originalVal) {
-            saveBtn.style.display = 'inline-flex';
-            saveBtn.classList.add('visible');
-            input.classList.add('dirty');
+        const input = document.getElementById(`setting-input-${key}`);
+        if (!input) return;
+        clearTimeout(this._settingTimers[key]);
+        const dirty = input.value.trim() !== (input.dataset.original || '').trim();
+        input.classList.toggle('dirty', dirty || input.dataset.saving === 'true');
+        if (!dirty && input.dataset.saving !== 'true') {
+            this.settingSaveStatus(key, '');
+            return;
+        }
+        if (input.validity && !input.validity.valid) {
+            this.settingSaveStatus(key, input.validationMessage);
+            return;
+        }
+        this.settingSaveStatus(key, '');
+        if (input.tagName === 'SELECT') {
+            this.saveSetting(key);
         } else {
-            saveBtn.style.display = 'none';
-            saveBtn.classList.remove('visible');
-            input.classList.remove('dirty');
+            this._settingTimers[key] = setTimeout(() => this.saveSetting(key), 650);
         }
     },
 
-    async saveSetting(key) {
-        const input = document.getElementById('setting-input-' + key);
-        const saveBtn = document.getElementById('setting-save-' + key);
-        if (!input) return;
-        const val = input.value.trim();
-
-        if (saveBtn) {
-            saveBtn.disabled = true;
-            saveBtn.innerHTML = `<span>⏳</span> Kaydediliyor...`;
-        }
-
-        const resultBlock = document.getElementById('settings-result');
-        if (resultBlock) {
-            resultBlock.style.display = 'block';
-            resultBlock.className = 'settings-toast-banner info';
-            resultBlock.textContent = `${key} güncelleniyor...`;
-        }
-
-        const data = await API.saveSettings(key, val);
-
-        if (data.error) {
-            if (resultBlock) {
-                resultBlock.className = 'settings-toast-banner error';
-                resultBlock.textContent = `Hata: ${data.error}`;
-            }
-            if (saveBtn) {
-                saveBtn.disabled = false;
-                saveBtn.textContent = 'Tekrar Dene';
-            }
-        } else {
-            input.dataset.original = val;
-            input.classList.remove('dirty');
-            input.classList.add('saved-flash');
-            setTimeout(() => input.classList.remove('saved-flash'), 1200);
-
-            if (resultBlock) {
-                resultBlock.className = 'settings-toast-banner success';
-                resultBlock.textContent = `✓ ${key} başarıyla kaydedildi!`;
-                setTimeout(() => {
-                    if (resultBlock.textContent.includes(key)) {
-                        resultBlock.style.display = 'none';
-                    }
-                }, 3000);
-            }
-
-            if (saveBtn) {
-                saveBtn.innerHTML = `<span>✓</span> Kaydedildi`;
-                saveBtn.classList.add('saved');
-                setTimeout(() => {
-                    saveBtn.disabled = false;
-                    saveBtn.textContent = 'Kaydet';
-                    saveBtn.classList.remove('saved', 'visible');
-                    saveBtn.style.display = 'none';
-                }, 1200);
-            }
-
-            if (key === 'tts_enabled') {
-                const isEnabled = String(val).toLowerCase() === 'true';
-                const audioToggle = document.getElementById('audio-toggle');
-                if (audioToggle) {
-                    audioToggle.checked = isEnabled;
+    saveSetting(key) {
+        clearTimeout(this._settingTimers[key]);
+        // Serialize writes, including model/voice changes, so the latest choice wins.
+        this._settingSaveQueue = this._settingSaveQueue.catch(() => {}).then(async () => {
+            const input = document.getElementById(`setting-input-${key}`);
+            if (!input || (input.validity && !input.validity.valid)) return;
+            const val = input.value.trim();
+            if (val === (input.dataset.original || '').trim()) return;
+            input.dataset.saving = 'true';
+            input.classList.add('dirty');
+            this.settingSaveStatus(key, 'Kaydediliyor…');
+            try {
+                const data = await API.saveSettings(key, val);
+                if (data.error) throw new Error(typeof data.error === 'string' ? data.error : 'Değer kabul edilmedi.');
+                input.dataset.original = val;
+                if (this.currentSettings) this.currentSettings[key] = data[key] ?? val;
+                const changed = input.value.trim() !== val;
+                input.classList.toggle('dirty', changed);
+                this.settingSaveStatus(key, '');
+                if (!changed) this.showToast('Kaydedildi');
+                if (key === 'tts_enabled') {
+                    const enabled = val.toLowerCase() === 'true';
+                    const toggle = document.getElementById('audio-toggle');
+                    if (toggle) toggle.checked = enabled;
+                    localStorage.setItem('orion_tts_enabled', String(enabled));
                 }
-                localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
+            } catch (error) {
+                input.classList.add('dirty');
+                this.settingSaveStatus(key, `Kaydedilemedi: ${error.message}`, true);
+            } finally {
+                delete input.dataset.saving;
             }
-        }
+        });
+        return this._settingSaveQueue;
+    },
+
+    toggleAdvancedSettings() {
+        const panel = document.getElementById('settings-panel-advanced');
+        const button = document.getElementById('settings-advanced-toggle');
+        if (!panel || !button) return;
+        panel.hidden = !panel.hidden;
+        button.setAttribute('aria-expanded', String(!panel.hidden));
     },
 
     renderSettings(settings) {
@@ -535,11 +549,10 @@ const UI = {
         if (alreadyRendered) {
             Object.keys(settings).forEach(key => {
                 const el = document.getElementById(`setting-input-${key}`);
-                const saveBtn = document.getElementById(`setting-save-${key}`);
                 if (el && document.activeElement !== el && !el.classList.contains('dirty')) {
-                    const serverVal = settings[key] !== undefined ? String(settings[key]) : '';
+                    const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
                     if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled') {
-                        el.value = String(settings[key]).toLowerCase() === 'true' ? 'true' : 'false';
+                        el.value = String(settings[key] ?? '').toLowerCase() === 'true' ? 'true' : 'false';
                         el.dataset.original = el.value;
                     } else {
                         if (el.tagName === 'SELECT' && !Array.from(el.options).some(option => option.value === serverVal)) {
@@ -548,32 +561,34 @@ const UI = {
                         el.value = serverVal;
                         el.dataset.original = serverVal;
                     }
-                    if (saveBtn) saveBtn.style.display = 'none';
                 }
             });
             return;
         }
 
         const categoryMeta = {
-            "Seslendirme ve Sesli Yazma": {
-                icon: "🎙️",
-                keys: ["tts_enabled", "tts_voice", "tts_model", "tts_timeout_seconds", "stt_enabled", "stt_model"],
-                desc: "Yanıtları seslendirme (TTS) ve mikrofonla canlı yazma (STT) ayarları"
+            "Sohbet": {
+                section: "general", icon: "💬", keys: ["router_model_group", "chat_title_model", "ai_chat_titles_enabled", "router_api_key"],
+                desc: "Sohbet modeli ve otomatik başlık tercihleriniz"
             },
-            "Router Konfigürasyonu": {
-                icon: "⚡",
-                keys: ["router_api_key", "router_model_group"],
-                desc: "Orion Router yönlendirme ve API güvenlik anahtarları"
+            "Ses": {
+                section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "stt_enabled", "stt_model"],
+                desc: "Seslendirme ve mikrofonla yazma tercihleriniz"
             },
-            "Yapay Zeka (AI) Ayarları": {
-                icon: "🧠",
-                keys: ["ai_chat_titles_enabled", "chat_title_model", "system_prompt", "llm_timeout_seconds", "embed_timeout_seconds", "chat_history_max_messages", "first_token_delay_ms", "token_delay_ms", "thinking_level", "temperature"],
-                desc: "Model zekası, sistem promptu, düşünme seviyesi ve token gecikmeleri"
+            "Model davranışı": {
+                section: "advanced", icon: "🧠",
+                keys: ["temperature", "thinking_level", "system_prompt", "chat_history_max_messages"],
+                desc: "Modelin yanıt davranışı, talimatları ve sohbet bağlamı"
             },
-            "Sistem Parametreleri": {
-                icon: "⚙️",
-                keys: ["result_ttl_seconds", "sse_heartbeat_seconds", "worker_max_concurrency", "stop_key_ttl_seconds", "redis_cache_ttl_seconds"],
-                desc: "Redis önbellek süreleri, heartbeat ve eşzamanlı kuyruk yapılandırması"
+            "Zaman aşımı": {
+                section: "advanced", icon: "⚡",
+                keys: ["llm_timeout_seconds", "embed_timeout_seconds", "tts_timeout_seconds"],
+                desc: "Servislerin yanıt bekleme süreleri"
+            },
+            "Sistem": {
+                section: "advanced", icon: "⚙️",
+                keys: ["first_token_delay_ms", "token_delay_ms", "result_ttl_seconds", "sse_heartbeat_seconds", "worker_max_concurrency", "stop_key_ttl_seconds", "redis_cache_ttl_seconds"],
+                desc: "Akış, önbellek ve worker ayarları"
             }
         };
 
@@ -585,7 +600,20 @@ const UI = {
             "chat_title_model": "Başlık üretimi için ayrı model seçin. Boşsa sohbet modeli kullanılır.",
             "router_api_key": "Orion Router API Key",
             "system_prompt": "Asistanın ana rolü ve sistem talimatı",
-            "temperature": "Yaratıcılık katsayısı (0.0 - 2.0)",
+            "temperature": "0–2 arasında değer girin. Boş bırakılırsa gönderilmez.",
+            "thinking_level": "Modelin desteklediği düşünme seviyesini girin. Boş bırakılırsa isteğe eklenmez.",
+            "first_token_delay_ms": "İlk yanıt veya düşünce parçasını yayınlamadan önce bekleme. 1000 ms = 1 saniye.",
+            "token_delay_ms": "Yalnızca continuous demo akışında uygulanır; normal sohbeti etkilemez. 1000 ms = 1 saniye.",
+            "llm_timeout_seconds": "Model yanıtı için zaman aşımı (saniye).",
+            "embed_timeout_seconds": "Embedding servisi zaman aşımı (saniye).",
+            "tts_timeout_seconds": "Seslendirme servisi zaman aşımı (saniye).",
+            "tts_voice": "Yanıtları seslendirecek sesi seçin.",
+            "router_model_group": "Sohbetlerde kullanılacak model.",
+            "result_ttl_seconds": "Tamamlanan sonuçların saklanma süresi (saniye).",
+            "sse_heartbeat_seconds": "Akış bağlantısı canlılık sinyali aralığı (saniye).",
+            "worker_max_concurrency": "Bir worker'ın aynı anda işleyebileceği iş sayısı.",
+            "stop_key_ttl_seconds": "Durdurma sinyalinin saklanma süresi (saniye).",
+            "redis_cache_ttl_seconds": "Önbellek kayıtlarının geçerlilik süresi (saniye).",
             "chat_history_max_messages": "Hafızada tutulacak maksimum mesaj sayısı"
         };
 
@@ -598,7 +626,8 @@ const UI = {
             "router_model_group": "Model grubu..."
         };
 
-        let html = '';
+        const escapeSetting = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const sections = {general: '', advanced: ''};
         const handledKeys = new Set(['tool_selection']);
 
         Object.entries(categoryMeta).forEach(([categoryName, meta]) => {
@@ -610,7 +639,7 @@ const UI = {
                     hasKeys = true;
                     handledKeys.add(key);
 
-                    let val = settings[key] !== undefined ? String(settings[key]) : '';
+                    let val = settings[key] !== undefined ? String(settings[key] ?? '') : '';
                     if (key === 'router_api_key' && val === 'sk-60f3eaf169d7c485-0icocf-0a3db541') {
                         val = '';
                     } else if (key === 'thinking_level' && val.toLowerCase() === 'default') {
@@ -621,38 +650,40 @@ const UI = {
 
                     let inputHtml = '';
                     if ((key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled')) {
-                        const isChecked = String(settings[key]).toLowerCase() === 'true';
+                        const isChecked = String(settings[key] ?? '').toLowerCase() === 'true';
                         inputHtml = `
                             <select id="setting-input-${key}" data-original="${isChecked ? 'true' : 'false'}" onchange="UI.handleSettingChange('${key}')" class="setting-select">
                                 <option value="true" ${isChecked ? 'selected' : ''}>Açık (True)</option>
                                 <option value="false" ${!isChecked ? 'selected' : ''}>Kapalı (False)</option>
                             </select>`;
                     } else if (['chat_title_model', 'router_model_group', 'tts_model', 'tts_voice', 'stt_model'].includes(key)) {
-                        inputHtml = `<select id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" onchange="UI.handleSettingChange('${key}')" class="setting-select"></select>`;
+                        inputHtml = `<select id="setting-input-${key}" data-original="${escapeSetting(val)}" onchange="UI.handleSettingChange('${key}')" class="setting-select"></select>`;
+                    } else if (key === 'temperature' || key === 'thinking_level') {
+                        inputHtml = `<input id="setting-input-${key}" type="${key === 'temperature' ? 'number' : 'text'}" ${key === 'temperature' ? 'min="0" max="2" step="0.1"' : ''} data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" placeholder="İsteğe bağlı" oninput="UI.handleSettingChange('${key}')" class="setting-input">
+                        `;
                     } else if (key === 'system_prompt') {
-                        inputHtml = `<textarea id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-textarea" rows="4" placeholder="${placeholder}">${val}</textarea>`;
+                        inputHtml = `<textarea id="setting-input-${key}" data-original="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-textarea" rows="4" placeholder="${placeholder}">${escapeSetting(val)}</textarea>`;
                     } else {
-                        inputHtml = `<input type="text" id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" value="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-input" placeholder="${placeholder}">`;
+                        inputHtml = `<input type="text" id="setting-input-${key}" data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-input" placeholder="${placeholder}">`;
                     }
 
                     rowsHtml += `
                     <div class="setting-row">
                         <div class="setting-info">
-                            <label class="setting-label">${({ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
+                            <label class="setting-label" for="setting-input-${key}">${({router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
                             ${hint ? `<span class="setting-hint">${hint}</span>` : ''}
                         </div>
                         <div class="setting-control">
                             ${inputHtml}
-                            <button id="setting-save-${key}" class="btn btn-save setting-save-btn" onclick="window.saveSetting('${key}')" style="display: none;">
-                                <span>Kaydet</span>
-                            </button>
+                            <span id="setting-status-${key}" class="setting-save-status" role="status"></span>
+                            <button type="button" id="setting-retry-${key}" class="setting-retry" onclick="UI.saveSetting('${key}')" hidden>Tekrar dene</button>
                         </div>
                     </div>`;
                 }
             });
 
             if (hasKeys) {
-                html += `
+                sections[meta.section] += `
                 <div class="settings-card">
                     <div class="settings-card-header">
                         <div class="settings-card-icon">${meta.icon}</div>
@@ -673,22 +704,21 @@ const UI = {
         if (unhandledKeys.length > 0) {
             let rowsHtml = '';
             unhandledKeys.forEach(key => {
-                const val = settings[key] !== undefined ? String(settings[key]) : '';
+                const val = settings[key] !== undefined ? String(settings[key] ?? '') : '';
                 rowsHtml += `
                 <div class="setting-row">
                     <div class="setting-info">
-                        <label class="setting-label">${({ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
+                        <label class="setting-label" for="setting-input-${key}">${({router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
                     </div>
                     <div class="setting-control">
-                        <input type="text" id="setting-input-${key}" data-original="${val.replace(/"/g, '&quot;')}" value="${val.replace(/"/g, '&quot;')}" oninput="UI.handleSettingChange('${key}')" class="setting-input">
-                        <button id="setting-save-${key}" class="btn btn-save setting-save-btn" onclick="window.saveSetting('${key}')" style="display: none;">
-                            <span>Kaydet</span>
-                        </button>
+                        <input type="text" id="setting-input-${key}" data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-input">
+                        <span id="setting-status-${key}" class="setting-save-status" role="status"></span>
+                            <button type="button" id="setting-retry-${key}" class="setting-retry" onclick="UI.saveSetting('${key}')" hidden>Tekrar dene</button>
                     </div>
                 </div>`;
             });
 
-            html += `
+            sections.advanced += `
             <div class="settings-card">
                 <div class="settings-card-header">
                     <div class="settings-card-icon">📦</div>
@@ -703,7 +733,15 @@ const UI = {
             </div>`;
         }
 
-        dashboard.innerHTML = `<div class="settings-catalog-toolbar"><div><strong>Model ve sesler</strong><span id="catalog-status" role="status">Bu sayfa açıkken otomatik güncellenir</span></div><button type="button" class="catalog-refresh" id="refresh-models" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> Yenile</button></div>` + html;
+        dashboard.innerHTML = `<div class="settings-catalog-toolbar"><div><strong>Model ve sesler</strong><span id="catalog-status" role="status">Bu sayfa açıkken otomatik güncellenir</span></div><button type="button" class="catalog-refresh" id="refresh-models" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> Yenile</button></div>` + `
+        <section id="settings-panel-general" data-settings-panel="general" aria-labelledby="settings-general-title">
+            <h2 id="settings-general-title" class="settings-section-title">Genel</h2>
+            ${sections.general}
+        </section>
+        <button type="button" id="settings-advanced-toggle" class="settings-advanced-toggle" aria-expanded="false" aria-controls="settings-panel-advanced" onclick="UI.toggleAdvancedSettings()">
+            Gelişmiş ayarlar <svg class="settings-advanced-chevron" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7.5 5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <section id="settings-panel-advanced" data-settings-panel="advanced" aria-labelledby="settings-advanced-toggle" hidden>${sections.advanced}</section>`;
 
     },
 

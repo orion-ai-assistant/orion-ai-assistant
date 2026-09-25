@@ -345,6 +345,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const validateSettingValue = (key, value) => {
         const constraint = settingConstraints[key];
         if (!constraint || !["integer", "number"].includes(constraint.type)) return "";
+        if (constraint.nullable && !String(value).trim()) return "";
         const number = Number(value);
         if (!String(value).trim() || !Number.isFinite(number) ||
             (constraint.type === "integer" && !Number.isInteger(number)) ||

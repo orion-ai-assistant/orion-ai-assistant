@@ -151,8 +151,9 @@ async def llama_stream_chat_typed(
         "model": settings.router_model_group,
         "messages": messages,
         "stream": True,
-        "temperature": settings.temperature,
     }
+    if settings.temperature is not None:
+        payload["temperature"] = settings.temperature
     thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
     if tools:
         payload["tools"] = tools
@@ -342,8 +343,9 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
         "model": settings.router_model_group,
         "messages": messages,
         "stream": False,
-        "temperature": settings.temperature,
     }
+    if settings.temperature is not None:
+        payload["temperature"] = settings.temperature
     thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
     if thinking_level and thinking_level.lower() != "default":
         payload["thinking_level"] = thinking_level

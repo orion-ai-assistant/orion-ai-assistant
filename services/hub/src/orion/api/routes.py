@@ -285,10 +285,14 @@ async def get_global_factory_defaults(request: Request) -> dict[str, str]:
 async def get_settings_constraints(request: Request) -> dict[str, dict]:
     _check_admin_key(request)
     properties = RuntimeSettings.model_json_schema()["properties"]
-    return {
-        key: {name: field[name] for name in ("type", "minimum", "maximum") if name in field}
-        for key, field in properties.items()
-    }
+    constraints = {}
+    for key, field in properties.items():
+        variants = field.get("anyOf", [field])
+        value_field = next((item for item in variants if item.get("type") != "null"), field)
+        constraints[key] = {name: value_field[name] for name in ("type", "minimum", "maximum") if name in value_field}
+        if any(item.get("type") == "null" for item in variants):
+            constraints[key]["nullable"] = True
+    return constraints
 
 
 @router.get("/api/v1/admin/models")

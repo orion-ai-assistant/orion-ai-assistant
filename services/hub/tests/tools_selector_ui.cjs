@@ -39,7 +39,7 @@ const dialog = new Element('dialog');
 dialog.querySelector = selector => selector === '.tools-close' ? nodes['tools-close'] :
     nodes[selector.slice(1)] || Element.prototype.querySelector.call(dialog, selector);
 const context = vm.createContext({
-    window: {}, structuredClone, console,
+    window: {}, structuredClone, console, UI: {showToast() {}},
     AppConfig: {getUserId: () => 'u'}, AppState: {currentChatId: null},
     document: {createElement: tag => new Element(tag), addEventListener() {}},
 });
@@ -148,10 +148,15 @@ tools.request = async url => url === '/api/v1/tools'
     assert.equal(nodes['tools-reset'].disabled, false, 'Reset does not flash while autosaving');
     assert.equal(nodes['tools-close'].disabled, undefined, 'Close does not flash while autosaving');
     await nodes['tools-reset'].onclick();
-    assert.equal(settingWrites.length, 1, 'Reset waits for the current write');
+    assert.equal(settingWrites.length, 1, 'Reset queues behind the current write');
     nodes['tools-save'].onclick();
     assert.equal(dialog.open, true, 'Done cannot close during a write');
     finishWrite({}); await new Promise(setImmediate);
+    assert.equal(settingWrites.length, 2, 'Reset click during saving is not lost');
+    assert.equal(JSON.parse(settingWrites[1].values.tool_selection).functions.get_current_time, true);
+    assert.equal(tools.saving, true);
+    finishWrite({}); await new Promise(setImmediate);
+    assert.equal(tools.saving, false);
     settingsSwitch.checked = false; settingsSwitch.onchange();
     finishWrite({}); await new Promise(setImmediate);
     const resetPromise = nodes['tools-reset'].onclick();

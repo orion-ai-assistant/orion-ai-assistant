@@ -1107,35 +1107,20 @@ details[open] > .think-summary::before {
     flex-shrink: 0;
 }
 
-.settings-toast-banner {
-    max-width: 860px;
-    width: 100%;
-    margin: 16px auto 0;
-    padding: 10px 16px;
-    border-radius: var(--radius-md);
-    font-size: 0.88rem;
-    font-weight: 600;
-    display: none;
-    animation: fadeIn 0.2s ease;
+.app-toast {
+    position: fixed; inset: auto 24px 24px auto; margin: 0; z-index: 10000;
+    max-width: calc(100vw - 48px); box-sizing: border-box; pointer-events: none;
+    padding: 11px 18px; border: 1px solid rgba(16, 185, 129, .35); border-radius: 12px;
+    background: #142b24; color: #a7f3d0; font: 500 13px var(--font-sans);
+    box-shadow: 0 8px 24px #0003; animation: app-toast-flash 1.6s ease both;
 }
-
-.settings-toast-banner.info {
-    background: rgba(16, 185, 129, 0.12);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    color: var(--primary-light);
+.app-toast[hidden] { display: none; }
+@keyframes app-toast-flash {
+    0% { opacity: 0; transform: translateY(5px); }
+    10%, 88% { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(0); }
 }
-
-.settings-toast-banner.success {
-    background: var(--success-bg);
-    border: 1px solid rgba(16, 185, 129, 0.35);
-    color: var(--success);
-}
-
-.settings-toast-banner.error {
-    background: var(--danger-bg);
-    border: 1px solid rgba(244, 63, 94, 0.3);
-    color: var(--danger);
-}
+@media (prefers-reduced-motion: reduce) { .app-toast { animation: none; } }
 
 .settings-dashboard-grid {
     padding: 24px 0 40px;
@@ -1589,3 +1574,32 @@ details[open] > .think-summary::before {
     gap: 12px;
     flex-wrap: wrap;
 }
+
+/* Advanced settings expand beneath the always-visible general settings. */
+.settings-section-title { margin: 0; font-size: 1.1rem; color: var(--text-primary, #fff); }
+.settings-advanced-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 14px 20px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); background: var(--bg-card); color: var(--text-primary, #fff); cursor: pointer; font: inherit; text-align: left; }
+.settings-advanced-toggle:hover { border-color: var(--accent-color, #818cf8); }
+.settings-advanced-chevron { width: 20px; height: 20px; flex: 0 0 20px; transition: transform 0.2s ease; }
+.settings-advanced-toggle[aria-expanded="true"] .settings-advanced-chevron { transform: rotate(180deg); }
+[data-settings-panel] { display: flex; flex-direction: column; gap: 20px; }
+[data-settings-panel][hidden] { display: none; }
+.setting-control { flex-wrap: wrap; min-width: 0; }
+.setting-control input, .setting-control select, .setting-control textarea { min-width: 0; }
+@media (max-width: 600px) { .setting-row { flex-direction: column; align-items: stretch; gap: 8px; } .setting-control { width: 100%; } }
+
+.setting-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 42px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23cbd5e1' stroke-width='1.8'%3E%3Cpath d='m5 7.5 5 5 5-5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    background-size: 20px 20px;
+}
+.setting-control > .setting-input, .setting-control > .setting-select, .setting-control > .setting-textarea { flex-basis: 100%; width: 100%; box-sizing: border-box; }
+.settings-advanced-toggle { box-sizing: border-box; gap: 16px; }
+.setting-save-status { font-size: 0.74rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.setting-save-status:empty { display: none; }
+.setting-save-status.error { color: var(--danger-color, #fb7185); }
+.setting-retry { background: none; border: 0; color: var(--text-primary, #fff); cursor: pointer; font: inherit; font-size: 0.74rem; }
+.setting-retry[hidden] { display: none; }

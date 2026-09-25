@@ -44,7 +44,7 @@ const ToolsUI = {
         card.className = 'settings-card tool-settings-card';
         card.innerHTML = '<h3>Varsayılan fonksiyonlar</h3><p>Özel seçim yapılmamış sohbetlerde kullanılacak fonksiyonları belirleyin.</p><button type="button" class="btn btn-primary">Fonksiyonları düzenle</button>';
         card.querySelector('button').onclick = () => this.open(true);
-        dashboard.appendChild(card);
+        (document.getElementById('settings-panel-general') || dashboard).appendChild(card);
     },
     async open(defaults) {
         const revision = ++this.revision;
@@ -57,7 +57,9 @@ const ToolsUI = {
         const reset = this.dialog.querySelector('#tools-reset');
         this.dialog.querySelector('#tools-title').textContent = defaults ? 'Varsayılan fonksiyonlar' : 'Sohbet fonksiyonları';
         const source = this.dialog.querySelector('#tools-source');
-        source.textContent = 'Yükleniyor…'; list.replaceChildren(); error.textContent = '';
+        source.textContent = defaults ? 'Yeni sohbetlerde kullanılacak fonksiyonları seçin.' : 'Bu sohbette kullanılacak fonksiyonları seçin.';
+        list.replaceChildren(); list.textContent = 'Yükleniyor…'; error.textContent = '';
+        list.setAttribute('aria-busy', 'true');
         save.disabled = true; reset.hidden = false; reset.disabled = true;
         this.dialog.showModal();
         const current = () => revision === this.revision && userId === AppConfig.getUserId();
@@ -68,6 +70,7 @@ const ToolsUI = {
                 defaults ? this.request('/api/v1/tools/default-selection') : null
             ]);
             if (!current()) return;
+            list.replaceChildren();
             const normalize = value => ({
                 categories: Object.fromEntries(catalog.map(cat => [cat.id, value?.categories?.[cat.id] === true])),
                 functions: Object.fromEntries(catalog.flatMap(cat => cat.functions.map(fn => [fn.id, value?.functions?.[fn.id] === true])))
@@ -92,8 +95,10 @@ const ToolsUI = {
                 for (const entry of switches) entry.input.checked = selected[entry.kind][entry.id];
                 for (const cat of catalog) updateCategoryBadge(cat);
             };
+            let pendingReset = false;
             const setSaving = saving => {
                 this.saving = saving;
+                reset.setAttribute('aria-busy', String(saving));
                 for (const entry of switches) entry.input.disabled = saving ||
                     (entry.kind === 'functions' && !selected.categories[entry.categoryId]);
             };
@@ -109,6 +114,7 @@ const ToolsUI = {
                         this.draft = useDefaults ? null : structuredClone(selected);
                     }
                     savedSelection = structuredClone(selected);
+                    if (current() && typeof UI !== 'undefined') UI.showToast('Kaydedildi');
                 } catch (exc) {
                     if (current()) {
                         selected = structuredClone(savedSelection);
@@ -116,7 +122,13 @@ const ToolsUI = {
                         error.textContent = `Kaydedilemedi: ${exc.message}`;
                     }
                 } finally {
-                    if (current()) setSaving(false);
+                    if (current()) {
+                        setSaving(false);
+                        if (pendingReset) {
+                            pendingReset = false;
+                            await reset.onclick();
+                        }
+                    }
                 }
             };
             for (const cat of catalog) {
@@ -185,17 +197,18 @@ const ToolsUI = {
                 row.append(button, toggle); card.append(row, reveal); list.appendChild(card);
                 categoryRows.set(cat.id, card); updateCategoryBadge(cat);
             }
+            list.setAttribute('aria-busy', 'false');
             save.disabled = false;
             reset.disabled = false;
             setSaving(false);
             save.onclick = () => { if (!this.saving) this.dialog.close(); };
             reset.onclick = async () => {
-                if (this.saving) return;
+                if (this.saving) { pendingReset = true; return; }
                 selected = structuredClone(resetSelection);
                 refresh();
                 await persist(true);
             };
-        } catch (exc) { if (current()) { source.textContent = ''; error.textContent = exc.message; } }
+        } catch (exc) { if (current()) { list.setAttribute('aria-busy', 'false'); list.replaceChildren(); error.textContent = exc.message; } }
     },
     toggle(label, checked, change) {
         const input = document.createElement('input'); input.type = 'checkbox'; input.checked = checked;

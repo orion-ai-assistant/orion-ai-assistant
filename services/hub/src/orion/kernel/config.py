@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 def serialize_setting(value) -> str:
+    if value is None:
+        return ""
     return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
 
 
@@ -130,8 +132,6 @@ async def seed_database_settings(redis: Redis) -> None:
         await insert_missing_setting_overrides(SETTINGS_DEFAULT_USER, missing)
 
     updates = {}
-    if existing.get("temperature") == "0.7":
-        updates["temperature"] = "0.9"
     if existing.get("router_model_group") == "local-model":
         updates["router_model_group"] = "local-chat"
     if updates:

@@ -29,7 +29,14 @@ class AISettings(BaseModel):
     embed_timeout_seconds: int = Field(default=60, ge=1, le=3600)
     
     thinking_level: str = ""
-    temperature: float = Field(default=0.9, ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def parse_temperature(cls, value):
+        if isinstance(value, str) and value.strip().lower() in ("", "default", "none", "null"):
+            return None
+        return value
     
     # Router Configuration
     router_api_key: str = ""
