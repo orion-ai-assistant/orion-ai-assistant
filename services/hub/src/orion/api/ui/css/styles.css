@@ -746,33 +746,25 @@ body {
 }
 
 /* Settings catalog and voice responses */
-.settings-catalog-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
-    padding: 16px 20px;
-    margin-bottom: 20px;
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 16px;
-}
-.settings-catalog-toolbar strong { display: block; font-size: .9rem; }
-#catalog-status { display: block; margin-top: 5px; color: #94a3b8; font-size: .78rem; }
+.settings-view .view-header { gap: 16px; }
 .catalog-refresh {
+    flex-shrink: 0;
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    padding: 9px 14px;
-    background: rgba(16, 185, 129, .1);
+    padding: 8px 16px;
+    background: rgba(16, 185, 129, .09);
     border: 1px solid rgba(16, 185, 129, .25);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     color: #6ee7b7;
     font: inherit;
-    font-size: .82rem;
+    font-size: .84rem;
+    font-weight: 500;
     cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, transform .1s ease;
 }
-.catalog-refresh:hover { background: rgba(16, 185, 129, .18); }
+.catalog-refresh:hover:not(:disabled) { background: rgba(16, 185, 129, .18); border-color: rgba(16, 185, 129, .4); }
+.catalog-refresh:active:not(:disabled) { transform: scale(.98); }
 .catalog-refresh:disabled { opacity: .5; cursor: wait; }
 .catalog-refresh:focus-visible { outline: 2px solid #6ee7b7; outline-offset: 3px; }
 .setting-control:has(.tts-availability) { flex-wrap: wrap; }
@@ -1235,7 +1227,7 @@ details[open] > .think-summary::before {
     font-family: var(--font-sans);
     font-size: 0.88rem;
     outline: none;
-    transition: all 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .setting-textarea {
@@ -1248,7 +1240,7 @@ details[open] > .think-summary::before {
     font-family: var(--font-sans);
     font-size: 0.88rem;
     outline: none;
-    transition: all 0.2s ease;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
     min-height: 96px;
     max-height: 280px;
     resize: vertical;
@@ -1567,13 +1559,6 @@ details[open] > .think-summary::before {
     background-color: #182124;
     color: #f1f5f9;
 }
-.settings-catalog-toolbar {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
 
 /* Advanced settings expand beneath the always-visible general settings. */
 .settings-section-title { margin: 0; font-size: 1.1rem; color: var(--text-primary, #fff); }
@@ -1598,8 +1583,7 @@ details[open] > .think-summary::before {
 }
 .setting-control > .setting-input, .setting-control > .setting-select, .setting-control > .setting-textarea { flex-basis: 100%; width: 100%; box-sizing: border-box; }
 .settings-advanced-toggle { box-sizing: border-box; gap: 16px; }
-.setting-save-status { font-size: 0.74rem; color: var(--text-muted); overflow-wrap: anywhere; }
-.setting-save-status:empty { display: none; }
-.setting-save-status.error { color: var(--danger-color, #fb7185); }
+.setting-save-status { font-size: 0.74rem; overflow-wrap: anywhere; display: none; }
+.setting-save-status.error { display: block; color: var(--danger, #fb7185); }
 .setting-retry { background: none; border: 0; color: var(--text-primary, #fff); cursor: pointer; font: inherit; font-size: 0.74rem; }
 .setting-retry[hidden] { display: none; }

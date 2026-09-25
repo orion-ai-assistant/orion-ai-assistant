@@ -500,7 +500,7 @@ const UI = {
             if (val === (input.dataset.original || '').trim()) return;
             input.dataset.saving = 'true';
             input.classList.add('dirty');
-            this.settingSaveStatus(key, 'Kaydediliyor…');
+            this.settingSaveStatus(key, '');
             try {
                 const data = await API.saveSettings(key, val);
                 if (data.error) throw new Error(typeof data.error === 'string' ? data.error : 'Değer kabul edilmedi.');
@@ -569,21 +569,21 @@ const UI = {
         const categoryMeta = {
             "Sohbet": {
                 section: "general", icon: "💬", keys: ["router_model_group", "chat_title_model", "ai_chat_titles_enabled", "router_api_key"],
-                desc: "Sohbet modeli ve otomatik başlık tercihleriniz"
+                desc: "Sohbet ve başlık ayarları"
             },
             "Ses": {
                 section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "stt_enabled", "stt_model"],
-                desc: "Seslendirme ve mikrofonla yazma tercihleriniz"
+                desc: "Seslendirme ve sesli yazma ayarları"
             },
             "Model davranışı": {
                 section: "advanced", icon: "🧠",
                 keys: ["temperature", "thinking_level", "system_prompt", "chat_history_max_messages"],
-                desc: "Modelin yanıt davranışı, talimatları ve sohbet bağlamı"
+                desc: "Model yanıt davranışı ve talimatlar"
             },
             "Zaman aşımı": {
                 section: "advanced", icon: "⚡",
                 keys: ["llm_timeout_seconds", "embed_timeout_seconds", "tts_timeout_seconds"],
-                desc: "Servislerin yanıt bekleme süreleri"
+                desc: "Servis yanıt bekleme süreleri"
             },
             "Sistem": {
                 section: "advanced", icon: "⚙️",
@@ -593,28 +593,19 @@ const UI = {
         };
 
         const keyHints = {
-            "ai_chat_titles_enabled": "Her yeni sorudan sonra önceki başlık ve son soruya göre başlığı güncelle.",
-            "tts_enabled": "TTS ses sentezleyici aktif olsun mu?",
-            "stt_enabled": "Mikrofonla canlı sesli yazmayı aç veya kapat.",
-            "stt_model": "Canlı akış için şimdilik yalnızca yerel STT desteklenir.",
-            "chat_title_model": "Başlık üretimi için ayrı model seçin. Boşsa sohbet modeli kullanılır.",
-            "router_api_key": "Orion Router API Key",
-            "system_prompt": "Asistanın ana rolü ve sistem talimatı",
-            "temperature": "0–2 arasında değer girin. Boş bırakılırsa gönderilmez.",
-            "thinking_level": "Modelin desteklediği düşünme seviyesini girin. Boş bırakılırsa isteğe eklenmez.",
-            "first_token_delay_ms": "İlk yanıt veya düşünce parçasını yayınlamadan önce bekleme. 1000 ms = 1 saniye.",
-            "token_delay_ms": "Yalnızca continuous demo akışında uygulanır; normal sohbeti etkilemez. 1000 ms = 1 saniye.",
-            "llm_timeout_seconds": "Model yanıtı için zaman aşımı (saniye).",
-            "embed_timeout_seconds": "Embedding servisi zaman aşımı (saniye).",
-            "tts_timeout_seconds": "Seslendirme servisi zaman aşımı (saniye).",
-            "tts_voice": "Yanıtları seslendirecek sesi seçin.",
-            "router_model_group": "Sohbetlerde kullanılacak model.",
-            "result_ttl_seconds": "Tamamlanan sonuçların saklanma süresi (saniye).",
-            "sse_heartbeat_seconds": "Akış bağlantısı canlılık sinyali aralığı (saniye).",
-            "worker_max_concurrency": "Bir worker'ın aynı anda işleyebileceği iş sayısı.",
-            "stop_key_ttl_seconds": "Durdurma sinyalinin saklanma süresi (saniye).",
-            "redis_cache_ttl_seconds": "Önbellek kayıtlarının geçerlilik süresi (saniye).",
-            "chat_history_max_messages": "Hafızada tutulacak maksimum mesaj sayısı"
+            "temperature": "0–2 arasında değer (boşsa varsayılan).",
+            "thinking_level": "Model düşünme seviyesi (boşsa varsayılan).",
+            "first_token_delay_ms": "İlk parça öncesi bekleme (ms).",
+            "token_delay_ms": "Yalnızca continuous demo akışında geçerlidir (ms).",
+            "llm_timeout_seconds": "Model zaman aşımı (saniye).",
+            "embed_timeout_seconds": "Embedding zaman aşımı (saniye).",
+            "tts_timeout_seconds": "Seslendirme zaman aşımı (saniye).",
+            "result_ttl_seconds": "Sonuç saklama süresi (saniye).",
+            "sse_heartbeat_seconds": "Canlılık sinyali aralığı (saniye).",
+            "worker_max_concurrency": "Eşzamanlı worker iş limiti.",
+            "stop_key_ttl_seconds": "Durdurma sinyali saklama süresi (saniye).",
+            "redis_cache_ttl_seconds": "Önbellek saklama süresi (saniye).",
+            "chat_history_max_messages": "Hafızada tutulacak mesaj sayısı."
         };
 
         const keyPlaceholders = {
@@ -733,7 +724,7 @@ const UI = {
             </div>`;
         }
 
-        dashboard.innerHTML = `<div class="settings-catalog-toolbar"><div><strong>Model ve sesler</strong><span id="catalog-status" role="status">Bu sayfa açıkken otomatik güncellenir</span></div><button type="button" class="catalog-refresh" id="refresh-models" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> Yenile</button></div>` + `
+        dashboard.innerHTML = `
         <section id="settings-panel-general" data-settings-panel="general" aria-labelledby="settings-general-title">
             <h2 id="settings-general-title" class="settings-section-title">Genel</h2>
             ${sections.general}
@@ -748,14 +739,13 @@ const UI = {
     async loadModelChoices(settings, silent = false) {
         window.ToolsUI?.renderSettings();
         const button = document.getElementById('refresh-models');
-        const status = document.getElementById('catalog-status');
         if (!silent && button?.disabled) return;
         if (button && !silent) button.disabled = true;
-        if (status && !silent) status.textContent = 'Güncelleniyor…';
+        if (button && !silent) button.title = 'Güncelleniyor…';
         const result = await API.getChatModels();
         if (button && !silent) button.disabled = false;
         if (result.error) {
-            if (status) status.textContent = result.error;
+            if (button && !silent) button.title = result.error;
             return;
         }
         this.routerCatalog = result;
@@ -784,9 +774,9 @@ const UI = {
             UI.loadVoiceChoices(true);
         };
         this.loadVoiceChoices(false);
-        if (status && !silent) status.textContent = result.unavailable?.length
-            ? 'Erişilebilen listeler güncellendi · Diğerleri tekrar kontrol edilecek'
-            : 'Güncel · Bu sayfa açıkken otomatik kontrol edilir';
+        if (button && !silent) button.title = result.unavailable?.length
+            ? 'Bazı listelere erişilemiyor.'
+            : 'Model ve ses listesini yenile';
     },
 
     loadVoiceChoices(modelChanged) {
@@ -814,8 +804,8 @@ const UI = {
             select.parentElement.appendChild(notice);
         }
         notice.textContent = String(this.currentSettings.tts_enabled).toLowerCase() === 'false'
-            ? 'Seslendirme kapalı. Kayıtlı ses tercihiniz korunuyor.'
-            : model === 'local-tts' && (inaccessible || !voices.length)
+            ? 'Seslendirme kapalı.'
+            : !voices.length
                 ? 'Orion TTS’ye erişilemiyor.'
                 : '';
         if (modelChanged) this.handleSettingChange('tts_voice');
