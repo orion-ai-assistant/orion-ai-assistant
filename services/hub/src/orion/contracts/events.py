@@ -96,8 +96,10 @@ class StreamEvent(BaseModel):
         text: str,
         turn_id: str | None = None,
         generation_id: str | None = None,
+        attachments: list[dict] | None = None,
+        display_text: str | None = None,
     ) -> "StreamEvent":
-        return cls(type="user_message", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"text": text})
+        return cls(type="user_message", chat_id=chat_id, **cls._turn_kwargs(turn_id, generation_id), data={"text": text, "attachments": attachments or [], "display_text": display_text if display_text is not None else text})
 
     @classmethod
     def chat_rename(cls, chat_id: str, name: str) -> "StreamEvent":

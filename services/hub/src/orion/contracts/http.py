@@ -5,7 +5,7 @@ from orion.contracts.tools import ToolSelection
 
 
 class JobInput(BaseModel):
-    text: str = Field(min_length=1, max_length=10000)
+    text: str = Field(min_length=1)
     images: list[str] | None = Field(default=None, description="List of base64 encoded images or image URLs")
     audio: bool | None = Field(default=None, description="Whether to generate audio/TTS for response")
     voice: str | None = Field(default=None, description="Voice ID or name for TTS")

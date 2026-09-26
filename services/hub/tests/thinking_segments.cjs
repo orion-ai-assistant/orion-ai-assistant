@@ -42,6 +42,14 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.
 const ui = context.ui;
 
 ui.createBotMessagePlaceholder('chat');
+const waiting = ui._chatDivs.chat.botDiv;
+assert.match(waiting.innerHTML, /typing-indicator/);
+ui.appendToken('chat', '');
+ui.appendThinkingToken('chat', '');
+ui.createBotMessagePlaceholder('chat');
+assert.equal(ui._chatDivs.chat.botDiv, waiting);
+assert.match(waiting.innerHTML, /typing-indicator/);
+assert.equal(waiting.classList.contains('typing'), true);
 ui.appendThinkingToken('chat', 'first thought');
 ui.appendToken('chat', 'first answer');
 ui.appendThinkingToken('chat', 'second thought');

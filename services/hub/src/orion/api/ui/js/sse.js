@@ -236,7 +236,7 @@ const SSE = {
             }
             const alreadyRendered = AppState.claimOptimisticUserMessage(chatId, data.data.text);
             if (!alreadyRendered) {
-                UI.appendUserMessage(data.data.text);
+                UI.appendUserMessage(data.data.display_text ?? data.data.text, data.data.attachments || []);
             }
             // CRITICAL FIX: Don't create duplicate placeholder if already generating
             const currentState = UI._chatDivs[chatId];

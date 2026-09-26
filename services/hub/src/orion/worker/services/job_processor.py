@@ -389,15 +389,17 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 user_content: list[dict[str, Any]] = []
                 for img in context.images:
                     img_url = img if img.startswith("data:") or img.startswith("http") else f"data:image/jpeg;base64,{img}"
-                    user_content.append({"type": "text", "text": "<audio>"})
                     user_content.append({"type": "image_url", "image_url": {"url": img_url}})
-                    user_content.append({"type": "text", "text": "</audio>\n"})
                 user_content.append({"type": "text", "text": context.prompt})
                 messages.append({"role": "user", "content": user_content})
             else:
                 messages.append({"role": "user", "content": context.prompt})
 
-            user_message = messages[-1]
+            user_message = {**messages[-1], "turn_id": context.turn_id}
+            if context.request.input.metadata.get("attachments"):
+                user_message.update({key: context.request.input.metadata[key]
+                                     for key in ("attachments", "display_text")
+                                     if key in context.request.input.metadata})
             conversation = ToolConversation(context, json.loads(context.record.enabled_tools))
 
             # Stream tokens from LLM.

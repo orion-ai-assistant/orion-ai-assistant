@@ -2,7 +2,7 @@
  * Main Initialization and Event Listeners
  */
 document.addEventListener("DOMContentLoaded", async () => {
-    
+
     // Auth Initialization
     const loadChats = async () => {
         if (!Auth.getToken() || !AppState.sseConnected) return;
@@ -21,12 +21,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         const selectionVersion = AppState.chatSelectionVersion;
         AppState._loadingHistory = true;
         AppState._sseBuffer = [];
-        
+
         const currentSeq = ++loadChatSeq;
-        
+
         // Load history from server
         const history = await API.getChatHistory(chatId);
-        
+
         // If another loadChat was called while we were fetching, discard this one
         if (currentSeq !== loadChatSeq || selectionVersion !== AppState.chatSelectionVersion) return;
 
@@ -34,20 +34,21 @@ document.addEventListener("DOMContentLoaded", async () => {
         const hasCachedLiveMessage = Boolean(cachedLiveState?.botDiv);
 
         UI.clearChatArea();
-        
+
         let hasPartial = false;
         if (Array.isArray(history)) {
             if (history.length === 0) {
                 UI.chatArea.innerHTML = '<div class="message bot">Geçmiş bulunamadı.</div>';
             }
-            history.forEach(msg => {
+            history.forEach((msg, idx) => {
                 if (msg.role === 'user') {
-                    if (Array.isArray(msg.content)) {
-                        const textObj = msg.content.find(c => c.type === 'text' && c.text !== '<audio>' && c.text !== '</audio>\\n');
-                        UI.appendUserMessage(textObj ? textObj.text : "İçerik");
-                    } else {
-                        UI.appendUserMessage(msg.content);
-                    }
+                    if (msg.attachments) {
+                        UI.appendUserMessage(msg.display_text ?? '', msg.attachments);
+                    } else if (Array.isArray(msg.content)) {
+                        const text = msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+                        const images = msg.content.filter(c => c.type === 'image_url').map(c => c.image_url.url);
+                        UI.appendUserMessage(text, images);
+                    } else UI.appendUserMessage(msg.content, []);
                 } else if (msg.role === 'assistant') {
                     if (msg.tool_calls) return;
                     if (msg.partial) {
@@ -57,7 +58,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         if (!activeTurn || (msg.turn_id && activeTurn.turnId !== msg.turn_id)) {
                             AppState.startGenerating(chatId, msg.turn_id || null);
                         }
-                        
+
                         // When navigating back, the detached live element already
                         // contains every SSE token received in the background.
                         // Keep it; use the Redis snapshot only after reload/reconnect.
@@ -91,13 +92,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         } else {
             UI.chatArea.innerHTML = `<div class="message bot">Hata: ${history ? history.error : 'Geçmiş alınamadı.'}</div>`;
         }
-        
+
 
         // CRITICAL FIX: Only show stop button if chat is ACTIVELY generating in AppState
         // Do NOT rely solely on hasPartial flag from history, as it may be stale
         // when error event just arrived but history hasn't refreshed yet
         const isActivelyGenerating = AppState.isAnyChatGenerating(chatId);
-        
+
         if (isActivelyGenerating) {
             // Chat is generating live via SSE — re-attach the bot div if not already there
             const chatState = UI._chatDivs[chatId];
@@ -240,11 +241,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         // State temizliği
         AppState.selectChat(null);
         AppState.activeTurns.clear();
-        
+
         // UI Temizliği
         UI.setConnectionStatus(false, "disconnected");
         UI.chatArea.innerHTML = '<div class="message bot">Oturum kapatıldı. Lütfen tekrar giriş yapın.</div>';
-        
+
         Auth.clearToken();
         document.getElementById("auth-modal").classList.add("show");
     });
@@ -262,16 +263,36 @@ document.addEventListener("DOMContentLoaded", async () => {
         API.stopGeneration();
     });
 
-    document.getElementById('message-input').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
+    const messageInputEl = document.getElementById('message-input');
+    messageInputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
             const text = UI.messageInput.value.trim();
-            API.sendMessage(text);
-            if (window.STT) {
-                if (window.STT.isStreaming) window.STT.stop();
-                window.STT.reset();
+            if (text || (UI.selectedImages && UI.selectedImages.length > 0)) {
+                API.sendMessage(text);
+                if (window.STT) {
+                    if (window.STT.isStreaming) window.STT.stop();
+                    window.STT.reset();
+                }
             }
         }
     });
+
+    messageInputEl.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = (this.scrollHeight) + 'px';
+        if (this.value === '') {
+            this.style.height = '38px';
+        }
+    });
+
+    const originalClearInput2 = UI.clearInput.bind(UI);
+    UI.clearInput = function() {
+        originalClearInput2();
+        if (messageInputEl) {
+            messageInputEl.style.height = '38px';
+        }
+    };
 
     const audioToggle = document.getElementById('audio-toggle');
     if (audioToggle) {
@@ -399,4 +420,167 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (window.STT) window.STT.toggle();
         });
     }
+
+    // --- Image Upload Logic ---
+    UI.selectedImages = [];
+
+    const imageUploadBtn = document.getElementById('composer-image');
+    const imageUploadInput = document.getElementById('image-upload');
+    const imagePreviewContainer = document.getElementById('image-preview-container');
+
+    const renderImagePreviews = () => {
+        if (!imagePreviewContainer) return;
+        imagePreviewContainer.innerHTML = '';
+        if (UI.selectedImages.length === 0) {
+            imagePreviewContainer.style.display = 'none';
+            return;
+        }
+        imagePreviewContainer.style.display = 'flex';
+
+        UI.selectedImages.forEach((fileObj, index) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'image-preview-item';
+            const previewEl = UI.createAttachmentCard(fileObj);
+
+            const removeBtn = document.createElement('button');
+            removeBtn.innerHTML = '&times;';
+            removeBtn.style = 'position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15); color: white; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 13px; line-height: 18px; text-align: center; padding: 0; display:flex; align-items:center; justify-content:center; transition: all 0.2s;';
+            removeBtn.onmouseover = () => { removeBtn.style.background = '#ef4444'; removeBtn.style.borderColor = '#ef4444'; };
+            removeBtn.onmouseout = () => { removeBtn.style.background = 'rgba(0,0,0,0.7)'; removeBtn.style.borderColor = 'rgba(255,255,255,0.15)'; };
+            removeBtn.onclick = () => {
+                UI.selectedImages.splice(index, 1);
+                renderImagePreviews();
+            };
+
+            wrapper.appendChild(previewEl);
+            wrapper.appendChild(removeBtn);
+
+            // Name tooltip
+            wrapper.title = fileObj.name;
+
+            imagePreviewContainer.appendChild(wrapper);
+        });
+    };
+
+    const processFiles = (files) => {
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+
+            // Basic deduplication check by name + size
+            const isDuplicate = UI.selectedImages.some(item => item.name === file.name && item.size === file.size);
+            if (isDuplicate) {
+                if (UI.showToast) UI.showToast("Bu dosya (" + file.name + ") zaten eklendi.");
+                continue;
+            }
+
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        // Canvas tabanlı JPEG dönüştürme (WebP gibi yerel modellerin desteklemediği formatlar için)
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        // Dönüştür ve listeye ekle
+                        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+                        UI.selectedImages.push({
+                            data: dataUrl,
+                            name: file.name,
+                            size: file.size
+                        });
+                        renderImagePreviews();
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            } else if (file.type.startsWith('video/') || file.type.startsWith('audio/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    UI.selectedImages.push({
+                        data: e.target.result,
+                        name: file.name,
+                        size: file.size
+                    });
+                    renderImagePreviews();
+                };
+                reader.readAsDataURL(file);
+            } else if (file.type.startsWith('text/') || /\.(txt|md|py|js|json|csv|log|yaml|yml|html|css|sql|sh|bat)$/i.test(file.name)) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    UI.selectedImages.push({
+                        data: e.target.result,
+                        name: file.name,
+                        size: file.size,
+                        isText: true
+                    });
+                    renderImagePreviews();
+                };
+                reader.readAsText(file);
+            }
+        }
+    };
+
+    if (imageUploadBtn && imageUploadInput) {
+        imageUploadBtn.addEventListener('click', () => {
+            imageUploadInput.click();
+            // Hide the composer menu if open
+            const composerMenu = document.getElementById('composer-menu');
+            if (composerMenu) composerMenu.hidden = true;
+            const composerPlus = document.getElementById('composer-plus');
+            if (composerPlus) composerPlus.setAttribute('aria-expanded', 'false');
+        });
+
+        imageUploadInput.addEventListener('change', (e) => {
+            if (e.target.files) {
+                processFiles(e.target.files);
+            }
+            e.target.value = ''; // Reset
+        });
+    }
+
+    const messageInput = document.getElementById('message-input');
+    if (messageInput) {
+        messageInput.addEventListener('paste', (e) => {
+            if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+                processFiles(e.clipboardData.files);
+                e.preventDefault(); // Don't paste image as text
+            }
+        });
+    }
+
+    const inputWrapper = document.querySelector('.input-dock');
+    if (inputWrapper) {
+        inputWrapper.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            inputWrapper.style.boxShadow = '0 0 0 2px #007bff';
+        });
+        inputWrapper.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            inputWrapper.style.boxShadow = '';
+        });
+        inputWrapper.addEventListener('drop', (e) => {
+            e.preventDefault();
+            inputWrapper.style.boxShadow = '';
+            if (e.dataTransfer && e.dataTransfer.files) {
+                processFiles(e.dataTransfer.files);
+            }
+        });
+    }
+
+    const originalClearInput = UI.clearInput.bind(UI);
+    UI.clearInput = function() {
+        originalClearInput();
+        if (this.selectedImages && this.selectedImages.length > 0) {
+            this.selectedImages = [];
+            renderImagePreviews();
+        }
+    };
+
+    // Ensure initial state is clean
+    renderImagePreviews();
+    // --- End Image Upload Logic ---
+
 });

@@ -108,6 +108,16 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         "chat_id": chat_id, "status": "queued", "user_id": payload.user_id,
         "stream_mode": payload.stream_mode, "created_at": now, "updated_at": now, "channel": channel,
         "active_turn_id": turn_id,
+        "current_prompt": payload.input.text,
+        "current_user_message": json.dumps({
+            "role": "user", "content": payload.input.text,
+            "display_text": payload.input.metadata.get("display_text", payload.input.text),
+            "attachments": payload.input.metadata.get("attachments") or [
+                {"data": image, "name": "Dosya"} for image in payload.input.images or []
+            ],
+            "turn_id": turn_id,
+        }),
+        "partial_text": "", "partial_thinking": "", "partial_tools": "[]", "partial_display": "[]",
     }
 
     queue_record = JobQueueRecord(
@@ -127,7 +137,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe.set(active_turn_key, turn_id, ex=active_turn_ttl)
     pipe.hset(state_key, mapping=status_mapping)
     pipe.expire(state_key, settings.result_ttl_seconds)
-    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id).model_dump_json())
+    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id, attachments=payload.input.metadata.get("attachments") or [{"data": image, "name": "Dosya"} for image in payload.input.images or []], display_text=payload.input.metadata.get("display_text", payload.input.text)).model_dump_json())
     pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued", turn_id=turn_id).model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
 
@@ -279,8 +289,10 @@ def _append_processing_state(history: list[dict], state: dict[str, str]) -> None
                 and previous.get("role") == "user"
                 and previous.get("content") == current_prompt
             )
+        if active_turn_id and state.get("current_user_message"):
+            prompt_already_persisted = any(msg.get("turn_id") == active_turn_id and msg.get("role") == "user" for msg in history)
         if not prompt_already_persisted:
-            history.append({"role": "user", "content": current_prompt})
+            history.append(json.loads(state["current_user_message"]) if state.get("current_user_message") else {"role": "user", "content": current_prompt})
 
     # Keep an explicit in-progress item even before the first token. The UI
     # uses it to preserve/rehydrate the active turn across chat navigation.
@@ -315,7 +327,7 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str) -> list[dic
 
     # Append in-progress tokens for the currently streaming message (if any)
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
-    if state and state.get("status") == "processing":
+    if state and state.get("status") in {"queued", "processing"}:
         _append_processing_state(history, state)
 
     return history
@@ -375,7 +387,7 @@ async def get_chat_history_admin(redis: Redis, chat_id: str) -> list[dict]:
     history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
 
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
-    if state and state.get("status") == "processing":
+    if state and state.get("status") in {"queued", "processing"}:
         _append_processing_state(history, state)
 
     return history

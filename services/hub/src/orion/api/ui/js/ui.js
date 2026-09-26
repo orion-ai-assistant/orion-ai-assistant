@@ -46,14 +46,94 @@ const UI = {
         return meta;
     },
 
-    appendUserMessage(text) {
+    createAttachmentCard(item) {
+        const file = typeof item === 'string' ? { data: item, name: 'Dosya' } : item;
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'media-square-item';
+        card.title = file.name || 'Dosya';
+        card.setAttribute('aria-label', `${card.title} — önizle`);
+        const video = !file.isText && file.data.startsWith('data:video/');
+        const audio = !file.isText && file.data.startsWith('data:audio/');
+        if (!file.isText && !audio) {
+            const preview = document.createElement(video ? 'video' : 'img');
+            preview.src = file.data;
+            if (video) {
+                preview.muted = true;
+                preview.playsInline = true;
+                preview.preload = 'metadata';
+                preview.onloadedmetadata = () => { preview.currentTime = Math.min(0.01, preview.duration || 0); };
+            } else preview.alt = file.name || 'Resim';
+            card.appendChild(preview);
+        } else {
+            const icon = document.createElement('span');
+            icon.className = 'attachment-icon';
+            icon.textContent = audio ? '♫' : '📄';
+            card.appendChild(icon);
+        }
+        if (video || audio) {
+            const play = document.createElement('span');
+            play.className = 'attachment-play';
+            play.textContent = '▶';
+            card.appendChild(play);
+        }
+        if (file.isText || audio) {
+            const label = document.createElement('span');
+            label.className = 'attachment-name';
+            label.textContent = file.name || 'Dosya';
+            card.appendChild(label);
+        }
+        if (video) card.className += ' attachment-video';
+        card.onclick = () => this.openAttachment(file);
+        return card;
+    },
+
+    openAttachment(file) {
+        const modal = document.createElement('dialog');
+        modal.className = 'attachment-dialog';
+        const title = document.createElement('div');
+        title.className = 'attachment-title';
+        title.textContent = file.name || 'Dosya';
+        const kind = file.isText ? 'pre' : file.data.startsWith('data:video/') ? 'video' : file.data.startsWith('data:audio/') ? 'audio' : 'img';
+        const content = document.createElement(kind);
+        if (file.isText) content.textContent = file.data;
+        else content.src = file.data;
+        if (kind === 'video' || kind === 'audio') { content.controls = true; content.autoplay = true; }
+        if (kind === 'img') content.alt = file.name || 'Resim';
+        if (file.isText) modal.className += ' attachment-text-dialog';
+        modal.append(content, title);
+        modal.setAttribute('aria-label', file.name || 'Dosya önizlemesi');
+        modal.onclick = e => { if (e.target === modal) modal.close(); };
+        modal.onclose = () => { if (content.pause) content.pause(); modal.remove(); };
+        document.body.appendChild(modal);
+        modal.showModal();
+    },
+
+    appendUserMessage(text, images = []) {
+        // Restore attachments from messages saved by the old client.
+        const files = [...images];
+        text = (text || '').replace(/\n*\[Ek Dosya: ([^\n]+)\]\r?\n```\r?\n([\s\S]*?)\r?\n```/g, (_, name, data) => {
+            if (!files.some(f => f.isText && f.name === name && f.data === data)) files.push({ name, data, isText: true });
+            return '';
+        }).trim();
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
-
-        const div = document.createElement('div');
-        div.className = 'message user';
-        div.textContent = text;
-        this.chatArea.appendChild(div);
+        const group = document.createElement('div');
+        group.className = 'user-message-group';
+        if (files.length) {
+            const row = document.createElement('div');
+            row.className = 'user-media-container';
+            files.forEach(file => row.appendChild(this.createAttachmentCard(file)));
+            group.appendChild(row);
+        }
+        if (text) {
+            const div = document.createElement('div');
+            div.className = 'message user';
+            div.style.marginBottom = '0';
+            div.textContent = text;
+            group.appendChild(div);
+        }
+        this.chatArea.appendChild(group);
         this.scrollToBottom();
     },
 
@@ -112,7 +192,7 @@ const UI = {
         this.scrollToBottom();
     },
 
-    createBotMessagePlaceholder(chatId, isWaiting = false) {
+    createBotMessagePlaceholder(chatId, isWaiting = true) {
         if (!chatId) return;
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
@@ -120,8 +200,6 @@ const UI = {
 
         // If there's an existing typing placeholder for this chat, reuse it
         if (state.botDiv && state.botDiv.classList.contains('typing')) {
-            state.botDiv.innerHTML = '';
-            state.botDiv.classList.remove('typing');
             return;
         }
 
@@ -173,7 +251,7 @@ const UI = {
     },
 
     appendThinkingToken(chatId, token) {
-        if (!chatId) return;
+        if (!chatId || !token) return;
         const state = this._getOrCreateChatState(chatId);
         state.currentContentNode = null;
 
@@ -209,7 +287,7 @@ const UI = {
     },
 
     appendToken(chatId, token) {
-        if (!chatId) return;
+        if (!chatId || !token) return;
         this.finishThinking(chatId);
         const state = this._getOrCreateChatState(chatId);
 
