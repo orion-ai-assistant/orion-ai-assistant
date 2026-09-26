@@ -53,6 +53,8 @@ const UI = {
         card.className = 'media-square-item';
         card.title = file.name || 'Dosya';
         card.setAttribute('aria-label', `${card.title} — önizle`);
+        card.setAttribute('draggable', 'false');
+        card.ondragstart = (e) => e.preventDefault();
         if (file.loading) {
             card.textContent = `${file.name} — hazırlanıyor…`;
             card.disabled = true;
@@ -63,6 +65,8 @@ const UI = {
         if (!file.isText && !audio) {
             const preview = document.createElement(video ? 'video' : 'img');
             preview.src = file.data;
+            preview.setAttribute('draggable', 'false');
+            preview.ondragstart = (e) => e.preventDefault();
             if (video) {
                 preview.muted = true;
                 preview.playsInline = true;
@@ -101,6 +105,8 @@ const UI = {
         title.textContent = file.name || 'Dosya';
         const kind = file.isText ? 'pre' : file.data.startsWith('data:video/') ? 'video' : file.data.startsWith('data:audio/') ? 'audio' : 'img';
         const content = document.createElement(kind);
+        content.setAttribute('draggable', 'false');
+        content.ondragstart = (e) => e.preventDefault();
         if (file.isText) content.textContent = file.data;
         else content.src = file.data;
         if (kind === 'video' || kind === 'audio') { content.controls = true; content.autoplay = true; }

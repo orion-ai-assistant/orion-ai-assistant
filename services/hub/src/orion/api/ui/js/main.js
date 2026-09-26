@@ -440,9 +440,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         UI.selectedImages.forEach((fileObj, index) => {
             const wrapper = document.createElement('div');
             wrapper.className = 'image-preview-item';
+            wrapper.setAttribute('draggable', 'false');
+            wrapper.ondragstart = (e) => e.preventDefault();
             const previewEl = UI.createAttachmentCard(fileObj);
 
             const removeBtn = document.createElement('button');
+            removeBtn.setAttribute('draggable', 'false');
             removeBtn.innerHTML = '&times;';
             removeBtn.style = 'position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15); color: white; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 13px; line-height: 18px; text-align: center; padding: 0; display:flex; align-items:center; justify-content:center; transition: all 0.2s;';
             removeBtn.onmouseover = () => { removeBtn.style.background = '#ef4444'; removeBtn.style.borderColor = '#ef4444'; };
@@ -492,6 +495,13 @@ document.addEventListener("DOMContentLoaded", async () => {
             const finish = (data, mime) => {
                 // Removed files and cleared drafts must not reappear on completion.
                 if (!UI.selectedImages.includes(item)) return;
+                if (UI.selectedImages.some(other => other !== item && other.data && other.data === data)) {
+                    const index = UI.selectedImages.indexOf(item);
+                    if (index >= 0) UI.selectedImages.splice(index, 1);
+                    renderImagePreviews();
+                    UI.showToast?.('Bu dosya (' + (file.name || 'Görsel') + ') zaten ekli.');
+                    return;
+                }
                 item.data = data;
                 item.mime_type = mime;
                 item.loading = false;
@@ -551,9 +561,34 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
     }
 
+    let isInternalDrag = false;
+    document.addEventListener('dragstart', () => {
+        isInternalDrag = true;
+    });
+    document.addEventListener('dragend', () => {
+        isInternalDrag = false;
+    });
+
+    // Prevent default browser behavior (navigating to file when dropped outside drop zone)
+    window.addEventListener('dragover', (e) => {
+        if (!e.target.closest || !e.target.closest('.input-dock')) {
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+        }
+    });
+    window.addEventListener('drop', (e) => {
+        if (!e.target.closest || !e.target.closest('.input-dock')) {
+            e.preventDefault();
+        }
+    });
+
     const inputWrapper = document.querySelector('.input-dock');
     if (inputWrapper) {
         inputWrapper.addEventListener('dragover', (e) => {
+            if (isInternalDrag) {
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+                return;
+            }
             e.preventDefault();
             inputWrapper.style.boxShadow = '0 0 0 2px #007bff';
         });
@@ -564,6 +599,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         inputWrapper.addEventListener('drop', (e) => {
             e.preventDefault();
             inputWrapper.style.boxShadow = '';
+            if (isInternalDrag) {
+                return;
+            }
             if (e.dataTransfer && e.dataTransfer.files) {
                 processFiles(e.dataTransfer.files);
             }
