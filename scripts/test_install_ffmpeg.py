@@ -34,7 +34,7 @@ class InstallationTests(unittest.TestCase):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as package:
             for name, data in content.items():
-                package.writestr(name, data)
+                package.writestr(installer.FILES[name], data)
             package.writestr("../unexpected.txt", b"must not be extracted")
         self.archive = archive.getvalue()
         hashes = {name: hashlib.sha256(content[name]).hexdigest() for name in installer.BINARY_HASHES}
@@ -60,6 +60,9 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.download.call_count, 1)
         self.assertTrue(installer.installed(self.destination))
         self.assertFalse((self.destination.parent / "unexpected.txt").exists())
+        self.assertTrue((self.destination / "LICENSE").is_file())
+        self.assertTrue((self.destination / "UPSTREAM-README.txt").is_file())
+        self.assertFalse((self.destination / installer.ARCHIVE_ROOT).exists())
 
     def test_missing_or_corrupted_executable_repairs_install(self):
         installer.ensure_ffmpeg(self.destination)

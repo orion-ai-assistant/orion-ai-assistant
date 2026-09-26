@@ -14,13 +14,20 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DESTINATION = ROOT / "services/llm/llama-cpp/bin/ffmpeg"
-URL = "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/ffmpeg-v9.0.2/orion-ffmpeg-9.0.2-windows-x64.zip"
-SHA256 = "1a69e2301c0abaaf536275f5b8dbca1b14c1f75908b1e49c2694125df48a6a50"
+# Download directly from the binary provider, not an Orion redistribution.
+URL = "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip"
+SHA256 = "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"
 BINARY_HASHES = {
     "ffmpeg.exe": "3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec",
     "ffprobe.exe": "f0d36ecbbdd3bcfac3efa078c96c7271c2e68b3810595552ac3b7f17e9a65c52",
 }
-FILES = (*BINARY_HASHES, "LICENSE", "UPSTREAM-README.txt", "THIRD_PARTY_NOTICES.txt", "INSTALL.txt", "BUILD-INFO.txt")
+ARCHIVE_ROOT = "ffmpeg-9.0.2-essentials_build"
+FILES = {
+    "ffmpeg.exe": f"{ARCHIVE_ROOT}/bin/ffmpeg.exe",
+    "ffprobe.exe": f"{ARCHIVE_ROOT}/bin/ffprobe.exe",
+    "LICENSE": f"{ARCHIVE_ROOT}/LICENSE",
+    "UPSTREAM-README.txt": f"{ARCHIVE_ROOT}/README.txt",
+}
 
 
 def digest(path):
@@ -92,9 +99,9 @@ def ensure_ffmpeg(destination=DESTINATION):
             if actual != SHA256:
                 raise ValueError(f"FFmpeg SHA256 mismatch: expected {SHA256}, received {actual}. Installation stopped.")
             with zipfile.ZipFile(archive) as package:
-                # Only known flat files are extracted; arbitrary archive paths are never used.
-                for name in FILES:
-                    with package.open(name) as source, (staging / name).open("wb") as target:
+                # Flatten only explicitly mapped upstream files, preserving license and README.
+                for name, member in FILES.items():
+                    with package.open(member) as source, (staging / name).open("wb") as target:
                         shutil.copyfileobj(source, target)
             if not installed(staging):
                 raise ValueError("FFmpeg executable hashes do not match the pinned release")

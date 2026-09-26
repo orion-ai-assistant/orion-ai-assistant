@@ -69,8 +69,12 @@ https://ffmpeg.org/download.html and put both `ffmpeg.exe` and `ffprobe.exe` in
 automatically; restart the llama.cpp service after installation. Its own web UI
 then uses the same server-side video decoder as API requests.
 Native Windows x64 installation of either Hub or llama.cpp calls the shared
-`scripts/install_ffmpeg.py` installer. It downloads the `ffmpeg-v9.0.2` release
-ZIP and verifies the SHA256 pinned in that script; no checksum asset is needed.
+`scripts/install_ffmpeg.py` installer. It downloads the version-pinned `9.0.2` essentials ZIP directly from
+`GyanD/codexffmpeg` on GitHub and verifies the SHA256 pinned in that script;
+no Orion release or checksum asset is needed. The upstream archive hash differs
+from the old Orion repack, while both executable hashes are unchanged. Only
+FFmpeg, FFprobe, the license and upstream README are extracted from its nested
+directory into the shared folder.
 Both services share the directory above, and verified installations are reused.
 Concurrent installs are serialized. A failed checksum stops installation rather
 than changing the trusted hash. Existing llama.cpp installs also run this check.
@@ -81,3 +85,7 @@ separate Router repository. On native Linux/macOS install ffmpeg and ffprobe
 through your package manager. The Windows archive cannot be used in containers.
 The executables are ignored by Git. Cloning alone does not install them.
 For Docker, the tools must be available inside the llama.cpp container.
+
+Release migration: publish the updated installer before removing the old Orion
+`ffmpeg-v9.0.2` binary asset. Older checkouts must update before reinstalling.
+Existing verified executables continue to work without downloading again.
