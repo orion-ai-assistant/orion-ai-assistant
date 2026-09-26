@@ -83,10 +83,8 @@ def _chat_provider(model_group: str) -> str | None:
     lowered_model = (model_group or "").strip().lower()
     if lowered_model in ("", "none", "null", "default", "local", "local-chat", "local-model"):
         return "local"
-    if "gemini" in lowered_model:
-        return "gemini"
-    if "openai" in lowered_model or "gpt" in lowered_model:
-        return "openai"
+    # Model names are not provider identities: GPT and Gemini can be routed
+    # through OpenRouter, and named groups can contain multiple providers.
     return None
 
 
@@ -103,6 +101,7 @@ async def _chat_headers(settings: RuntimeSettings) -> dict[str, str]:
         try:
             provider = await get_model_provider(settings.router_model_group, "chat")
         except RuntimeError:
+            # Router can still resolve the model/group if its catalog is temporarily unavailable.
             provider = None
     if provider:
         headers["x-orion-provider"] = provider

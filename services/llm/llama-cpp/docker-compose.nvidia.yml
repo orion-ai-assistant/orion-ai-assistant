@@ -17,6 +17,7 @@ services:
               count: all
               capabilities: [gpu]
     environment:
+      - LLAMA_ARG_VIDEO_FPS=${VIDEO_FPS:-1}
       - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_IDS:-all}
     volumes:
       - ./models:/app/models

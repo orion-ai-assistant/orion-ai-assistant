@@ -10,6 +10,7 @@ services:
       - .env
     command: --model /app/models/${MODEL_FILE} --host ${DEFAULT_LISTEN_HOST} --port ${LLM_CONTAINER_PORT} --n-gpu-layers ${GPU_LAYERS} --ctx-size ${CONTEXT_SIZE} --batch-size ${BATCH_SIZE} --parallel ${N_PARALLEL} ${MMPROJ_ARGS} ${EXTRA_ARGS}
     environment:
+      - LLAMA_ARG_VIDEO_FPS=${VIDEO_FPS:-1}
       - NVIDIA_DRIVER_CAPABILITIES=all
       - NVIDIA_VISIBLE_DEVICES=all
     devices:

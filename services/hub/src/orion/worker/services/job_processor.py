@@ -60,6 +60,15 @@ def _format_router_fallback_message(error: Exception, settings: RuntimeSettings)
     err_str = str(error)
     err_lower = err_str.lower()
 
+    if "openrouter http error 401" in err_lower:
+        return (
+            "OpenRouter kimlik doğrulaması başarısız (401). "
+            "Hub isteği Orion Router’a ulaştı; OpenRouter, Router’ın kullandığı sağlayıcı anahtarını kabul etmedi.\n\n"
+            "Orion Router panelindeki OpenRouter anahtar havuzunu kontrol edin: "
+            "geçersiz veya şifresi çözülemeyen kaydı düzeltin ya da devre dışı bırakın. "
+            "Hub’daki Router API anahtarı, OpenRouter sağlayıcı anahtarından ayrıdır."
+        )
+
     is_conn_error = (
         isinstance(error, (aiohttp.ClientConnectorError, ConnectionRefusedError, OSError))
         or "cannot connect" in err_lower

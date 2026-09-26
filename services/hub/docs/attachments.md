@@ -6,9 +6,16 @@ is a base64 data URL; text attachment `data` is the decoded text. The array orde
 is the selection order, including files still being read in the browser. Sending
 is blocked until those files finish loading. Failed reads are visibly reported.
 
-The worker emits one user message with one content part per attachment, in that
-same order, followed by the user's prompt. Each text file is a separate `text`
-part prefixed with its filename. There is no `chat` content type and no artificial
+The worker emits one user message with attachments in that same order, followed
+by the user's prompt. Each media attachment has a short `text` label immediately
+before its native media part: `Ek 1 — Görsel: photo.png` (or `Ses` / `Video`).
+Each text/code file stays in one `text` part: `Ek 2 — Metin dosyası: test.txt`,
+then its unmodified contents between `<file_content>` and `</file_content>` lines.
+Numbering follows the full attachment list and restarts in each user turn.
+These labels apply to all providers, including remote providers, and history
+rebuilt from attachment metadata uses the same format. The delimiters are reading
+aids, not a security boundary or a guarantee of model comprehension.
+There is no `chat` content type and no artificial
 conversation turn per file. Display metadata preserves filenames and previews
 through SSE, Redis and persisted history.
 
@@ -30,8 +37,11 @@ reject unsupported parts instead of dropping them or treating them as images.
 - Local llama.cpp receives typed parts directly. Audio/video require a compatible
   server build, model/projector and, for video, the server's ffmpeg support.
 - OpenAI audio uses Chat Completions with WAV/MP3 and an audio-capable model.
-  The Router rejects raw video for this provider; automatic frame extraction or
-  transcoding is not performed. Audio must not be rerouted to Responses.
+  Video is decoded locally by the Router using FFmpeg/FFprobe: 1 FPS, at most
+  32 frames spread across the whole clip, and at most 768 pixels per edge.
+  Frames and approximate timestamps replace the video at its original position.
+  Video audio is not processed. A vision-capable model is required; frames go to
+  the OpenAI API, so only preparation is local. Audio must not be rerouted to Responses.
 - Future providers implement this contract in their Router adapter; no provider
   branching belongs in the browser.
 
@@ -44,3 +54,20 @@ References:
 - https://developers.openai.com/api/docs/guides/audio-chat-completions
 - https://ai.google.dev/gemini-api/docs/video-understanding
 - https://github.com/ggml-org/llama.cpp/tree/master/tools/server#post-v1chatcompletions-openai-compatible-chat-completions-api
+
+Native llama.cpp uses 1 FPS by default in Orion (`VIDEO_FPS` in its service `.env`;
+upstream defaults to 4 FPS). Install both `ffmpeg` and `ffprobe` on PATH, or set
+`FFMPEG_DIR` in the llama.cpp service `.env` and Router `.env` to their directory.
+Use a current video-enabled llama.cpp build and a vision model/projector.
+No separate transcription or audio-analysis model is called. Native video decoding
+and inference stay local. Unlike the OpenAI frame path, native llama.cpp samples
+at the configured FPS without Orion's 32-frame cap; long clips need more context.
+
+For a fresh native Windows checkout, obtain a Windows build linked from
+https://ffmpeg.org/download.html and put both `ffmpeg.exe` and `ffprobe.exe` in
+`services/llm/llama-cpp/bin/ffmpeg/`. The native launcher discovers that directory
+automatically; restart the llama.cpp service after installation. Its own web UI
+then uses the same server-side video decoder as API requests.
+The executables are ignored by Git and are not downloaded by the current
+llama.cpp installer. Cloning the repository alone does not install them.
+For Docker, the tools must be available inside the llama.cpp container.

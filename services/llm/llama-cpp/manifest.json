@@ -10,7 +10,8 @@
     "GPU_LAYERS": {"default": 35, "label": "GPU Layer Count", "min": 0, "max": 100, "type": "int"},
     "CONTEXT_SIZE": {"default": 8192, "label": "Context Size", "min": 512, "max": 128000, "type": "int"},
     "BATCH_SIZE": {"default": 512, "label": "Batch Size", "min": 8, "max": 8192, "type": "int"},
-    "N_PARALLEL": {"default": 1, "label": "Parallel Request Count", "min": 1, "max": 16, "type": "int"}
+    "N_PARALLEL": {"default": 1, "label": "Parallel Request Count", "min": 1, "max": 16, "type": "int"},
+    "VIDEO_FPS": {"default": 1, "label": "Video Frames per Second", "min": 1, "max": 4, "type": "int"}
   },
   "models_path": "models/",
   "models_catalog": [

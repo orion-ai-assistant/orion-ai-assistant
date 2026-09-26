@@ -24,14 +24,28 @@ def media_part(data: str) -> dict[str, Any]:
     return {"type": "image_url", "image_url": {"url": data}}
 
 
+def attachment_parts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Label each attachment immediately before its content, in selection order."""
+    parts: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        name = " ".join((item.get("name") or "Dosya").splitlines())
+        if item.get("isText"):
+            parts.append({"type": "text", "text": (
+                f"Ek {index} — Metin dosyası: {name}\n"
+                f"<file_content>\n{item['data']}\n</file_content>"
+            )})
+        else:
+            media = media_part(item["data"])
+            label = {"image_url": "Görsel", "input_audio": "Ses", "input_video": "Video"}[media["type"]]
+            parts.append({"type": "text", "text": f"Ek {index} — {label}: {name}"})
+            parts.append(media)
+    return parts
+
+
 def user_content(value: JobInput) -> str | list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     if value.attachments is not None:
-        for item in value.attachments:
-            if item.isText:
-                parts.append({"type": "text", "text": f"[Ek Dosya: {item.name}]\n{item.data}"})
-            else:
-                parts.append(media_part(item.data))
+        parts = attachment_parts([item.model_dump() for item in value.attachments])
     else:
         parts.extend(media_part(data) for data in value.images or [])
     if not parts:
@@ -54,11 +68,7 @@ def history_content(message: dict[str, Any]) -> Any:
     ):
         # Old UI metadata still has the cross-media order even though its content
         # array grouped media first and appended every text file to the prompt.
-        parts = [
-            {"type": "text", "text": f"[Ek Dosya: {item.get('name', 'Dosya')}]\n{item['data']}"}
-            if item.get("isText") else media_part(item["data"])
-            for item in attachments
-        ]
+        parts = attachment_parts(attachments)
         return parts + [{"type": "text", "text": display_text or "Ekleri incele."}]
     if isinstance(content, list):
         return [

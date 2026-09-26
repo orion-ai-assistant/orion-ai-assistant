@@ -116,6 +116,17 @@ def main():
     print(f"Starting Llama.cpp Server: {' '.join(cmd)}")
 
     proc_env = os.environ.copy()
+    # Native llama.cpp decodes video locally through ffmpeg/ffprobe.
+    # Environment defaults keep older text-only builds usable; EXTRA_ARGS can override FPS.
+    proc_env["LLAMA_ARG_VIDEO_FPS"] = env_vars.get(
+        "VIDEO_FPS", proc_env.get("LLAMA_ARG_VIDEO_FPS", "1")
+    )
+    ffmpeg_dir = env_vars.get("FFMPEG_DIR") or proc_env.get("FFMPEG_DIR")
+    bundled_ffmpeg = os.path.join(base_dir, "bin", "ffmpeg")
+    if not ffmpeg_dir and os.path.isdir(bundled_ffmpeg):
+        ffmpeg_dir = bundled_ffmpeg
+    if ffmpeg_dir:
+        proc_env["LLAMA_ARG_VIDEO_FFMPEG_DIR"] = ffmpeg_dir
     gpu_device_ids = env_vars.get("GPU_DEVICE_IDS", "all")
     if gpu_device_ids and gpu_device_ids != "all" and hw_type != "cpu":
         proc_env["CUDA_VISIBLE_DEVICES"] = gpu_device_ids
