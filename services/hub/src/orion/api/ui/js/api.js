@@ -320,14 +320,18 @@ const API = {
         }
     },
 
-    async getChatModels() {
+    async getChatModels(includeVoices = false) {
         try {
-            const response = await this._fetch('/api/v1/models');
+            const response = await this._fetch(`/api/v1/models?include_voices=${includeVoices}`);
             const data = await response.json();
             return response.ok ? data : {error: data.detail || 'Model listesi alınamadı.'};
         } catch (error) {
             return {error: error.message};
         }
+    },
+
+    getVoiceCatalog() {
+        return this.getChatModels(true);
     },
 
     async getSettings() {

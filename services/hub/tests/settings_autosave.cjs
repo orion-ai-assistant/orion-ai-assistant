@@ -48,8 +48,11 @@ async function run() {
     const model = field('router_model_group', 'a', 'SELECT');
     model.value = 'b'; ui.handleSettingChange('router_model_group'); await tick();
     assert.equal(requests[2].value, 'b', 'Selections save immediately');
+    assert.equal(elements['setting-status-router_model_group'].textContent, 'Kaydediliyor…', 'Pending save gives immediate feedback');
+    const notificationsBeforeSave = notifications.length;
     model.value = 'a'; ui.handleSettingChange('router_model_group');
     requests[2].resolve({router_model_group: 'b'}); await tick();
+    assert.equal(notifications.length, notificationsBeforeSave, 'Superseded save does not show a success notification');
     assert.equal(requests[3].value, 'a', 'Reverting during a request still saves the final choice');
     requests[3].resolve({error: 'offline'}); await ui._settingSaveQueue;
     assert.ok(model.classList.contains('dirty'));

@@ -53,6 +53,8 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.patches = [
             patch.object(catalog, '_catalog_sections', {}),
             patch.object(catalog, '_catalog_cache', None),
+            patch.object(catalog, '_model_catalog_cache', None),
+            patch.object(catalog, '_model_refresh_task', None),
             patch.object(catalog, '_LOCAL_TTS_TIMEOUT_SECONDS', .03),
             patch.object(catalog, 'get_router_base_urls', return_value=['http://router', 'http://fallback']),
         ]
@@ -81,3 +83,41 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         recovered = await self.fetch(Session(voices=['zephyr2', 'new-voice']))
         self.assertEqual(recovered['voices']['local'], ['zephyr2', 'new-voice'])
         self.assertNotIn('local-tts-info', recovered['unavailable'])
+
+    async def test_cold_model_save_never_requests_voice_services(self):
+        session = Session(local_delay=10)
+        with patch.object(catalog.aiohttp, 'ClientSession', return_value=session):
+            await catalog.validate_model_updates({'router_model_group': 'gemini'})
+        self.assertCountEqual(session.calls, ['models', 'model-groups'])
+
+    async def test_poll_and_first_save_share_model_request(self):
+        session = Session()
+        with patch.object(catalog.aiohttp, 'ClientSession', return_value=session):
+            result, _ = await asyncio.gather(
+                catalog.get_router_catalog(force_refresh=True, include_voices=False),
+                catalog.validate_model_updates({'router_model_group': 'gemini'}),
+            )
+        self.assertEqual(result['models'][0]['name'], 'gemini')
+        self.assertCountEqual(session.calls, ['models', 'model-groups'])
+
+    async def test_validation_finishes_while_voice_refresh_is_pending(self):
+        voice_started, release_voice = asyncio.Event(), asyncio.Event()
+        original = catalog._fetch_section
+
+        async def fetch(session, bases, name, key):
+            if name == 'local-tts-info':
+                voice_started.set()
+                await release_voice.wait()
+            return await original(session, bases, name, key)
+
+        with patch.object(catalog, '_fetch_section', side_effect=fetch), patch.object(
+            catalog.aiohttp, 'ClientSession', return_value=Session()
+        ):
+            full = asyncio.create_task(catalog.get_router_catalog(force_refresh=True))
+            try:
+                await voice_started.wait()
+                await asyncio.wait_for(catalog.validate_model_updates({'router_model_group': 'gemini'}), .5)
+                self.assertFalse(full.done())
+            finally:
+                release_voice.set()
+                await full

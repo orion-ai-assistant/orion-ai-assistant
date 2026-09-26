@@ -638,7 +638,7 @@ const UI = {
             if (val === (input.dataset.original || '').trim()) return;
             input.dataset.saving = 'true';
             input.classList.add('dirty');
-            this.settingSaveStatus(key, '');
+            this.settingSaveStatus(key, 'Kaydediliyor…');
             try {
                 const data = await API.saveSettings(key, val);
                 if (data.error) throw new Error(typeof data.error === 'string' ? data.error : 'Değer kabul edilmedi.');
@@ -910,25 +910,29 @@ const UI = {
             if (button && !silent) button.title = result.error;
             return;
         }
-        this.routerCatalog = result;
-        let ttsModelChangedInCatalog = false;
-        const prevTtsModel = document.getElementById('setting-input-tts_model')?.value;
+        this.routerCatalog = {...result, voices: this.routerCatalog?.voices || result.voices};
         for (const key of ['router_model_group', 'chat_title_model', 'tts_model', 'stt_model']) {
             const select = document.getElementById(`setting-input-${key}`);
             if (!select) continue;
-            if (document.activeElement === select) continue;
             const current = select.options.length ? select.value : String(settings[key] || '');
             const original = select.dataset.original;
             const capability = key === 'tts_model' ? 'tts' : key === 'stt_model' ? 'stt' : 'chat';
             const models = result.models.filter(model => model.capability === capability &&
                 (key !== 'stt_model' || (model.provider === 'local' && model.name === 'local-stt')));
-            select.replaceChildren();
-            if (key === 'chat_title_model') select.add(new Option('Sohbet modelini kullan', ''));
-            for (const model of models) select.add(new Option(model.name, model.name));
-            if (current && !Array.from(select.options).some(option => option.value === current)) {
-                const missing = new Option(`${current} — listesi şu an alınamıyor`, current);
-                select.add(missing);
+            const choices = models.map(model => [model.name, model.name]);
+            if (key === 'chat_title_model') choices.unshift(['', 'Sohbet modelini kullan']);
+            if (current && !choices.some(([value]) => value === current)) {
+                choices.push([current, `${current} — listesi şu an alınamıyor`]);
             }
+            // Reconcile in place, including the focused picker. Unchanged options
+            // retain their DOM nodes and the user's pending selection is preserved.
+            choices.forEach(([value, label], index) => {
+                let option = Array.from(select.options).find(item => item.value === value);
+                if (!option) option = new Option(label, value);
+                if (option.text !== label) option.text = label;
+                if (select.options[index] !== option) select.insertBefore(option, select.options[index] || null);
+            });
+            while (select.options.length > choices.length) select.remove(select.options.length - 1);
             select.value = current;
             select.dataset.original = original;
         }
@@ -940,6 +944,17 @@ const UI = {
             };
         }
         this.loadVoiceChoices(false);
+        // Optional voice services must not hold up model polling or selection.
+        if (!this._voiceCatalogLoading && typeof API.getVoiceCatalog === 'function') {
+            this._voiceCatalogLoading = true;
+            API.getVoiceCatalog().then(catalog => {
+                if (!catalog.error && this.routerCatalog) {
+                    this.routerCatalog.voices = catalog.voices;
+                    this.routerCatalog.unavailable = catalog.unavailable;
+                    this.loadVoiceChoices(false);
+                }
+            }).catch(() => {}).finally(() => { this._voiceCatalogLoading = false; });
+        }
         if (button && !silent) button.title = result.unavailable?.length
             ? 'Bazı listelere erişilemiyor.'
             : 'Model ve ses listesini yenile';

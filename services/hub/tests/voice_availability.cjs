@@ -15,7 +15,7 @@ const context = vm.createContext({ window: {}, Option, document: {
 }});
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
 const ui = context.ui;
-ui.currentSettings = { tts_enabled: true, tts_voice: 'zephyr2' };
+ui.currentSettings = { tts_enabled: true, tts_model: 'local-tts', tts_voice: 'zephyr2' };
 ui.routerCatalog = { models: [{ name: 'local-tts', provider: 'local' }], voices: {} };
 ui.handleSettingChange = () => {};
 ui.loadVoiceChoices(false);
