@@ -3,7 +3,7 @@ OmniVoice-GGUF Hybrid Binary Installer
 =======================================
 - CPU binaries are bundled directly with the repository (~2.4 MB) -> Instant 0-second setup.
 - CUDA runtime (ggml-cuda.dll, ~370 MB) is downloaded on-demand from GitHub Releases.
-- Dynamic GitHub API release discovery with 3-tier fallback chain.
+- Pinned TTS release independent of the repository Latest designation.
 - SHA256 integrity verification and atomic rollback.
 - Graceful fallback to bundled CPU binaries if CUDA download or GPU driver fails.
 - Zero external dependencies (Python standard library only).
@@ -16,7 +16,6 @@ import subprocess
 import shutil
 import zipfile
 import hashlib
-import json
 import re
 import urllib.request
 import urllib.error
@@ -24,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 GITHUB_REPO = "orion-ai-assistant/orion-ai-assistant"
-FALLBACK_TAG = "tts-v1.0.0"
+RELEASE_TAG = "tts-v1.0.0"
 MIN_CUDA_DRIVER_VERSION = 525.60
 
 REQUIRED_FILES_CPU = [
@@ -130,60 +129,14 @@ def check_cpu_binaries_present(bin_dir: str) -> bool:
     return True
 
 
-# ─── Dynamic Release Resolution & Download ────────────────────────────────────
+# ─── Pinned Release Resolution & Download ────────────────────────────────────
 def resolve_cuda_release_urls() -> Tuple[str, Optional[str], str]:
+    """Pin CUDA to the release matching the checksum shipped in this checkout.
+
+    Repository-wide Latest may point at unrelated video tools or app releases.
     """
-    Finds download URLs for omnivoice-gguf-windows-cuda.zip and checksums.sha256.
-    3-Tier Fallback:
-      Tier 1: GitHub API matching 'tts-*'
-      Tier 2: /releases/latest/download/
-      Tier 3: /releases/download/{FALLBACK_TAG}/
-    """
-    checksum_name = "checksums.sha256"
-
-    # Tier 1: GitHub API
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
-    headers = {"User-Agent": "Orion-AI-Assistant/1.0", "Accept": "application/vnd.github.v3+json"}
-
-    print(f"[*] Querying GitHub API for latest CUDA release asset...")
-    try:
-        req = urllib.request.Request(api_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=5) as response:
-            if response.status == 200:
-                releases = json.loads(response.read().decode("utf-8"))
-                candidate_releases = []
-                for rel in releases:
-                    tag = rel.get("tag_name", "").lower()
-                    if tag.startswith("tts-") or tag.startswith("omnivoice-"):
-                        candidate_releases.append(rel)
-                if not candidate_releases and releases:
-                    candidate_releases = releases
-
-                for rel in candidate_releases:
-                    assets = {a.get("name"): a.get("browser_download_url") for a in rel.get("assets", [])}
-                    if ZIP_NAME in assets:
-                        zip_url = assets[ZIP_NAME]
-                        chk_url = assets.get(checksum_name)
-                        tag = rel.get("tag_name", "unknown")
-                        return zip_url, chk_url, f"GitHub API (Tag: {tag})"
-    except Exception as e:
-        print(f"  [Notice] GitHub API query unavailable ({e}). Proceeding to direct download URL...")
-
-    # Tier 2: Direct latest download URL
-    tier2_zip = f"https://github.com/{GITHUB_REPO}/releases/latest/download/{ZIP_NAME}"
-    tier2_chk = f"https://github.com/{GITHUB_REPO}/releases/latest/download/{checksum_name}"
-    try:
-        req = urllib.request.Request(tier2_zip, headers=headers, method="HEAD")
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            if resp.status in (200, 302):
-                return tier2_zip, tier2_chk, "GitHub Latest Release (Direct)"
-    except Exception:
-        pass
-
-    # Tier 3: Pinned fallback release
-    tier3_zip = f"https://github.com/{GITHUB_REPO}/releases/download/{FALLBACK_TAG}/{ZIP_NAME}"
-    tier3_chk = f"https://github.com/{GITHUB_REPO}/releases/download/{FALLBACK_TAG}/{checksum_name}"
-    return tier3_zip, tier3_chk, f"Pinned Release Fallback (Tag: {FALLBACK_TAG})"
+    base = f"https://github.com/{GITHUB_REPO}/releases/download/{RELEASE_TAG}"
+    return f"{base}/{ZIP_NAME}", f"{base}/checksums.sha256", f"Pinned Release (Tag: {RELEASE_TAG})"
 
 
 def download_file(url: str, dest_path: str, description: str = "") -> bool:

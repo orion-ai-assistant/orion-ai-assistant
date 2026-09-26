@@ -513,20 +513,24 @@ def handle_start(args):
                 print(f"[!] Orion Router is already running on port {router_port}.")
             else:
                 print("[*] Starting Orion Router...")
+                router_env = os.environ.copy()
+                shared_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "services", "llm", "llama-cpp", "bin", "ffmpeg")
+                if all(os.path.isfile(os.path.join(shared_ffmpeg, name)) for name in ("ffmpeg.exe", "ffprobe.exe")):
+                    router_env.setdefault("FFMPEG_DIR", shared_ffmpeg)
                 if plat == "win":
                     if show_terminals:
                         cmd_router = ["powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start"]
-                        subprocess.Popen(cmd_router, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                        subprocess.Popen(cmd_router, env=router_env, creationflags=subprocess.CREATE_NEW_CONSOLE)
                     else:
                         cmd_router = ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
-                        subprocess.Popen(cmd_router, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                        subprocess.Popen(cmd_router, env=router_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
                 else:
                     if show_terminals:
                         cmd_router = [path, "start"]
-                        subprocess.Popen(cmd_router)
+                        subprocess.Popen(cmd_router, env=router_env)
                     else:
                         cmd_router = [path, "start", "--silent"]
-                        subprocess.Popen(cmd_router, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(cmd_router, env=router_env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             if not router_running:
                 print("[!] Orion Router is not installed yet. Please install it from the Orion Installer panel.")

@@ -673,14 +673,18 @@ def start_local_service(service_id: str) -> bool:
                     os.remove(lock_path)
                 except Exception:
                     pass
+        router_env = os.environ.copy()
+        shared_ffmpeg = os.path.join(config.PROJECT_ROOT, "services", "llm", "llama-cpp", "bin", "ffmpeg")
+        if os.path.isfile(os.path.join(shared_ffmpeg, "ffmpeg.exe")) and os.path.isfile(os.path.join(shared_ffmpeg, "ffprobe.exe")):
+            router_env.setdefault("FFMPEG_DIR", shared_ffmpeg)
         try:
             if plat == "win" or os.name == 'nt':
                 cmd_router = ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
                 cflags = 0x08000000  # CREATE_NO_WINDOW
-                subprocess.Popen(cmd_router, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
+                subprocess.Popen(cmd_router, env=router_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=cflags)
             else:
                 cmd_router = [path, "start", "--silent"]
-                subprocess.Popen(cmd_router, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.Popen(cmd_router, env=router_env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except Exception as e:
             print(f"[ERROR] start_local_service(orion-router): {e}")

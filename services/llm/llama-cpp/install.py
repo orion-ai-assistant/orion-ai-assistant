@@ -10,6 +10,11 @@ from io import BytesIO
 
 def download_and_extract_llama_cpp():
     print("Starting Llama.cpp installation for local mode...")
+    # Run even when llama-server already exists; Hub uses this same installation.
+    from pathlib import Path
+    import runpy
+    shared_installer = Path(__file__).resolve().parents[3] / "scripts/install_ffmpeg.py"
+    runpy.run_path(str(shared_installer))["ensure_ffmpeg"]()
     
     # Define directories
     base_dir = os.path.dirname(os.path.abspath(__file__))

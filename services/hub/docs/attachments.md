@@ -68,6 +68,16 @@ https://ffmpeg.org/download.html and put both `ffmpeg.exe` and `ffprobe.exe` in
 `services/llm/llama-cpp/bin/ffmpeg/`. The native launcher discovers that directory
 automatically; restart the llama.cpp service after installation. Its own web UI
 then uses the same server-side video decoder as API requests.
-The executables are ignored by Git and are not downloaded by the current
-llama.cpp installer. Cloning the repository alone does not install them.
+Native Windows x64 installation of either Hub or llama.cpp calls the shared
+`scripts/install_ffmpeg.py` installer. It downloads the `ffmpeg-v9.0.2` release
+ZIP and verifies the SHA256 pinned in that script; no checksum asset is needed.
+Both services share the directory above, and verified installations are reused.
+Concurrent installs are serialized. A failed checksum stops installation rather
+than changing the trusted hash. Existing llama.cpp installs also run this check.
+The installer and manager pass this directory to the native Orion Router when
+starting it (an explicit FFMPEG_DIR environment value takes precedence).
+Restart an already-running Router to pick up the tools. This does not modify the
+separate Router repository. On native Linux/macOS install ffmpeg and ffprobe
+through your package manager. The Windows archive cannot be used in containers.
+The executables are ignored by Git. Cloning alone does not install them.
 For Docker, the tools must be available inside the llama.cpp container.
