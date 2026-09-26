@@ -1,3 +1,6 @@
+from orion.worker.services.attachments import history_content
+
+
 def model_history(history, max_messages):
     """Keep whole user turns, including paired calls/results, at the boundary."""
     groups = []
@@ -19,6 +22,6 @@ def model_history(history, max_messages):
             break
         kept.insert(0, group)
         count += len(group)
-    return [{key: (msg.get("model_content", msg.get("content")) if key == "content" else msg[key])
+    return [{key: (history_content(msg) if key == "content" else msg[key])
              for key in ("role", "content", "tool_calls", "tool_call_id") if key in msg}
             for group in kept for msg in group]

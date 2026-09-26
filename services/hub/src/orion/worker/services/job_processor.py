@@ -16,6 +16,7 @@ from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
 from orion.worker.services.chat_titles import generate_chat_title
+from orion.worker.services.attachments import user_content
 from orion.worker.services.router import llama_stream_chat_typed, generate_tts
 from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import model_history
@@ -384,22 +385,13 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 messages.append({"role": "system", "content": settings.system_prompt})
             messages.extend(history)
 
-            # Multimodal support
-            if context.images:
-                user_content: list[dict[str, Any]] = []
-                for img in context.images:
-                    img_url = img if img.startswith("data:") or img.startswith("http") else f"data:image/jpeg;base64,{img}"
-                    user_content.append({"type": "image_url", "image_url": {"url": img_url}})
-                user_content.append({"type": "text", "text": context.prompt})
-                messages.append({"role": "user", "content": user_content})
-            else:
-                messages.append({"role": "user", "content": context.prompt})
+            messages.append({"role": "user", "content": user_content(context.request.input)})
 
             user_message = {**messages[-1], "turn_id": context.turn_id}
-            if context.request.input.metadata.get("attachments"):
-                user_message.update({key: context.request.input.metadata[key]
-                                     for key in ("attachments", "display_text")
-                                     if key in context.request.input.metadata})
+            attachments = context.request.input.display_attachments()
+            if attachments:
+                user_message["attachments"] = attachments
+                user_message["display_text"] = context.request.input.metadata.get("display_text", context.prompt)
             conversation = ToolConversation(context, json.loads(context.record.enabled_tools))
 
             # Stream tokens from LLM.

@@ -462,64 +462,64 @@ document.addEventListener("DOMContentLoaded", async () => {
         });
     };
 
+    let attachmentSequence = 0;
     const processFiles = (files) => {
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-
-            // Basic deduplication check by name + size
-            const isDuplicate = UI.selectedImages.some(item => item.name === file.name && item.size === file.size);
-            if (isDuplicate) {
-                if (UI.showToast) UI.showToast("Bu dosya (" + file.name + ") zaten eklendi.");
+        for (const file of files) {
+            if (UI.selectedImages.some(item => item.name === file.name && item.size === file.size)) {
+                UI.showToast?.('Bu dosya (' + file.name + ') zaten eklendi.');
                 continue;
             }
-
-            if (file.type.startsWith('image/')) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const img = new Image();
-                    img.onload = () => {
-                        // Canvas tabanlı JPEG dönüştürme (WebP gibi yerel modellerin desteklemediği formatlar için)
-                        const canvas = document.createElement('canvas');
-                        canvas.width = img.width;
-                        canvas.height = img.height;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0);
-                        // Dönüştür ve listeye ekle
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-                        UI.selectedImages.push({
-                            data: dataUrl,
-                            name: file.name,
-                            size: file.size
-                        });
-                        renderImagePreviews();
-                    };
-                    img.src = e.target.result;
-                };
-                reader.readAsDataURL(file);
-            } else if (file.type.startsWith('video/') || file.type.startsWith('audio/')) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    UI.selectedImages.push({
-                        data: e.target.result,
-                        name: file.name,
-                        size: file.size
-                    });
-                    renderImagePreviews();
-                };
-                reader.readAsDataURL(file);
-            } else if (file.type.startsWith('text/') || /\.(txt|md|py|js|json|csv|log|yaml|yml|html|css|sql|sh|bat)$/i.test(file.name)) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    UI.selectedImages.push({
-                        data: e.target.result,
-                        name: file.name,
-                        size: file.size,
-                        isText: true
-                    });
-                    renderImagePreviews();
-                };
-                reader.readAsText(file);
+            const isText = file.type.startsWith('text/') || /\.(txt|md|py|js|json|csv|log|yaml|yml|html|css|sql|sh|bat)$/i.test(file.name);
+            const media = /^(image|audio|video)\//.test(file.type);
+            if (!isText && !media) {
+                UI.showToast?.('Desteklenmeyen dosya türü: ' + file.name);
+                continue;
             }
+            // Reserve the slot immediately, before any asynchronous read/decode.
+            const item = {
+                id: `attachment-${Date.now()}-${++attachmentSequence}`, name: file.name, size: file.size,
+                mime_type: file.type || 'text/plain', isText, data: '', loading: true
+            };
+            UI.selectedImages.push(item);
+            renderImagePreviews();
+            const fail = () => {
+                const index = UI.selectedImages.indexOf(item);
+                if (index < 0) return;
+                UI.selectedImages.splice(index, 1);
+                renderImagePreviews();
+                UI.showToast?.('Dosya okunamadı: ' + file.name);
+            };
+            const finish = (data, mime) => {
+                // Removed files and cleared drafts must not reappear on completion.
+                if (!UI.selectedImages.includes(item)) return;
+                item.data = data;
+                item.mime_type = mime;
+                item.loading = false;
+                renderImagePreviews();
+            };
+            const reader = new FileReader();
+            reader.onerror = fail;
+            reader.onabort = fail;
+            reader.onload = () => {
+                if (!UI.selectedImages.includes(item)) return;
+                if (file.type.startsWith('image/')) {
+                    const img = new Image();
+                    img.onerror = fail;
+                    img.onload = () => {
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(img, 0, 0);
+                            finish(canvas.toDataURL('image/jpeg', 0.9), 'image/jpeg');
+                        } catch { fail(); }
+                    };
+                    img.src = reader.result;
+                } else finish(reader.result, item.mime_type);
+            };
+            if (isText) reader.readAsText(file);
+            else reader.readAsDataURL(file);
         }
     };
 

@@ -53,6 +53,11 @@ const UI = {
         card.className = 'media-square-item';
         card.title = file.name || 'Dosya';
         card.setAttribute('aria-label', `${card.title} — önizle`);
+        if (file.loading) {
+            card.textContent = `${file.name} — hazırlanıyor…`;
+            card.disabled = true;
+            return card;
+        }
         const video = !file.isText && file.data.startsWith('data:video/');
         const audio = !file.isText && file.data.startsWith('data:audio/');
         if (!file.isText && !audio) {

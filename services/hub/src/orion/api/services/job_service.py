@@ -112,9 +112,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         "current_user_message": json.dumps({
             "role": "user", "content": payload.input.text,
             "display_text": payload.input.metadata.get("display_text", payload.input.text),
-            "attachments": payload.input.metadata.get("attachments") or [
-                {"data": image, "name": "Dosya"} for image in payload.input.images or []
-            ],
+            "attachments": payload.input.display_attachments(),
             "turn_id": turn_id,
         }),
         "partial_text": "", "partial_thinking": "", "partial_tools": "[]", "partial_display": "[]",
@@ -137,7 +135,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe.set(active_turn_key, turn_id, ex=active_turn_ttl)
     pipe.hset(state_key, mapping=status_mapping)
     pipe.expire(state_key, settings.result_ttl_seconds)
-    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id, attachments=payload.input.metadata.get("attachments") or [{"data": image, "name": "Dosya"} for image in payload.input.images or []], display_text=payload.input.metadata.get("display_text", payload.input.text)).model_dump_json())
+    pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id, attachments=payload.input.display_attachments(), display_text=payload.input.metadata.get("display_text", payload.input.text)).model_dump_json())
     pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued", turn_id=turn_id).model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
 

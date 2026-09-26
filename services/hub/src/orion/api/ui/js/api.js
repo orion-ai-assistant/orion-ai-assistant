@@ -90,14 +90,12 @@ const API = {
     async sendMessage(text, images = []) {
         const attachments = [...(UI.selectedImages || [])];
         if (!text && !attachments.length && !images.length) return;
+        if (attachments.some(item => item.loading)) {
+            UI.showToast?.('Dosyalar hazırlanıyor, tamamlanınca gönder.');
+            return;
+        }
         const displayText = text || '';
         text = displayText;
-        if (attachments.length) {
-            images = attachments.filter(item => !item.isText).map(item => item.data);
-            for (const item of attachments.filter(item => item.isText)) {
-                text += `\n\n[Ek Dosya: ${item.name}]\n\`\`\`\n${item.data}\n\`\`\``;
-            }
-        }
         text = text || 'Ekleri incele.';
 
         // Prevent rapid Enter/click events from creating duplicate jobs before
@@ -143,8 +141,11 @@ const API = {
                     input: { 
                         text: text,
                         audio: audioEnabled,
-                        images: images,
-                        metadata: attachments.length ? { display_text: displayText, attachments } : {}
+                        ...(attachments.length ? {
+                            attachments: attachments.map(({ id, name, mime_type, data, size, isText }) =>
+                                ({ id, name, mime_type, data, size, isText: Boolean(isText) }))
+                        } : { images }),
+                        metadata: { display_text: displayText }
                     },
                     stream_mode: "once"
                 })
