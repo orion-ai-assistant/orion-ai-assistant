@@ -100,8 +100,7 @@ def _format_router_fallback_message(error: Exception, settings: RuntimeSettings)
     else:
         return (
             "⚠️ **Yönlendirici (Router) Hatası:**\n\n"
-            f"```text\n{err_str}\n```\n"
-            "Lütfen servis loglarını kontrol edin veya modeli yeniden başlatın."
+            f"```text\n{err_str}\n```"
         )
 
 
