@@ -158,5 +158,6 @@ Sonuç sayısı ve metin uzunlukları Orion'un çıktı sınırına göre kısı
 `tools/` dizini boş `__init__.py` olmadan namespace package olarak çalışır.
 Kategori klasörlerindeki `__init__.py` dosyaları ise `CATEGORY` kaydını taşır;
 bunları silmeyin. Paket keşfi ve web araması `test_web_search.py` ile doğrulanır.
-Kök `orion/__init__.py` korunmalıdır: bu ortamda komşu Router projesinin
-`orion.py` modülüyle isim çakışmasını engeller.
+Kök `orion/` dizini de namespace package olarak çalışır. Python import yolunda
+başka bir `orion.py` bulunmamalıdır; komşu Router projesindeki bu dosyanın adı ve
+ona yapılan referanslar ayrıca güncellenmelidir.
