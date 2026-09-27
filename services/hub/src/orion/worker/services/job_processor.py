@@ -674,6 +674,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             if conversation.activity:
                 assistant_entry["tool_activity"] = conversation.activity
                 assistant_entry["model_content"] = conversation.final_content
+                if conversation.direct_tool_call_id:
+                    assistant_entry["direct_tool_call_id"] = conversation.direct_tool_call_id
             if audio_entry:
                 assistant_entry["audio"] = audio_entry
             if metrics:

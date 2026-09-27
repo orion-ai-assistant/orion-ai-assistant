@@ -1,0 +1,121 @@
+import asyncio
+import json
+import unittest
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from orion.contracts.settings import RuntimeSettings
+from orion.kernel.config import build_runtime_settings
+from orion.worker.services.tool_runner import ToolConversation, stream_tool_answer, ToolCancelled, google_direct_text
+from orion.worker.tools._base import ToolContext
+from orion.worker.tools.google_ai.tools import GOOGLE_AI_MODE
+
+
+def call():
+    return {'id': 'google-1', 'type': 'function', 'function': {
+        'name': 'google_ai_mode', 'arguments': '{"query":"test"}'}}
+
+
+class GoogleDirectStreamTests(unittest.IsolatedAsyncioTestCase):
+    def conversation(self):
+        return ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['google_ai_mode'])
+
+    def test_default_off_and_persisted_boolean(self):
+        self.assertFalse(RuntimeSettings().google_ai_direct_stream)
+        self.assertTrue(build_runtime_settings({'google_ai_direct_stream': 'true'}).google_ai_direct_stream)
+        self.assertFalse(build_runtime_settings({'google_ai_direct_stream': 'false'}).google_ai_direct_stream)
+
+    def test_markdown_preserved_and_old_plain_text_still_escaped(self):
+        answer = '## Başlık\n\n**Kalın**\n\n- Liste'
+        self.assertIn(answer, google_direct_text(answer, {'answer_format': 'markdown'}))
+        self.assertIn(answer, google_direct_text(answer, answer_format='markdown'))
+        self.assertIn('\\*\\*Kalın\\*\\*', google_direct_text('**Kalın**'))
+
+    async def test_live_snapshots_before_result_revisions_and_no_second_model(self):
+        conversation = self.conversation()
+        advance = asyncio.Event()
+        model_calls = []
+        async def model(*args, **kwargs):
+            model_calls.append(kwargs)
+            yield 'content', 'Araştırıyorum.\n\n'
+            yield 'tool_calls', json.dumps([call()])
+        async def execute(tool, arguments, context):
+            await context.emit_answer('First longer draft')
+            await advance.wait()
+            await context.emit_answer('Corrected')
+            await asyncio.sleep(.1)
+            return {'status': 'ok', 'answer': 'Corrected', 'sources': [
+                {'url': 'https://example.org/source', 'title': 'Actual source'}]}
+        events = []
+        with patch('orion.worker.services.tool_runner.execute_tool', execute):
+            async for event in conversation.stream([], RuntimeSettings(google_ai_direct_stream=True), AsyncMock(return_value=False), model):
+                events.append(event)
+                if event[0] == 'content_snapshot' and 'First longer draft' in event[1]:
+                    self.assertFalse(any(kind == 'tool_result' for kind, _ in events))
+                    advance.set()
+        self.assertEqual(len(model_calls), 1)
+        self.assertEqual(conversation.direct_tool_call_id, 'google-1')
+        self.assertIn('Actual source', conversation.final_content)
+        self.assertNotIn('First longer draft', conversation.final_content)
+        self.assertIn('Corrected', conversation.final_content)
+        self.assertTrue(events[-1][1].startswith('Araştırıyorum.\n\n**Google AI Mode**'))
+        self.assertEqual(conversation.transcript[-1]['role'], 'tool')
+        self.assertEqual(json.loads(conversation.transcript[-1]['content'])['answer'], 'Corrected')
+
+    async def test_disabled_setting_keeps_normal_model_followup(self):
+        conversation = self.conversation()
+        model_calls = []
+        async def model(*args, **kwargs):
+            model_calls.append(kwargs)
+            if len(model_calls) == 1:
+                yield 'tool_calls', json.dumps([call()])
+            else:
+                yield 'content', 'Orion summary'
+        async def execute(tool, arguments, context):
+            self.assertIsNone(context.emit_answer)
+            return {'status': 'ok', 'answer': 'Google answer', 'sources': []}
+        with patch('orion.worker.services.tool_runner.execute_tool', execute):
+            events = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), model)]
+        self.assertEqual(len(model_calls), 2)
+        self.assertEqual(events[-1], ('content', 'Orion summary'))
+
+    async def test_failed_stream_replaces_preview_with_error(self):
+        conversation = self.conversation()
+        requests = []
+        async def model(*args, **kwargs):
+            requests.append(kwargs)
+            yield 'tool_calls', json.dumps([call()])
+        async def execute(tool, arguments, context):
+            await context.emit_answer('Incomplete draft')
+            await asyncio.sleep(.1)
+            return {'status': 'timeout', 'recovery': 'google_session'}
+        with patch('orion.worker.services.tool_runner.execute_tool', execute):
+            events = [event async for event in conversation.stream([], RuntimeSettings(google_ai_direct_stream=True), AsyncMock(return_value=False), model)]
+        self.assertTrue(any('Incomplete draft' in value for kind, value in events if kind == 'content_snapshot'))
+        self.assertNotIn('Incomplete draft', conversation.final_content)
+        self.assertIn('alınamadı', conversation.final_content)
+        self.assertEqual(len(requests), 1)
+
+    async def test_stop_and_consumer_close_cancel_underlying_handler(self):
+        for close_consumer in (False, True):
+            ended = asyncio.Event()
+            stopped = False
+            async def cancelled():
+                return stopped
+            async def handler(args, context):
+                try:
+                    await context.emit_answer('Visible draft')
+                    await asyncio.Event().wait()
+                finally:
+                    ended.set()
+            context = ToolContext('u', 'c', 't', cancelled)
+            stream = stream_tool_answer(replace(GOOGLE_AI_MODE, handler=handler), '{"query":"test"}', context)
+            self.assertEqual(await anext(stream), ('answer', 'Visible draft'))
+            if close_consumer:
+                await stream.aclose()
+            else:
+                stopped = True
+                with self.assertRaises(ToolCancelled):
+                    await anext(stream)
+            await asyncio.wait_for(ended.wait(), 1)

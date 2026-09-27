@@ -149,6 +149,29 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_google_failure_stops_without_model_invention_or_web_fallback(self):
+        for result in ({'status': 'timeout', 'recovery': 'google_session'},
+                       {'status': 'blocked'}, {'status': 'ok', 'answer': ''}):
+            conversation = self.conversation(['google_ai_mode', 'research_web'])
+            requests = []
+            async def stream(messages, settings, **kwargs):
+                requests.append(kwargs)
+                if len(requests) == 1:
+                    yield 'tool_calls', json.dumps([
+                        call(name='google_ai_mode', arguments='{"query":"test"}'),
+                        call('call_2', name='research_web', arguments='{"query":"test"}'),
+                    ])
+                else:
+                    yield 'content', 'Invented researched answer'
+            with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=result)) as execute:
+                events = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), stream)]
+            execute.assert_awaited_once()
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(events[-1][0], 'content_snapshot')
+            self.assertIn('normal web aramasına geçilmedi', conversation.final_content)
+            self.assertNotIn('Invented', conversation.final_content)
+            self.assertEqual([item['status'] for item in conversation.activity], ['error', 'error'])
+
     def test_thinking_segments_and_snapshot_keep_order(self):
         timeline = DisplayTimeline()
         for kind, value in [('thinking', 'first thought'), ('content', 'first answer'),
@@ -213,6 +236,23 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, 'limit exceeded'):
                 _ = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), stream)]
             self.assertLessEqual(len(conversation.activity), 16)
+
+    def test_web_catalog_and_legacy_selection_migration(self):
+        registry = get_registry()
+        self.assertEqual([t.id for t in registry.categories['web_search'].tools], ['research_web'])
+        for functions, expected in (
+            ({'search_web': True, 'read_pages': True}, True),
+            ({'read_page': True}, True),
+            ({'search_web': False}, False),
+            ({'search_web': True, 'research_web': False}, False),
+        ):
+            selection = ToolSelection(categories={'web_search': True}, functions=functions)
+            registry.validate_selection(selection)
+            self.assertEqual(selection.functions, {'research_web': expected})
+            self.assertEqual(registry.enabled(selection), ['research_web'] if expected else [])
+        disabled = ToolSelection(categories={'web_search': False}, functions={'search_web': True})
+        self.assertEqual(registry.enabled(disabled), [])
+        self.assertEqual(self.conversation(['search_web', 'read_page']).enabled, {'research_web'})
 
     async def test_stop_before_followup(self):
         conversation = self.conversation()

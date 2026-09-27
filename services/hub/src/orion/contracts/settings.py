@@ -11,6 +11,7 @@ class SystemSettings(BaseModel):
 
 class AISettings(BaseModel):
     tool_selection: ToolSelection = Field(default_factory=default_tool_selection)
+    google_ai_direct_stream: bool = False
 
     @field_validator("tool_selection", mode="before")
     @classmethod

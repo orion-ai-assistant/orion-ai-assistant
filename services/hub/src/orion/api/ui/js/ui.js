@@ -163,7 +163,7 @@ const UI = {
                     this._closeThinkingBlock(block.details, block.body);
                     div.appendChild(block.details);
                 } else if (part.type === 'content') {
-                    div.appendChild(document.createTextNode(part.content || ''));
+                    div.appendChild(MarkdownView.create(part.content || ''));
                 } else if (part.type === 'tool') {
                     const item = toolActivity.find(entry => entry.call_id === part.call_id);
                     if (item) window.ToolsUI?.renderActivity(div, item);
@@ -190,7 +190,7 @@ const UI = {
 
         if (!Array.isArray(displayParts) || !displayParts.length) {
             for (const item of toolActivity) window.ToolsUI?.renderActivity(div, item);
-            div.appendChild(document.createTextNode(content || ''));
+            div.appendChild(MarkdownView.create(content || ''));
         }
 
         if (metrics && (metrics.total_ms || metrics.first_token_ms)) {
@@ -312,12 +312,12 @@ const UI = {
         }
 
         if (!state.currentContentNode) {
-            state.currentContentNode = document.createTextNode('');
+            state.currentContentNode = MarkdownView.create();
             state.contentNodes ||= [];
             state.contentNodes.push(state.currentContentNode);
             state.botDiv.appendChild(state.currentContentNode);
         }
-        state.currentContentNode.textContent += token;
+        MarkdownView.update(state.currentContentNode, state.currentContentNode.markdownSource + token);
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
         }
@@ -338,15 +338,15 @@ const UI = {
         }
 
         const nodes = state.contentNodes ||= [];
-        const earlierLength = nodes.reduce((sum, node) => sum + node.textContent.length, 0) -
-            (state.currentContentNode?.textContent.length || 0);
+        const earlierLength = nodes.reduce((sum, node) => sum + node.markdownSource.length, 0) -
+            (state.currentContentNode?.markdownSource.length || 0);
         if (!state.currentContentNode) {
-            state.currentContentNode = document.createTextNode('');
+            state.currentContentNode = MarkdownView.create();
             nodes.push(state.currentContentNode);
             const trailingElement = state.botDiv.querySelector('.audio-player-container, .message-meta');
             state.botDiv.insertBefore(state.currentContentNode, trailingElement || null);
         }
-        state.currentContentNode.textContent = (content || '').slice(earlierLength);
+        MarkdownView.update(state.currentContentNode, (content || '').slice(earlierLength));
         if (chatId === AppState.currentChatId) {
             this.scrollToBottom();
         }
@@ -426,6 +426,7 @@ const UI = {
         }
 
         const botDivRef = state.botDiv;
+        for (const node of state.contentNodes || []) MarkdownView.render(node);
 
         if (state.thinkDiv) {
             state.thinkDiv.open = false;
@@ -702,7 +703,7 @@ const UI = {
                 const el = document.getElementById(`setting-input-${key}`);
                 if (el && document.activeElement !== el && !el.classList?.contains('dirty')) {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
-                    if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled') {
+                    if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled' || key === 'google_ai_direct_stream') {
                         el.value = String(settings[key] ?? '').toLowerCase() === 'true' ? 'true' : 'false';
                         el.dataset.original = el.value;
                     } else {
@@ -729,6 +730,10 @@ const UI = {
         }
 
         const categoryMeta = {
+            "Google AI Mode": {
+                section: "general", icon: "🌐", keys: ["google_ai_direct_stream"],
+                desc: "Google yanıtını doğrudan gösterme"
+            },
             "Sohbet": {
                 section: "general", icon: "💬", keys: ["router_model_group", "chat_title_model", "ai_chat_titles_enabled", "router_api_key"],
                 desc: "Sohbet ve başlık ayarları"
@@ -755,6 +760,7 @@ const UI = {
         };
 
         const keyHints = {
+            "google_ai_direct_stream": "Açıkken Google yanıtı oluştukça ekrana aktarılır; Orion modeli yeniden yazmaz. Kapalıyken Google sonucu Orion modeline verilir.",
             "temperature": "0–2 arasında değer (boşsa varsayılan).",
             "thinking_level": "Model düşünme seviyesi (boşsa varsayılan).",
             "first_token_delay_ms": "İlk parça öncesi bekleme (ms).",
@@ -802,7 +808,7 @@ const UI = {
                     const placeholder = keyPlaceholders[key] || key;
 
                     let inputHtml = '';
-                    if ((key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled')) {
+                    if ((key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled' || key === 'google_ai_direct_stream')) {
                         const isChecked = String(settings[key] ?? '').toLowerCase() === 'true';
                         inputHtml = `
                             <select id="setting-input-${key}" data-original="${isChecked ? 'true' : 'false'}" onchange="UI.handleSettingChange('${key}')" class="setting-select">
@@ -823,7 +829,7 @@ const UI = {
                     rowsHtml += `
                     <div class="setting-row">
                         <div class="setting-info">
-                            <label class="setting-label" for="setting-input-${key}">${({router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
+                            <label class="setting-label" for="setting-input-${key}">${({google_ai_direct_stream: "Google yan\u0131t\u0131n\u0131 do\u011frudan ak\u0131t", router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
                             ${hint ? `<span class="setting-hint">${hint}</span>` : ''}
                         </div>
                         <div class="setting-control">
@@ -861,7 +867,7 @@ const UI = {
                 rowsHtml += `
                 <div class="setting-row">
                     <div class="setting-info">
-                        <label class="setting-label" for="setting-input-${key}">${({router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
+                        <label class="setting-label" for="setting-input-${key}">${({google_ai_direct_stream: "Google yan\u0131t\u0131n\u0131 do\u011frudan ak\u0131t", router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
                     </div>
                     <div class="setting-control">
                         <input type="text" id="setting-input-${key}" data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-input">

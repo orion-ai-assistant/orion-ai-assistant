@@ -144,6 +144,11 @@
 .tools-button-primary:hover:not(:disabled) { background: #6ee7b7; }
 .tools-button-primary:active:not(:disabled) { background: #34d399; box-shadow: 0 2px 6px rgba(16, 185, 129, .18); }
 .tool-settings-card { padding: 20px 24px; }
+.google-session { padding: 12px 0; font-size: 13px; }
+.google-session p { color: var(--text-secondary); margin: 8px 0; }
+.google-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.google-session label { display: block; margin: 12px 0; color: var(--text-secondary); }
+.google-session input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; color: inherit; background: transparent; border: 1px solid var(--border-medium); border-radius: 8px; }
 .tool-settings-card h3 { margin: 0 0 12px; }
 .tool-settings-card p { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; }
 .tool-activity { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 10px; font-size: 13px; background: rgba(255, 255, 255, .035); white-space: normal; }

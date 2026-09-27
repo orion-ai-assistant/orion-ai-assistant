@@ -1,13 +1,73 @@
 import asyncio
 import json
+import re
 from contextlib import aclosing
+from dataclasses import replace
+from urllib.parse import quote
 
+from orion.contracts.tools import LEGACY_WEB_TOOLS
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
+
+WEB_TOOLS = {"research_web", "google_ai_mode", *LEGACY_WEB_TOOLS}
+
+
+def google_failure_message(result):
+    reason = {
+        'timeout': 'Google AI Mode’dan süre içinde okunabilir bir yanıt alınamadı.',
+        'blocked': 'Google, CAPTCHA veya trafik engeli gösterdi.',
+        'interaction_required': 'Google tarayıcıda giriş veya doğrulama istiyor.',
+        'busy': 'Google profili kullanımda. Açık giriş penceresini kapatıp yeniden deneyin.',
+        'not_configured': 'Google AI Mode için Playwright/Chromium kurulumu eksik.',
+        'unavailable': 'Google AI Mode bu oturumda kullanılamıyor.',
+    }.get(result.get('status'), 'Google AI Mode yanıtı alınamadı.')
+    return (reason + ' Bu sorgu için Google’dan doğrulanabilir araştırma sonucu alınamadı; '
+            'normal web aramasına geçilmedi.' +
+            (' Araç kartındaki doğrulama düğmesiyle aynı sorguyu açabilir, ardından yeniden deneyebilirsiniz.'
+             if result.get('recovery') == 'google_session' else ''))
 
 
 class ToolCancelled(Exception):
     pass
+
+
+def google_direct_text(answer, result=None, *, answer_format=None):
+    def escape(text):
+        return re.sub(r'([\\`*_{}\[\]<>])', r'\\\1', text)
+    answer_format = answer_format or (result or {}).get('answer_format', 'text')
+    text = '**Google AI Mode**\n\n' + (answer if answer_format == 'markdown' else escape(answer))
+    if result:
+        if result.get('sources'):
+            text += '\n\n**Kaynaklar**\n\n' + '\n'.join(
+                '- [' + escape(source.get('title') or source['url']) + '](<' +
+                quote(source['url'], safe=':/?&=%#@+;,-._~') + '>)' for source in result['sources'])
+        if result.get('truncated'):
+            text += '\n\n_Yanıt uzunluk sınırı nedeniyle kısaltıldı._'
+    return text
+
+
+async def stream_tool_answer(tool, arguments, context):
+    """Coalesce page snapshots; closing the consumer also cancels its browser task."""
+    snapshots = asyncio.Queue(maxsize=1)
+
+    async def emit(text):
+        if snapshots.full():
+            snapshots.get_nowait()
+        snapshots.put_nowait(text)
+
+    task = asyncio.create_task(execute_tool(tool, arguments, replace(context, emit_answer=emit)))
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=.05)
+            if not snapshots.empty():
+                yield 'answer', snapshots.get_nowait()
+        if not snapshots.empty():
+            yield 'answer', snapshots.get_nowait()
+        yield 'result', task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def execute_tool(tool, arguments, context):
@@ -37,21 +97,28 @@ class ToolConversation:
     def __init__(self, context, enabled):
         self.context = context
         self.enabled = set(enabled)
+        # Queued jobs can still contain the old catalog IDs after an upgrade.
+        if self.enabled & LEGACY_WEB_TOOLS:
+            self.enabled.difference_update(LEGACY_WEB_TOOLS)
+            self.enabled.add("research_web")
         self.transcript = []
         self.activity = []
         self.final_content = ""
+        self.direct_tool_call_id = None
         self.rounds = 0
+        self.research_used = False
 
     async def stream(self, messages, settings, stop_checker, stream_fn):
         registry = get_registry()
         unknown = self.enabled - registry.tools.keys()
         if unknown:
             raise RuntimeError(f"Tools no longer installed: {', '.join(sorted(unknown))}")
-        schemas = [registry.tools[name].schema() for name in sorted(self.enabled)]
         context = ToolContext(self.context.user_id, self.context.chat_id, self.context.turn_id, stop_checker)
         prefix = ""
         seen_ids = set()
         while not await stop_checker():
+            schemas = [registry.tools[name].schema() for name in sorted(self.enabled)
+                       if not (self.research_used and name in WEB_TOOLS)]
             calls = []
             round_content = ""
             kwargs = {"stop_checker": stop_checker}
@@ -88,6 +155,8 @@ class ToolConversation:
             self.transcript.append(assistant)
             self.final_content = ""
             cancelled = False
+            google_failure = None
+            google_direct_result = None
             for call in calls:
                 function = call["function"]
                 name, arguments = function["name"], function["arguments"]
@@ -101,7 +170,22 @@ class ToolConversation:
                         raise ToolCancelled()
                     if name not in self.enabled or name not in registry.tools:
                         raise ValueError("Tool is not enabled or registered")
-                    result = await execute_tool(registry.tools[name], arguments, context)
+                    if self.research_used and name in WEB_TOOLS:
+                        raise ValueError("Research is complete for this request. Answer from the existing sources "
+                                         "or explain missing evidence; do not call web tools again.")
+                    if name in {"research_web", "google_ai_mode"}:
+                        self.research_used = True
+                    if name == 'google_ai_mode' and settings.google_ai_direct_stream:
+                        async with aclosing(stream_tool_answer(registry.tools[name], arguments, context)) as updates:
+                            async for update, value in updates:
+                                if update == 'answer':
+                                    self.final_content = google_direct_text(value, answer_format='markdown')
+                                    yield 'content_snapshot', prefix + round_content + self.final_content
+                                else:
+                                    result = value
+                        google_direct_result = result
+                    else:
+                        result = await execute_tool(registry.tools[name], arguments, context)
                     item.update(status="completed", result=result)
                 except ToolCancelled:
                     cancelled = True
@@ -112,8 +196,24 @@ class ToolConversation:
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
                 messages.append(result_message)
                 self.transcript.append(result_message)
+                if (name == 'google_ai_mode' and name in self.enabled and item['status'] != 'cancelled'
+                        and (item['result'].get('status') not in ('ok', 'partial') or not item['result'].get('answer'))):
+                    item['status'] = 'error'
+                    google_failure = google_failure_message(item['result'])
                 yield "tool_result", json.dumps(item)
             if cancelled or await stop_checker():
+                return
+            if google_failure:
+                # Do not ask the model to invent a researched answer after a failed provider.
+                self.final_content = google_failure
+                yield 'content_snapshot', prefix + round_content + google_failure
+                return
+            if google_direct_result:
+                self.final_content = google_direct_text(google_direct_result['answer'], google_direct_result)
+                self.direct_tool_call_id = next(
+                    entry['call_id'] for entry in self.activity
+                    if entry['name'] == 'google_ai_mode' and entry['result'] is google_direct_result)
+                yield 'content_snapshot', prefix + round_content + self.final_content
                 return
             prefix += round_content
             self.final_content = ""

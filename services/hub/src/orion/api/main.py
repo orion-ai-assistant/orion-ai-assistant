@@ -8,6 +8,7 @@ from redis.asyncio import Redis
 
 from orion.api.routes import router
 from orion.api.auth_routes import router as auth_router
+from orion.api.google_ai_routes import router as google_ai_router
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from services.shared.environment import get_redis_url
 from orion.kernel.config import get_runtime_settings, seed_database_settings
@@ -30,6 +31,7 @@ app = FastAPI(title="Orion Hub API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(router)
+app.include_router(google_ai_router)
 
 # Arayüzü sunma
 ui_dir = os.path.join(os.path.dirname(__file__), "ui")

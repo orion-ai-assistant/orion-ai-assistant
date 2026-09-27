@@ -15,6 +15,7 @@ class ToolContext:
     chat_id: str
     turn_id: str
     cancelled: Callable[[], Awaitable[bool]]
+    emit_answer: Callable[[str], Awaitable[None]] | None = None
 
 
 @dataclass(frozen=True)

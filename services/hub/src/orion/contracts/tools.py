@@ -1,10 +1,23 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+LEGACY_WEB_TOOLS = {"search_web", "read_page", "read_pages"}
 
 
 class ToolSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     categories: dict[str, bool] = Field(default_factory=dict)
     functions: dict[str, bool] = Field(default_factory=dict)
+
+    @field_validator("functions")
+    @classmethod
+    def migrate_web_tools(cls, value):
+        functions = dict(value)
+        legacy = LEGACY_WEB_TOOLS & functions.keys()
+        if legacy:
+            functions.setdefault("research_web", any(functions[name] for name in legacy))
+            for name in legacy:
+                functions.pop(name)
+        return functions
 
 
 def default_tool_selection() -> ToolSelection:
