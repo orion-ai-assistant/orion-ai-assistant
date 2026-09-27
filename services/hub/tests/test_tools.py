@@ -20,7 +20,8 @@ from orion.worker.services.tool_runner import ToolConversation, ToolCancelled, e
 from orion.worker.services.tool_stream import ToolCallAccumulator
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import ToolRegistry, get_registry
-from orion.worker.tools.datetime_tools import CATEGORY, TimeInput
+from orion.worker.tools.datetime import CATEGORY
+from orion.worker.tools.datetime.tools import TimeInput
 
 
 def call(identifier="call_1", name="get_current_time", arguments='{"timezone":"UTC"}'):
