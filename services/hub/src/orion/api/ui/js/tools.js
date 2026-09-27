@@ -45,22 +45,35 @@ const ToolsUI = {
         card.innerHTML = '<h3>Varsayılan fonksiyonlar</h3><p>Özel seçim yapılmamış sohbetlerde kullanılacak fonksiyonları belirleyin.</p><button type="button" class="btn btn-primary">Fonksiyonları düzenle</button>';
         card.querySelector('button').onclick = () => this.open(true);
         (document.getElementById('settings-panel-general') || dashboard).appendChild(card);
-        const google = document.createElement('section');
-        google.className = 'settings-card';
-        const title = document.createElement('h3'); title.textContent = 'Google Search / AI Mode';
-        google.appendChild(title);
-        this.renderGoogleSession(google);
-        (document.getElementById('settings-panel-general') || dashboard).appendChild(google);
+    },
+    renderGoogleOptions(target, settings) {
+        const row = document.createElement('label'); row.className = 'tool-row';
+        const copy = document.createElement('span'); copy.className = 'tool-row-copy';
+        const title = document.createElement('strong'); title.textContent = 'Google yanıtını doğrudan akıt';
+        const description = document.createElement('small');
+        description.textContent = 'Açıkken Google yanıtı oluştukça ekrana aktarılır; Orion modeli yeniden yazmaz. Kapalıyken Google sonucu Orion modeline verilir. Tüm sohbetlerde geçerlidir.';
+        copy.append(title, description);
+        const status = document.createElement('p'); status.setAttribute('role', 'status');
+        const user = AppConfig.getUserId();
+        const input = this.toggle(title.textContent, settings.google_ai_direct_stream !== false && settings.google_ai_direct_stream !== 'false', async value => {
+            if (user !== AppConfig.getUserId()) return;
+            input.disabled = true; status.textContent = '';
+            try {
+                await this.request('/api/v1/admin/settings', 'POST', {
+                    user_id: user, values: {google_ai_direct_stream: String(value)}
+                });
+            } catch (error) {
+                input.checked = !value;
+                status.textContent = `Kaydedilemedi: ${error.message}`;
+            } finally { input.disabled = false; }
+        });
+        row.append(copy, input); target.append(row, status);
     },
     renderGoogleSession(target, query = '') {
         const panel = document.createElement('div'); panel.className = 'google-session';
         const description = document.createElement('p');
-        description.textContent = 'Giriş bu bilgisayarda açılan Google penceresinde yapılır. Oturum yerelde saklanır; normal aramalar pencere açmadan arka planda çalışır. CAPTCHA tekrar istenebilir. Giriş veya doğrulama bitince pencereyi kapatın.';
+        description.textContent = 'Doğrulama bu bilgisayarda açılan Google penceresinde yapılır; hesap girişi gerekmez. Profil yerelde saklanır; normal aramalar arka planda çalışır. CAPTCHA tekrar istenebilir. Doğrulama bitince pencereyi kapatın.';
         const status = document.createElement('p'); status.setAttribute('role', 'status');
-        const label = document.createElement('label'); label.textContent = 'Girişten sonra / doğrulamada açılacak arama';
-        const input = document.createElement('input'); input.type = 'text';
-        input.value = typeof query === 'string' && query.trim() ? query : 'Türkiye’nin başkenti neresidir?';
-        label.appendChild(input);
         const actions = document.createElement('div'); actions.className = 'google-session-actions';
         const buttons = [];
         const user = AppConfig.getUserId();
@@ -68,7 +81,7 @@ const ToolsUI = {
         const refresh = async () => {
             const data = await this.request('/api/v1/google-ai/session');
             if (current()) status.textContent = data.busy ? 'Google profili kullanımda. Pencereyi kapattıktan sonra durumu yenileyin.' :
-                data.saved ? 'Kalıcı profil kayıtlı. Google giriş durumu tarayıcıdan kontrol edilir.' : 'Kayıtlı profil yok. Giriş yapmadan da arama yapabilirsiniz.';
+                data.saved ? 'Kalıcı profil kayıtlı. Bu, Google doğrulamasının hâlâ geçerli olduğunu garanti etmez.' : 'Kayıtlı profil yok. Hesap girişi gerekmez.';
         };
         const add = (label, action) => {
             const button = document.createElement('button'); button.type = 'button';
@@ -84,18 +97,18 @@ const ToolsUI = {
             buttons.push(button); actions.appendChild(button);
         };
         const open = async verify => {
-            if (!input.value.trim()) throw new Error('Doğrulama için bir arama yazın.');
-            const data = await this.request('/api/v1/google-ai/session', 'POST', {verify, query: input.value.trim()});
+            const payload = {verify};
+            if (typeof query === 'string' && query.trim()) payload.query = query.trim();
+            const data = await this.request('/api/v1/google-ai/session', 'POST', payload);
             if (current()) status.textContent = data.message;
         };
-        add('Google hesabıyla giriş yap', () => open(false));
         add('Google doğrulamasını aç', () => open(true));
         add('Durumu yenile', refresh);
         add('Google oturumunu sil', async () => {
             await this.request('/api/v1/google-ai/session', 'DELETE');
             await refresh();
         });
-        panel.append(description, label, actions, status); target.appendChild(panel);
+        panel.append(description, actions, status); target.appendChild(panel);
         refresh().catch(error => { if (current()) status.textContent = error.message; });
     },
     async open(defaults) {
@@ -215,7 +228,10 @@ const ToolsUI = {
                 const description = document.createElement('p'); description.className = 'tool-category-description';
                 description.textContent = cat.description;
                 content.appendChild(description);
-                if (cat.id === 'google_ai') this.renderGoogleSession(content);
+                if (cat.id === 'google_ai') {
+                    this.renderGoogleOptions(content, settings);
+                    this.renderGoogleSession(content);
+                }
                 const children = document.createElement('fieldset'); children.className = 'tools-functions';
                 children.disabled = !selected.categories[cat.id];
                 for (const fn of cat.functions) {
@@ -283,7 +299,8 @@ const ToolsUI = {
         let args = item.arguments;
         try { args = JSON.parse(args); } catch (_) { /* Show malformed arguments verbatim. */ }
         card.querySelector('pre').textContent = 'Girdi\n' + JSON.stringify(args, null, 2) +
-            (item.result === undefined ? '' : '\n\nSonuç\n' + JSON.stringify(item.result, null, 2));
+            (item.result === undefined ? '' : '\n\nSonuç\n' + JSON.stringify(item.result,
+                (key, value) => key === 'truncated' ? undefined : value, 2));
         card.querySelector('.google-session')?.remove();
         if (item.name === 'google_ai_mode' && item.result?.recovery === 'google_session') this.renderGoogleSession(card, args?.query);
     },

@@ -1,6 +1,7 @@
 """Browser-backed fixtures distilled from the user's September 2026 AI Mode DOM."""
 
 import os
+import tempfile
 import unittest
 
 from orion.worker.tools.google_ai.tools import ANSWER_SELECTOR, SNAPSHOT, _sources
@@ -28,6 +29,26 @@ class GoogleDOMTests(unittest.TestCase):
             return page.evaluate(SNAPSHOT, ANSWER_SELECTOR)
         finally:
             page.close()
+
+    def test_session_cookies_survive_browser_restart_with_restore(self):
+        # No Google requests, actual account data, or exported cookie files.
+        with tempfile.TemporaryDirectory() as directory:
+            options = dict(headless=True, channel='chromium', chromium_sandbox=True,
+                           args=['--restore-last-session'])
+            context = self.playwright.chromium.launch_persistent_context(directory, **options)
+            try:
+                context.add_cookies([{'name': 'synthetic_session', 'value': 'test-only',
+                                     'domain': 'example.com', 'path': '/'}])
+                context.pages[0].goto('about:blank')
+            finally:
+                context.close()
+            context = self.playwright.chromium.launch_persistent_context(directory, **options)
+            try:
+                self.assertTrue(any(c['name'] == 'synthetic_session' and c['expires'] == -1
+                                    for c in context.cookies()))
+                self.assertTrue(all(p.url == 'about:blank' for p in context.pages))
+            finally:
+                context.close()
 
     def test_current_main_col_excludes_hidden_ui_and_reads_citation_record(self):
         data = self.snapshot('''<nav>Google navigation</nav>
@@ -70,6 +91,21 @@ class GoogleDOMTests(unittest.TestCase):
         data = self.snapshot('<main><h1>Search results</h1><p>A very plausible answer in a normal search snippet.</p></main>')
         self.assertFalse(data['root_found'])
         self.assertEqual(data['answer'], '')
+
+    def test_inline_links_and_citations_keep_their_position(self):
+        data = self.snapshot('''<div data-container-id="main-col">
+          <p>First claim.<button data-icl-uuid="first">Source chip</button></p>
+          <p><a href="https://example.org/biography"><strong>Biography</strong></a>: second claim.</p>
+          <p><a href="javascript:alert(1)">Unsafe label</a></p>
+          <div hidden><!--TgQPHd|||[["first",null,null,0,"favicon","Archive",1,"https://example.org/archive"]]--></div>
+          <button>Share</button></div>''')
+        answer = data['answer']
+        self.assertIn('First claim. [Archive](<https://example.org/archive>)', answer)
+        self.assertIn('[**Biography**](<https://example.org/biography>): second claim.', answer)
+        self.assertLess(answer.index('[Archive]'), answer.index('[**Biography**]'))
+        self.assertNotIn('javascript:', answer)
+        self.assertNotIn('Share', answer)
+        self.assertEqual(len(_sources(data['links'])), 2)
 
     def test_nested_formatting_is_applied_once_without_rewriting_words(self):
         data = self.snapshot('''<div data-container-id="main-col"><p>

@@ -30,6 +30,15 @@ SNAPSHOT = r"""selector => {
         '[data-ignore-copy],[jsaction*="aimRenderComplete:"]';
     const escapeText = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/([\\`*_{}\[\]|#!])/g, '\\$1');
+    const citations = new Map();
+    const safeHref = value => {
+        try {
+            const url = new URL(value, location.href);
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+            return url.href.replace(/[<>\\\s]/g, c => encodeURIComponent(c));
+        } catch (_) { return ''; }
+    };
+    const markdownLink = (label, url) => `[${label}](<${url}>)`;
     const hidden = node => {
         const style = getComputedStyle(node);
         return node.matches(excluded) || node.hidden || node.getAttribute('aria-hidden') === 'true' ||
@@ -38,7 +47,12 @@ SNAPSHOT = r"""selector => {
     // Track formatting through the DOM tree, rather than repairing generated text.
     const read = (node, marks = {bold: false, italic: false}) => {
         if (node.nodeType === Node.TEXT_NODE) return escapeText(node.textContent.replace(/\s+/g, ' '));
-        if (node.nodeType !== Node.ELEMENT_NODE || node.matches(excluded)) return '';
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        // A citation button is content metadata, unlike ordinary toolbar buttons.
+        const citation = citations.get(node.getAttribute('data-icl-uuid'));
+        if (citation && visible(node) && !node.closest('[aria-hidden="true"],[data-ignore-copy],[jsaction*="aimRenderComplete:"]'))
+            return ' ' + markdownLink(escapeText(citation.title || 'Kaynak'), safeHref(citation.url)) + ' ';
+        if (node.matches(excluded)) return '';
         const style = getComputedStyle(node);
         if (hidden(node)) return '';
         if (node.tagName === 'BR') return '\n';
@@ -67,6 +81,10 @@ SNAPSHOT = r"""selector => {
                 }).join('\n') + '\n';
         }
         let text = [...node.childNodes].map(readChild).join('');
+        if (node.tagName === 'A') {
+            const href = safeHref(node.getAttribute('href') || '');
+            if (href && text.trim()) return markdownLink(text.trim(), href);
+        }
         if (!text.trim()) return text;
         if (/^H[1-6]$/.test(node.tagName) || node.getAttribute('role') === 'heading') {
             const level = /^H/.test(node.tagName) ? Number(node.tagName[1]) : Number(node.getAttribute('aria-level')) || 3;
@@ -87,8 +105,11 @@ SNAPSHOT = r"""selector => {
     let budget = 2000;
     const collect = (value, depth = 0) => {
         if (!Array.isArray(value) || depth > 12 || --budget < 0) return;
-        if (citationIds.has(value[0]) && typeof value[7] === 'string' && /^https?:\/\//.test(value[7]))
-            links.push({url: value[7], title: typeof value[5] === 'string' ? value[5] : ''});
+        if (citationIds.has(value[0]) && typeof value[7] === 'string' && /^https?:\/\//.test(value[7]) && safeHref(value[7])) {
+            const citation = {url: value[7], title: typeof value[5] === 'string' ? value[5] : ''};
+            links.push(citation);
+            citations.set(value[0], citation);
+        }
         value.forEach(child => collect(child, depth + 1));
     };
     const comments = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
@@ -201,16 +222,21 @@ async def _read_browser(query_url, user_id=None, emit_answer=None):
 
     async with async_playwright() as playwright:
         user_agent = await _compatible_user_agent(playwright)
-        persistent = user_id is not None and (profile_dir(user_id) / '.orion-enabled').exists()
+        # Keep the same profile even before the first verification visit.
+        persistent = user_id is not None
         browser = None
         context = None
         try:
             if persistent:
+                directory = profile_dir(user_id)
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 context = await playwright.chromium.launch_persistent_context(
-                    str(profile_dir(user_id)), headless=True, channel='chromium',
+                    str(directory), headless=True, channel='chromium',
+                    args=['--restore-last-session'],
                     chromium_sandbox=True, timeout=8000, locale='tr-TR',
                     accept_downloads=False, service_workers='block', user_agent=user_agent,
                 )
+                (directory / '.orion-enabled').touch()
             else:
                 browser = await playwright.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True, timeout=8000)
                 context = await browser.new_context(locale='tr-TR', accept_downloads=False, service_workers='block', user_agent=user_agent)
@@ -226,7 +252,8 @@ async def _read_browser(query_url, user_id=None, emit_answer=None):
                     await route.continue_()
 
             await context.route('**/*', route_request)
-            page = await context.new_page()
+            # Reuse a restored tab rather than accumulating Google tabs per query.
+            page = context.pages[0] if context.pages else await context.new_page()
             page.set_default_timeout(3000)
             response = await page.goto(query_url, wait_until='domcontentloaded', timeout=10000)
             if response and response.status >= 400:
@@ -264,6 +291,18 @@ async def _read_browser(query_url, user_id=None, emit_answer=None):
                                     'page_path': urlsplit(page.url).path}}
         finally:
             if context:
+                if persistent:
+                    # Save a blank tab so the next session restore doesn't replay
+                    # the previous search in addition to the user's new query.
+                    try:
+                        async with asyncio.timeout(2):
+                            pages = context.pages
+                            if pages:
+                                await pages[0].goto('about:blank', wait_until='commit', timeout=1500)
+                                for extra in pages[1:]:
+                                    await extra.close()
+                    except Exception:
+                        pass
                 await asyncio.wait_for(context.close(), timeout=2)
             if browser:
                 await asyncio.wait_for(browser.close(), timeout=2)

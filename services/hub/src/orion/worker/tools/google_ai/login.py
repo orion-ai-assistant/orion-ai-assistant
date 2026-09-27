@@ -22,6 +22,7 @@ async def open_login(user_id, verify=False, query='Türkiye’nin başkenti nere
         async with async_playwright() as playwright:
             context = await playwright.chromium.launch_persistent_context(
                 str(directory), headless=False, channel='chromium',
+                args=['--restore-last-session'],
                 chromium_sandbox=True, locale='tr-TR', accept_downloads=False,
                 timeout=15000,
             )

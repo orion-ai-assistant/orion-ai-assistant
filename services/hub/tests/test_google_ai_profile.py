@@ -58,13 +58,13 @@ class GoogleProfileTests(unittest.IsolatedAsyncioTestCase):
         except ImportError:
             self.skipTest('Optional Playwright dependency is not installed')
         directory = profile.profile_dir('alice')
-        directory.mkdir(parents=True)
-        (directory / '.orion-enabled').touch()
+        # The first anonymous search must persist too, before any verification.
         page = AsyncMock()
         page.goto.return_value = SimpleNamespace(status=200)
         page.url = 'https://www.google.com/sorry/index'
         page.evaluate.return_value = {'body': 'unusual traffic'}
         context = AsyncMock()
+        context.pages = []
         context.new_page.return_value = page
         page.set_default_timeout = Mock()
         chromium = SimpleNamespace(launch_persistent_context=AsyncMock(return_value=context), launch=AsyncMock())
@@ -75,7 +75,9 @@ class GoogleProfileTests(unittest.IsolatedAsyncioTestCase):
             result = await tools._read_browser('https://www.google.com/search?udm=50', 'alice')
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(chromium.launch_persistent_context.call_args.args[0], str(directory))
+        self.assertTrue((directory / '.orion-enabled').exists())
         self.assertTrue(chromium.launch_persistent_context.call_args.kwargs['headless'])
+        self.assertEqual(chromium.launch_persistent_context.call_args.kwargs['args'], ['--restore-last-session'])
         self.assertEqual(chromium.launch_persistent_context.call_args.kwargs['user_agent'], 'Chrome/test')
         chromium.launch.assert_not_awaited()
         context.close.assert_awaited_once()

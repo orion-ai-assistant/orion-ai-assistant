@@ -730,10 +730,6 @@ const UI = {
         }
 
         const categoryMeta = {
-            "Google AI Mode": {
-                section: "general", icon: "🌐", keys: ["google_ai_direct_stream"],
-                desc: "Google yanıtını doğrudan gösterme"
-            },
             "Sohbet": {
                 section: "general", icon: "💬", keys: ["router_model_group", "chat_title_model", "ai_chat_titles_enabled", "router_api_key"],
                 desc: "Sohbet ve başlık ayarları"
@@ -787,7 +783,7 @@ const UI = {
 
         const escapeSetting = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         const sections = {general: '', advanced: ''};
-        const handledKeys = new Set(['tool_selection', 'tts_model_voices']);
+        const handledKeys = new Set(['tool_selection', 'tts_model_voices', 'google_ai_direct_stream']);
 
         Object.entries(categoryMeta).forEach(([categoryName, meta]) => {
             let hasKeys = false;

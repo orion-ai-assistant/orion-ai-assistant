@@ -21,8 +21,8 @@ class GoogleDirectStreamTests(unittest.IsolatedAsyncioTestCase):
     def conversation(self):
         return ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['google_ai_mode'])
 
-    def test_default_off_and_persisted_boolean(self):
-        self.assertFalse(RuntimeSettings().google_ai_direct_stream)
+    def test_default_on_and_persisted_boolean(self):
+        self.assertTrue(RuntimeSettings().google_ai_direct_stream)
         self.assertTrue(build_runtime_settings({'google_ai_direct_stream': 'true'}).google_ai_direct_stream)
         self.assertFalse(build_runtime_settings({'google_ai_direct_stream': 'false'}).google_ai_direct_stream)
 
@@ -76,7 +76,7 @@ class GoogleDirectStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(context.emit_answer)
             return {'status': 'ok', 'answer': 'Google answer', 'sources': []}
         with patch('orion.worker.services.tool_runner.execute_tool', execute):
-            events = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), model)]
+            events = [event async for event in conversation.stream([], RuntimeSettings(google_ai_direct_stream=False), AsyncMock(return_value=False), model)]
         self.assertEqual(len(model_calls), 2)
         self.assertEqual(events[-1], ('content', 'Orion summary'))
 

@@ -69,7 +69,8 @@ worker/API images do not acquire a browser dependency automatically.
 - Failed Google calls finish with a deterministic error message, not another model
   completion that could invent research or sources. The tool activity is marked error.
 - Returns up to 5,000 UTF-8 bytes of answer text, up to six source links, truncation
-  flag, search URL and elapsed time. `partial` means the answer was extracted but
+  flag, search URL and elapsed time. The activity UI hides the internal `truncated`
+  field for all tools, including nested results; truncation handling is retained. `partial` means the answer was extracted but
   source links were not available.
 - Failures are explicit: `not_configured`, `blocked`, `interaction_required`,
   `unavailable`, `timeout`, `provider_error`, or `busy`; no invented answer is returned.
@@ -108,8 +109,8 @@ Google may reject automated-browser sign-in or require CAPTCHA again.
 
 Blocked and timed-out tool results include session controls. Choose **Google
 doğrulamasını aç** to open the failed query, complete verification, close the window,
-and resend the question. In settings, the editable test query defaults to a simple
-capital-city question; login also continues to this search. There is no automatic
+and resend the question. The failed model-generated query is reused automatically.
+From the tool settings, a server-side default query is used; there is no query input. There is no automatic
 replay of the failed tool call.
 
 Profiles live in `services/hub/data/google-profiles/<hashed-Orion-user>/`, covered
@@ -182,3 +183,26 @@ Validation: five Google DOM tests, three real-browser Markdown UI tests, six dir
 stream tests and six history projection tests passed. A local visual check covered
 headings, emphasis, lists, tables, sources and code blocks. No new live Google query
 was used for this formatting change.
+
+Session recovery fix: verification and background searches both launch Chromium
+with `--restore-last-session`. A synthetic browser experiment demonstrated that
+session cookies were lost on restart without this option, despite using the same
+profile. With it, session cookies survive without exporting their values. Every
+Orion user's search now uses a persistent profile from the first request, even
+without Google sign-in. Background cleanup saves a blank tab to avoid replaying
+the previous search at the next startup. The first startup after manually closing
+verification can still restore that verification tab; Google may challenge again.
+
+The UI account-login button was removed: Google may reject automation-controlled
+browsers at sign-in, and login is not a guaranteed remedy for CAPTCHA. Manual
+verification remains available. Twenty Google tests pass, including actual
+Chromium session-cookie persistence. These are local fixtures, not proof that a
+particular Google CAPTCHA clearance will be accepted by the next headless request.
+
+Inline sources: answer anchors now retain their HTTP(S) links in Markdown, and
+known citation records are matched to `data-icl-uuid` buttons at their position in
+the answer. Ordinary toolbar buttons remain excluded. Source labels without a
+resolved URL are not converted to invented citations. This does not scrape the
+separate right-hand source panel or guarantee support for every Google citation
+record variant. Seven browser fixture tests cover extraction and session restore;
+no live Google request was made for the inline-link change.
