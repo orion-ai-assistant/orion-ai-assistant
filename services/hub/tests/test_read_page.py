@@ -36,7 +36,7 @@ class ReadPageTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
 
-    async def test_batch_reads_concurrently_preserves_order_and_bounds_json(self):
+    async def test_batch_reads_concurrently_preserves_order_and_full_text(self):
         started = 0
         all_started = asyncio.Event()
         urls = [f'https://example.com/{i}/' + 'a' * 1000 for i in range(5)]
@@ -52,15 +52,14 @@ class ReadPageTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(page, '_fetch_page', side_effect=fetch):
             result = await execute_tool(page.READ_PAGES, json.dumps({'urls': urls}), self.context)
         self.assertEqual([p['url'] for p in result['pages']], urls)
-        self.assertTrue(all(p['status'] == 'ok' and p['truncated'] for p in result['pages']))
-        self.assertTrue(all(len(p['text'].encode()) <= 4000 for p in result['pages']))
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertTrue(all(p['status'] == 'ok' and 'truncated' not in p for p in result['pages']))
+        self.assertTrue(all(p['text'] == '"' * 10000 for p in result['pages']))
 
     async def test_batch_keeps_success_when_other_pages_fail(self):
         async def fetch(session, url):
             if url.endswith('/slow'):
                 raise TimeoutError('page timed out')
-            return {'status': 'ok', 'url': url, 'text': 'Useful article', 'truncated': False}
+            return {'status': 'ok', 'url': url, 'text': 'Useful article'}
         with patch.object(page, '_fetch_page', side_effect=fetch) as fetch_mock:
             result = await execute_tool(page.READ_PAGES, json.dumps({'urls': [
                 'https://example.com/article', 'https://example.com/slow', 'http://127.0.0.1',
@@ -106,7 +105,7 @@ class ReadPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['title'], 'Example & news')
         self.assertEqual(result['text'], 'Headline Real content.')
         self.assertEqual(result['date'], '2026-09-27T10:00:00Z')
-        self.assertFalse(result['truncated'])
+        self.assertNotIn('truncated', result)
         self.assertTrue(all(call.kwargs['allow_redirects'] is False for call in session.get.call_args_list))
 
     async def test_redirect_cannot_reach_private_target_and_loops_are_bounded(self):
@@ -132,12 +131,12 @@ class ReadPageTests(unittest.IsolatedAsyncioTestCase):
             await page._fetch_page(session, 'https://example.com')
         session.get.return_value = Response(('<article>' + '\U0001f600' * 10000 + '</article>').encode())
         result = await page._fetch_page(session, 'https://example.com')
-        self.assertTrue(result['truncated'])
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertNotIn('truncated', result)
+        self.assertEqual(result['text'], '\U0001f600' * 10000)
         session.get.return_value = Response(b'"' * 25000, content_type='text/plain')
         result = await page._fetch_page(session, 'https://example.com')
-        self.assertTrue(result['truncated'])
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertNotIn('truncated', result)
+        self.assertEqual(result['text'], '"' * 25000)
 
     async def test_deadline_covers_all_redirects_and_connection_cleanup(self):
         async def slow_fetch(*args):

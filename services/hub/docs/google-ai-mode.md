@@ -68,10 +68,9 @@ worker/API images do not acquire a browser dependency automatically.
   both `research_web` and `google_ai_mode` are then removed from available schemas.
 - Failed Google calls finish with a deterministic error message, not another model
   completion that could invent research or sources. The tool activity is marked error.
-- Returns up to 5,000 UTF-8 bytes of answer text, up to six source links, truncation
-  flag, search URL and elapsed time. The activity UI hides the internal `truncated`
-  field for all tools, including nested results; truncation handling is retained. `partial` means the answer was extracted but
-  source links were not available.
+- Returns the full extracted answer, up to six source links, search URL and elapsed
+  time. Live snapshots and final results have no answer byte limit or truncation
+  field. `partial` means source links were not available.
 - Failures are explicit: `not_configured`, `blocked`, `interaction_required`,
   `unavailable`, `timeout`, `provider_error`, or `busy`; no invented answer is returned.
 

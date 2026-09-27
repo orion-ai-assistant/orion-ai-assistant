@@ -32,15 +32,13 @@ class WebSearchInput(ToolInput):
         return value
 
 
-def _short_text(value, limit):
-    # Byte bounds keep even non-ASCII results below the runner's 32 KiB limit.
+def _clean_text(value):
     value = "".join(char if char.isprintable() else " " for char in str(value or ""))
-    return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    return value
 
 
 def _normalize(rows, max_results):
     results, seen = [], set()
-    output_bytes = 0
     for row in rows:
         url = str(row.get("url") or row.get("href") or "")
         try:
@@ -58,16 +56,12 @@ def _normalize(rows, max_results):
             continue
         seen.add(key)
         result = {
-            "title": _short_text(row.get("title"), 200), "url": url,
-            "snippet": _short_text(row.get("body"), 400 if max_results > 10 else 800),
-            "date": _short_text(row.get("date"), 80) or None,
-            "source": _short_text(row.get("source"), 160) or None,
+            "title": _clean_text(row.get("title")), "url": url,
+            "snippet": _clean_text(row.get("body")),
+            "date": _clean_text(row.get("date")) or None,
+            "source": _clean_text(row.get("source")) or None,
         }
-        result_bytes = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
-        if output_bytes + result_bytes > 24_000:
-            break
         results.append(result)
-        output_bytes += result_bytes
         if len(results) >= max_results:
             break
     return results
@@ -122,7 +116,7 @@ async def search_web(args, context):
             result["status"] = "no_results"
         else:
             result["status"] = "provider_error"
-        result["error"] = {"type": exception_type, "message": _short_text(exc, 500), "http_status": http_status}
+        result["error"] = {"type": exception_type, "message": _clean_text(exc), "http_status": http_status}
     except asyncio.CancelledError:
         result["status"] = "cancelled"
         exception_type = "CancelledError"

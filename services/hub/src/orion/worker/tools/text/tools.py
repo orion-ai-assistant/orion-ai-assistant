@@ -26,12 +26,8 @@ class FindInTextInput(ToolInput):
 async def find_in_text(args: FindInTextInput, context: ToolContext) -> dict:
     matches = re.finditer(re.escape(args.query), args.text,
                           flags=0 if args.case_sensitive else re.IGNORECASE)
-    positions = []
-    for match in matches:
-        positions.append(match.start())
-        if len(positions) > 100:
-            break
-    return {"positions": positions[:100], "truncated": len(positions) > 100,
+    positions = [match.start() for match in matches]
+    return {"positions": positions,
             "case_sensitive": args.case_sensitive}
 
 

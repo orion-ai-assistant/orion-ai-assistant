@@ -41,8 +41,6 @@ def google_direct_text(answer, result=None, *, answer_format=None):
             text += '\n\n**Kaynaklar**\n\n' + '\n'.join(
                 '- [' + escape(source.get('title') or source['url']) + '](<' +
                 quote(source['url'], safe=':/?&=%#@+;,-._~') + '>)' for source in result['sources'])
-        if result.get('truncated'):
-            text += '\n\n_Yanıt uzunluk sınırı nedeniyle kısaltıldı._'
     return text
 
 
@@ -84,8 +82,6 @@ async def execute_tool(tool, arguments, context):
                     raise ToolCancelled()
                 if ready:
                     result = json.dumps(task.result(), ensure_ascii=False, allow_nan=False)
-                    if len(result.encode("utf-8")) > 32768:
-                        raise ValueError("Tool result exceeds 32 KiB")
                     return json.loads(result)
     finally:
         if not task.done():

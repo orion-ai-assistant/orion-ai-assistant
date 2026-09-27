@@ -79,7 +79,14 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             TimeInput.model_validate({'extra': True})
 
-    async def test_timeout_result_limit_and_cancellation(self):
+    async def test_find_returns_all_matching_positions(self):
+        from orion.worker.tools.text.tools import find_in_text, FindInTextInput
+        context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
+        result = await find_in_text(FindInTextInput(text='a' * 10000, query='a'), context)
+        self.assertEqual(result['positions'], list(range(10000)))
+        self.assertNotIn('truncated', result)
+
+    async def test_timeout_full_result_and_cancellation(self):
         ended = asyncio.Event()
         async def waiting(args, context):
             try:
@@ -95,8 +102,8 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             await execute_tool(replace(CATEGORY.tools[0], handler=waiting), '{}', context)
         async def large(args, context):
             return 'x' * 32768
-        with self.assertRaises(ValueError):
-            await execute_tool(replace(CATEGORY.tools[0], handler=large), '{}', replace(context, cancelled=AsyncMock(return_value=False)))
+        result = await execute_tool(replace(CATEGORY.tools[0], handler=large), '{}', replace(context, cancelled=AsyncMock(return_value=False)))
+        self.assertEqual(result, 'x' * 32768)
 
 
 class StreamTests(unittest.IsolatedAsyncioTestCase):

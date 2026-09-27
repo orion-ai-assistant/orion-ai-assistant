@@ -54,7 +54,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(result['results'][0]['date'])
             self.assertIsNone(result['results'][0]['source'])
 
-    async def test_thirty_links_in_one_call_with_bounded_output(self):
+    async def test_thirty_links_in_one_call_with_full_snippets(self):
         self.client.text.return_value = [
             {'href': f'https://example.com/article/{i}', 'title': 'Example', 'body': '\U0001f600' * 1000}
             for i in range(30)
@@ -63,7 +63,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result['results']), 30)
         self.assertEqual(self.client.text.call_count, 1)
         self.assertEqual(self.client.text.call_args.kwargs['max_results'], 30)
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertTrue(all(row['snippet'] == '\U0001f600' * 1000 for row in result['results']))
 
     async def test_invalid_inputs_do_not_call_provider(self):
         for args in ({'query': ' '}, {'query': 'q', 'max_results': 31},
@@ -74,7 +74,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
                 await execute_tool(SEARCH_WEB, json.dumps(args), self.context)
         self.constructor.assert_not_called()
 
-    async def test_filters_deduplicates_and_bounds_unicode_output(self):
+    async def test_filters_deduplicates_and_preserves_unicode_output(self):
         self.client.text.return_value = [
             {'href': 'javascript:alert(1)'}, {'href': 'https://[broken'},
             {'href': 'https://example.com/\n'}, {'href': 'https://example.com/' + 'x' * 1300},
@@ -90,7 +90,8 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         ]
         result = await execute_tool(SEARCH_WEB, '{"query":"q","max_results":10}', self.context)
         self.assertEqual(len(result['results']), 10)
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertEqual(result['results'][0]['snippet'], '\U0001f600' * 10000)
+        self.assertEqual(result['results'][0]['title'], '\U0001f600' * 500)
 
     async def test_status_classification_and_structured_log(self):
         wrapped = RuntimeError('upstream failed')
@@ -126,7 +127,7 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await tools.search_web(tools.WebSearchInput(query='q'), self.context)
 
-    async def test_json_escaping_cannot_exceed_runner_limit(self):
+    async def test_json_escaping_preserves_all_results(self):
         self.client.text.return_value = [
             {'href': f'https://example.com/{i}/' + '"' * 1100,
              'title': '"' * 200, 'body': '"' * 800, 'source': '"' * 160, 'date': '"' * 80}
@@ -134,4 +135,5 @@ class WebSearchTests(unittest.IsolatedAsyncioTestCase):
         ]
         result = await execute_tool(SEARCH_WEB, '{"query":"q","max_results":10}', self.context)
         self.assertEqual(result['status'], 'ok')
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 32768)
+        self.assertEqual(len(result['results']), 10)
+        self.assertEqual(result['results'][-1]['snippet'], '"' * 800)

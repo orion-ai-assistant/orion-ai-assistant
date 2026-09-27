@@ -148,9 +148,9 @@ class GoogleAIInput(ToolInput):
         return value
 
 
-def _text(value, limit):
+def _text(value):
     value = ''.join(c if c.isprintable() or c in '\n\t' else ' ' for c in str(value or ''))
-    return value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    return value
 
 
 def _blocked_state(url, body):
@@ -192,7 +192,7 @@ def _sources(links):
         except ValueError:
             continue
         if url not in seen:
-            sources.append({'url': url, 'title': _text(link.get('title') or host, 160)})
+            sources.append({'url': url, 'title': _text(link.get('title') or host)})
             seen.add(url)
         if len(sources) == 6:
             break
@@ -269,15 +269,15 @@ async def _read_browser(query_url, user_id=None, emit_answer=None):
                     return {'status': blocked[0], 'message': blocked[1]}
                 answer = snapshot.get('answer', '')
                 if emit_answer and answer and answer != emitted:
-                    await emit_answer(_text(answer, 5000))
+                    await emit_answer(answer)
                     emitted = answer
                 if answer != previous or snapshot.get('busy'):
                     stable_since = monotonic()
                     previous = answer
                 elif answer and monotonic() - stable_since >= (2 if snapshot.get('completed') else 4):
                     sources = _sources(snapshot.get('links', []))
-                    return {'status': 'ok' if sources else 'partial', 'answer': _text(answer, 5000), 'answer_format': 'markdown',
-                            'sources': sources, 'truncated': len(answer.encode('utf-8')) > 5000,
+                    return {'status': 'ok' if sources else 'partial', 'answer': answer, 'answer_format': 'markdown',
+                            'sources': sources,
                             'message': 'Google-generated answer, not independently verified. Completion inferred from stable page text.'
                             + ('' if sources else ' No source links could be extracted from the answer container.')}
                 await asyncio.sleep(.5)

@@ -12,12 +12,10 @@ from pydantic import Field, field_validator
 
 from .._base import Tool, ToolInput
 from .page import ReadPageInput, read_page
-from .tools import WebSearchInput, _short_text, search_web
+from .tools import WebSearchInput, _clean_text, search_web
 
 logger = logging.getLogger(__name__)
 MAX_SOURCES = 5
-SOURCE_TEXT_BYTES = 1_200
-SOURCE_JSON_BYTES = 3_000
 READ_TIMEOUT = 10
 
 
@@ -63,26 +61,17 @@ async def _read_source(row, context):
         return {"status": "timeout", "error": {"type": "TimeoutError", "message": "Research page deadline exceeded"}}
 
 
-def _compact_source(row, page):
+def _source_result(row, page):
     has_page = page.get("status") == "ok" and bool(page.get("text"))
     raw = page["text"] if has_page else row.get("snippet", "")
-    text = _short_text(raw, SOURCE_TEXT_BYTES)
     source = {
         "url": row["url"],
-        "title": _short_text(page.get("title") or row.get("title"), 160),
-        "date": _short_text(page.get("date") or row.get("date"), 80) or None,
+        "title": _clean_text(page.get("title") or row.get("title")),
+        "date": _clean_text(page.get("date") or row.get("date")) or None,
         "read_status": page.get("status", "provider_error"),
         "evidence": "page_excerpt" if has_page else "search_snippet",
-        "text": text,
-        "truncated": bool(page.get("truncated")) if has_page else False,
+        "text": raw,
     }
-    source["truncated"] |= len(raw.encode("utf-8")) > SOURCE_TEXT_BYTES
-    # URL/title/date remain usable while escaped content stays within a compact budget.
-    while len(json.dumps(source, ensure_ascii=False).encode("utf-8")) > SOURCE_JSON_BYTES and source["text"]:
-        source["text"] = source["text"][:len(source["text"]) // 2]
-        source["truncated"] = True
-    while len(json.dumps(source, ensure_ascii=False).encode("utf-8")) > SOURCE_JSON_BYTES and source["title"]:
-        source["title"] = source["title"][:len(source["title"]) // 2]
     return source
 
 
@@ -107,7 +96,7 @@ async def research_web(args, context):
             return result
         rows = _select_sources(search["results"])
         pages = await asyncio.gather(*(_read_source(row, context) for row in rows))
-        result["sources"] = [_compact_source(row, page) for row, page in zip(rows, pages)]
+        result["sources"] = [_source_result(row, page) for row, page in zip(rows, pages)]
         result["status"] = "ok" if all(p.get("status") == "ok" and p.get("text") for p in pages) else "partial"
         return result
     except asyncio.CancelledError:
@@ -126,7 +115,7 @@ async def research_web(args, context):
 RESEARCH_WEB = Tool(
     id="research_web", name="Web'de araştır",
     description="Preferred tool for researching a question and answering with sources. In ONE call it searches, "
-                "deduplicates, selects up to 5 sources and reads them concurrently, returning compact excerpts. "
+                "deduplicates, selects up to 5 sources and reads them concurrently, returning full extracted text. "
                 "Only query is required; optionally set recency. Returns the retrieval timestamp, so no separate "
                 "clock call is needed for web research. Use once, then answer with citations and disclose gaps. "
                 "All web tools become unavailable after this call. No nested model calls. "

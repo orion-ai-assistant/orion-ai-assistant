@@ -19,12 +19,10 @@ domains in search ranking order, and reads up to five sources concurrently. It
 reuses the guarded page reader. Selection is a simple ranking/diversity heuristic,
 not a guarantee that these are the objectively best sources.
 
-The model receives only compact source records: original URL, title, optional date,
-read status, evidence kind, excerpt and truncation flag. Each excerpt has at most
-1,200 UTF-8 bytes; each serialized source is capped at 3,000 bytes. The raw search
-list and full page bodies do not enter the model conversation. No additional model
-is called to summarize or rank content. These are shortened excerpts, not generated
-summaries. If a page fails, its search snippet is retained and explicitly marked
+The model receives source records: original URL, title, optional date,
+read status, evidence kind and full extracted text (or the provider snippet when a
+page cannot be read). No model is called to summarize or rank content.
+If a page fails, its search snippet is retained and explicitly marked
 `search_snippet`, with the failure in `read_status`. Mixed reading outcomes produce
 `partial`; search failures retain the original status/error and return no sources.
 
@@ -61,8 +59,8 @@ research flow has not yet been benchmarked live; historical figures below predat
 - Only `query` is required. There is no model-facing news mode or provider configuration.
 - `recency`: `day`, `week`, `month`, `year`, or `null` (default). Support varies by engine;
   a recency filter does not establish that an article was published on today's local date.
-- `max_results`: 1–30, default 10. Invalid/duplicate URLs and the output byte budget can reduce the count.
-  Requests above 10 use shorter snippets so more links fit in one response.
+- `max_results`: 1–30, default 10. Invalid/duplicate URLs can reduce the count.
+  Provider snippets are preserved in full for every requested result.
 
 All queries use general DDGS `text()` search, with worldwide `wt-wt` region and
 an internal mapping from recency to DDGS time filters. Relevant language/place belongs
@@ -103,15 +101,14 @@ its own status; a timeout, blocked URL or other page failure preserves the succe
 entries. Each reader uses the same SSRF checks and independent 15-second deadline.
 Cancellation of the batch cancels all in-flight readers.
 
-Both readers return at most 4,000 UTF-8 bytes of text per page. Batch entries also
-have a 6,000-byte serialized JSON budget (including metadata/escaping), so five pages
-fit within the runner's 32 KiB ceiling. Further shortening sets `truncated=true`.
+Both readers return extracted text in full, with no output byte budget or truncation
+flag. The runner accepts full serialized results, including JSON escaping.
 Research selects and reads pages internally; the model does not call these helpers.
 The runner already executes all tool calls in one model response before requesting
 the next model response; the batch tool additionally makes these HTTP reads parallel.
 
 `read_page({"url":"https://..."})` returns final URL, title, readable text,
-optional publication metadata, HTTP status, elapsed time, and a truncation flag.
+optional publication metadata, HTTP status and elapsed time.
 The minimal HTML extractor prefers `article`, then `main`, then body text,
 excluding navigation, scripts, styles and common non-content elements.
 Publication metadata is a publisher claim; missing metadata stays null.
@@ -121,9 +118,9 @@ Only public HTTP(S), ports 80/443, without URL credentials are accepted. IP lite
 and actual DNS answers are checked; private/mixed DNS answers are rejected at the
 connector. Every redirect is revalidated (maximum five). The dedicated session has
 no environment proxy/authentication or cookies. The reader does not execute JavaScript.
-It accepts HTML/plain text, caps decompressed response data at 1 MiB, caps returned
-text at 4,000 UTF-8 bytes, and enforces a 15-second total deadline across redirects.
-This keeps JSON output under the runner's 32 KiB limit, including escaping.
+It accepts HTML/plain text, rejects decompressed responses above 1 MiB, and enforces
+a 15-second total deadline across redirects. Oversized downloads return an explicit
+error rather than partial text. Extracted output is not shortened.
 
 HTTP success does not guarantee useful article text. JS-only pages can return
 `no_results`; challenge/login pages may still contain text. The model must treat

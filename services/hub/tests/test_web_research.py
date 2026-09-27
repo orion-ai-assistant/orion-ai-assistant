@@ -29,7 +29,7 @@ class ResearchTests(unittest.IsolatedAsyncioTestCase):
             if 'site5.' in args.url:
                 raise TimeoutError('upstream timed out')
             return {'status': 'ok', 'url': args.url, 'title': 'Read title',
-                    'date': '2026-09-27', 'text': '"' * 4000, 'truncated': False}
+                    'date': '2026-09-27', 'text': '"' * 4000}
 
         search = AsyncMock(return_value={'status': 'ok', 'results': rows})
         with patch.object(research, 'search_web', search), patch.object(research, 'read_page', side_effect=read):
@@ -43,13 +43,11 @@ class ResearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any('utm_source=b' in url for url in urls))
         self.assertEqual(result['status'], 'partial')
         self.assertEqual([s['url'] for s in result['sources']], urls)
-        self.assertTrue(all(len(s['text'].encode()) <= 1200 for s in result['sources']))
-        self.assertTrue(all(len(json.dumps(s, ensure_ascii=False).encode()) <= 3000 for s in result['sources']))
-        self.assertLess(len(json.dumps(result, ensure_ascii=False).encode()), 16_384)
+        self.assertEqual(result['sources'][0]['text'], '"' * 4000)
         self.assertEqual(result['sources'][-1]['evidence'], 'search_snippet')
         self.assertEqual(result['sources'][-1]['read_status'], 'timeout')
         self.assertEqual(result['sources'][0]['evidence'], 'page_excerpt')
-        self.assertTrue(result['sources'][0]['truncated'])
+        self.assertTrue(all('truncated' not in source for source in result['sources']))
         with patch.object(research, 'search_web', AsyncMock(return_value={'status': 'no_results', 'results': []})), \
                 patch.object(research, 'read_page', AsyncMock()) as reader:
             empty = await execute_tool(research.RESEARCH_WEB, '{"query":"missing"}', context)

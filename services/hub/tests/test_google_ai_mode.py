@@ -1,6 +1,7 @@
 import json
+from contextlib import nullcontext
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from orion.contracts.tools import default_tool_selection
 from orion.worker.services.tool_runner import execute_tool
@@ -10,6 +11,11 @@ from orion.worker.tools.google_ai import tools
 
 
 class GoogleAIModeTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        lock = patch.object(tools, 'profile_lock', return_value=nullcontext())
+        lock.start()
+        self.addCleanup(lock.stop)
+
     def test_long_query_is_preserved_and_empty_query_rejected(self):
         from pydantic import ValidationError
         from orion.api.google_ai_routes import OpenSession
@@ -49,3 +55,31 @@ class GoogleAIModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['answer'], 'Google answer')
         self.assertEqual(result['provider'], 'google_ai_mode')
         self.assertLess(len(json.dumps(result).encode()), 32768)
+
+    async def test_long_browser_answer_is_streamed_and_returned_in_full(self):
+        answer = '\U0001f600' * 20000 + ' END'
+        page = MagicMock()
+        page.url = 'https://www.google.com/search?q=test'
+        page.goto = AsyncMock(return_value=None)
+        page.evaluate = AsyncMock(return_value={'answer': answer, 'links': [], 'completed': True})
+        context = MagicMock()
+        context.pages = [page]
+        context.route = AsyncMock()
+        context.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=context)
+        browser.close = AsyncMock()
+        playwright = MagicMock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+        manager = MagicMock()
+        manager.__aenter__ = AsyncMock(return_value=playwright)
+        manager.__aexit__ = AsyncMock(return_value=False)
+        emit = AsyncMock()
+        with patch('playwright.async_api.async_playwright', return_value=manager), \
+                patch.object(tools, '_compatible_user_agent', AsyncMock(return_value='Chrome')), \
+                patch.object(tools, 'monotonic', side_effect=[0, 0, 0, 0, 5, 5]), \
+                patch.object(tools.asyncio, 'sleep', AsyncMock()):
+            result = await tools._read_browser(page.url, emit_answer=emit)
+        emit.assert_awaited_once_with(answer)
+        self.assertEqual(result['answer'], answer)
+        self.assertNotIn('truncated', result)
