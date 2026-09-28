@@ -17,7 +17,7 @@ from .._base import Tool, ToolInput
 class YouTubeInput(ToolInput):
     action: Literal['search', 'open', 'play', 'play_new', 'pause', 'status', 'now_playing']
     query: str | SkipJsonSchema[None] = Field(default=None,
-        description='Song search text, or a video reference from search when replacing an existing tab.',
+        description='For play, a song name is searched and played in the target tab; also accepts a video reference.',
         json_schema_extra=lambda schema: schema.pop('default', None))
     target: str | SkipJsonSchema[None] = Field(default=None,
         description='Tab ID, video reference from search, or YouTube URL. Combine a tab ID with query to replace its video.',
@@ -246,9 +246,10 @@ async def _time_advanced(page, seconds):
 
 
 YOUTUBE_CONTROL = Tool(id='youtube_control', name='YouTube oynatmayı yönet',
-    description='Control YouTube in the connected browser. now_playing returns the IDs of playing tabs, so another tab listing is unnecessary for those tabs. '
-                'To replace a video in a particular tab, call play once with target=that tab ID and query=the new song or a video reference from search; this searches or navigates inside that same tab. '
-                'To resume an existing tab, call play with its tab ID only. Search returns short video references; play with target=video reference uses the search tab. '
-                'Play with query only uses the saved media tab. Use play_new only for a separate simultaneous tab. Target may also be a user-provided YouTube URL. '
-                'Pause/status take a tab ID or use the saved tab when target is omitted. Omit unused fields. Verify playback before claiming success.',
+    description='Play a requested song directly with action=play and query; play searches and starts it in one call. '
+                'To replace the song in an existing tab, use target=that tab ID together with query; the search and playback stay in that tab. '
+                'For the currently playing tab, now_playing supplies its ID; another tab listing is unnecessary. '
+                'Use search only when the user asks to see choices; it uses a separate reusable search tab. '
+                'To resume a paused tab, play with its tab ID only. Use play_new only when a separate simultaneous tab is requested. '
+                'Target also accepts a video reference from search or a user-provided YouTube URL. Pause/status take a tab ID or use the saved tab when omitted. Omit unused fields and verify playback.',
     input_model=YouTubeInput, handler=youtube_control, timeout_seconds=55)
