@@ -156,64 +156,24 @@ class GoogleDirectStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conversation.activity[-1]['status'], 'cancelled')
         self.assertEqual([kind for kind, _ in events][-1], 'tool_result')
 
-    async def test_late_google_text_after_stop_reaches_display_and_partial_tool_result(self):
-        conversation = self.conversation()
+    async def test_queued_google_snapshot_is_drained_when_stop_arrives(self):
         stopped = False
 
         async def cancelled():
             return stopped
 
-        async def model(*args, **kwargs):
-            yield 'tool_calls', json.dumps([call()])
-
-        async def handler(args, context):
+        async def execute(tool, arguments, context):
             await context.emit_answer('First draft')
-            while not await context.cancelled():
+            while not stopped:
                 await asyncio.sleep(.005)
-            await context.emit_answer('First draft, late text')
-            await asyncio.Event().wait()
+            await context.emit_answer('Last queued draft')
+            raise ToolCancelled()
 
-        tool = replace(GOOGLE_AI_MODE, handler=handler)
-        events = []
-        with patch('orion.worker.services.tool_runner.get_registry', return_value=SimpleNamespace(tools={'google_ai_mode': tool})), \
-             patch('orion.worker.services.tool_runner.GOOGLE_STOP_GRACE_SECONDS', .15):
-            async for event in conversation.stream([], RuntimeSettings(), cancelled, model):
-                events.append(event)
-                if event[0] == 'content_snapshot' and 'First draft' in event[1]:
-                    stopped = True
-
-        previews = [value for kind, value in events if kind == 'content_snapshot']
-        self.assertTrue(any('First draft, late text' in value for value in previews))
-        result = json.loads(conversation.transcript[-1]['content'])
-        self.assertEqual(result['answer'], 'First draft, late text')
-        self.assertTrue(result['cancelled'])
-
-    async def test_google_completion_during_stop_grace_reaches_display(self):
-        conversation = self.conversation()
-        stopped = False
-
-        async def cancelled():
-            return stopped
-
-        async def model(*args, **kwargs):
-            yield 'tool_calls', json.dumps([call()])
-
-        async def handler(args, context):
-            await context.emit_answer('First draft')
-            while not await context.cancelled():
-                await asyncio.sleep(.005)
-            await context.emit_answer('Completed after stop')
-            return {'status': 'ok', 'answer': 'Completed after stop', 'answer_format': 'markdown', 'sources': []}
-
-        tool = replace(GOOGLE_AI_MODE, handler=handler)
-        events = []
-        with patch('orion.worker.services.tool_runner.get_registry', return_value=SimpleNamespace(tools={'google_ai_mode': tool})), \
-             patch('orion.worker.services.tool_runner.GOOGLE_STOP_GRACE_SECONDS', .15):
-            async for event in conversation.stream([], RuntimeSettings(), cancelled, model):
-                events.append(event)
-                if event[0] == 'content_snapshot' and 'First draft' in event[1]:
-                    stopped = True
-
-        self.assertEqual(conversation.activity[-1]['status'], 'completed')
-        self.assertEqual(json.loads(conversation.transcript[-1]['content'])['answer'], 'Completed after stop')
-        self.assertIn('Completed after stop', [value for kind, value in events if kind == 'content_snapshot'][-1])
+        context = ToolContext('u', 'c', 't', cancelled)
+        with patch('orion.worker.services.tool_runner.execute_tool', execute):
+            stream = stream_tool_answer(GOOGLE_AI_MODE, '{"query":"test"}', context)
+            self.assertEqual(await anext(stream), ('answer', 'First draft'))
+            stopped = True
+            self.assertEqual(await anext(stream), ('answer', 'Last queued draft'))
+            with self.assertRaises(ToolCancelled):
+                await anext(stream)

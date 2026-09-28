@@ -3,7 +3,6 @@ import json
 import re
 from contextlib import aclosing
 from dataclasses import replace
-from time import monotonic
 from urllib.parse import quote
 
 from orion.contracts.tools import LEGACY_WEB_TOOLS
@@ -11,7 +10,6 @@ from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
 
 WEB_TOOLS = {"research_web", "google_ai_mode", *LEGACY_WEB_TOOLS}
-GOOGLE_STOP_GRACE_SECONDS = 2
 
 
 def google_failure_message(result):
@@ -68,12 +66,11 @@ async def stream_tool_answer(tool, arguments, context):
 
 
 async def execute_tool(tool, arguments, context):
-    """Only async, cooperative handlers; let Google flush late text after stop."""
+    """Only async, cooperative handlers; cancellation never retries a handler."""
     if await context.cancelled():
         raise ToolCancelled()
     args = tool.input_model.model_validate_json(arguments)
     task = asyncio.create_task(tool.handler(args, context))
-    stop_deadline = None
     try:
         async with asyncio.timeout(tool.timeout_seconds):
             while True:
@@ -82,12 +79,7 @@ async def execute_tool(tool, arguments, context):
                     result = json.dumps(task.result(), ensure_ascii=False, allow_nan=False)
                     return json.loads(result)
                 if await context.cancelled():
-                    if tool.id != 'google_ai_mode' or context.emit_answer is None:
-                        raise ToolCancelled()
-                    if stop_deadline is None:
-                        stop_deadline = monotonic() + GOOGLE_STOP_GRACE_SECONDS
-                    elif monotonic() >= stop_deadline:
-                        raise ToolCancelled()
+                    raise ToolCancelled()
     finally:
         if not task.done():
             task.cancel()
