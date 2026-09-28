@@ -694,6 +694,9 @@ def handle_stop(args):
 
         # ── 1. Hub (API, Worker, Redis) ──────────────────────────────────────
         def stop_hub():
+            from services.shared.browser_shutdown import stop_hub_browsers
+            if not stop_hub_browsers(hub_dir):
+                print('[!] Orion browser shutdown could not be confirmed.')
             pids = []
             if os.path.exists(pid_path):
                 try:

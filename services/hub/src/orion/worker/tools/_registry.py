@@ -41,7 +41,9 @@ class ToolRegistry:
 
     def catalog(self):
         return [{"id": cat.id, "name": cat.name, "description": cat.description,
-                 "functions": [{"id": tool.id, "name": tool.name, "description": tool.description}
+                 "requires_browser": getattr(cat, "requires_browser", False),
+                 "functions": [{"id": tool.id, "name": tool.name, "description": tool.description,
+                                "requires_browser": getattr(tool, "requires_browser", False) or getattr(cat, "requires_browser", False)}
                                for tool in cat.tools]} for cat in self.categories.values()]
 
 

@@ -26,6 +26,7 @@ class Tool:
     input_model: type[BaseModel]
     handler: Callable[[Any, ToolContext], Awaitable[Any]]
     timeout_seconds: float = 30
+    requires_browser: bool = False
 
     def schema(self) -> dict:
         return {"type": "function", "function": {
@@ -40,3 +41,4 @@ class Category:
     name: str
     description: str
     tools: tuple[Tool, ...]
+    requires_browser: bool = False

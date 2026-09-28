@@ -344,8 +344,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (settingsCard) settingsCard.style.display = targetId === 'settings-view' ? 'flex' : 'none';
             if (statusCard) statusCard.style.display = targetId === 'status-view' ? 'flex' : 'none';
 
-            if (targetId === 'settings-view') {
-                loadInitialSettings();
+            if (targetId === 'settings-view') {
+                loadInitialSettings();
+                window.ToolsUI?.refreshBrowserStatus?.();
             }
         });
     });

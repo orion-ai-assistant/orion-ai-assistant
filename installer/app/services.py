@@ -572,6 +572,11 @@ def stop_service(service_id: str) -> bool:
                     subprocess.run([path, "stop"], check=False)
             return True
         elif service_id_val == "orion-hub":
+            import sys
+            if config.PROJECT_ROOT not in sys.path:
+                sys.path.insert(0, config.PROJECT_ROOT)
+            from services.shared.browser_shutdown import stop_hub_browsers
+            browsers_closed = stop_hub_browsers(s_dir)
             _kill_local_service_procs(s_dir)
             # Gracefully stop Hub's PostgreSQL
             base_dir = config.PROJECT_ROOT
@@ -583,6 +588,8 @@ def stop_service(service_id: str) -> bool:
                     [pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
+            if not browsers_closed:
+                raise RuntimeError('Hub durduruldu ancak Orion tarayıcısının kapandığı doğrulanamadı. Tarayıcı penceresini kontrol edin.')
             return True
         else:
             # All other local services (tts, llm, embedding, vision etc.)

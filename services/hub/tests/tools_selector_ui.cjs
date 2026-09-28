@@ -45,6 +45,7 @@ const context = vm.createContext({
 });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/tools.js'), 'utf8') + '\nglobalThis.tools = ToolsUI;', context);
 const tools = context.tools;
+context.navigator = {userAgent: 'Mozilla/5.0 Chrome/154.0', brave: {isBrave: async () => true}};
 tools.dialog = dialog;
 tools.request = async url => url === '/api/v1/tools'
     ? [{id: 'datetime', name: 'Tarih ve saat', description: 'Güncel tarih ve saat bilgileri.',
@@ -58,6 +59,7 @@ tools.request = async url => url === '/api/v1/tools'
     : {tool_selection: {categories: {datetime: true}, functions: {get_current_time: true}}};
 
 (async () => {
+    assert.equal(await tools.currentBrowser(), 'brave');
     await tools.open(false);
     const list = nodes['tools-list'];
     const categories = list.querySelectorAll('.tool-category');

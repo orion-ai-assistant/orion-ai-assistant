@@ -7,48 +7,18 @@ import unittest
 from orion.worker.tools.google_ai.tools import ANSWER_SELECTOR, SNAPSHOT, _sources
 
 
-class GoogleDOMTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', '0')
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise unittest.SkipTest('Optional Playwright dependency is not installed')
-        cls.playwright = sync_playwright().start()
-        cls.addClassCleanup(cls.playwright.stop)
-        if not os.path.exists(cls.playwright.chromium.executable_path):
-            raise unittest.SkipTest('Full Chromium is not installed')
-        cls.browser = cls.playwright.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True)
-        cls.addClassCleanup(cls.browser.close)
+from raw_browser_fixture import RawBrowserFixture
+import json
 
+
+class GoogleDOMTests(RawBrowserFixture):
     def snapshot(self, html):
-        page = self.browser.new_page()
-        try:
-            page.set_content(html)
-            return page.evaluate(SNAPSHOT, ANSWER_SELECTOR)
-        finally:
-            page.close()
-
-    def test_session_cookies_survive_browser_restart_with_restore(self):
-        # No Google requests, actual account data, or exported cookie files.
-        with tempfile.TemporaryDirectory() as directory:
-            options = dict(headless=True, channel='chromium', chromium_sandbox=True,
-                           args=['--restore-last-session'])
-            context = self.playwright.chromium.launch_persistent_context(directory, **options)
-            try:
-                context.add_cookies([{'name': 'synthetic_session', 'value': 'test-only',
-                                     'domain': 'example.com', 'path': '/'}])
-                context.pages[0].goto('about:blank')
-            finally:
-                context.close()
-            context = self.playwright.chromium.launch_persistent_context(directory, **options)
-            try:
-                self.assertTrue(any(c['name'] == 'synthetic_session' and c['expires'] == -1
-                                    for c in context.cookies()))
-                self.assertTrue(all(p.url == 'about:blank' for p in context.pages))
-            finally:
-                context.close()
+        async def read():
+            async with self.manager.tab('google-fixture', background=True) as page:
+                frame = (await page.send('Page.getFrameTree'))['frameTree']['frame']['id']
+                await page.send('Page.setDocumentContent', {'frameId': frame, 'html': html})
+                return await page.evaluate('(' + SNAPSHOT + ')(' + json.dumps(ANSWER_SELECTOR) + ')')
+        return self.run_async(read())
 
     def test_current_main_col_excludes_hidden_ui_and_reads_citation_record(self):
         data = self.snapshot('''<nav>Google navigation</nav>

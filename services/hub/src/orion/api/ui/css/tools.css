@@ -144,9 +144,10 @@
 .tools-button-primary:hover:not(:disabled) { background: #6ee7b7; }
 .tools-button-primary:active:not(:disabled) { background: #34d399; box-shadow: 0 2px 6px rgba(16, 185, 129, .18); }
 .tool-settings-card { padding: 20px 24px; }
-.google-session { padding: 12px 0; font-size: 13px; }
-.google-session p { color: var(--text-secondary); margin: 8px 0; }
-.google-session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.google-session { padding: 12px 0 0; font-size: 13px; }
+.google-session p { color: var(--text-secondary); margin: 16px 0 8px; line-height: 1.55; }
+.google-session-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.google-session-actions select { color: var(--text-primary); background: var(--bg-secondary, #202024); border: 1px solid var(--border-medium); border-radius: 8px; padding: 8px 12px; font: inherit; }
 .google-session label { display: block; margin: 12px 0; color: var(--text-secondary); }
 .google-session input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; color: inherit; background: transparent; border: 1px solid var(--border-medium); border-radius: 8px; }
 .tool-settings-card h3 { margin: 0 0 12px; }
@@ -154,6 +155,8 @@
 .tool-activity { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 10px; font-size: 13px; background: rgba(255, 255, 255, .035); white-space: normal; }
 .tool-activity summary { cursor: pointer; color: var(--text-secondary); }
 .tool-activity[data-status="error"] summary { color: #fb7185; }
+.tool-activity[data-status="not_configured"] summary,
+.tool-activity[data-status="warning"] summary { color: #fb7185; }
 .tool-activity pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; padding-top: 12px; }
 @media (max-width: 640px) {
     .tools-dialog { width: calc(100vw - 20px); height: fit-content; max-height: min(88vh, 600px); }

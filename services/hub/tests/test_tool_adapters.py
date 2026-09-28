@@ -93,11 +93,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
             await execute_tool(tool, '{"query":"hello"}', self.context)
         self.assertTrue(ended.is_set())
 
-    async def test_adapter_output_still_uses_runner_limits(self):
-        for result, error in [('x' * 32768, ValueError), (object(), TypeError)]:
-            tool = from_callable(**self.metadata, factory=lambda context: AsyncMock(return_value=result))
-            with self.assertRaises(error):
-                await execute_tool(tool, '{"query":"hello"}', self.context)
+    async def test_adapter_preserves_full_output_and_requires_json(self):
+        result = 'x' * 32768
+        tool = from_callable(**self.metadata, factory=lambda context: AsyncMock(return_value=result))
+        self.assertEqual(await execute_tool(tool, '{"query":"hello"}', self.context), result)
+        tool = from_callable(**self.metadata, factory=lambda context: AsyncMock(return_value=object()))
+        with self.assertRaises(TypeError):
+            await execute_tool(tool, '{"query":"hello"}', self.context)
 
     def test_category_packages_discovered_without_adapter_as_category(self):
         get_registry.cache_clear()

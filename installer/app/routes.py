@@ -95,7 +95,11 @@ async def install_service(
 
 @router.post("/api/services/{service_id}/stop")
 def stop_service(service_id: str):
-    if not services.stop_service(service_id):
+    try:
+        stopped = services.stop_service(service_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not stopped:
         raise HTTPException(status_code=404, detail=i18n.t("MSG_SERVICE_NOT_FOUND"))
     return {"status": "success", "message": i18n.t("MSG_SERVICE_STOPPED")}
 

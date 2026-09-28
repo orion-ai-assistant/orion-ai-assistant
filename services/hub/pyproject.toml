@@ -21,9 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-google-ai = [
-  "playwright>=1.51,<2",
-]
+# Compatibility extra: browser tools now use the existing aiohttp dependency.
+google-ai = []
 dev = [
   "pytest>=8.2.0",
   "httpx>=0.27.0",

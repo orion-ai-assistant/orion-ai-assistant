@@ -13,18 +13,15 @@ WEB_TOOLS = {"research_web", "google_ai_mode", *LEGACY_WEB_TOOLS}
 
 
 def google_failure_message(result):
-    reason = {
+    return {
         'timeout': 'Google AI Mode’dan süre içinde okunabilir bir yanıt alınamadı.',
         'blocked': 'Google, CAPTCHA veya trafik engeli gösterdi.',
         'interaction_required': 'Google tarayıcıda giriş veya doğrulama istiyor.',
-        'busy': 'Google profili kullanımda. Açık giriş penceresini kapatıp yeniden deneyin.',
-        'not_configured': 'Google AI Mode için Playwright/Chromium kurulumu eksik.',
+        'busy': 'Başka bir tarayıcı işlemi sürüyor. Tamamlandıktan sonra yeniden deneyin.',
+        'verification_required': 'Tarayıcı doğrulaması gerekiyor. Ayarlar → Tarayıcı bölümünden bağlanın.',
+        'not_configured': 'Mevcut tarayıcınıza bağlanmanız gerekiyor.',
         'unavailable': 'Google AI Mode bu oturumda kullanılamıyor.',
     }.get(result.get('status'), 'Google AI Mode yanıtı alınamadı.')
-    return (reason + ' Bu sorgu için Google’dan doğrulanabilir araştırma sonucu alınamadı; '
-            'normal web aramasına geçilmedi.' +
-            (' Araç kartındaki doğrulama düğmesiyle aynı sorguyu açabilir, ardından yeniden deneyebilirsiniz.'
-             if result.get('recovery') == 'google_session' else ''))
 
 
 class ToolCancelled(Exception):
@@ -192,19 +189,10 @@ class ToolConversation:
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
                 messages.append(result_message)
                 self.transcript.append(result_message)
-                if (name == 'google_ai_mode' and name in self.enabled and item['status'] != 'cancelled'
-                        and (item['result'].get('status') not in ('ok', 'partial') or not item['result'].get('answer'))):
-                    item['status'] = 'error'
-                    google_failure = google_failure_message(item['result'])
                 yield "tool_result", json.dumps(item)
             if cancelled or await stop_checker():
                 return
-            if google_failure:
-                # Do not ask the model to invent a researched answer after a failed provider.
-                self.final_content = google_failure
-                yield 'content_snapshot', prefix + round_content + google_failure
-                return
-            if google_direct_result:
+            if google_direct_result and google_direct_result.get('status') in ('ok', 'partial') and google_direct_result.get('answer'):
                 self.final_content = google_direct_text(google_direct_result['answer'], google_direct_result)
                 self.direct_tool_call_id = next(
                     entry['call_id'] for entry in self.activity

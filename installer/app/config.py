@@ -1,4 +1,3 @@
-import glob
 import json
 import os
 from .core import detect_hardware
@@ -86,10 +85,21 @@ def _load_global_env() -> dict[str, str]:
 def _iter_manifests():
     global_env = _load_global_env()
 
-    for path in glob.glob(os.path.join(SERVICES_DIR, "**", "manifest.json"), recursive=True):
+    # Runtime profiles and dependencies also contain manifest.json files. Never
+    # descend into those trees when discovering Orion service definitions.
+    paths = []
+    for directory, children, files in os.walk(SERVICES_DIR):
+        children[:] = [name for name in children if not name.startswith('.')
+                       and name not in {'data', 'node_modules', '__pycache__', 'models'}]
+        if 'manifest.json' in files:
+            paths.append(os.path.join(directory, 'manifest.json'))
+    for path in paths:
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
+                if (not isinstance(data, dict) or not isinstance(data.get('id'), str)
+                        or not data['id'].strip() or not isinstance(data.get('category'), str)):
+                    continue
                 
                 # Global.env'den port ve host isimlerini çek ve manifest verisini ez
                 category_upper = data.get("category", "").upper()

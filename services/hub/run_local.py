@@ -60,6 +60,8 @@ def main():
     env = os.environ.copy()
     
     hub_dir = os.path.dirname(os.path.abspath(__file__))
+    from services.shared.browser_shutdown import allow_hub_browsers, stop_hub_browsers
+    allow_hub_browsers(hub_dir)
     repo_root = os.path.abspath(os.path.join(hub_dir, "..", ".."))
     hub_src = os.path.join(hub_dir, "src")
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -136,6 +138,7 @@ def main():
     print("[*] Tailing logs (Close this window to leave processes running in background)...\n" + "-"*40)
     
     def handle_shutdown(*args):
+        stop_hub_browsers(hub_dir)
         for p in processes:
             try:
                 p.terminate()

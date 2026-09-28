@@ -39,10 +39,9 @@ class GoogleProfileTests(unittest.IsolatedAsyncioTestCase):
     async def test_busy_does_not_start_browser_and_blocked_offers_recovery(self):
         context = ToolContext('alice', 'chat', 'turn', AsyncMock(return_value=False))
         args = tools.GoogleAIInput(query='example')
-        with profile.profile_lock('alice'), patch.object(tools, '_read_browser', AsyncMock()) as reader:
+        with patch.object(tools, '_read_browser', AsyncMock(side_effect=tools.BrowserBusy('busy'))):
             result = await tools.google_ai_mode(args, context)
             self.assertEqual(result['status'], 'busy')
-            reader.assert_not_awaited()
         with patch.object(tools, '_read_browser', AsyncMock(return_value={
             'status': 'blocked', 'message': 'CAPTCHA',
         })) as reader:
@@ -52,44 +51,29 @@ class GoogleProfileTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('answer', result)
         self.assertFalse(profile.profile_status('alice')['busy'])
 
-    async def test_saved_profile_used_and_closed_on_block(self):
-        try:
-            from playwright import async_api
-        except ImportError:
-            self.skipTest('Optional Playwright dependency is not installed')
-        directory = profile.profile_dir('alice')
-        # The first anonymous search must persist too, before any verification.
+    async def test_verification_keeps_tab_and_pauses_automation(self):
         page = AsyncMock()
-        page.goto.return_value = SimpleNamespace(status=200)
-        page.url = 'https://www.google.com/sorry/index'
-        page.evaluate.return_value = {'body': 'unusual traffic'}
-        context = AsyncMock()
-        context.pages = []
-        context.new_page.return_value = page
-        page.set_default_timeout = Mock()
-        chromium = SimpleNamespace(launch_persistent_context=AsyncMock(return_value=context), launch=AsyncMock())
-        manager = AsyncMock()
-        manager.__aenter__.return_value = SimpleNamespace(chromium=chromium)
-        with patch.object(async_api, 'async_playwright', return_value=manager), \
-                patch.object(tools, '_compatible_user_agent', AsyncMock(return_value='Chrome/test')):
+        page.evaluate.side_effect = [{'body': 'unusual traffic'}, 'https://www.google.com/sorry/index']
+        lease = AsyncMock()
+        lease.__aenter__.return_value = page
+        manager = Mock()
+        manager.tab.return_value = lease
+        with patch.object(tools, 'BrowserManager', return_value=manager):
             result = await tools._read_browser('https://www.google.com/search?udm=50', 'alice')
-        self.assertEqual(result['status'], 'blocked')
-        self.assertEqual(chromium.launch_persistent_context.call_args.args[0], str(directory))
-        self.assertTrue((directory / '.orion-enabled').exists())
-        self.assertTrue(chromium.launch_persistent_context.call_args.kwargs['headless'])
-        self.assertEqual(chromium.launch_persistent_context.call_args.kwargs['args'], ['--restore-last-session'])
-        self.assertEqual(chromium.launch_persistent_context.call_args.kwargs['user_agent'], 'Chrome/test')
-        chromium.launch.assert_not_awaited()
-        context.close.assert_awaited_once()
+        self.assertEqual(result['status'], 'verification_required')
+        page.require_verification.assert_awaited_once()
+        page.close.assert_not_awaited()
 
     async def test_local_only_and_authenticated_identity_used(self):
         remote = SimpleNamespace(client=SimpleNamespace(host='203.0.113.1'))
         with self.assertRaises(HTTPException) as error:
             await routes.session_open(routes.OpenSession(), remote, 'alice')
         self.assertEqual(error.exception.status_code, 403)
-        with patch.object(routes, 'require_local'), patch.object(routes, 'launch_login') as launch:
+        manager = AsyncMock()
+        with patch.object(routes, 'require_local'), patch.object(routes, 'BrowserManager', return_value=manager) as factory:
             await routes.session_open(routes.OpenSession(verify=True, query='a&b Türkçe'), remote, 'alice')
-            launch.assert_called_once_with('alice', True, 'a&b Türkçe')
+            factory.assert_called_once_with('alice')
+            self.assertIn('q=a%26b', manager.open_manual.call_args.kwargs['url'])
 
     def test_verification_opens_real_query_and_login_continues_to_it(self):
         from urllib.parse import parse_qs, urlsplit
@@ -97,7 +81,7 @@ class GoogleProfileTests(unittest.IsolatedAsyncioTestCase):
         query = 'a&b Türkçe?'
         search = session_url(query, True)
         self.assertEqual(parse_qs(urlsplit(search).query), {'q': [query], 'udm': ['50'], 'hl': ['tr']})
-        self.assertEqual(parse_qs(urlsplit(session_url(query, False)).query)['continue'], [search])
+        self.assertIsNone(session_url(query, False))
 
     async def test_cancel_releases_profile_and_does_not_expose_browser_error(self):
         import asyncio

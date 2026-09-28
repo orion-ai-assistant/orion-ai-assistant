@@ -3,18 +3,16 @@
 import asyncio
 import json
 import logging
-import os
 from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from pydantic import Field, field_validator
 
 from .._base import Tool, ToolInput
-from .profile import ProfileBusy, profile_dir, profile_lock
+from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable
 
 logger = logging.getLogger(__name__)
 _browser_lock = asyncio.Lock()
-_chromium_user_agent = None
 ANSWER_SELECTOR = '[data-container-id="main-col"], [data-subtree="aimc"]'
 
 # Fail closed if the AI-specific container disappears; never use the whole SERP
@@ -199,113 +197,36 @@ def _sources(links):
     return sources
 
 
-async def _compatible_user_agent(playwright):
-    global _chromium_user_agent
-    if _chromium_user_agent is None:
-        # Derive platform/version from the installed browser, not a stale hardcoded UA.
-        # Google serves an unavailable page to HeadlessChrome in this environment.
-        probe = await playwright.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True, timeout=8000)
-        try:
-            page = await probe.new_page()
-            actual = await page.evaluate('navigator.userAgent')
-            _chromium_user_agent = actual.replace('HeadlessChrome/', 'Chrome/')
-        finally:
-            await asyncio.wait_for(probe.close(), timeout=2)
-    return _chromium_user_agent
-
-
 async def _read_browser(query_url, user_id=None, emit_answer=None):
-    deadline = monotonic() + 22
-    # Lazy import keeps the optional dependency out of API/catalog startup.
-    os.environ.setdefault('PLAYWRIGHT_BROWSERS_PATH', '0')
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as playwright:
-        user_agent = await _compatible_user_agent(playwright)
-        # Keep the same profile even before the first verification visit.
-        persistent = user_id is not None
-        browser = None
-        context = None
-        try:
-            if persistent:
-                directory = profile_dir(user_id)
-                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                context = await playwright.chromium.launch_persistent_context(
-                    str(directory), headless=True, channel='chromium',
-                    args=['--restore-last-session'],
-                    chromium_sandbox=True, timeout=8000, locale='tr-TR',
-                    accept_downloads=False, service_workers='block', user_agent=user_agent,
-                )
-                (directory / '.orion-enabled').touch()
-            else:
-                browser = await playwright.chromium.launch(headless=True, channel='chromium', chromium_sandbox=True, timeout=8000)
-                context = await browser.new_context(locale='tr-TR', accept_downloads=False, service_workers='block', user_agent=user_agent)
-
-            async def route_request(route):
-                request = route.request
-                host = urlsplit(request.url).hostname or ''
-                allowed = any(host == domain or host.endswith('.' + domain)
-                              for domain in ('google.com', 'gstatic.com', 'googleusercontent.com', 'googleapis.com'))
-                if not allowed or request.resource_type in ('image', 'media', 'font'):
-                    await route.abort()
-                else:
-                    await route.continue_()
-
-            await context.route('**/*', route_request)
-            # Reuse a restored tab rather than accumulating Google tabs per query.
-            page = context.pages[0] if context.pages else await context.new_page()
-            page.set_default_timeout(3000)
-            response = await page.goto(query_url, wait_until='domcontentloaded', timeout=10000)
-            if response and response.status >= 400:
-                return {'status': 'blocked' if response.status in (403, 429) else 'provider_error',
-                        'http_status': response.status, 'message': 'Google did not allow the AI Mode request.'}
-            previous, stable_since = '', monotonic()
-            emitted = ''
-            snapshot = {}
-            while monotonic() < deadline:
-                snapshot = await page.evaluate(SNAPSHOT, ANSWER_SELECTOR)
-                blocked = _blocked_state(page.url, snapshot.get('body', ''))
-                if blocked:
-                    return {'status': blocked[0], 'message': blocked[1]}
-                answer = snapshot.get('answer', '')
-                if emit_answer and answer and answer != emitted:
-                    await emit_answer(answer)
-                    emitted = answer
-                if answer != previous or snapshot.get('busy'):
-                    stable_since = monotonic()
-                    previous = answer
-                elif answer and monotonic() - stable_since >= (2 if snapshot.get('completed') else 4):
-                    sources = _sources(snapshot.get('links', []))
-                    return {'status': 'ok' if sources else 'partial', 'answer': answer, 'answer_format': 'markdown',
-                            'sources': sources,
-                            'message': 'Google-generated answer, not independently verified. Completion inferred from stable page text.'
-                            + ('' if sources else ' No source links could be extracted from the answer container.')}
-                await asyncio.sleep(.5)
-            return {'status': 'timeout',
-                    'reason': 'ai_response_not_stable' if snapshot.get('answer') else
-                              'ai_response_empty' if snapshot.get('root_found') else 'ai_answer_container_missing',
-                    'message': 'No stable AI Mode answer could be read. Open the same query in the verification window.',
-                    'diagnostics': {'answer_container_found': bool(snapshot.get('root_found')),
-                                    'answer_characters': len(snapshot.get('answer', '')),
-                                    'busy': bool(snapshot.get('busy')),
-                                    'page_path': urlsplit(page.url).path}}
-        finally:
-            if context:
-                if persistent:
-                    # Save a blank tab so the next session restore doesn't replay
-                    # the previous search in addition to the user's new query.
-                    try:
-                        async with asyncio.timeout(2):
-                            pages = context.pages
-                            if pages:
-                                await pages[0].goto('about:blank', wait_until='commit', timeout=1500)
-                                for extra in pages[1:]:
-                                    await extra.close()
-                    except Exception:
-                        pass
-                await asyncio.wait_for(context.close(), timeout=2)
-            if browser:
-                await asyncio.wait_for(browser.close(), timeout=2)
+    async with BrowserManager(user_id).tab('google_ai', background=True) as page:
+        await page.navigate(query_url)
+        deadline = monotonic() + 22
+        previous, stable_since = '', monotonic()
+        emitted, snapshot = '', {}
+        while monotonic() < deadline:
+            snapshot = await page.evaluate('(' + SNAPSHOT + ')(' + json.dumps(ANSWER_SELECTOR) + ')')
+            url = await page.evaluate('location.href')
+            blocked = _blocked_state(url, snapshot.get('body', ''))
+            if blocked:
+                status, message = blocked
+                if status in ('blocked', 'interaction_required'):
+                    await page.require_verification()
+                    status = 'verification_required'
+                return {'status': status, 'message': message}
+            answer = snapshot.get('answer', '')
+            if emit_answer and answer and answer != emitted:
+                await emit_answer(answer)
+                emitted = answer
+            if answer != previous or snapshot.get('busy'):
+                stable_since, previous = monotonic(), answer
+            elif answer and monotonic() - stable_since >= (2 if snapshot.get('completed') else 4):
+                sources = _sources(snapshot.get('links', []))
+                return {'status': 'ok' if sources else 'partial', 'answer': answer,
+                        'answer_format': 'markdown', 'sources': sources,
+                        'message': 'Google-generated answer, not independently verified. Completion inferred from stable page text.'}
+            await asyncio.sleep(.5)
+        return {'status': 'timeout', 'reason': 'ai_response_not_stable' if snapshot.get('answer') else 'ai_response_empty',
+                'message': 'No stable AI Mode answer could be read. Open the query using the verification button and retry.'}
 
 
 async def google_ai_mode(args, context):
@@ -318,24 +239,21 @@ async def google_ai_mode(args, context):
             return result
         async with _browser_lock:
             try:
-                async with asyncio.timeout(25):
-                    with profile_lock(context.user_id):
-                        result.update(await _read_browser(query_url, context.user_id, context.emit_answer))
-                    if result['status'] in ('blocked', 'interaction_required', 'timeout'):
+                async with asyncio.timeout(28):
+                    result.update(await _read_browser(query_url, context.user_id, context.emit_answer))
+                    if result['status'] in ('blocked', 'interaction_required', 'verification_required', 'timeout'):
                         result['recovery'] = 'google_session'
-                        result['message'] += ' Open Google verification in Orion, complete it, close the window, then resend your question.'
-            except ProfileBusy:
-                result.update(status='busy', message='Google profile is in use. Close its sign-in window or wait for the active search.')
-            except ImportError:
-                result.update(status='not_configured', message='Install the hub google-ai extra and its Playwright Chromium browser.')
+                        result['message'] += ' Click Google doğrulamasını aç, complete verification in your existing browser, then click “Devam et”, then resend your question.'
+            except BrowserBusy:
+                result.update(status='busy', message='Tarayıcıda başka bir işlem sürüyor. Tamamlandıktan sonra yeniden deneyin.')
+            except (BrowserUnavailable, ImportError) as exc:
+                result.update(status='not_configured', message=str(exc) or 'Mevcut tarayıcınıza bağlanmanız gerekiyor.')
             except TimeoutError:
                 result.update(status='timeout', reason='browser_operation_deadline', recovery='google_session',
                               message='Google browser operation exceeded the time limit. Open the same query in the verification window.')
             except Exception as exc:
-                missing_browser = 'Executable doesn' in str(exc)
-                result.update(status='not_configured' if missing_browser else 'provider_error',
-                              error={'type': type(exc).__name__, 'message':
-                                     'Install Playwright Chromium.' if missing_browser else 'Google browser operation failed.'})
+                result.update(status='provider_error', error={'type': type(exc).__name__,
+                              'message': 'Google browser operation failed.'})
     except asyncio.CancelledError:
         result['status'] = 'cancelled'
         raise

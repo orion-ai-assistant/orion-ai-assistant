@@ -5,13 +5,34 @@ const ToolsUI = {
     resetDraft() { this.draft = null; this.revision++; this.dialog?.close(); },
     draftPayload() { return this.draft ? structuredClone(this.draft) : null; },
     async request(url, method = 'GET', body) {
+        let cur = null;
+        try { cur = await this.currentBrowser(); } catch (_) {}
+        const headers = {'Content-Type': 'application/json'};
+        if (cur) headers['X-Client-Browser'] = cur;
         const response = await API._fetch(url, {
-            method, headers: {'Content-Type': 'application/json'},
+            method, headers,
             ...(body === undefined ? {} : {body: JSON.stringify(body)})
         });
         const data = await response.json();
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
         return data;
+    },
+    async currentBrowser() {
+        try {
+            if (window.navigator.brave) {
+                if (typeof window.navigator.brave.isBrave === 'function') {
+                    if (await window.navigator.brave.isBrave()) return 'brave';
+                }
+                return 'brave';
+            }
+        } catch (_) {
+            if (window.navigator.brave) return 'brave';
+        }
+        if (navigator.userAgentData?.brands?.some(b => /brave/i.test(b.brand))) return 'brave';
+        if (/Edg\//i.test(navigator.userAgent)) return 'edge';
+        if (navigator.userAgentData?.brands?.some(b => /microsoft edge|edg/i.test(b.brand))) return 'edge';
+        if (/Chrome\//i.test(navigator.userAgent)) return 'chrome';
+        return 'chrome';
     },
     init() {
         this.dialog = document.createElement('dialog');
@@ -36,15 +57,37 @@ const ToolsUI = {
         document.addEventListener('keydown', event => {
             if (event.key === 'Escape' && !menu.hidden) { menu.hidden = true; plus.setAttribute('aria-expanded', 'false'); plus.focus(); }
         });
+        setTimeout(async () => {
+            try {
+                const cur = await this.currentBrowser();
+                const data = await this.request('/api/v1/browser');
+                const target = cur || (data && data.browser) || 'chrome';
+                const shouldAuto = Boolean(data && data.saved && data.autoconnect !== false);
+                if (shouldAuto && (!data.running || data.browser !== target)) {
+                    await this.request('/api/v1/browser/open', 'POST', {browser: target});
+                }
+                await this.refreshBrowserStatus?.();
+            } catch (_) {}
+        }, 500);
     },
     renderSettings() {
         const dashboard = document.getElementById('settings-dashboard');
-        if (!dashboard || dashboard.querySelector('.tool-settings-card')) return;
+        if (!dashboard) return;
+        if (dashboard.querySelector('.tool-settings-card')) {
+            this.refreshBrowserStatus?.();
+            return;
+        }
         const card = document.createElement('section');
         card.className = 'settings-card tool-settings-card';
         card.innerHTML = '<h3>Varsayılan fonksiyonlar</h3><p>Özel seçim yapılmamış sohbetlerde kullanılacak fonksiyonları belirleyin.</p><button type="button" class="btn btn-primary">Fonksiyonları düzenle</button>';
         card.querySelector('button').onclick = () => this.open(true);
-        (document.getElementById('settings-panel-general') || dashboard).appendChild(card);
+        const host = document.getElementById('settings-panel-general') || dashboard;
+        host.appendChild(card);
+        const browserCard = document.createElement('section');
+        browserCard.className = 'settings-card tool-settings-card';
+        browserCard.innerHTML = '<h3>Tarayıcı</h3><p>Mevcut açık tarayıcınızdaki oturumları kullanarak yerel tarayıcı işlemlerini yürütür.</p>';
+        host.appendChild(browserCard);
+        this.renderGoogleSession(browserCard);
     },
     renderGoogleOptions(target, settings) {
         const row = document.createElement('label'); row.className = 'tool-row';
@@ -69,46 +112,105 @@ const ToolsUI = {
         });
         row.append(copy, input); target.append(row, status);
     },
-    renderGoogleSession(target, query = '') {
+    renderGoogleSession(target) {
         const panel = document.createElement('div'); panel.className = 'google-session';
-        const description = document.createElement('p');
-        description.textContent = 'Doğrulama bu bilgisayarda açılan Google penceresinde yapılır; hesap girişi gerekmez. Profil yerelde saklanır; normal aramalar arka planda çalışır. CAPTCHA tekrar istenebilir. Doğrulama bitince pencereyi kapatın.';
         const status = document.createElement('p'); status.setAttribute('role', 'status');
+        status.style.cssText = 'margin: 18px 0 8px 0; font-size: 13px; line-height: 1.55; color: var(--text-secondary);';
+        const hint = document.createElement('p'); hint.className = 'google-session-hint';
+        hint.style.cssText = 'margin-top:10px;font-size:12px;color:var(--text-muted);line-height:1.5;';
         const actions = document.createElement('div'); actions.className = 'google-session-actions';
+        const select = document.createElement('select'); select.setAttribute('aria-label', 'Orion tarayıcısı');
+        for (const [value, label] of [['chrome', 'Chrome'], ['edge', 'Edge'], ['brave', 'Brave']]) {
+            const option = document.createElement('option'); option.value = value; option.textContent = label;
+            select.appendChild(option);
+        }
         const buttons = [];
-        const user = AppConfig.getUserId();
-        const current = () => user === AppConfig.getUserId() && panel.isConnected;
-        const refresh = async () => {
-            const data = await this.request('/api/v1/google-ai/session');
-            if (current()) status.textContent = data.busy ? 'Google profili kullanımda. Pencereyi kapattıktan sonra durumu yenileyin.' :
-                data.saved ? 'Kalıcı profil kayıtlı. Bu, Google doğrulamasının hâlâ geçerli olduğunu garanti etmez.' : 'Kayıtlı profil yok. Hesap girişi gerekmez.';
+        const current = () => panel.isConnected;
+
+        const updateHint = (connected) => {
+            if (connected) {
+                hint.textContent = '';
+                hint.style.display = 'none';
+            } else {
+                const b = select.value || 'brave';
+                const inspectUrl = `${b}://inspect/#remote-debugging`;
+                hint.innerHTML = `Otomatik bağlanamazsa: Yeni sekmede <code>${inspectUrl}</code> sayfasını açıp <em>Uzaktan hata ayıklamayı etkinleştir</em> kutusunu işaretleyin, ardından <strong>Tarayıcıya bağlan</strong> düğmesine basın ve ekrana gelecek pencereden izin verin.`;
+                hint.style.display = 'block';
+            }
         };
+
+        select.addEventListener('change', () => {
+            select.dataset.userChanged = 'true';
+            updateHint(false);
+        });
+        actions.appendChild(select);
+
+        const disconnectBtn = document.createElement('button');
+        disconnectBtn.type = 'button';
+        disconnectBtn.className = 'tools-button tools-button-ghost';
+        disconnectBtn.textContent = 'Bağlantıyı kes';
+        disconnectBtn.style.display = 'none';
+        disconnectBtn.onclick = async () => {
+            if (!current()) return;
+            disconnectBtn.disabled = true; select.disabled = true;
+            status.textContent = 'Bağlantı kesiliyor…';
+            try {
+                await this.request('/api/v1/browser/disconnect', 'POST');
+                await refresh();
+            } catch (error) {
+                if (current()) status.textContent = 'Hata: ' + error.message;
+            } finally {
+                disconnectBtn.disabled = false; select.disabled = false;
+            }
+        };
+
+        const refresh = async () => {
+            const data = await this.request('/api/v1/browser');
+            const currentBrowser = await this.currentBrowser();
+            if (!current()) return;
+            const activeBrowser = (data.running && data.browser) || currentBrowser || data.suggested_browser || 'chrome';
+            if (select.dataset.userChanged !== 'true') select.value = activeBrowser;
+            const isConnected = Boolean(data && data.running);
+            status.textContent = isConnected
+                ? 'Bağlantı açık. Araçlar aynı bağlantıyı kullanır; tarayıcıyı küçültebilirsiniz.'
+                : 'Bağlan düğmesine basın.';
+            disconnectBtn.style.display = isConnected ? 'inline-block' : 'none';
+            updateHint(isConnected);
+        };
+        this.refreshBrowserStatus = refresh;
+
         const add = (label, action) => {
             const button = document.createElement('button'); button.type = 'button';
             button.className = 'tools-button'; button.textContent = label;
             button.onclick = async () => {
                 if (!current()) return;
-                buttons.forEach(item => item.disabled = true);
-                status.textContent = 'İşlem yapılıyor…';
+                buttons.forEach(item => item.disabled = true); select.disabled = true;
+                status.textContent = 'Bağlanıyor…';
                 try { await action(); }
-                catch (error) { if (current()) status.textContent = error.message; }
-                finally { buttons.forEach(item => item.disabled = false); }
+                catch (error) {
+                    if (current()) {
+                        status.textContent = 'Bağlanılamadı: ' + error.message;
+                        updateHint(false);
+                    }
+                }
+                finally { buttons.forEach(item => item.disabled = false); select.disabled = false; }
             };
             buttons.push(button); actions.appendChild(button);
         };
-        const open = async verify => {
-            const payload = {verify};
-            if (typeof query === 'string' && query.trim()) payload.query = query.trim();
-            const data = await this.request('/api/v1/google-ai/session', 'POST', payload);
-            if (current()) status.textContent = data.message;
-        };
-        add('Google doğrulamasını aç', () => open(true));
-        add('Durumu yenile', refresh);
-        add('Google oturumunu sil', async () => {
-            await this.request('/api/v1/google-ai/session', 'DELETE');
-            await refresh();
+        add('Tarayıcıya bağlan', async () => {
+            try {
+                const data = await this.request('/api/v1/browser/open', 'POST', {browser: select.value});
+                if (current()) status.textContent = data.message;
+                await refresh();
+            } catch (error) {
+                if (current()) {
+                    status.textContent = 'Bağlanılamadı: ' + error.message;
+                    updateHint(false);
+                }
+            }
         });
-        panel.append(description, actions, status); target.appendChild(panel);
+        actions.appendChild(disconnectBtn);
+        panel.append(actions, status, hint); target.appendChild(panel);
         refresh().catch(error => { if (current()) status.textContent = error.message; });
     },
     async open(defaults) {
@@ -230,7 +332,6 @@ const ToolsUI = {
                 content.appendChild(description);
                 if (cat.id === 'google_ai') {
                     this.renderGoogleOptions(content, settings);
-                    this.renderGoogleSession(content);
                 }
                 const children = document.createElement('fieldset'); children.className = 'tools-functions';
                 children.disabled = !selected.categories[cat.id];
@@ -240,8 +341,16 @@ const ToolsUI = {
                     const name = document.createElement('strong'); name.textContent = fn.name;
                     const fnDescription = document.createElement('small'); fnDescription.textContent = fn.description;
                     text.append(name, fnDescription); functionRow.appendChild(text);
-                    const input = this.toggle(fn.name, selected.functions[fn.id], value => {
-                        selected.functions[fn.id] = value;
+                    const input = this.toggle(fn.name, selected.functions[fn.id], async value => {
+                        const isBrowser = Boolean(fn.requires_browser || cat.requires_browser);
+                        if (value && isBrowser) {
+                            const confirmed = await this.requestBrowserConnectionConfirm(fn.name);
+                            if (!confirmed) {
+                                input.checked = false;
+                                return;
+                            }
+                        }
+                        selected.functions[fn.id] = input.checked;
                         updateCategoryBadge(cat);
                         persist(false);
                     });
@@ -257,8 +366,15 @@ const ToolsUI = {
                     reveal.setAttribute('aria-hidden', String(!open));
                     reveal.inert = !open;
                 };
-                const toggle = this.toggle(cat.name + ' kategorisi', selected.categories[cat.id], value => {
-                    selected.categories[cat.id] = value;
+                const toggle = this.toggle(cat.name + ' kategorisi', selected.categories[cat.id], async value => {
+                    if (value && cat.requires_browser) {
+                        const confirmed = await this.requestBrowserConnectionConfirm(cat.name);
+                        if (!confirmed) {
+                            toggle.checked = false;
+                            return;
+                        }
+                    }
+                    selected.categories[cat.id] = toggle.checked;
                     updateCategoryBadge(cat);
                     persist(false);
                 });
@@ -279,6 +395,65 @@ const ToolsUI = {
             };
         } catch (exc) { if (current()) { list.setAttribute('aria-busy', 'false'); list.replaceChildren(); error.textContent = exc.message; } }
     },
+    async requestBrowserConnectionConfirm(featureName) {
+        try {
+            const data = await this.request('/api/v1/browser');
+            if (data && data.running) return true;
+        } catch (_) {}
+
+        return new Promise(resolve => {
+            const dialog = document.createElement('dialog');
+            dialog.className = 'tools-dialog browser-confirm-dialog';
+            dialog.style.cssText = 'max-width: 440px; border-radius: 16px; padding: 0; box-shadow: 0 20px 60px rgba(0,0,0,0.6);';
+            dialog.innerHTML = `
+                <header class="tools-header" style="padding: 22px 24px 14px;">
+                    <div>
+                        <h2 style="font-size: 18px; margin: 0 0 6px;">Tarayıcı bağlantısı gerekli</h2>
+                        <p style="font-size: 12px; color: var(--text-secondary); margin: 0;">Bu fonksiyon için yerel tarayıcı kontrolü gerekiyor</p>
+                    </div>
+                </header>
+                <div style="padding: 0 24px 20px; font-size: 13px; line-height: 1.6; color: var(--text-secondary);">
+                    <strong>${featureName || 'Bu fonksiyon'}</strong> özelliğinin çalışabilmesi için aktif açık tarayıcınıza bağlanılması gereklidir.<br><br>
+                    Tarayıcı bağlantı prosedürü şimdi başlatılsın mı?
+                </div>
+                <footer class="tools-footer" style="padding: 14px 24px 18px; display: flex; justify-content: flex-end; gap: 10px;">
+                    <button type="button" class="tools-button tools-button-ghost" id="browser-confirm-cancel">Vazgeç</button>
+                    <button type="button" class="tools-button tools-button-primary" id="browser-confirm-ok">Tarayıcıya bağlan</button>
+                </footer>
+            `;
+            document.body.appendChild(dialog);
+            dialog.showModal();
+
+            let handled = false;
+            const finish = async (confirmed) => {
+                if (handled) return;
+                handled = true;
+                dialog.close();
+                dialog.remove();
+                if (confirmed) {
+                    await this.ensureBrowserConnected();
+                }
+                resolve(confirmed);
+            };
+
+            dialog.querySelector('#browser-confirm-cancel').onclick = () => finish(false);
+            dialog.querySelector('#browser-confirm-ok').onclick = () => finish(true);
+            dialog.addEventListener('cancel', () => finish(false));
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) finish(false);
+            });
+        });
+    },
+    async ensureBrowserConnected() {
+        try {
+            const data = await this.request('/api/v1/browser');
+            if (!data.running) {
+                const cur = await this.currentBrowser();
+                await this.request('/api/v1/browser/open', 'POST', {browser: cur || data.browser || 'chrome'});
+                await this.refreshBrowserStatus?.();
+            }
+        } catch (_) {}
+    },
     toggle(label, checked, change) {
         const input = document.createElement('input'); input.type = 'checkbox'; input.checked = checked;
         input.className = 'tool-switch'; input.setAttribute('role', 'switch'); input.setAttribute('aria-label', label);
@@ -295,14 +470,79 @@ const ToolsUI = {
         if (card.dataset.status && card.dataset.status !== 'running' && item.status === 'running') return;
         card.dataset.status = item.status;
         const statuses = {running: 'Çalışıyor…', completed: 'Tamamlandı', error: 'Hata', cancelled: 'İptal edildi'};
-        card.querySelector('summary').textContent = `${item.label || item.name} · ${statuses[item.status] || item.status}`;
         let args = item.arguments;
         try { args = JSON.parse(args); } catch (_) { /* Show malformed arguments verbatim. */ }
         card.querySelector('pre').textContent = 'Girdi\n' + JSON.stringify(args, null, 2) +
             (item.result === undefined ? '' : '\n\nSonuç\n' + JSON.stringify(item.result,
                 (key, value) => key === 'truncated' ? undefined : value, 2));
         card.querySelector('.google-session')?.remove();
-        if (item.name === 'google_ai_mode' && item.result?.recovery === 'google_session') this.renderGoogleSession(card, args?.query);
+
+        const resText = typeof item.result === 'string' ? item.result : JSON.stringify(item.result || '');
+        const needsBrowser = (
+            item.result?.status === 'not_configured' ||
+            resText.includes('not_configured') ||
+            resText.includes('Tarayıcı') ||
+            resText.includes('tarayıcınıza bağlanın') ||
+            resText.includes('Tarayıcıya bağlan')
+        );
+
+        let displayStatus = statuses[item.status] || item.status;
+        let cardStatus = item.status;
+        if (item.status === 'completed' && item.result !== undefined) {
+            const r = item.result;
+            if (r?.status === 'not_configured' || needsBrowser) {
+                displayStatus = 'Tarayıcı gerekli';
+                cardStatus = 'not_configured';
+            } else if (r?.status === 'verification_required' || r?.status === 'interaction_required') {
+                displayStatus = 'Doğrulama gerekli';
+                cardStatus = 'warning';
+            } else if (r?.status === 'timeout') {
+                displayStatus = 'Zaman aşımı';
+                cardStatus = 'error';
+            } else if (r?.status === 'blocked') {
+                displayStatus = 'Engellendi';
+                cardStatus = 'error';
+            } else if (r?.status === 'busy') {
+                displayStatus = 'Meşgul';
+                cardStatus = 'warning';
+            } else if (r?.status === 'provider_error' || r?.status === 'error' || r?.error) {
+                displayStatus = 'Hata';
+                cardStatus = 'error';
+            }
+        }
+        card.dataset.status = cardStatus;
+        card.querySelector('summary').textContent = `${item.label || item.name} · ${displayStatus}`;
+
+        let connectBtn = target.querySelector(`.tool-connect-btn[data-call-key="${key}"]`);
+        if (needsBrowser) {
+            if (!connectBtn) {
+                connectBtn = document.createElement('button');
+                connectBtn.type = 'button';
+                connectBtn.className = 'tool-connect-btn tools-button tools-button-primary';
+                connectBtn.dataset.callKey = key;
+                connectBtn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin:8px 0 10px;font-size:12px;font-weight:600;padding:7px 15px;border-radius:9px;cursor:pointer;';
+                connectBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg> Tarayıcıya bağlan';
+                connectBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    connectBtn.disabled = true;
+                    connectBtn.textContent = 'Bağlanıyor…';
+                    try {
+                        const cur = await ToolsUI.currentBrowser();
+                        await ToolsUI.request('/api/v1/browser/open', 'POST', {browser: cur || 'chrome'});
+                        connectBtn.textContent = 'Bağlandı ✓';
+                        connectBtn.style.background = '#059669';
+                        await ToolsUI.refreshBrowserStatus?.();
+                    } catch (err) {
+                        connectBtn.disabled = false;
+                        connectBtn.textContent = 'Yeniden dene';
+                    }
+                };
+                card.insertAdjacentElement('afterend', connectBtn);
+            }
+        } else if (connectBtn) {
+            connectBtn.remove();
+        }
     },
     liveActivity(chatId, item) {
         UI.finishThinking(chatId);
