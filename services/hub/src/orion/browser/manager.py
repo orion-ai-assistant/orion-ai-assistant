@@ -29,6 +29,10 @@ class BrowserBusy(RuntimeError):
     pass
 
 
+class BrowserTabMissing(BrowserUnavailable):
+    pass
+
+
 def browser_root():
     return Path(__file__).resolve().parents[3] / 'data' / 'browser-profiles'
 
@@ -414,8 +418,32 @@ class BrowserManager:
         config['manual'] = True
         self._write(self.config, config)
 
+    async def list_tabs(self):
+        """List pages in the browser the user connected, without creating a tab."""
+        with file_lock(self.directory / 'operation.lock'):
+            if self._read(self.config).get('manual') and self._read(self.config).get('mode') == 'existing':
+                raise BrowserUnavailable('Doğrulamayı tamamlayıp tarayıcıya bağlan düğmesine basın.')
+            _, endpoint = await self.ensure_launched()
+            connection = await get_connection(endpoint)
+            targets = (await connection.send('Target.getTargets'))['targetInfos']
+            return [{'id': item['targetId'], 'title': item.get('title', ''), 'url': item.get('url', '')}
+                    for item in targets if item.get('type') == 'page']
+
     @asynccontextmanager
-    async def tab(self, tag, *, background=False, inactive=False):
+    async def connected(self):
+        """Share one locked browser connection across a read-only multi-tab operation."""
+        with file_lock(self.directory / 'operation.lock'):
+            if self._read(self.config).get('manual') and self._read(self.config).get('mode') == 'existing':
+                raise BrowserUnavailable('Doğrulamayı tamamlayıp tarayıcıya bağlan düğmesine basın.')
+            _, endpoint = await self.ensure_launched()
+            lease = browser_root() / ('shared-' + hashlib.sha256(endpoint.encode()).hexdigest() + '.lock')
+            with file_lock(lease):
+                yield await get_connection(endpoint)
+
+    @asynccontextmanager
+    async def tab(self, tag, *, background=False, inactive=False, target_id=None, create=True):
+        if target_id and background:
+            raise ValueError('An existing tab cannot be a temporary background target')
         with file_lock(self.directory / 'operation.lock'):
             if self._read(self.config).get('manual') and self._read(self.config).get('mode') == 'existing':
                 raise BrowserUnavailable('Doğrulamayı tamamlayıp tarayıcıya bağlan düğmesine basın.')
@@ -426,7 +454,13 @@ class BrowserManager:
                 connection = await get_connection(endpoint)
                 target = None
                 try:
-                    if background:
+                    if target_id:
+                        targets = (await connection.send('Target.getTargets'))['targetInfos']
+                        if not any(t.get('targetId') == target_id and t.get('type') == 'page'
+                                   for t in targets):
+                            raise BrowserTabMissing('Seçilen sekme artık açık değil. Sekmeleri yeniden listeleyin.')
+                        target = target_id
+                    elif background:
                         # No window, no tab-strip entry, same default browser context.
                         # Never silently fall back to a visible target.
                         from .cdp import CDPError
@@ -443,6 +477,8 @@ class BrowserManager:
                         targets = (await connection.send('Target.getTargets'))['targetInfos']
                         target = tabs.get(tag)
                         if not any(t['targetId'] == target and t['type'] == 'page' for t in targets):
+                            if not create:
+                                raise BrowserTabMissing('Orion medya sekmesi açık değil. Mevcut sekmeleri listeleyip tab_id seçin.')
                             options = {'url': 'about:blank'}
                             if inactive:
                                 # Real, visible-in-tab-strip media tab, without

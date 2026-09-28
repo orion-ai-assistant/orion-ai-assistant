@@ -246,8 +246,10 @@ async def google_ai_mode(args, context):
                         result['message'] += ' Click Google doğrulamasını aç, complete verification in your existing browser, then click “Devam et”, then resend your question.'
             except BrowserBusy:
                 result.update(status='busy', message='Tarayıcıda başka bir işlem sürüyor. Tamamlandıktan sonra yeniden deneyin.')
-            except (BrowserUnavailable, ImportError) as exc:
+            except BrowserUnavailable as exc:
                 result.update(status='not_configured', message=str(exc) or 'Mevcut tarayıcınıza bağlanmanız gerekiyor.')
+            except ImportError:
+                result.update(status='unavailable', message='Google AI Mode bu oturumda kullanılamıyor.')
             except TimeoutError:
                 result.update(status='timeout', reason='browser_operation_deadline', recovery='google_session',
                               message='Google browser operation exceeded the time limit. Open the same query in the verification window.')

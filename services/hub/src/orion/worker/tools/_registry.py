@@ -22,7 +22,7 @@ class ToolRegistry:
             self.categories[category.id] = category
             for tool in category.tools:
                 if (not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", tool.id) or tool.id in self.tools
-                    or not tool.name or not tool.description or not 0 < tool.timeout_seconds <= 30
+                    or not tool.name or not tool.description or not 0 < tool.timeout_seconds <= 60
                     or not inspect.iscoroutinefunction(tool.handler)
                     or not issubclass(tool.input_model, BaseModel)):
                     raise ValueError(f"Duplicate or invalid tool: {tool.id}")

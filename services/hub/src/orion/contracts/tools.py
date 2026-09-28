@@ -10,8 +10,10 @@ class ToolSelection(BaseModel):
 
     @field_validator("functions")
     @classmethod
-    def migrate_web_tools(cls, value):
+    def migrate_tool_ids(cls, value):
         functions = dict(value)
+        if functions.get('browser_control'):
+            functions.setdefault('browser_tabs', True)
         legacy = LEGACY_WEB_TOOLS & functions.keys()
         if legacy:
             functions.setdefault("research_web", any(functions[name] for name in legacy))

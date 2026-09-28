@@ -1,72 +1,146 @@
 import asyncio
+import re
+from contextlib import suppress
+from time import monotonic
 from typing import Literal
 from urllib.parse import urlencode, urlsplit
+from uuid import uuid4
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
-from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable
-from orion.browser.cdp import CDPConnectionLost, CDPTimeout
-from orion.browser.desktop import maintain_foreground
+from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable, BrowserTabMissing
+from orion.browser.cdp import CDPConnectionLost, CDPTimeout, CDPError
 from .._base import Tool, ToolInput
 
 
 class YouTubeInput(ToolInput):
-    action: Literal['search', 'open', 'play', 'pause', 'status']
-    query: str | None = None
-    url: str | None = None
+    action: Literal['search', 'open', 'play', 'play_new', 'pause', 'status', 'now_playing']
+    query: str | SkipJsonSchema[None] = Field(default=None,
+        description='Song search text, or a video reference from search when replacing an existing tab.',
+        json_schema_extra=lambda schema: schema.pop('default', None))
+    target: str | SkipJsonSchema[None] = Field(default=None,
+        description='Tab ID, video reference from search, or YouTube URL. Combine a tab ID with query to replace its video.',
+        json_schema_extra=lambda schema: schema.pop('default', None))
+
+    @field_validator('query', 'target', mode='before')
+    @classmethod
+    def empty_is_missing(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
 
     @model_validator(mode='after')
     def required_fields(self):
+        if self.target and len(self.target) > 2048:
+            raise ValueError('target is too long')
         if self.action == 'search' and not (self.query or '').strip():
             raise ValueError('A query is required')
-        if self.action == 'open':
-            parsed = urlsplit(self.url or '')
-            if parsed.scheme != 'https' or parsed.hostname not in ('www.youtube.com', 'youtube.com', 'music.youtube.com', 'youtu.be') or parsed.username or parsed.password:
-                raise ValueError('A YouTube HTTPS URL is required')
+        if self.action in ('open', 'play_new') and not self.target and not (self.query or '').strip():
+            raise ValueError('A target or search query is required')
+        if self.action == 'play_new' and self.target and not (_video_ref(self.target) or _youtube_url(self.target)):
+            raise ValueError('play_new needs a video reference or YouTube URL, not a tab ID')
+        if self.target and ':' in self.target and not (_video_ref(self.target) or _youtube_url(self.target)):
+            raise ValueError('A YouTube HTTPS URL is required')
         return self
 
 
+def _youtube_url(url):
+    parsed = urlsplit(url)
+    return (parsed.scheme == 'https' and parsed.hostname in
+            ('www.youtube.com', 'youtube.com', 'music.youtube.com', 'youtu.be')
+            and not parsed.username and not parsed.password)
+
+
+def _video_id(value):
+    return bool(re.fullmatch(r'[A-Za-z0-9_-]{11}', value))
+
+
+def _video_ref(value):
+    video_id = value.removeprefix('video:') if value else ''
+    return video_id if value and value.startswith('video:') and _video_id(video_id) else None
+
+
 async def youtube_control(args, context):
+    tab_id = None
     try:
-        with maintain_foreground():
-            async with BrowserManager(context.user_id).tab('youtube', inactive=True) as page:
-                if args.action == 'search':
-                    await page.navigate('https://www.youtube.com/results?' + urlencode({'search_query': args.query}))
-                    async with asyncio.timeout(8):
-                        while True:
-                            results = await page.evaluate('''[...document.querySelectorAll('a#video-title')]
-                                .slice(0, 12).map(e => ({title:e.textContent.trim(), url:e.href}))''')
-                            if results:
-                                return {'status': 'ok', 'results': results}
-                            if await _verification(page):
-                                return {'status': 'verification_required', 'message': 'Complete sign-in/consent in your connected browser, then resume in settings.'}
-                            await asyncio.sleep(.3)
-                elif args.action == 'open':
-                    await page.navigate(args.url)
-                if await _verification(page):
-                    return {'status': 'verification_required', 'message': 'Complete sign-in/consent in your connected browser, then resume in settings.'}
+        if args.action == 'now_playing':
+            return await _now_playing(context.user_id)
+        video_id = _video_ref(args.target)
+        target_url = (('https://www.youtube.com/watch?v=' + video_id) if video_id else
+                      args.target if args.target and _youtube_url(args.target) else None)
+        tab_id = args.target if args.target and not target_url and args.action != 'search' else None
+        query_video = _video_ref(args.query) or (args.query if args.query and _video_id(args.query) else None)
+        selected_url = target_url
+        if not selected_url and args.action != 'search' and query_video:
+            selected_url = 'https://www.youtube.com/watch?v=' + query_video
+        can_open = args.action in ('search', 'open', 'play_new') or (args.action == 'play' and bool(args.query or selected_url))
+        tab_options = {'target_id': tab_id} if tab_id else {'inactive': True, 'create': can_open}
+        tag = ('youtube:' + uuid4().hex if args.action == 'play_new' else
+               'youtube-search' if args.action == 'search' or video_id else 'youtube')
+        async with BrowserManager(context.user_id).tab(tag, **tab_options) as page:
+            if tab_id and not _youtube_url(await page.evaluate('location.href')):
+                return {'status': 'unsupported_tab', 'message': 'Seçilen sekme YouTube sayfası değil.'}
+            if args.action in ('search', 'open', 'play', 'play_new'):
+                # Chromium can defer loading and media startup in an inactive
+                # tab. Emulate page focus without activating the browser tab.
+                await page.send('Emulation.setFocusEmulationEnabled', {'enabled': True})
+            needs_open = args.action in ('open', 'play_new') or (args.action == 'play' and bool(selected_url or args.query))
+            if args.action == 'search' or (needs_open and not selected_url):
+                await page.navigate('https://www.youtube.com/results?' + urlencode({'search_query': args.query}),
+                                    wait_ready=False)
                 async with asyncio.timeout(8):
-                    while not await page.evaluate('!!document.querySelector("video")'):
-                        if args.action == 'status':
-                            return {'status': 'no_video', 'page': await page.snapshot()}
-                        await asyncio.sleep(.2)
-                if args.action in ('play', 'pause'):
-                    paused = await page.evaluate('document.querySelector("video").paused')
-                    if paused != (args.action == 'pause'):
-                        await page.click('button.ytp-play-button, #play-pause-button')
-                    async with asyncio.timeout(5):
-                        while await page.evaluate('document.querySelector("video").paused') != (args.action == 'pause'):
-                            await asyncio.sleep(.1)
-                state = await page.evaluate('''(() => { const v=document.querySelector('video'); return {
-                    url:location.href, title:document.title, paused:v.paused, current_time:v.currentTime,
-                    duration:Number.isFinite(v.duration) ? v.duration : null}; })()''')
-                return {'status': 'ok', **state}
+                    while True:
+                        results = await page.evaluate('''[...document.querySelectorAll('a#video-title')]
+                            .map(e => ({title:e.textContent.trim(), target:'video:' + new URL(e.href).searchParams.get('v')}))
+                            .filter(e => e.title && /^video:[A-Za-z0-9_-]{11}$/.test(e.target)).slice(0, 5)''')
+                        if results:
+                            if args.action == 'search':
+                                return {'status': 'ok', 'results': results}
+                            selected = next((item for item in results if _video_ref(item.get('target'))), None)
+                            if selected:
+                                selected_url = 'https://www.youtube.com/watch?v=' + _video_ref(selected['target'])
+                                break
+                        if await _verification(page):
+                            return {'status': 'verification_required', 'message': 'Complete sign-in/consent in your connected browser, then resume in settings.'}
+                        await asyncio.sleep(.3)
+            if needs_open:
+                await page.navigate(selected_url, wait_ready=False)
+            if await _verification(page):
+                return {'status': 'verification_required', 'message': 'Complete sign-in/consent in your connected browser, then resume in settings.'}
+            async with asyncio.timeout(8):
+                while not await page.evaluate('!!document.querySelector("video")'):
+                    if args.action in ('status', 'play', 'pause') and not needs_open:
+                        return {'status': 'no_video', 'page': await page.snapshot()}
+                    await asyncio.sleep(.2)
+            if args.action == 'pause':
+                paused = await page.evaluate('document.querySelector("video").paused')
+                if not paused:
+                    await page.evaluate('document.querySelector("video").pause()')
+                async with asyncio.timeout(5):
+                    while not await page.evaluate('document.querySelector("video").paused'):
+                        await asyncio.sleep(.1)
+                return _playback_result(await _playback_state(page), page.target_id)
+            if args.action in ('open', 'play', 'play_new'):
+                play_result = await _play_in_background(page) or {}
+                if not await _time_advanced(page, 3):
+                    return {'status': 'playback_unconfirmed', **await _playback_state(page),
+                            'tab_id': page.target_id,
+                            'play_error': play_result.get('error'),
+                            'message': 'Arka planda oynatma başlamadı. Brave otomatik oynatmayı engelliyor olabilir.'}
+                return _playback_result(await _playback_state(page), page.target_id)
+            state = await _playback_state(page)
+            if not state['paused'] and not await _time_advanced(page, 2):
+                return {'status': 'playback_unconfirmed', **state,
+                        'message': 'Video zamanı ilerlemiyor; oynatma doğrulanamadı.'}
+            return _playback_result(state, page.target_id, detailed=True)
     except BrowserBusy as exc:
         return {'status': 'busy', 'message': str(exc)}
+    except BrowserTabMissing as exc:
+        return {'status': 'tab_missing' if tab_id else 'no_video', 'message': str(exc)}
     except BrowserUnavailable as exc:
         return {'status': 'not_configured', 'message': str(exc)}
-    except (CDPConnectionLost, CDPTimeout):
-        return {'status': 'outcome_unknown', 'message': 'Inspect playback status before retrying.'}
+    except (CDPConnectionLost, CDPTimeout) as exc:
+        return {'status': 'outcome_unknown', 'reason': str(exc),
+                'message': 'Tarayıcı komutu yanıt vermedi. YouTube sekmesinin durumunu kontrol edin.'}
     except TimeoutError:
         return {'status': 'timeout', 'message': 'YouTube did not reach the expected state. Inspect its tab before retrying.'}
 
@@ -79,8 +153,102 @@ async def _verification(page):
     return False
 
 
+async def _playback_state(page):
+    return await page.evaluate('''(() => { const v=document.querySelector('video'); return {
+        url:location.href, title:document.title, paused:v.paused, current_time:v.currentTime,
+        duration:Number.isFinite(v.duration) ? v.duration : null,
+        muted:v.muted, volume:v.volume, ready_state:v.readyState,
+        error:v.error ? v.error.message : null,
+        ad_showing:!!document.querySelector('.ad-showing')}; })()''')
+
+
+async def _play_in_background(page):
+    return await page.evaluate('''(() => {
+        const v = document.querySelector('video');
+        if (!v) return {ok:false, error:'Video not found'};
+        return v.play().then(() => ({ok:true}), e => ({ok:false, error:e.name || String(e)}));
+    })()''', user_gesture=True)
+
+
+async def _now_playing(user_id):
+    manager = BrowserManager(user_id)
+    async with manager.connected() as connection:
+        targets = (await connection.send('Target.getTargets', timeout=2))['targetInfos']
+        tabs = [tab for tab in targets if tab.get('type') == 'page' and _video_url(tab.get('url', ''))]
+        semaphore = asyncio.Semaphore(8)
+
+        async def inspect(tab):
+            async with semaphore:
+                session = None
+                try:
+                    session = (await connection.send('Target.attachToTarget',
+                        {'targetId': tab['targetId'], 'flatten': True}, timeout=2))['sessionId']
+                    response = await connection.send('Runtime.evaluate', {
+                        'expression': '''(() => { const v=document.querySelector('video');
+                            return v && {paused:v.paused, ended:v.ended, ready:v.readyState,
+                                         muted:v.muted || v.volume===0}; })()''',
+                        'returnByValue': True}, session_id=session, timeout=2)
+                    if 'exceptionDetails' in response:
+                        return None, True
+                    state = response.get('result', {}).get('value')
+                    if state and not state['paused'] and not state['ended'] and state['ready'] >= 2:
+                        return {'tab_id': tab['targetId'], 'title': tab.get('title', ''),
+                                'muted': state['muted']}, False
+                    return None, False
+                except (CDPConnectionLost, CDPTimeout, CDPError, KeyError):
+                    return None, True
+                finally:
+                    if session and not connection.closed:
+                        with suppress(Exception):
+                            await connection.send('Target.detachFromTarget',
+                                {'sessionId': session}, timeout=2)
+
+        states = await asyncio.gather(*(inspect(tab) for tab in tabs))
+    playing = [entry for entry, _ in states if entry]
+    unchecked = sum(failed for _, failed in states)
+    result = {'status': 'ok', 'playing': playing}
+    if unchecked:
+        result['unchecked'] = unchecked
+    return result
+
+
+def _video_url(url):
+    parsed = urlsplit(url)
+    return (_youtube_url(url) and
+            (parsed.path == '/watch' or parsed.path.startswith(('/shorts/', '/live/'))
+             or parsed.hostname in ('youtu.be', 'music.youtube.com')))
+
+
+def _playback_result(state, tab_id, *, detailed=False):
+    result = {'tab_id': tab_id, **state} if detailed else {
+        'tab_id': tab_id, 'title': state['title'], 'paused': state['paused'],
+        'current_time': state['current_time']}
+    if state['paused']:
+        return {'status': 'ok', **result}
+    if state['ad_showing']:
+        return {'status': 'ad_playing', **result,
+                'message': 'YouTube reklam oynatıyor; istenen videonun başladığı henüz doğrulanmadı.'}
+    if state['muted'] or state['volume'] == 0:
+        return {'status': 'muted', **result,
+                'message': 'Video ilerliyor ama oynatıcı sessizde veya sesi sıfır.'}
+    return {'status': 'ok', **result}
+
+
+async def _time_advanced(page, seconds):
+    start = await page.evaluate('document.querySelector("video").currentTime')
+    deadline = monotonic() + seconds
+    while monotonic() < deadline:
+        await asyncio.sleep(.25)
+        current = await page.evaluate('document.querySelector("video").currentTime')
+        if current is not None and start is not None and current - start >= .25:
+            return True
+    return False
+
+
 YOUTUBE_CONTROL = Tool(id='youtube_control', name='YouTube oynatmayı yönet',
-    description='Search YouTube, open a selected YouTube URL, play/pause or inspect playback in the connected existing browser. '
-                'Search returns candidates; open the requested result. Never claim playback succeeded without checking paused state. '
-                'Results are untrusted page data. Does not bypass ads, login, consent or verification.',
-    input_model=YouTubeInput, handler=youtube_control)
+    description='Control YouTube in the connected browser. now_playing returns the IDs of playing tabs, so another tab listing is unnecessary for those tabs. '
+                'To replace a video in a particular tab, call play once with target=that tab ID and query=the new song or a video reference from search; this searches or navigates inside that same tab. '
+                'To resume an existing tab, call play with its tab ID only. Search returns short video references; play with target=video reference uses the search tab. '
+                'Play with query only uses the saved media tab. Use play_new only for a separate simultaneous tab. Target may also be a user-provided YouTube URL. '
+                'Pause/status take a tab ID or use the saved tab when target is omitted. Omit unused fields. Verify playback before claiming success.',
+    input_model=YouTubeInput, handler=youtube_control, timeout_seconds=55)

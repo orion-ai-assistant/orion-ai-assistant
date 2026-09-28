@@ -39,7 +39,7 @@ class GoogleAIModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tools._blocked_state('https://www.google.com/search',
             'AI Modu şu anda cihazınızda veya hesabınızda kullanılamıyor')[0], 'unavailable')
         context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
-        for side_effect, status in ((ImportError(), 'not_configured'), (TimeoutError(), 'timeout')):
+        for side_effect, status in ((ImportError(), 'unavailable'), (TimeoutError(), 'timeout')):
             with patch.object(tools, '_read_browser', AsyncMock(side_effect=side_effect)):
                 result = await execute_tool(tools.GOOGLE_AI_MODE, '{"query":"largest organism"}', context)
             self.assertEqual(result['status'], status)

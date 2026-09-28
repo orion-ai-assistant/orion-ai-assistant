@@ -65,6 +65,21 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(registry.enabled(selection), ['get_current_time'])
         self.assertNotIn('handler', registry.catalog()[0]['functions'][0])
 
+    def test_existing_browser_selection_enables_tabs(self):
+        selection = ToolSelection(categories={'browser': True},
+                                  functions={'browser_control': True})
+        self.assertEqual(get_registry().enabled(selection), ['browser_tabs', 'browser_control'])
+        disabled = ToolSelection(categories={'browser': True},
+                                 functions={'browser_control': True, 'browser_tabs': False})
+        self.assertEqual(get_registry().enabled(disabled), ['browser_control'])
+
+    def test_youtube_schema_omits_null_placeholders(self):
+        schema = get_registry().tools['youtube_control'].schema()['function']['parameters']
+        self.assertEqual(schema['required'], ['action'])
+        self.assertEqual(schema['properties']['query']['type'], 'string')
+        self.assertNotIn('default', schema['properties']['query'])
+        self.assertEqual(set(schema['properties']), {'action', 'query', 'target'})
+
     async def test_time_and_input_validation(self):
         context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
         result = await execute_tool(CATEGORY.tools[0], '{}', context)
@@ -215,6 +230,23 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conversation.final_content, 'Done!')
         self.assertEqual([item['status'] for item in conversation.activity], ['completed', 'completed'])
 
+    async def test_reused_tool_call_id_in_followup_is_remapped(self):
+        conversation = self.conversation()
+        requests = []
+        async def stream(messages, settings, **kwargs):
+            requests.append(json.loads(json.dumps(messages)))
+            if len(requests) <= 2:
+                yield 'tool_calls', json.dumps([call('reused')])
+            else:
+                yield 'content', 'Done'
+        events = [event async for event in conversation.stream(
+            [], RuntimeSettings(), AsyncMock(return_value=False), stream)]
+        self.assertEqual([item['status'] for item in conversation.activity], ['completed', 'completed'])
+        self.assertEqual(conversation.activity[0]['call_id'], 'reused')
+        self.assertNotEqual(conversation.activity[1]['call_id'], 'reused')
+        self.assertEqual(requests[2][-1]['tool_call_id'], conversation.activity[1]['call_id'])
+        self.assertEqual(events[-1], ('content', 'Done'))
+
     async def test_bad_arguments_and_disabled_unknown_tools_are_results(self):
         for name, args, enabled in [('get_current_time', '{', ['get_current_time']),
                                     ('get_current_time', '{}', []), ('missing', '{}', [])]:
@@ -290,6 +322,12 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[-1], {'role': 'assistant', 'content': 'final text'})
         self.assertEqual(result[1]['tool_calls'], [call()])
         self.assertEqual(model_history(history[:-2], 20), history[:2])
+        history[4]['content'] = json.dumps({'status': 'ok', 'page': {
+            'url': 'https://example.com', 'title': 'Example', 'text': 'x' * 19000,
+            'elements': [{'tag': 'BUTTON', 'label': 'Play'}] * 100}})
+        compact = json.loads(model_history(history, 20)[4]['content'])['page']
+        self.assertEqual(len(compact['text']), 500)
+        self.assertEqual(len(compact['elements']), 10)
 
 
 class SelectionTests(unittest.IsolatedAsyncioTestCase):

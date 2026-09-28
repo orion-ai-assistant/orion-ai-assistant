@@ -140,8 +140,19 @@ class ToolConversation:
             self.rounds += 1
             if self.rounds > 8 or len(seen_ids) + len(calls) > 16:
                 raise RuntimeError("Tool limit exceeded (8 rounds / 16 calls)")
-            if any(call["id"] in seen_ids for call in calls):
-                raise RuntimeError("Repeated tool call ID; execution refused")
+            if len({call['id'] for call in calls}) != len(calls):
+                raise RuntimeError("Repeated tool call ID in one response")
+            # Some model backends reuse IDs on the next response. Give those
+            # calls unique transcript IDs before sending their tool results.
+            occupied_ids = seen_ids | {call['id'] for call in calls}
+            for index, call in enumerate(calls):
+                if call['id'] in seen_ids:
+                    original = call['id']
+                    replacement = f'{original}_{self.rounds}_{index}'
+                    while replacement in occupied_ids:
+                        replacement += '_'
+                    call['id'] = replacement
+                    occupied_ids.add(replacement)
             seen_ids.update(call["id"] for call in calls)
             assistant = {"role": "assistant", "content": round_content or None, "tool_calls": calls}
             messages.append(assistant)

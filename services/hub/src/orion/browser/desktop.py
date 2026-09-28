@@ -5,31 +5,9 @@ import csv
 import io
 import subprocess
 import threading
-from contextlib import contextmanager
 
 
 EXECUTABLES = {'chrome.exe': 'chrome', 'brave.exe': 'brave', 'msedge.exe': 'edge'}
-
-
-@contextmanager
-def maintain_foreground():
-    """Ensure the user's active foreground window does not lose focus during automation."""
-    if os.name != 'nt':
-        yield
-        return
-    import ctypes
-    user32 = ctypes.WinDLL('user32', use_last_error=True)
-    fg = user32.GetForegroundWindow()
-    try:
-        yield
-    finally:
-        if fg:
-            try:
-                current = user32.GetForegroundWindow()
-                if current != fg and user32.IsWindow(fg):
-                    user32.SetForegroundWindow(fg)
-            except Exception:
-                pass
 
 
 def browser_windows():

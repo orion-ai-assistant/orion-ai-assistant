@@ -477,22 +477,22 @@ const ToolsUI = {
                 (key, value) => key === 'truncated' ? undefined : value, 2));
         card.querySelector('.google-session')?.remove();
 
-        const resText = typeof item.result === 'string' ? item.result : JSON.stringify(item.result || '');
-        const needsBrowser = (
-            item.result?.status === 'not_configured' ||
-            resText.includes('not_configured') ||
-            resText.includes('Tarayıcı') ||
-            resText.includes('tarayıcınıza bağlanın') ||
-            resText.includes('Tarayıcıya bağlan')
-        );
+        let result = item.result;
+        if (typeof result === 'string') {
+            try { result = JSON.parse(result); } catch (_) { /* Keep plain text. */ }
+        }
+        const needsBrowser = result?.status === 'not_configured';
 
         let displayStatus = statuses[item.status] || item.status;
         let cardStatus = item.status;
         if (item.status === 'completed' && item.result !== undefined) {
-            const r = item.result;
-            if (r?.status === 'not_configured' || needsBrowser) {
+            const r = result;
+            if (needsBrowser) {
                 displayStatus = 'Tarayıcı gerekli';
                 cardStatus = 'not_configured';
+            } else if (r?.status === 'tab_missing') {
+                displayStatus = 'Sekme bulunamadı';
+                cardStatus = 'warning';
             } else if (r?.status === 'verification_required' || r?.status === 'interaction_required') {
                 displayStatus = 'Doğrulama gerekli';
                 cardStatus = 'warning';

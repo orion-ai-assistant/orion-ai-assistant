@@ -74,13 +74,14 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
     def test_tool_validation_and_discovery(self):
         registry = get_registry()
         self.assertIn('browser_control', registry.tools)
+        self.assertIn('browser_tabs', registry.tools)
         self.assertIn('youtube_control', registry.tools)
         for kwargs in ({'action': 'navigate', 'url': 'file:///secret'}, {'action': 'click'}, {'action': 'type', 'selector': 'input'}):
             with self.assertRaises(ValueError):
                 BrowserInput(**kwargs)
         for url in ('https://youtube.com.attacker.net/watch', 'https://user:pass@youtube.com/watch', 'javascript:alert(1)'):
             with self.assertRaises(ValueError):
-                YouTubeInput(action='open', url=url)
+                YouTubeInput(action='open', target=url)
 
     async def test_old_profile_configuration_requires_explicit_new_connection(self):
         self.manager.directory.mkdir()
