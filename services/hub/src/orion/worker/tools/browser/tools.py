@@ -13,7 +13,7 @@ class BrowserInput(ToolInput):
     action: Literal['navigate', 'read', 'click', 'type', 'scroll']
     url: str | SkipJsonSchema[None] = Field(default=None,
         json_schema_extra=lambda schema: schema.pop('default', None))
-    tab_id: str | SkipJsonSchema[None] = Field(default=None, min_length=1, max_length=128,
+    tab_id: str | SkipJsonSchema[None] = Field(default=None,
         description='ID returned by browser_tabs for an existing tab; omit to use the Orion tab',
         json_schema_extra=lambda schema: schema.pop('default', None))
     selector: str | SkipJsonSchema[None] = Field(default=None,
@@ -21,7 +21,7 @@ class BrowserInput(ToolInput):
         json_schema_extra=lambda schema: schema.pop('default', None))
     text: str | SkipJsonSchema[None] = Field(default=None,
         json_schema_extra=lambda schema: schema.pop('default', None))
-    delta: int = Field(default=500, ge=-3000, le=3000,
+    delta: int = Field(default=500,
         description='Scroll amount; use only with scroll',
         json_schema_extra=lambda schema: schema.pop('default', None))
 
