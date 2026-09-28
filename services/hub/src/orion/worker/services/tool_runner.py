@@ -3,6 +3,7 @@ import json
 import re
 from contextlib import aclosing
 from dataclasses import replace
+from time import monotonic
 from urllib.parse import quote
 
 from orion.contracts.tools import LEGACY_WEB_TOOLS
@@ -10,6 +11,7 @@ from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
 
 WEB_TOOLS = {"research_web", "google_ai_mode", *LEGACY_WEB_TOOLS}
+GOOGLE_STOP_GRACE_SECONDS = 2
 
 
 def google_failure_message(result):
@@ -66,20 +68,26 @@ async def stream_tool_answer(tool, arguments, context):
 
 
 async def execute_tool(tool, arguments, context):
-    """Only async, cooperative handlers; cancellation never retries a handler."""
+    """Only async, cooperative handlers; let Google flush late text after stop."""
     if await context.cancelled():
         raise ToolCancelled()
     args = tool.input_model.model_validate_json(arguments)
     task = asyncio.create_task(tool.handler(args, context))
+    stop_deadline = None
     try:
         async with asyncio.timeout(tool.timeout_seconds):
             while True:
                 ready, _ = await asyncio.wait({task}, timeout=0.05)
-                if await context.cancelled():
-                    raise ToolCancelled()
                 if ready:
                     result = json.dumps(task.result(), ensure_ascii=False, allow_nan=False)
                     return json.loads(result)
+                if await context.cancelled():
+                    if tool.id != 'google_ai_mode' or context.emit_answer is None:
+                        raise ToolCancelled()
+                    if stop_deadline is None:
+                        stop_deadline = monotonic() + GOOGLE_STOP_GRACE_SECONDS
+                    elif monotonic() >= stop_deadline:
+                        raise ToolCancelled()
     finally:
         if not task.done():
             task.cancel()
@@ -169,7 +177,10 @@ class ToolConversation:
                         "arguments": arguments, "status": "running", "turn_id": context.turn_id}
                 self.activity.append(item)
                 yield "tool_call", json.dumps(item)
+                google_preview = None
                 try:
+                    if google_failure:
+                        raise ValueError("Google AI Mode failed; further web calls were skipped")
                     if cancelled or await stop_checker():
                         raise ToolCancelled()
                     if name not in self.enabled or name not in registry.tools:
@@ -183,6 +194,7 @@ class ToolConversation:
                         async with aclosing(stream_tool_answer(registry.tools[name], arguments, context)) as updates:
                             async for update, value in updates:
                                 if update == 'answer':
+                                    google_preview = value
                                     self.final_content = google_direct_text(value, answer_format='markdown')
                                     yield 'content_snapshot', prefix + round_content + self.final_content
                                 else:
@@ -190,10 +202,24 @@ class ToolConversation:
                         google_direct_result = result
                     else:
                         result = await execute_tool(registry.tools[name], arguments, context)
-                    item.update(status="completed", result=result)
+                    if name == 'google_ai_mode' and settings.google_ai_direct_stream and not (
+                            result.get('status') in ('ok', 'partial') and result.get('answer')):
+                        google_failure = google_failure_message(result) + ' normal web aramasına geçilmedi.'
+                        item.update(status="error", result=result)
+                    else:
+                        item.update(status="completed", result=result)
                 except ToolCancelled:
                     cancelled = True
-                    item.update(status="cancelled", result={"error": {"type": "cancelled", "message": "Tool execution cancelled"}})
+                    if name == 'google_ai_mode' and google_preview:
+                        item.update(status="cancelled", result={
+                            "status": "partial", "provider": "google_ai_mode",
+                            "answer": google_preview, "answer_format": "markdown",
+                            "cancelled": True,
+                            "message": "Google AI Mode was stopped before the answer completed. Sources were not collected.",
+                        })
+                        self.direct_tool_call_id = call["id"]
+                    else:
+                        item.update(status="cancelled", result={"error": {"type": "cancelled", "message": "Tool execution cancelled"}})
                 except Exception as exc:
                     item.update(status="error", result={"error": {"type": type(exc).__name__, "message": str(exc)[:2000] or "Tool timed out"}})
                 result_message = {"role": "tool", "tool_call_id": call["id"],
@@ -201,13 +227,17 @@ class ToolConversation:
                 messages.append(result_message)
                 self.transcript.append(result_message)
                 yield "tool_result", json.dumps(item)
-            if cancelled or await stop_checker():
-                return
             if google_direct_result and google_direct_result.get('status') in ('ok', 'partial') and google_direct_result.get('answer'):
                 self.final_content = google_direct_text(google_direct_result['answer'], google_direct_result)
                 self.direct_tool_call_id = next(
                     entry['call_id'] for entry in self.activity
                     if entry['name'] == 'google_ai_mode' and entry['result'] is google_direct_result)
+                yield 'content_snapshot', prefix + round_content + self.final_content
+                return
+            if cancelled or await stop_checker():
+                return
+            if google_failure:
+                self.final_content = google_failure
                 yield 'content_snapshot', prefix + round_content + self.final_content
                 return
             prefix += round_content
