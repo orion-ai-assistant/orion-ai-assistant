@@ -58,14 +58,15 @@ class DirectToolHistoryTests(unittest.TestCase):
 
     def test_cancelled_partial_google_answer_is_only_in_tool_result(self):
         history = self.history()
-        result = {'status': 'partial', 'cancelled': True,
+        result = {'status': 'partial', 'provider': 'google_ai_mode', 'cancelled': True,
                   'answer': 'Visible Google draft', 'answer_format': 'markdown'}
         history[2]['content'] = json.dumps(result)
         history[3]['content'] = google_direct_text(result['answer'], result)
         projected = model_history(history, 20)
         self.assertEqual([message['role'] for message in projected], ['user', 'assistant', 'tool', 'user'])
         self.assertEqual(json.dumps(projected).count('Visible Google draft'), 1)
-        self.assertTrue(json.loads(projected[2]['content'])['cancelled'])
+        self.assertEqual(projected[2]['content'], 'Visible Google draft')
+        self.assertEqual(json.loads(history[2]['content']), result)
 
     def test_budget_counts_projected_messages_and_retains_pairs(self):
         history = self.history()

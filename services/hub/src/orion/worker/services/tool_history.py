@@ -10,6 +10,9 @@ def _model_tool_content(message):
         return content
     if not isinstance(result, dict):
         return content
+    if (result.get('provider') == 'google_ai_mode' and result.get('status') == 'partial'
+            and result.get('cancelled') is True and isinstance(result.get('answer'), str)):
+        return result['answer']
     if isinstance(result.get('tabs'), list):
         tabs = [{key: value[:limit] if isinstance(value, str) else value
                  for key, limit in (('id', 128), ('title', 100), ('url', 200))
