@@ -125,6 +125,9 @@ const API = {
 
         // Render immediately. The matching SSE user_message event is claimed
         // later so slow chat creation never leaves the conversation area blank.
+        // NOTE: Do NOT call finishGeneration here - the SSE done event already
+        // finalizes the previous generation. Calling it here would attach stale
+        // metrics from the previous turn onto the new empty bot bubble.
         AppState.showOptimisticUserMessage(text, chatId);
         UI.appendUserMessage(displayText, attachments.length ? attachments : images);
         UI.clearInput();

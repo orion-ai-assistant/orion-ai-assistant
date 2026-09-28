@@ -25,6 +25,9 @@ const UI = {
 
     scrollToBottom() {
         this.chatArea.scrollTop = this.chatArea.scrollHeight;
+        requestAnimationFrame(() => {
+            if (this.chatArea) this.chatArea.scrollTop = this.chatArea.scrollHeight;
+        });
     },
 
     createMetricsElement(firstTokenMs, totalMs) {
@@ -129,6 +132,14 @@ const UI = {
         }).trim();
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
+
+        const chatId = AppState.currentChatId;
+        const curState = chatId ? this._chatDivs[chatId] : null;
+        if (curState?.botDiv && curState.botDiv.classList.contains('typing')) {
+            curState.botDiv.remove();
+            curState.botDiv = null;
+        }
+
         const group = document.createElement('div');
         group.className = 'user-message-group';
         if (files.length) {
@@ -209,7 +220,18 @@ const UI = {
         if (hero) hero.remove();
         const state = this._getOrCreateChatState(chatId);
 
-        // If there's an existing typing placeholder for this chat, reuse it
+        // Ensure botDiv is never positioned BEFORE the latest user message
+        const lastUserMsg = this.chatArea.querySelector('.user-message-group:last-of-type, .message.user:last-of-type');
+        if (state.botDiv && lastUserMsg) {
+            if (state.botDiv.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                if (state.botDiv.classList.contains('typing')) {
+                    state.botDiv.remove();
+                }
+                state.botDiv = null;
+            }
+        }
+
+        // If there's an existing typing placeholder for this chat that is correctly positioned, reuse it
         if (state.botDiv && state.botDiv.classList.contains('typing')) {
             return;
         }
@@ -261,14 +283,28 @@ const UI = {
         state.thinkBody = null;
     },
 
-    appendThinkingToken(chatId, token) {
-        if (!chatId || !token) return;
+    _ensureValidBotDiv(chatId) {
         const state = this._getOrCreateChatState(chatId);
-        state.currentContentNode = null;
-
+        const lastUserMsg = this.chatArea?.querySelector('.user-message-group:last-of-type, .message.user:last-of-type');
+        if (state.botDiv && lastUserMsg && (state.botDiv.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+            if (state.botDiv.classList.contains('typing')) {
+                state.botDiv.remove();
+            }
+            state.botDiv = null;
+            state.contentNodes = [];
+            state.currentContentNode = null;
+        }
         if (!state.botDiv) {
             this.createBotMessagePlaceholder(chatId);
         }
+        return state;
+    },
+
+    appendThinkingToken(chatId, token) {
+        if (!chatId || !token) return;
+        const state = this._ensureValidBotDiv(chatId);
+        state.currentContentNode = null;
+
         if (state.botDiv.classList.contains('typing')) {
             state.botDiv.innerHTML = '';
             state.botDiv.classList.remove('typing');
@@ -300,11 +336,7 @@ const UI = {
     appendToken(chatId, token) {
         if (!chatId || !token) return;
         this.finishThinking(chatId);
-        const state = this._getOrCreateChatState(chatId);
-
-        if (!state.botDiv) {
-            this.createBotMessagePlaceholder(chatId);
-        }
+        const state = this._ensureValidBotDiv(chatId);
 
         if (state.botDiv.classList.contains('typing')) {
             state.botDiv.innerHTML = '';
@@ -326,10 +358,7 @@ const UI = {
     replaceMessageContent(chatId, content) {
         if (!chatId) return;
         this.finishThinking(chatId);
-        const state = this._getOrCreateChatState(chatId);
-        if (!state.botDiv) {
-            this.createBotMessagePlaceholder(chatId);
-        }
+        const state = this._ensureValidBotDiv(chatId);
         if (state.botDiv.classList.contains('typing')) {
             state.botDiv.innerHTML = '';
             state.botDiv.classList.remove('typing');

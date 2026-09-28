@@ -573,12 +573,13 @@ body {
     width: 100%;
     max-width: 920px;
     margin: 0 auto;
-    padding: 30px 24px 60px;
+    padding: 30px 24px 110px;
     display: flex;
     flex-direction: column;
     gap: 22px;
     align-items: stretch;
     justify-content: flex-start;
+    scroll-behavior: smooth;
 }
 
 /* Welcome Hero */

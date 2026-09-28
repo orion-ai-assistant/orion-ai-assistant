@@ -464,7 +464,20 @@ const ToolsUI = {
         let card = Array.from(target.querySelectorAll('.tool-activity')).find(el => el.dataset.callKey === key);
         if (!card) {
             card = document.createElement('details'); card.className = 'tool-activity'; card.dataset.callKey = key;
-            card.append(document.createElement('summary'), document.createElement('pre')); target.appendChild(card);
+            card.append(document.createElement('summary'), document.createElement('pre'));
+            card.addEventListener('toggle', () => {
+                if (card.open) {
+                    requestAnimationFrame(() => {
+                        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        const chatArea = UI.chatArea;
+                        if (chatArea) {
+                            const isNearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 450;
+                            if (isNearBottom) UI.scrollToBottom();
+                        }
+                    });
+                }
+            });
+            target.appendChild(card);
         }
         // A replayed start event must not overwrite a terminal result.
         if (card.dataset.status && card.dataset.status !== 'running' && item.status === 'running') return;
@@ -547,10 +560,22 @@ const ToolsUI = {
     liveActivity(chatId, item) {
         UI.finishThinking(chatId);
         const state = UI._getOrCreateChatState(chatId);
+
+        // Ensure botDiv is positioned AFTER the latest user message
+        const lastUserMsg = UI.chatArea?.querySelector('.user-message-group:last-of-type, .message.user:last-of-type');
+        if (state.botDiv && lastUserMsg && (state.botDiv.compareDocumentPosition(lastUserMsg) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+            state.botDiv = null;
+            state.contentNodes = [];
+            state.currentContentNode = null;
+        }
+
         if (item.status === 'running') state.currentContentNode = null;
         if (!state.botDiv) UI.createBotMessagePlaceholder(chatId);
         if (state.botDiv.classList.contains('typing')) { state.botDiv.replaceChildren(); state.botDiv.classList.remove('typing'); }
         this.renderActivity(state.botDiv, item);
+        if (chatId === AppState.currentChatId) {
+            UI.scrollToBottom();
+        }
     }
 };
 window.ToolsUI = ToolsUI;

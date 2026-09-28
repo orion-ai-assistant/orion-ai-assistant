@@ -152,12 +152,57 @@
 .google-session input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; padding: 10px; color: inherit; background: transparent; border: 1px solid var(--border-medium); border-radius: 8px; }
 .tool-settings-card h3 { margin: 0 0 12px; }
 .tool-settings-card p { margin: 0 0 12px; color: var(--text-secondary); font-size: 13px; }
-.tool-activity { margin: 8px 0; padding: 10px 14px; border: 1px solid var(--border-medium); border-radius: 10px; font-size: 13px; background: rgba(255, 255, 255, .035); white-space: normal; }
-.tool-activity summary { cursor: pointer; color: var(--text-secondary); }
+.tool-activity {
+    margin: 8px 0;
+    padding: 10px 14px;
+    border: 1px solid var(--border-medium);
+    border-radius: 12px;
+    font-size: 13px;
+    background: rgba(255, 255, 255, .035);
+    white-space: normal;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+.tool-activity summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    user-select: none;
+    outline: none;
+    transition: color 0.15s ease;
+}
+.tool-activity summary:hover {
+    color: var(--text-primary);
+}
 .tool-activity[data-status="error"] summary { color: #fb7185; }
 .tool-activity[data-status="not_configured"] summary,
 .tool-activity[data-status="warning"] summary { color: #fb7185; }
-.tool-activity pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; padding-top: 12px; }
+.tool-activity pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 380px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 12px 6px 4px 0;
+    margin: 0;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    line-height: 1.5;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.tool-activity pre::-webkit-scrollbar {
+    width: 6px;
+}
+.tool-activity pre::-webkit-scrollbar-track {
+    background: transparent;
+}
+.tool-activity pre::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+}
+.tool-activity pre::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.35);
+}
 @media (max-width: 640px) {
     .tools-dialog { width: calc(100vw - 20px); height: fit-content; max-height: min(88vh, 600px); }
     .tools-header { padding: 20px 20px 14px; }
