@@ -6,7 +6,7 @@ from .._base import ToolContext, ToolInput
 
 
 class AnalyzeTextInput(ToolInput):
-    text: str = Field(min_length=1, max_length=10000, description="Analiz edilecek metin")
+    text: str = Field(min_length=1, max_length=10000, description="Text to analyze")
 
 
 async def analyze_text(args: AnalyzeTextInput, context: ToolContext) -> dict:
@@ -18,9 +18,9 @@ async def analyze_text(args: AnalyzeTextInput, context: ToolContext) -> dict:
 
 
 class FindInTextInput(ToolInput):
-    text: str = Field(min_length=1, max_length=10000, description="Aranacak metin")
-    query: str = Field(min_length=1, max_length=200, description="Bulunacak ifade")
-    case_sensitive: bool = Field(default=False, description="Büyük-küçük harf ayrımı yapılsın mı?")
+    text: str = Field(min_length=1, max_length=10000, description="Text to search")
+    query: str = Field(min_length=1, max_length=200, description="Phrase to find")
+    case_sensitive: bool = Field(default=False, description="Whether matching is case sensitive")
 
 
 async def find_in_text(args: FindInTextInput, context: ToolContext) -> dict:
@@ -32,10 +32,10 @@ async def find_in_text(args: FindInTextInput, context: ToolContext) -> dict:
 
 
 class ReplaceInTextInput(ToolInput):
-    text: str = Field(min_length=1, max_length=10000, description="Değiştirilecek metin")
-    search: str = Field(min_length=1, max_length=200, description="Aranacak ifade")
-    replacement: str = Field(max_length=200, description="Yerine yazılacak ifade")
-    max_replacements: int = Field(default=20, ge=1, le=20, description="En çok kaç eşleşme değiştirilecek?")
+    text: str = Field(min_length=1, max_length=10000, description="Text to modify")
+    search: str = Field(min_length=1, max_length=200, description="Phrase to replace")
+    replacement: str = Field(max_length=200, description="Replacement phrase")
+    max_replacements: int = Field(default=20, ge=1, le=20, description="Maximum number of replacements")
 
 
 async def replace_in_text(args: ReplaceInTextInput, context: ToolContext) -> dict:

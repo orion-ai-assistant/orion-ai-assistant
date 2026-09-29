@@ -367,7 +367,7 @@ async def _time_advanced(page, seconds):
 
 YTMUSIC_CONTROL = Tool(
     id='ytmusic_control',
-    name='YouTube Music çalmayı yönet',
+    name='Control YouTube Music playback',
     description='Default tool for music/song playback requests (müzik/şarkı), including seeking the music, even when YouTube Music is not named. '
                 'play+query searches and plays; play without query resumes. next/previous skip; seek+seconds jumps to a position. '
                 'Omit target to find the open/playing tab automatically; no browser_tabs or status preflight needed. '

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css?v=2.0.8">
+    <link rel="stylesheet" href="css/styles.css?v=2.0.9">
     <link rel="stylesheet" href="css/tools.css?v=11">
     <link rel="stylesheet" href="css/markdown.css?v=6">
 </head>
@@ -19,18 +19,18 @@
                 <div class="auth-brand-icon">✦</div>
                 <h2>Orion Hub</h2>
             </div>
-            <p>Devam etmek için hesabınıza giriş yapın veya yeni bir hesap oluşturun.</p>
+            <p data-i18n="authDesc">Devam etmek için hesabınıza giriş yapın veya yeni bir hesap oluşturun.</p>
             <div id="auth-error" class="auth-error" style="display: none;"></div>
             <div class="auth-form">
                 <div class="auth-input-group">
-                    <input type="text" id="auth-username" placeholder="Kullanıcı Adı" autocomplete="username">
+                    <input type="text" id="auth-username" data-i18n-placeholder="username" placeholder="Kullanıcı Adı" autocomplete="username">
                 </div>
                 <div class="auth-input-group">
-                    <input type="password" id="auth-password" placeholder="Şifre" autocomplete="current-password">
+                    <input type="password" id="auth-password" data-i18n-placeholder="password" placeholder="Şifre" autocomplete="current-password">
                 </div>
                 <div class="auth-actions">
-                    <button id="auth-login-btn" class="btn btn-primary">Giriş Yap</button>
-                    <button id="auth-register-btn" class="btn btn-secondary">Kayıt Ol</button>
+                    <button id="auth-login-btn" class="btn btn-primary" data-i18n="login">Giriş Yap</button>
+                    <button id="auth-register-btn" class="btn btn-secondary" data-i18n="register">Kayıt Ol</button>
                 </div>
             </div>
         </div>
@@ -66,12 +66,12 @@
                                 <line x1="12" y1="5" x2="12" y2="19"></line>
                                 <line x1="5" y1="12" x2="19" y2="12"></line>
                             </svg>
-                            <span>Yeni Sohbet</span>
+                            <span data-i18n="newChat">Yeni Sohbet</span>
                         </button>
                     </div>
 
                     <div class="sidebar-section-title">
-                        <span>SOHBETLER</span>
+                        <span data-i18n="chats">SOHBETLER</span>
                     </div>
 
                     <div class="chat-list" id="chat-list">
@@ -83,18 +83,18 @@
                 <div id="sidebar-settings-card" class="sidebar-panel-card" style="display: none;">
                     <div class="panel-card-header">
                         <span class="panel-card-icon">⚙️</span>
-                        <span class="panel-card-title">Ayarlar</span>
+                        <span class="panel-card-title" data-i18n="settings">Ayarlar</span>
                     </div>
-                    <p class="panel-card-text">Model parametreleri, TTS ses ayarları ve sistem yapılandırması.</p>
+                    <p class="panel-card-text" data-i18n="settingsSidebarDesc">Model parametreleri, TTS ses ayarları ve sistem yapılandırması.</p>
                 </div>
 
                 <!-- İş durumu sayfasındayken orta kutucukta bilgi kartı -->
                 <div id="sidebar-status-card" class="sidebar-panel-card" style="display: none;">
                     <div class="panel-card-header">
                         <span class="panel-card-icon">📊</span>
-                        <span class="panel-card-title">İş Durumu</span>
+                        <span class="panel-card-title" data-i18n="jobStatus">İş Durumu</span>
                     </div>
-                    <p class="panel-card-text">Kuyruk durumu ve arka plan görevlerinin analizi.</p>
+                    <p class="panel-card-text" data-i18n="statusSidebarDesc">Kuyruk durumu ve arka plan görevlerinin analizi.</p>
                 </div>
             </div>
 
@@ -105,20 +105,20 @@
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                         </svg>
-                        <span>Sohbet</span>
+                        <span data-i18n="chat">Sohbet</span>
                     </button>
                     <button class="tab-btn" data-target="settings-view">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="12" cy="12" r="3"></circle>
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                         </svg>
-                        <span>Ayarlar</span>
+                        <span data-i18n="settings">Ayarlar</span>
                     </button>
                     <button class="tab-btn" data-target="status-view">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
                         </svg>
-                        <span>İş Durumu</span>
+                        <span data-i18n="jobStatus">İş Durumu</span>
                     </button>
                 </div>
 
@@ -127,9 +127,9 @@
                         <span>👤</span>
                     </div>
                     <div class="user-info">
-                        <span id="user-profile-badge" class="user-name">Giriş Yapılmadı</span>
+                        <span id="user-profile-badge" class="user-name" data-i18n="notLoggedIn">Giriş Yapılmadı</span>
                     </div>
-                    <button class="btn-logout" id="logout-btn" title="Çıkış Yap">
+                    <button class="btn-logout" id="logout-btn" data-i18n-title="logout" title="Çıkış Yap">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
                             <polyline points="16 17 21 12 16 7"></polyline>
@@ -146,13 +146,13 @@
             <div id="chat-view" class="view active chat-view">
                 <div class="chat-area" id="chat-area">
                     <div class="welcome-hero">
-                        <div class="welcome-badge">✦ Orion AI Platform</div>
-                        <h2 class="welcome-title">Nasıl yardımcı olabilirim?</h2>
-                        <p class="welcome-desc">Aşağıdaki mesaj kutusuna yazabilir veya mikrofon butonuna basarak doğrudan konuşabilirsiniz.</p>
+                        <div class="welcome-badge" data-i18n="welcomeBadge">✦ Orion AI Platform</div>
+                        <h2 class="welcome-title" data-i18n="welcomeTitle">Nasıl yardımcı olabilirim?</h2>
+                        <p class="welcome-desc" data-i18n="welcomeDesc">Aşağıdaki mesaj kutusuna yazabilir veya mikrofon butonuna basarak doğrudan konuşabilirsiniz.</p>
                         <div class="welcome-chips">
-                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bugün hava nasıl?'; document.getElementById('message-input').focus();">🌤️ Bugün hava nasıl?</button>
-                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Bana Python ile ilgili bir örnek kod yaz.'; document.getElementById('message-input').focus();">💻 Python örnek kod</button>
-                            <button class="prompt-chip" onclick="document.getElementById('message-input').value = 'Orion Router nedir ve ne işe yarar?'; document.getElementById('message-input').focus();">⚡ Orion Router hakkında</button>
+                            <button class="prompt-chip" data-i18n="chipWeather" onclick="document.getElementById('message-input').value = 'Bugün hava nasıl?'; document.getElementById('message-input').focus();">🌤️ Bugün hava nasıl?</button>
+                            <button class="prompt-chip" data-i18n="chipPython" onclick="document.getElementById('message-input').value = 'Bana Python ile ilgili bir örnek kod yaz.'; document.getElementById('message-input').focus();">💻 Python örnek kod</button>
+                            <button class="prompt-chip" data-i18n="chipRouter" onclick="document.getElementById('message-input').value = 'Orion Router nedir ve ne işe yarar?'; document.getElementById('message-input').focus();">⚡ Orion Router hakkında</button>
                         </div>
                     </div>
                 </div>
@@ -162,24 +162,24 @@
                         <div id="image-preview-container" style="display: none;"></div>
                         <div class="input-dock-main">
                             <div class="composer-add">
-                            <button type="button" class="btn" id="composer-plus" aria-label="Ekle" aria-expanded="false" aria-controls="composer-menu">+</button>
+                            <button type="button" class="btn" id="composer-plus" data-i18n-aria-label="add" aria-label="Ekle" aria-expanded="false" aria-controls="composer-menu">+</button>
                             <div id="composer-menu" hidden>
-                                <button type="button" id="composer-image">Dosya / Görsel ekle</button>
+                                <button type="button" id="composer-image" data-i18n="addFileOrImage">Dosya / Görsel ekle</button>
                                 <input type="file" id="image-upload" accept="image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv,.py" multiple hidden>
-                                <button type="button" id="composer-tools">Fonksiyonlar</button>
+                                <button type="button" id="composer-tools" data-i18n="tools">Fonksiyonlar</button>
                             </div>
                         </div>
-                        <button class="btn btn-stop" id="stop-btn" style="display: none;" title="Yanıtı Durdur">
+                        <button class="btn btn-stop" id="stop-btn" style="display: none;" data-i18n-title="stop" title="Yanıtı Durdur">
                             <span class="stop-icon">■</span>
-                            <span class="stop-text">Durdur</span>
+                            <span class="stop-text" data-i18n="stop">Durdur</span>
                         </button>
 
                         <div class="input-field-wrapper">
 
-                            <textarea id="message-input" placeholder="Mesajınızı yazın veya mikrofona konuşun..." autocomplete="off" rows="1"></textarea>
+                            <textarea id="message-input" data-i18n-placeholder="messagePlaceholder" placeholder="Mesajınızı yazın veya mikrofona konuşun..." autocomplete="off" rows="1"></textarea>
 
                             <!-- Mikrofon Butonu -->
-                            <button id="mic-btn" class="mic-btn" title="Canlı Konuşma (Whisper STT)" type="button">
+                            <button id="mic-btn" class="mic-btn" data-i18n-title="liveMicTitle" title="Canlı Konuşma (Whisper STT)" type="button">
                                 <svg id="mic-icon-idle" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
                                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
@@ -190,15 +190,15 @@
                         </div>
 
                         <div class="input-dock-actions">
-                            <label class="audio-toggle-switch" title="Cevabı sesli olarak dinle (TTS)">
+                            <label class="audio-toggle-switch" data-i18n-title="listenResponseTitle" title="Cevabı sesli olarak dinle (TTS)">
                                 <input type="checkbox" id="audio-toggle" checked>
                                 <span class="toggle-pill">
                                     <span class="toggle-icon">🎙️</span>
-                                    <span class="toggle-label">Ses</span>
+                                    <span class="toggle-label" data-i18n="voice">Ses</span>
                                 </span>
                             </label>
 
-                            <button class="btn btn-send" id="send-btn" title="Gönder">
+                            <button class="btn btn-send" id="send-btn" data-i18n-title="send" title="Gönder">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                     <line x1="22" y1="2" x2="11" y2="13"></line>
                                     <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
@@ -214,15 +214,15 @@
             <div id="settings-view" class="view settings-view">
                 <div class="view-header">
                     <div>
-                        <h2>Kullanıcı Ayarları</h2>
-                        <p>Model parametreleri, TTS ve sistem ayarlarını özelleştirin.</p>
+                        <h2 data-i18n="userSettings">Kullanıcı Ayarları</h2>
+                        <p data-i18n="settingsIntro">Model parametreleri, TTS ve sistem ayarlarını özelleştirin.</p>
                     </div>
-                    <button type="button" class="catalog-refresh" id="refresh-models" title="Model ve ses listesini yenile" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> Yenile</button>
+                    <button type="button" class="catalog-refresh" id="refresh-models" title="Model ve ses listesini yenile" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> <span data-i18n="refresh">Yenile</span></button>
                 </div>
 
 
                 <div id="settings-dashboard" class="settings-dashboard-grid">
-                    <div class="loading-spinner-state">Ayarlar yükleniyor...</div>
+                    <div class="loading-spinner-state" data-i18n="settingsLoading">Ayarlar yükleniyor...</div>
                 </div>
             </div>
 
@@ -230,20 +230,20 @@
             <div id="status-view" class="view status-view">
                 <div class="view-header">
                     <div>
-                        <h2>İş (Job) Durumu</h2>
-                        <p>Arka plandaki Redis işlerini ve chat oturum durumunu sorgulayın.</p>
+                        <h2 data-i18n="jobStatusTitle">İş (Job) Durumu</h2>
+                        <p data-i18n="jobStatusDesc">Arka plandaki Redis işlerini ve chat oturum durumunu sorgulayın.</p>
                     </div>
                 </div>
 
                 <div class="job-query-card">
                     <div class="search-input-group">
-                        <input type="text" id="query-chat-id" placeholder="Sorgulanacak Chat ID girin...">
+                        <input type="text" id="query-chat-id" data-i18n-placeholder="queryChatIdPlaceholder" placeholder="Sorgulanacak Chat ID girin...">
                         <button class="btn btn-primary" id="check-status-btn">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="11" cy="11" r="8"></circle>
                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                             </svg>
-                            <span>Sorgula</span>
+                            <span data-i18n="query">Sorgula</span>
                         </button>
                     </div>
                 </div>
@@ -253,15 +253,18 @@
                         <div class="terminal-dots">
                             <span></span><span></span><span></span>
                         </div>
-                        <span class="terminal-title">SONUÇ (JSON)</span>
+                        <span class="terminal-title" data-i18n="terminalTitle">SONUÇ (JSON)</span>
                     </div>
-                    <pre id="status-result" class="terminal-body">// Chat ID sorgu sonucu burada görüntülenecektir.</pre>
+                    <pre id="status-result" class="terminal-body" data-i18n="terminalPlaceholder">// Chat ID sorgu sonucu burada görüntülenecektir.</pre>
                 </div>
             </div>
         </main>
     </div>
 
     <!-- Scripts split by modules -->
+    <script src="js/locales/en.js"></script>
+    <script src="js/locales/tr.js"></script>
+    <script src="js/i18n.js"></script>
     <script src="js/config.js?v=2.0.7"></script>
     <script src="js/vendor/marked.js?v=18.0.14"></script>
     <script src="js/vendor/purify.js?v=3.4.16"></script>
@@ -271,6 +274,6 @@
     <script src="js/tools.js?v=13"></script>
     <script src="js/stt.js?v=2.0.7"></script>
     <script src="js/sse.js?v=2.0.7"></script>
-    <script src="js/main.js?v=2.0.8"></script>
+    <script src="js/main.js?v=2.0.9"></script>
 </body>
 </html>

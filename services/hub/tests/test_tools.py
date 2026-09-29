@@ -13,6 +13,7 @@ from orion.contracts.http import JobCreateRequest
 from orion.contracts.settings import RuntimeSettings
 from orion.contracts.tools import ToolSelection, default_tool_selection
 from orion.kernel import config, registry as db
+from orion.localization import language_of, translate
 from orion.worker.services import router
 from orion.worker.services.tool_history import model_history
 from orion.worker.services.tool_display import DisplayTimeline
@@ -64,6 +65,24 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry([CATEGORY, replace(CATEGORY, id='another', tools=(replace(CATEGORY.tools[0], id='new_tool'),))])
         self.assertEqual(registry.enabled(selection), ['get_current_time'])
         self.assertNotIn('handler', registry.catalog()[0]['functions'][0])
+
+    def test_catalog_exposes_only_localized_names(self):
+        registry = get_registry()
+        english = {cat['id']: cat for cat in registry.catalog('en-US')}
+        turkish = {cat['id']: cat for cat in registry.catalog('tr-TR')}
+        self.assertEqual(english['browser']['name'], 'Browser')
+        self.assertEqual(english['browser']['functions'][0]['name'], 'List open tabs')
+        self.assertEqual(turkish['browser']['functions'][0]['name'], 'Açık sekmeleri listele')
+        self.assertNotIn('description', english['browser'])
+        self.assertNotIn('description', english['browser']['functions'][0])
+        self.assertIn('List connected browser tabs', registry.tools['browser_tabs'].schema()['function']['description'])
+        self.assertEqual(registry.catalog('de-DE')[0]['name'], registry.catalog('en')[0]['name'])
+
+    def test_locale_negotiation_and_per_key_fallback(self):
+        self.assertEqual(language_of('de-DE, tr-TR;q=0.9, en;q=0.8'), 'tr')
+        self.assertEqual(translate('tools.browser_tabs.name', 'tr-TR'), 'Açık sekmeleri listele')
+        self.assertEqual(translate('tools.browser_tabs.name', 'fr-FR'), 'List open tabs')
+        self.assertEqual(translate('tools.new_tool.name', 'tr-TR', 'New tool'), 'New tool')
 
     def test_existing_browser_selection_enables_tabs(self):
         selection = ToolSelection(categories={'browser': True},

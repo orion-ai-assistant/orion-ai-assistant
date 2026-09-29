@@ -79,7 +79,7 @@ const API = {
                 headers: { "Content-Type": "application/json" }
             });
         }
-        options.headers = Auth.getAuthHeaders(options.headers || {});
+        options.headers = Auth.getAuthHeaders({"Accept-Language": OrionI18n.language, ...(options.headers || {})});
         const response = await fetch(url, options);
         if (response.status === 401) {
             Auth.handleUnauthorized();

@@ -113,7 +113,7 @@ async def research_web(args, context):
 
 
 RESEARCH_WEB = Tool(
-    id="research_web", name="Web'de araştır",
+    id="research_web", name="Research the web",
     description="Preferred tool for researching a question and answering with sources. In ONE call it searches, "
                 "deduplicates, selects up to 5 sources and reads them concurrently, returning full extracted text. "
                 "Only query is required; optionally set recency. Returns the retrieval timestamp, so no separate "

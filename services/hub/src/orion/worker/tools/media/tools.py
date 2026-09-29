@@ -160,6 +160,6 @@ async def media_control(args, context):
         return {'status': 'outcome_unknown', 'message': 'Could not inspect media tabs.'}
 
 
-MEDIA_CONTROL = Tool(id='media_control', name='Medya oynatmayı yönet',
+MEDIA_CONTROL = Tool(id='media_control', name='Control media playback',
     description='One tool for YouTube and YouTube Music. For "hangi müzik çalıyor" use now_playing with service=auto; it checks BOTH services in one call. For current playback control use auto to target the playing tab. Specify service=ytmusic for explicit YouTube Music, service=youtube for explicit YouTube video requests. play+query searches and plays; unspecified service for a new song defaults to YouTube Music. seek+seconds sets exact absolute position (2:00 = 120). If status=ambiguous, use the user request and returned titles/services to select a matching tab and retry the same action with its target tab ID. For a song request, prefer a uniquely matching music tab over an unrelated video. Ask the user only if the intended target remains unclear. Only report success when status=ok; explain failures or unverified outcomes from the returned result. Results verify actions; avoid extra status/read calls.',
     input_model=MediaInput, handler=media_control, timeout_seconds=55)

@@ -340,7 +340,7 @@ async def _time_advanced(page, seconds):
     return False
 
 
-YOUTUBE_CONTROL = Tool(id='youtube_control', name='YouTube oynatmayı yönet',
+YOUTUBE_CONTROL = Tool(id='youtube_control', name='Control YouTube playback',
     description='Control standard YouTube VIDEOS. For music/song requests (müzik/şarkı), default to ytmusic_control even if the service is not named. '
                 'play+query searches and plays; play without query resumes. next/previous skip; seek+seconds jumps to a position. '
                 'Omit target to find the open/playing tab automatically; no browser_tabs or status preflight needed. '

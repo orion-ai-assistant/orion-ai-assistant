@@ -1,0 +1,17 @@
+{
+  "categories.browser.name": "Tarayıcı",
+  "categories.datetime.name": "Tarih ve saat",
+  "categories.google_ai.name": "Google AI Modu",
+  "categories.media.name": "YouTube ve YouTube Music",
+  "categories.text.name": "Metin işlemleri",
+  "categories.web_search.name": "Web araması",
+  "tools.browser_control.name": "Tarayıcıyı kullan",
+  "tools.browser_tabs.name": "Açık sekmeleri listele",
+  "tools.get_current_time.name": "Güncel saat",
+  "tools.google_ai_mode.name": "Google AI Modu ile sor",
+  "tools.media_control.name": "Medya oynatmayı yönet",
+  "tools.analyze_text.name": "Metni analiz et",
+  "tools.find_in_text.name": "Metinde bul",
+  "tools.replace_in_text.name": "Metni değiştir",
+  "tools.research_web.name": "Web'de araştır"
+}

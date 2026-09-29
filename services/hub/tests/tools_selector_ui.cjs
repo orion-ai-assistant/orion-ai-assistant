@@ -40,28 +40,34 @@ dialog.querySelector = selector => selector === '.tools-close' ? nodes['tools-cl
     nodes[selector.slice(1)] || Element.prototype.querySelector.call(dialog, selector);
 const context = vm.createContext({
     window: {}, structuredClone, console, UI: {showToast() {}},
+    OrionI18n: {t: (key, ...values) => ({saved: 'Kaydedildi', saveFailed: 'Kaydedilemedi: {0}'}[key] || key).replace('{0}', values[0] ?? '')},
     AppConfig: {getUserId: () => 'u'}, AppState: {currentChatId: null},
-    document: {createElement: tag => new Element(tag), addEventListener() {}},
+    document: {createElement: tag => new Element(tag), addEventListener() {}, querySelectorAll() { return []; }},
 });
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/tools.js'), 'utf8') + '\nglobalThis.tools = ToolsUI;', context);
 const tools = context.tools;
-context.navigator = {userAgent: 'Mozilla/5.0 Chrome/154.0', brave: {isBrave: async () => true}};
+context.navigator = {language: 'tr-TR', userAgent: 'Mozilla/5.0 Chrome/154.0', brave: {isBrave: async () => true}};
+context.window.navigator = context.navigator;
 tools.dialog = dialog;
+const catalogRequests = [];
 tools.request = async url => url === '/api/v1/tools'
-    ? [{id: 'datetime', name: 'Tarih ve saat', description: 'Güncel tarih ve saat bilgileri.',
-        functions: [{id: 'get_current_time', name: 'Güncel saat', description: 'Current time.'}]},
+    ? (catalogRequests.push(url),
+       [{id: 'datetime', name: 'Tarih ve saat', description: 'Internal category instructions',
+        functions: [{id: 'get_current_time', name: 'Güncel saat', description: 'Internal model instructions'}]},
        {id: 'text', name: 'Metin işlemleri', description: 'Metni işle.',
         functions: [
             {id: 'analyze_text', name: 'Metni analiz et', description: 'Count.'},
             {id: 'find_in_text', name: 'Metinde bul', description: 'Find.'},
             {id: 'replace_in_text', name: 'Metni değiştir', description: 'Replace.'},
-        ]}]
+        ]}])
     : {tool_selection: {categories: {datetime: true}, functions: {get_current_time: true}}};
 
 (async () => {
     assert.equal(await tools.currentBrowser(), 'brave');
     await tools.open(false);
     const list = nodes['tools-list'];
+    assert.equal(catalogRequests[0], '/api/v1/tools');
+    assert.doesNotMatch(list.textContent, /Internal model instructions|Internal category instructions/);
     const categories = list.querySelectorAll('.tool-category');
     assert.equal(categories.length, 2);
     assert.equal(categories[0].classList.contains('is-expanded'), false, 'Every category starts collapsed');

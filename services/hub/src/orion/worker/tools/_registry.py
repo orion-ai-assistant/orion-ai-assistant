@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from orion.contracts.tools import ToolSelection
 from ._base import Category
+from orion.localization import translate
 
 
 class ToolRegistry:
@@ -44,10 +45,10 @@ class ToolRegistry:
                 enabled.append('media_control')
         return enabled
 
-    def catalog(self):
-        return [{"id": cat.id, "name": cat.name, "description": cat.description,
+    def catalog(self, locale="en"):
+        return [{"id": cat.id, "name": translate(f"categories.{cat.id}.name", locale, cat.name),
                  "requires_browser": getattr(cat, "requires_browser", False),
-                 "functions": [{"id": tool.id, "name": tool.name, "description": tool.description,
+                 "functions": [{"id": tool.id, "name": translate(f"tools.{tool.id}.name", locale, tool.name),
                                 "requires_browser": getattr(tool, "requires_browser", False) or getattr(cat, "requires_browser", False)}
                                for tool in cat.tools]} for cat in self.categories.values()
                 if cat.id not in ('youtube', 'ytmusic')]

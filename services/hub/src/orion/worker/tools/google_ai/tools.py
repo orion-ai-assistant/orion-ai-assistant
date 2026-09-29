@@ -267,7 +267,7 @@ async def google_ai_mode(args, context):
 
 
 GOOGLE_AI_MODE = Tool(
-    id='google_ai_mode', name='Google AI Modu ile sor',
+    id='google_ai_mode', name='Ask Google AI Mode',
     description='Ask Google Search AI Mode for its generated answer and source links. Experimental browser integration, '
                 'not Gemini API. Call once, then answer using the returned summary and citations. '
                 'Report blocked/unavailable/timeout honestly; never treat them as an answer. '

@@ -1,0 +1,17 @@
+{
+  "categories.browser.name": "Browser",
+  "categories.datetime.name": "Date and time",
+  "categories.google_ai.name": "Google AI Mode",
+  "categories.media.name": "YouTube and YouTube Music",
+  "categories.text.name": "Text operations",
+  "categories.web_search.name": "Web search",
+  "tools.browser_control.name": "Use browser",
+  "tools.browser_tabs.name": "List open tabs",
+  "tools.get_current_time.name": "Current time",
+  "tools.google_ai_mode.name": "Ask Google AI Mode",
+  "tools.media_control.name": "Control media playback",
+  "tools.analyze_text.name": "Analyze text",
+  "tools.find_in_text.name": "Find in text",
+  "tools.replace_in_text.name": "Replace in text",
+  "tools.research_web.name": "Research the web"
+}

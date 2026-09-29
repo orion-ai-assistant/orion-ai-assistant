@@ -25,8 +25,8 @@ from orion.worker.tools._registry import get_registry
 
 
 @router.get("/api/v1/tools")
-async def tool_catalog(current_user: str = Depends(get_current_user)):
-    return get_registry().catalog()
+async def tool_catalog(request: Request, lang: str | None = None, current_user: str = Depends(get_current_user)):
+    return get_registry().catalog(lang or request.headers.get("Accept-Language"))
 
 
 @router.get("/api/v1/tools/default-selection", response_model=ToolSelection)

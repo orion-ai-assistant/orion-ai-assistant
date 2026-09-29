@@ -18,7 +18,7 @@ async def search(args: SearchInput, context: ToolContext) -> dict:
     return {"matches": []}
 
 SEARCH = Tool(
-        id="search_sources", name="Kaynaklarda ara",
+        id="search_sources", name="Search sources",
         description="Search available sources using query terms.",
         input_model=SearchInput, handler=search, timeout_seconds=20,
 )
@@ -31,12 +31,12 @@ from .._base import Category
 from .tools import SEARCH
 
 CATEGORY = Category(
-    id="search", name="Arama", description="İzin verilen kaynaklarda arama.",
+    id="search", name="Search", description="Search the available sources.",
     tools=(SEARCH,),
 )
 ```
 
-Kategoriye birden çok fonksiyon eklemek için `tools` tuple'ına başka `Tool` tanımları koyun. Kategori ve fonksiyon kimlikleri kalıcı kayıtlarda kullanılır; adları sonradan değiştirmeyin. Pydantic giriş modelinden Router'a gidecek JSON Schema üretilir; `ToolInput` ek alanları reddeder. Açıklamalar modelin fonksiyonu ne zaman çağıracağını belirlemesine yardımcı olur.
+Kategoriye birden çok fonksiyon eklemek için `tools` tuple'ına başka `Tool` tanımları koyun. Kategori ve fonksiyon kimlikleri kalıcı kayıtlarda kullanılır; bunları sonradan değiştirmeyin. `name` için İngilizce varsayılan ad yazın; kullanıcıya gösterilecek adları `src/orion/localization/locales/en.json` ve `tr.json` dosyalarına `categories.<id>.name` veya `tools.<id>.name` anahtarıyla ekleyin. Yeni dil için aynı klasöre bir JSON dosyası ekleyin. Çeviri bulunmazsa İngilizce ad gösterilir. İstemciler dili `Accept-Language` başlığıyla gönderir. `Tool.description` ve giriş alanlarının açıklamaları İngilizce model talimatlarıdır; kullanıcıya gösterilmez. Pydantic giriş modelinden Router'a gidecek JSON Schema üretilir; `ToolInput` ek alanları reddeder.
 
 `ToolContext` kullanıcı, sohbet ve tur kimliklerini ve `cancelled()` denetimini verir. Uzun işlemlerde bu denetimi tekrarlayın. Ağ istekleri ve yan etkiler modül import edilirken değil handler çalışırken yapılmalıdır. Handler async olmalı, sonucu JSON'a dönüştürülebilmeli, 30 saniyede bitmeli ve 32 KiB'yi geçmemelidir. Dosya silme gibi geri alınamayacak işlemlere ayrı, açık bir yetkilendirme tasarlayın; bu örnek kategori onların çalıştırılması için izin vermez.
 
@@ -77,7 +77,7 @@ def make_search(context):
     return search
 
 SEARCH = from_callable(
-    id="search_sources", name="Kaynaklarda ara", description="Search sources.",
+    id="search_sources", name="Search sources", description="Search sources.",
     input_model=SearchInput, factory=make_search,
     map_output=lambda result: {"items": result["items"][:5]},
     timeout_seconds=15,

@@ -136,7 +136,7 @@ async def search_web(args, context):
 
 
 SEARCH_WEB = Tool(
-    id="search_web", name="Web'de ara",
+    id="search_web", name="Search the web",
     description="Find links for link-only tasks. Prefer research_web for researching a question and answering with sources. "
                 "Only query is required; include the relevant language/place in the query. "
                 "Set recency only when freshness matters. Request up to 30 links at once to reduce repeated searches. "

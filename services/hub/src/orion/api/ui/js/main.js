@@ -367,10 +367,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Event listener for dynamically rendered setting save buttons is handled globally via window.saveSetting
 
     // Load initial settings
-    let settingsLoading = false;
-    let settingsInitialRequested = false;
-    const settingsVisible = () => !document.hidden && document.getElementById('settings-view')?.classList.contains('active');
-    const loadInitialSettings = async (initial = false) => {
+    var settingsLoading = false;
+    var settingsInitialRequested = false;
+    function settingsVisible() { return !document.hidden && document.getElementById('settings-view')?.classList.contains('active'); }
+    async function loadInitialSettings(initial = false) {
         const initialLoad = initial === true && !settingsInitialRequested;
         if ((!settingsVisible() && !initialLoad) || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
         if (initialLoad) settingsInitialRequested = true;

@@ -214,7 +214,7 @@ async def read_pages(args, context):
 
 
 READ_PAGE = Tool(
-    id="read_page", name="Web sayfasını oku",
+    id="read_page", name="Read web page",
     description="Read a specific URL supplied by the user. Prefer research_web for general web research. "
                 "For multiple supplied URLs prefer read_pages in one call. "
                 "Verify article content and publication date. Returns extracted text in full. "
@@ -226,7 +226,7 @@ READ_PAGE = Tool(
 
 
 READ_PAGES = Tool(
-    id="read_pages", name="Web sayfalarını birlikte oku",
+    id="read_pages", name="Read web pages",
     description="Read 1-5 specific URLs supplied by the user concurrently. Prefer research_web for general research. "
                 "Prefer this over repeated "
                 "read_page calls when comparing sources. Each page returns its own status, URL, title, "
