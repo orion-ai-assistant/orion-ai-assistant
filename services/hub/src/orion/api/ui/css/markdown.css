@@ -20,3 +20,54 @@
 .markdown-content th, .markdown-content td { border: 1px solid var(--border-medium, #475569); padding: .55em .8em; text-align: left; min-width: 100px; }
 .markdown-content th { background: #ffffff08; font-weight: 700; }
 .markdown-content hr { border: 0; border-top: 1px solid var(--border-medium, #475569); margin: 1.5em 0; }
+
+/* YouTube Video Embed */
+.yt-video-embed {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    aspect-ratio: 16 / 9;
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 12px 0;
+    background: #000;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.yt-video-embed iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+/* Media Audio Card */
+.media-audio-card {
+    margin: 12px 0;
+    padding: 12px 14px;
+    background: #0f141f;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    max-width: 440px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.media-audio-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e2e8f0;
+}
+
+.media-audio-card audio {
+    width: 100%;
+    height: 38px;
+    outline: none;
+}
+

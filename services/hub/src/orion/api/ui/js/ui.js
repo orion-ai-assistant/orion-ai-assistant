@@ -1141,3 +1141,14 @@ const UI = {
 };
 
 window.saveSetting = (key) => UI.saveSetting(key);
+
+// Force all links in chat / markdown to open in a new tab without leaving the chat interface
+document.addEventListener('click', (e) => {
+    const link = e.target.closest('#chat-area a, .markdown-content a, .message a');
+    if (link && link.href && !link.href.startsWith('javascript:')) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(link.href, '_blank', 'noopener,noreferrer');
+    }
+}, true);
+
