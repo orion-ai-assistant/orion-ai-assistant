@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable, file_lock
 from orion.worker.tools._registry import get_registry
-from orion.worker.tools.browser.tools import BrowserInput
+from orion.worker.tools.web_browser.tools import BrowserInput
 from orion.worker.tools.youtube.tools import YouTubeInput
 
 

@@ -86,8 +86,8 @@ class BrowserPage:
                     try:
                         if await self.evaluate("document.readyState !== 'loading'"):
                             return
-                    except CDPError:
-                        pass  # Execution context can disappear during a redirect.
+                    except Exception:
+                        pass  # Execution context can disappear during a redirect or captcha challenge.
                 elif bypass_dialog:
                     try:
                         await self.send('Page.handleJavaScriptDialog', {'accept': True})
@@ -103,14 +103,21 @@ class BrowserPage:
         async with asyncio.timeout(8):
             while True:
                 point = await self.evaluate('''(() => {
-                    const el = document.querySelector(%s);
+                    let sel = %s;
+                    if (/^\d+$/.test(sel)) {
+                        sel = '[data-orion-id="' + sel + '"]';
+                    }
+                    const el = document.querySelector(sel);
                     if (!el || el.disabled) return null;
                     el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
                     const r = el.getBoundingClientRect();
                     const x = Math.max(0, r.left) + (Math.min(innerWidth, r.right) - Math.max(0, r.left))/2;
                     const y = Math.max(0, r.top) + (Math.min(innerHeight, r.bottom) - Math.max(0, r.top))/2;
                     const top = document.elementFromPoint(x, y);
-                    return r.width && r.height && (top === el || el.contains(top)) ? {x,y} : null;
+                    if (!r.width || !r.height) return null;
+                    if (top === el || el.contains(top)) return {x,y};
+                    const isFocusable = ['INPUT', 'TEXTAREA', 'BUTTON', 'SELECT'].includes(el.tagName) || el.isContentEditable || el.hasAttribute('role');
+                    return isFocusable ? {x,y} : null;
                 })()''' % json.dumps(selector))
                 if point:
                     break
@@ -118,22 +125,95 @@ class BrowserPage:
         for kind in ('mousePressed', 'mouseReleased'):
             await self.send('Input.dispatchMouseEvent', {'type': kind, **point, 'button': 'left', 'clickCount': 1})
 
-    async def type_text(self, selector, text):
+    async def activate(self):
+        await self.send('Page.bringToFront')
+
+    async def ensure_active(self):
+        """Arka plandaki sekmenin donmasını engeller ve odaklanmış gibi davranmasını sağlar."""
+        try:
+            await self.send('Page.enable')
+            await self.send('Page.setWebLifecycleState', {'state': 'active'})
+        except Exception:
+            pass
+        try:
+            await self.send('Emulation.setFocusEmulationEnabled', {'enabled': True})
+        except Exception:
+            pass
+
+    async def type_text(self, selector, text, press_enter=False):
         await self.click(selector)
         # insertText handles Unicode and IME text without inventing physical key codes.
         await self.send('Input.insertText', {'text': text})
+        if press_enter:
+            await self.send('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'text': '\r', 'unmodifiedText': '\r', 'windowsVirtualKeyCode': 13})
+            await self.send('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13})
+            await asyncio.sleep(1.0)
 
     async def scroll(self, delta):
         await self.send('Input.dispatchMouseEvent', {'type': 'mouseWheel', 'x': 200, 'y': 200,
                                                      'deltaX': 0, 'deltaY': delta})
 
-    async def snapshot(self, *, compact=False):
-        text_limit, element_limit = (500, 10) if compact else (2500, 30)
-        return await self.evaluate('''(() => ({url: location.href, title: document.title,
-            text: (document.body?.innerText || '').slice(0, %d),
-            text_truncated: (document.body?.innerText || '').length > %d,
-            elements: [...document.querySelectorAll('a,button,input,textarea,select,[role="button"]')]
-                .filter(e => e.checkVisibility()).slice(0, %d).map(e => ({tag: e.tagName,
-                    id: e.id, role: e.getAttribute('role'), label: (e.getAttribute('aria-label') || e.innerText || '').slice(0, 120),
-                    name: e.getAttribute('name'), href: e.href ? e.href.slice(0, 300) : null}))}))()'''
-            % (text_limit, text_limit, element_limit))
+    async def snapshot(self, *, compact=False, viewport_only=True):
+        text_limit, element_limit = (500, 15) if compact else (3000, 30)
+        
+        js_code = '''((viewportOnly, textLimit, elementLimit) => {
+            const isVisible = (el) => {
+                if (!el.checkVisibility()) return false;
+                if (!viewportOnly) return true;
+                const r = el.getBoundingClientRect();
+                return (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth);
+            };
+
+            // 1. Text Extraction: Prioritize main content area
+            let text = '';
+            const mainEl = document.querySelector('main, [role="main"], article');
+            if (mainEl) {
+                text = mainEl.innerText || '';
+            } else {
+                text = document.body?.innerText || '';
+            }
+            text = text.replace(/\\s+/g, ' ').trim();
+            const textTruncated = text.length > textLimit;
+            text = text.slice(0, textLimit);
+
+            // 2. Elements Extraction
+            const rawElements = [...document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="textbox"], [contenteditable="true"], rich-textarea')]
+                .filter(isVisible);
+
+            // Assign unique ID to every visible interactive element
+            let idCounter = 1;
+            rawElements.forEach(e => {
+                e.setAttribute('data-orion-id', idCounter++);
+            });
+
+            // Filter out elements that have no label and aren't inputs (e.g. empty decorative wrappers)
+            const elements = rawElements.filter(e => {
+                const isInput = ['INPUT', 'TEXTAREA'].includes(e.tagName) || e.hasAttribute('contenteditable') || e.getAttribute('role') === 'textbox' || e.tagName.toLowerCase() === 'rich-textarea';
+                if (isInput) return true;
+                const label = (e.getAttribute('aria-label') || e.innerText || e.getAttribute('title') || '').trim();
+                return label.length > 0;
+            });
+
+            const inputs = elements.filter(e => ['INPUT', 'TEXTAREA'].includes(e.tagName) || e.hasAttribute('contenteditable') || e.getAttribute('role') === 'textbox' || e.tagName.toLowerCase() === 'rich-textarea');
+            const buttonsLinks = elements.filter(e => !inputs.includes(e));
+            const topElements = [...inputs.slice(0, 15), ...buttonsLinks].slice(0, elementLimit);
+
+            return {
+                url: location.href,
+                title: document.title,
+                text: text,
+                text_truncated: textTruncated,
+                elements: topElements.map(e => ({
+                    id: e.getAttribute('data-orion-id'),
+                    tag: e.tagName,
+                    role: e.getAttribute('role') || undefined,
+                    name: e.getAttribute('name') || undefined,
+                    type: e.getAttribute('type') || undefined,
+                    placeholder: e.getAttribute('placeholder') || undefined,
+                    label: (e.getAttribute('aria-label') || e.innerText || e.getAttribute('title') || '').trim().replace(/\\s+/g, ' ').slice(0, 40) || undefined,
+                    href: e.href ? e.href.slice(0, 150) : undefined
+                }))
+            };
+        })(%s, %d, %d)''' % ('true' if viewport_only else 'false', text_limit, element_limit)
+        
+        return await self.evaluate(js_code)

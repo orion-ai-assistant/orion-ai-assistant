@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from orion.worker.tools import _media
 from orion.worker.tools.youtube import tools as youtube
 from orion.worker.tools.ytmusic import tools as music
-from orion.worker.tools.browser import tools as browser
+from orion.worker.tools.web_browser import tools as browser
 from orion.worker.services.tool_history import model_history
 
 

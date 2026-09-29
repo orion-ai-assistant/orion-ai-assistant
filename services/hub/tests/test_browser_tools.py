@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from orion.worker.tools.youtube import tools as youtube
 from orion.worker.tools.ytmusic import tools as ytmusic
-from orion.worker.tools.browser import tools as browser
+from orion.worker.tools.web_browser import tools as browser
 from orion.browser.cdp import CDPConnectionLost
 from orion.browser.page import BrowserPage
 from orion.browser.manager import BrowserManager, BrowserTabMissing
@@ -384,3 +384,27 @@ class BrowserToolTests(unittest.IsolatedAsyncioTestCase):
             result = await ytmusic.ytmusic_control(ytmusic.YTMusicInput(action='pause'), SimpleNamespace(user_id='alice'))
         self.assertEqual(result['status'], 'ok')
         self.assertEqual(result['title'], 'Şımarık - Tarkan | YouTube Music')
+
+    async def test_browser_tabs_warns_on_captcha_url(self):
+        tabs = [
+            {'id': 'tab-1', 'title': 'Gemini', 'url': 'https://www.google.com/sorry/index?continue=https://gemini.google.com/'},
+            {'id': 'tab-2', 'title': 'Normal Page', 'url': 'https://example.com'}
+        ]
+        with patch.object(browser.BrowserManager, 'list_tabs', AsyncMock(return_value=tabs)):
+            result = await browser.browser_tabs(browser.BrowserTabsInput(include_urls=False), SimpleNamespace(user_id='alice'))
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['tabs'][0]['warning'], 'Google bot doğrulaması (CAPTCHA) sayfasında takılı')
+            self.assertNotIn('warning', result['tabs'][1])
+
+    async def test_browser_control_detects_captcha_and_activates(self):
+        page = AsyncMock()
+        page.snapshot.return_value = {
+            'url': 'https://www.google.com/sorry/index?continue=https://gemini.google.com/',
+            'title': 'Google Sorry',
+            'elements': []
+        }
+        with patch.object(browser, 'BrowserManager', return_value=self.manager(page)):
+            result = await browser.browser_control(browser.BrowserInput(action='read'), SimpleNamespace(user_id='alice', chat_id='chat-1'))
+            self.assertEqual(result['status'], 'verification_required')
+            self.assertIn('robot doğrulaması', result['message'])
+            page.activate.assert_awaited_once()
