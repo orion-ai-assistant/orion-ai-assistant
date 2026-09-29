@@ -120,11 +120,12 @@ const SSE = {
             }
         }
 
-        if (data.type === 'chat_title_warning') {
+        if (data.type === 'chat_title_warning' || data.type === 'warning') {
             if (chatId === AppState.currentChatId) {
                 const notice = document.createElement('div');
-                notice.className = 'message bot';
-                notice.textContent = data.data?.message || 'Başlık güncellenemedi.';
+                notice.className = 'message system-warning';
+                notice.setAttribute('role', 'status');
+                notice.textContent = 'Sistem uyarısı: ' + (data.data?.message || 'İşlem tamamlanamadı.');
                 UI.chatArea.appendChild(notice);
             }
             return;

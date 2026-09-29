@@ -632,6 +632,14 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         "Worker %s: TTS generation failed for chat %s (%s)",
                         consumer_name, context.chat_id, tts_err,
                     )
+                    try:
+                        await context._publish(StreamEvent(
+                            type="warning", chat_id=context.chat_id,
+                            turn_id=context.turn_id, generation_id=context.turn_id,
+                            data={"code": "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz."},
+                        ))
+                    except Exception:
+                        logging.warning("Could not publish TTS warning for chat %s", context.chat_id)
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text}
