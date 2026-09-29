@@ -78,7 +78,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(schema['required'], ['action'])
         self.assertEqual(schema['properties']['query']['type'], 'string')
         self.assertNotIn('default', schema['properties']['query'])
-        self.assertEqual(set(schema['properties']), {'action', 'query', 'target'})
+        self.assertEqual(set(schema['properties']), {'action', 'query', 'target', 'seconds'})
 
     async def test_time_and_input_validation(self):
         context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
@@ -171,6 +171,43 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ambiguous_media_seek_asks_which_tab(self):
+        conversation = self.conversation(['media_control'])
+        async def stream(messages, settings, **kwargs):
+            yield 'tool_calls', json.dumps([call(name='media_control',
+                arguments='{"action":"seek","seconds":60}')])
+        result = {'status': 'ambiguous', 'playing': [
+            {'title': 'Eylül Sonu - Yansımalar', 'tab_id': 'music'},
+            {'title': 'Kahraman Elektro Büyücü', 'tab_id': 'video'}]}
+        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=result)):
+            _ = [event async for event in conversation.stream([], RuntimeSettings(),
+                                      AsyncMock(return_value=False), stream)]
+        self.assertIn('Hangi sekmeyi 1:00 konumuna alayım?', conversation.final_content)
+        self.assertIn('Eylül Sonu', conversation.final_content)
+        self.assertIn('Kahraman Elektro', conversation.final_content)
+        self.assertEqual(conversation.activity[0]['status'], 'completed')
+
+    async def test_failed_media_seek_cannot_be_reported_as_success(self):
+        conversation = self.conversation(['media_control'])
+        requests = 0
+        async def stream(messages, settings, **kwargs):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                yield 'tool_calls', json.dumps([call(name='media_control',
+                    arguments='{"action":"seek","seconds":60}')])
+            else:
+                yield 'content', '1. dakikaya aldım.'
+        failure = {'status': 'seek_unconfirmed', 'current_time': 60,
+                   'message': 'Konum doğrulanamadı: oynatma ilerlemiyor.'}
+        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=failure)):
+            events = [event async for event in conversation.stream([], RuntimeSettings(),
+                                        AsyncMock(return_value=False), stream)]
+        self.assertEqual(requests, 1)
+        self.assertEqual(conversation.final_content, failure['message'])
+        self.assertEqual(conversation.activity[0]['status'], 'error')
+        self.assertNotIn('aldım', str(events))
+
     async def test_google_failure_stops_without_model_invention_or_web_fallback(self):
         for result in ({'status': 'timeout', 'recovery': 'google_session'},
                        {'status': 'blocked'}, {'status': 'ok', 'answer': ''}):
@@ -274,7 +311,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
                 yield 'tool_calls', json.dumps([call(f'{count}_{n}') for n in range(batch)])
             with self.assertRaisesRegex(RuntimeError, 'limit exceeded'):
                 _ = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), stream)]
-            self.assertLessEqual(len(conversation.activity), 16)
+            self.assertLessEqual(len(conversation.activity), 64)
 
     def test_web_catalog_and_legacy_selection_migration(self):
         registry = get_registry()

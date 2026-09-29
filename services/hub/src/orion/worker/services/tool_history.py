@@ -2,7 +2,7 @@ from orion.worker.services.attachments import history_content
 import json
 
 
-def _model_tool_content(message):
+def _model_tool_content(message, tool_name=None):
     content = message.get('content', '')
     try:
         result = json.loads(content)
@@ -10,6 +10,13 @@ def _model_tool_content(message):
         return content
     if not isinstance(result, dict):
         return content
+    if tool_name in ('youtube_control', 'ytmusic_control', 'media_control') and 'tab_id' in result:
+        from orion.worker.tools._media import compact_state
+        compact = compact_state(result, result['tab_id'])
+        for key in ('status', 'service', 'message', 'reason', 'play_error'):
+            if result.get(key) is not None:
+                compact[key] = result[key]
+        return json.dumps(compact, ensure_ascii=False, separators=(',', ':'))
     if (result.get('provider') == 'google_ai_mode' and result.get('status') == 'partial'
             and result.get('cancelled') is True and isinstance(result.get('answer'), str)):
         return result['answer']
@@ -84,7 +91,9 @@ def model_history(history, max_messages):
             break
         kept.insert(0, group)
         count += len(group)
-    return [{key: (_model_tool_content(msg) if msg.get('role') == 'tool' else history_content(msg))
+    names = {call['id']: call.get('function', {}).get('name')
+             for group in kept for msg in group for call in msg.get('tool_calls', [])}
+    return [{key: (_model_tool_content(msg, names.get(msg.get('tool_call_id'))) if msg.get('role') == 'tool' else history_content(msg))
              if key == "content" else msg[key]
              for key in ("role", "content", "tool_calls", "tool_call_id") if key in msg}
             for group in kept for msg in group]

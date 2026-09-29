@@ -31,7 +31,43 @@ class BrowserPage:
             raise RuntimeError('Page JavaScript evaluation failed')
         return result.get('result', {}).get('value')
 
-    async def navigate(self, url, *, wait_ready=True):
+    async def handle_dialog(self, accept=True):
+        """Açık olan herhangi bir JavaScript dialogunu (beforeunload, alert, confirm) onaylar veya kapatır."""
+        if not self.connection:
+            return
+        try:
+            await self.send('Page.enable')
+        except Exception:
+            pass
+        try:
+            await self.send('Page.handleJavaScriptDialog', {'accept': accept})
+        except Exception:
+            pass
+
+    async def bypass_beforeunload(self):
+        """Sayfanın 'Siteden çıkılsın mı?' (beforeunload) uyarısı vermesini engeller ve varsa açık dialogu onaylar."""
+        if not self.connection:
+            return
+        await self.handle_dialog(accept=True)
+        try:
+            await self.evaluate('''(() => {
+                try {
+                    window.onbeforeunload = null;
+                    window.onunload = null;
+                    const stop = (e) => {
+                        delete e.returnValue;
+                        e.preventDefault = () => {};
+                        e.stopImmediatePropagation();
+                    };
+                    window.addEventListener('beforeunload', stop, {capture: true});
+                } catch(_) {}
+            })()''')
+        except Exception:
+            pass
+
+    async def navigate(self, url, *, wait_ready=True, bypass_dialog=True):
+        if bypass_dialog:
+            await self.bypass_beforeunload()
         previous = (await self.send('Page.getFrameTree'))['frameTree']['frame'].get('loaderId')
         result = await self.send('Page.navigate', {'url': web_url(url)})
         if result.get('errorText'):
@@ -52,6 +88,11 @@ class BrowserPage:
                             return
                     except CDPError:
                         pass  # Execution context can disappear during a redirect.
+                elif bypass_dialog:
+                    try:
+                        await self.send('Page.handleJavaScriptDialog', {'accept': True})
+                    except Exception:
+                        pass
                 await asyncio.sleep(.1)
 
     async def require_verification(self):

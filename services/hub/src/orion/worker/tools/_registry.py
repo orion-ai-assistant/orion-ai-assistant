@@ -36,15 +36,21 @@ class ToolRegistry:
         return selection
 
     def enabled(self, selection: ToolSelection) -> list[str]:
-        return [tool.id for cat in self.categories.values() if selection.categories.get(cat.id, False)
-                for tool in cat.tools if selection.functions.get(tool.id, False)]
+        enabled = [tool.id for cat in self.categories.values() if selection.categories.get(cat.id, False)
+                   for tool in cat.tools if selection.functions.get(tool.id, False)]
+        if set(enabled) & {'youtube_control', 'ytmusic_control'}:
+            enabled = [name for name in enabled if name not in ('youtube_control', 'ytmusic_control')]
+            if 'media_control' not in enabled:
+                enabled.append('media_control')
+        return enabled
 
     def catalog(self):
         return [{"id": cat.id, "name": cat.name, "description": cat.description,
                  "requires_browser": getattr(cat, "requires_browser", False),
                  "functions": [{"id": tool.id, "name": tool.name, "description": tool.description,
                                 "requires_browser": getattr(tool, "requires_browser", False) or getattr(cat, "requires_browser", False)}
-                               for tool in cat.tools]} for cat in self.categories.values()]
+                               for tool in cat.tools]} for cat in self.categories.values()
+                if cat.id not in ('youtube', 'ytmusic')]
 
 
 @lru_cache(maxsize=1)

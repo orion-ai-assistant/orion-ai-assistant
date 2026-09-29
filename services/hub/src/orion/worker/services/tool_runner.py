@@ -90,6 +90,9 @@ class ToolConversation:
     def __init__(self, context, enabled):
         self.context = context
         self.enabled = set(enabled)
+        if self.enabled & {'youtube_control', 'ytmusic_control'}:
+            self.enabled.difference_update({'youtube_control', 'ytmusic_control'})
+            self.enabled.add('media_control')
         # Queued jobs can still contain the old catalog IDs after an upgrade.
         if self.enabled & LEGACY_WEB_TOOLS:
             self.enabled.difference_update(LEGACY_WEB_TOOLS)
@@ -138,8 +141,10 @@ class ToolConversation:
             if await stop_checker() or not calls:
                 return
             self.rounds += 1
-            if self.rounds > 8 or len(seen_ids) + len(calls) > 16:
-                raise RuntimeError("Tool limit exceeded (8 rounds / 16 calls)")
+            max_rounds = getattr(settings, "max_tool_rounds", 32)
+            max_calls = getattr(settings, "max_tool_calls", 64)
+            if self.rounds > max_rounds or len(seen_ids) + len(calls) > max_calls:
+                raise RuntimeError(f"Tool limit exceeded ({max_rounds} rounds / {max_calls} calls)")
             if len({call['id'] for call in calls}) != len(calls):
                 raise RuntimeError("Repeated tool call ID in one response")
             # Some model backends reuse IDs on the next response. Give those
@@ -161,6 +166,7 @@ class ToolConversation:
             cancelled = False
             google_failure = None
             google_direct_result = None
+            media_seek_failure = None
             for call in calls:
                 function = call["function"]
                 name, arguments = function["name"], function["arguments"]
@@ -200,6 +206,12 @@ class ToolConversation:
                         item.update(status="error", result=result)
                     else:
                         item.update(status="completed", result=result)
+                    if (name == 'media_control' and len(calls) == 1
+                            and json.loads(arguments).get('action') == 'seek'
+                            and result.get('status') != 'ok'):
+                        media_seek_failure = result
+                        if result.get('status') != 'ambiguous':
+                            item['status'] = 'error'
                 except ToolCancelled:
                     cancelled = True
                     if name == 'google_ai_mode' and google_preview:
@@ -227,6 +239,21 @@ class ToolConversation:
                 yield 'content_snapshot', prefix + round_content + self.final_content
                 return
             if cancelled or await stop_checker():
+                return
+            if media_seek_failure:
+                if media_seek_failure.get('status') == 'ambiguous':
+                    choices = media_seek_failure.get('playing') or media_seek_failure.get('tabs') or []
+                    names = [str(choice.get('title') or choice.get('service') or choice.get('tab_id'))
+                             for choice in choices[:5] if isinstance(choice, dict)]
+                    seconds = json.loads(calls[0]['function']['arguments']).get('seconds')
+                    position = (f'{int(seconds) // 60}:{int(seconds) % 60:02d}'
+                                if isinstance(seconds, (int, float)) and seconds >= 0 else 'istenen')
+                    self.final_content = (f'Hangi sekmeyi {position} konumuna alayım? '
+                                          + ' / '.join(names))
+                else:
+                    self.final_content = (media_seek_failure.get('message') or
+                                          'İstenen konuma alma işlemi doğrulanamadı.')
+                yield 'content_snapshot', prefix + self.final_content
                 return
             if google_failure:
                 self.final_content = google_failure

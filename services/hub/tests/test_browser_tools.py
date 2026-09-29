@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
 from orion.worker.tools.youtube import tools as youtube
+from orion.worker.tools.ytmusic import tools as ytmusic
 from orion.worker.tools.browser import tools as browser
 from orion.browser.cdp import CDPConnectionLost
 from orion.browser.page import BrowserPage
@@ -348,3 +349,38 @@ class BrowserToolTests(unittest.IsolatedAsyncioTestCase):
                                                    SimpleNamespace(user_id='alice', chat_id='chat'))
         self.assertEqual(result['status'], 'outcome_unknown')
         page.click.assert_awaited_once()
+
+    async def test_youtube_next_and_previous_actions(self):
+        for action in ('next', 'previous'):
+            page = AsyncMock()
+            state = {'title': 'Song 2', 'paused': False, 'current_time': 0,
+                     'muted': False, 'volume': 0.8, 'ad_showing': False}
+            page.evaluate.side_effect = ['https://www.youtube.com/watch?v=test', 'https://www.youtube.com/watch?v=test', True, {**state, 'title': 'Song 1'}, True, state]
+            with patch.object(youtube, 'BrowserManager', return_value=self.manager(page)):
+                result = await youtube.youtube_control(youtube.YouTubeInput(action=action, target='tab-1'), SimpleNamespace(user_id='alice'))
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['title'], 'Song 2')
+
+    async def test_ytmusic_control_actions_and_tab_discovery(self):
+        # 1. Test next and previous actions
+        for action in ('next', 'previous'):
+            page = AsyncMock()
+            state = {'title': 'Şımarık - Tarkan | YouTube Music', 'paused': False, 'current_time': 10,
+                     'muted': False, 'volume': 0.8, 'ad_showing': False}
+            page.evaluate.side_effect = ['https://music.youtube.com/', 'https://music.youtube.com/', True, {**state, 'title': 'Old song'}, True, state]
+            with patch.object(ytmusic, '_find_existing_ytmusic_tab', AsyncMock(return_value='tab-ytm')), \
+                    patch.object(ytmusic, 'BrowserManager', return_value=self.manager(page)):
+                result = await ytmusic.ytmusic_control(ytmusic.YTMusicInput(action=action), SimpleNamespace(user_id='alice'))
+            self.assertEqual(result['status'], 'ok')
+            self.assertEqual(result['title'], 'Şımarık - Tarkan | YouTube Music')
+
+        # 2. Test pause action
+        page = AsyncMock()
+        state = {'title': 'Şımarık - Tarkan | YouTube Music', 'paused': True, 'current_time': 10,
+                 'muted': False, 'volume': 0.8, 'ad_showing': False}
+        page.evaluate.side_effect = ['https://music.youtube.com/', 'https://music.youtube.com/', True, True, True, state]
+        with patch.object(ytmusic, '_find_existing_ytmusic_tab', AsyncMock(return_value='tab-ytm')), \
+                patch.object(ytmusic, 'BrowserManager', return_value=self.manager(page)):
+            result = await ytmusic.ytmusic_control(ytmusic.YTMusicInput(action='pause'), SimpleNamespace(user_id='alice'))
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['title'], 'Şımarık - Tarkan | YouTube Music')

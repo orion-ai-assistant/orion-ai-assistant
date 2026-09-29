@@ -769,7 +769,7 @@ const UI = {
             },
             "Model davranışı": {
                 section: "advanced", icon: "🧠",
-                keys: ["temperature", "thinking_level", "system_prompt", "chat_history_max_messages"],
+                keys: ["temperature", "thinking_level", "system_prompt", "chat_history_max_messages", "max_tool_rounds", "max_tool_calls"],
                 desc: "Model yanıt davranışı ve talimatlar"
             },
             "Zaman aşımı": {
@@ -788,6 +788,8 @@ const UI = {
             "google_ai_direct_stream": "Açıkken Google yanıtı oluştukça ekrana aktarılır; Orion modeli yeniden yazmaz. Kapalıyken Google sonucu Orion modeline verilir.",
             "temperature": "0–2 arasında değer (boşsa varsayılan).",
             "thinking_level": "Model düşünme seviyesi (boşsa varsayılan).",
+            "max_tool_rounds": "Modelin bir yanıtta art arda araç çağırma tur limiti (varsayılan: 32).",
+            "max_tool_calls": "Bir yanıtta toplam çalıştırılabilecek maksimum araç çağrı sayısı (varsayılan: 64).",
             "first_token_delay_ms": "İlk parça öncesi bekleme (ms).",
             "token_delay_ms": "Yalnızca continuous demo akışında geçerlidir (ms).",
             "llm_timeout_seconds": "Model zaman aşımı (saniye).",
@@ -807,7 +809,9 @@ const UI = {
             "tts_voice": "Ses adı...",
             "tts_model": "Model adı...",
             "thinking_level": "Düşünce seviyesi...",
-            "router_model_group": "Model grubu..."
+            "router_model_group": "Model grubu...",
+            "max_tool_rounds": "32",
+            "max_tool_calls": "64"
         };
 
         const escapeSetting = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -854,7 +858,7 @@ const UI = {
                     rowsHtml += `
                     <div class="setting-row">
                         <div class="setting-info">
-                            <label class="setting-label" for="setting-input-${key}">${({google_ai_direct_stream: "Google yan\u0131t\u0131n\u0131 do\u011frudan ak\u0131t", router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses"})[key] || key}</label>
+                            <label class="setting-label" for="setting-input-${key}">${({google_ai_direct_stream: "Google yanıtını doğrudan akıt", router_api_key: "Router API anahtarı", router_model_group: "Sohbet modeli", tts_enabled: "Yanıtları seslendir", temperature: "Temperature", thinking_level: "Düşünme seviyesi", system_prompt: "Sistem promptu", token_delay_ms: "Demo akışı gecikmesi (ms)", first_token_delay_ms: "İlk parça gecikmesi (ms)", ai_chat_titles_enabled: "AI ile sohbet başlığı", chat_title_model: "Başlık modeli", stt_enabled: "Canlı sesli yazma", stt_model: "Sesli yazma modeli", tts_model: "Seslendirme modeli", tts_voice: "Ses", max_tool_rounds: "Araç çalıştırma tur limiti", max_tool_calls: "Maksimum araç çağrı sayısı"})[key] || key}</label>
                             ${hint ? `<span class="setting-hint">${hint}</span>` : ''}
                         </div>
                         <div class="setting-control">

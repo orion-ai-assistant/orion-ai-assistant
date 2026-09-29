@@ -31,6 +31,8 @@ class AISettings(BaseModel):
     
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)
+    max_tool_rounds: int = Field(default=32, ge=1, le=128)
+    max_tool_calls: int = Field(default=64, ge=1, le=256)
 
     @field_validator("temperature", mode="before")
     @classmethod
