@@ -324,35 +324,42 @@ const ToolsUI = {
     renderBrowserSession(target) {
         const row = document.createElement('div');
         row.className = 'setting-row compact-row';
-        const info = document.createElement('div'); info.className = 'setting-info';
+
+        // Info: label + action button side by side
+        const info = document.createElement('div'); info.className = 'setting-info browser-session-info';
         const label = document.createElement('label'); label.className = 'setting-label'; label.textContent = OrionI18n.t('orionBrowser');
-        const hint = document.createElement('span'); hint.className = 'setting-hint'; hint.style.display = 'block'; hint.style.marginTop = '4px';
-        info.append(label, hint);
+
+        const actionBtn = document.createElement('button'); actionBtn.type = 'button'; actionBtn.className = 'btn btn-primary';
+        actionBtn.style.marginLeft = '28px'; actionBtn.style.padding = '6px 14px'; actionBtn.style.fontSize = '0.82rem';
+
+        // hint used only for errors
+        const hint = document.createElement('span'); hint.className = 'setting-hint'; hint.style.display = 'none'; hint.style.marginTop = '4px';
+
+        const labelRow = document.createElement('div'); labelRow.style.display = 'flex'; labelRow.style.alignItems = 'center';
+        labelRow.append(label, actionBtn);
+        info.append(labelRow, hint);
+
+        // Control: only the dropdown on the right
         const control = document.createElement('div'); control.className = 'setting-control setting-control-compact';
         const select = document.createElement('select'); select.className = 'setting-select'; select.style.width = '120px';
         for (const [v, t] of [['chrome', 'Chrome'], ['edge', 'Edge'], ['brave', 'Brave']]) {
             const option = document.createElement('option'); option.value = v; option.textContent = t; select.appendChild(option);
         }
-        const actionBtn = document.createElement('button'); actionBtn.type = 'button'; actionBtn.className = 'btn btn-primary';
-        actionBtn.style.marginLeft = '8px'; actionBtn.style.padding = '9px 18px'; actionBtn.style.fontSize = '0.85rem';
-        control.append(select, actionBtn);
+        control.append(select);
         row.append(info, control); target.appendChild(row);
 
         let isConnected = false;
         const current = () => row.isConnected;
 
-        const updateHint = (connected) => {
-            if (connected) {
-                hint.textContent = OrionI18n.t('connectedShort') || 'Bağlandı ✓';
-                hint.style.color = 'var(--success-color, #10b981)';
-            } else {
-                const b = select.value || 'chrome';
-                hint.innerHTML = OrionI18n.t('browserHelp', b + '://inspect/#remote-debugging');
-                hint.style.color = 'var(--text-muted)';
-            }
+        const clearHint = () => { hint.textContent = ''; hint.style.display = 'none'; };
+
+        const showError = (msg) => {
+            hint.textContent = msg;
+            hint.style.color = 'var(--error-color, #ef4444)';
+            hint.style.display = 'block';
         };
 
-        select.addEventListener('change', () => { select.dataset.userChanged = 'true'; updateHint(false); });
+        select.addEventListener('change', () => { select.dataset.userChanged = 'true'; clearHint(); });
 
         const refresh = async () => {
             const data = await this.request('/api/v1/browser');
@@ -362,8 +369,8 @@ const ToolsUI = {
             if (select.dataset.userChanged !== 'true') select.value = activeBrowser;
             isConnected = Boolean(data && data.running);
             actionBtn.textContent = isConnected ? OrionI18n.t('disconnect') : OrionI18n.t('connectBrowser');
-            actionBtn.className = isConnected ? 'btn btn-danger' : 'btn btn-primary';
-            updateHint(isConnected);
+            actionBtn.className = isConnected ? 'btn btn-disconnect' : 'btn btn-primary';
+            clearHint();
         };
 
         actionBtn.onclick = async () => {
@@ -375,15 +382,12 @@ const ToolsUI = {
                 else await this.request('/api/v1/browser/open', 'POST', {browser: select.value});
                 await refresh();
             } catch (error) {
-                if (current()) {
-                    hint.textContent = (isConnected ? 'Hata: ' : OrionI18n.t('connectFailed', '')) + error.message;
-                    hint.style.color = 'var(--error-color, #ef4444)';
-                }
+                if (current()) showError((isConnected ? 'Hata: ' : OrionI18n.t('connectFailed', '')) + error.message);
             } finally { actionBtn.disabled = false; select.disabled = false; }
         };
 
         this.refreshBrowserStatus = refresh;
-        refresh().catch(e => { if (current()) hint.textContent = e.message; });
+        refresh().catch(e => { if (current()) showError(e.message); });
     },
 
     async open(defaults) {
