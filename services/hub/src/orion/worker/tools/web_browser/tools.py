@@ -19,7 +19,7 @@ class BrowserInput(ToolInput):
     url: str | SkipJsonSchema[None] = Field(default=None,
         json_schema_extra=lambda schema: schema.pop('default', None))
     tab_id: str | SkipJsonSchema[None] = Field(default=None,
-        description='ID returned by browser_tabs for an existing tab; omit to use the Orion tab',
+        description='MUST be an exact ID returned by browser_tabs (e.g. "A1B2"). Do NOT pass words like "new". To open a new tab or use the default background tab, completely OMIT this parameter.',
         json_schema_extra=lambda schema: schema.pop('default', None))
     selector: str | SkipJsonSchema[None] = Field(default=None,
         description='The exact numeric `id` of the element from the snapshot (e.g., "14"), OR a custom CSS selector.',
@@ -149,6 +149,6 @@ BROWSER_CONTROL = Tool(id='browser_control', name='Use browser',
 
 
 BROWSER_TABS = Tool(id='browser_tabs', name='List open tabs',
-    description='List connected browser tabs without opening or switching. Returns tab ID and title; request include_urls only when full links are needed. '
-                'Filter by query when possible. For currently playing media use media_control now_playing.',
+    description='List connected browser tabs. ONLY use this if the user explicitly asks to find a specific open tab or check existing tabs. '
+                'Otherwise, prefer navigating directly using browser_control. Returns tab ID and title.',
     input_model=BrowserTabsInput, handler=browser_tabs)
