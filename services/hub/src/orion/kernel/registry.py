@@ -138,6 +138,9 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
         await conn.execute(
             "create index if not exists idx_orion_chat_messages_chat_id on orion_chat_messages (chat_id, created_at asc);"
         )
+        await conn.execute(
+            "create index if not exists idx_orion_chat_messages_chat_id_id on orion_chat_messages (chat_id, id asc);"
+        )
     except (asyncpg.exceptions.UniqueViolationError, asyncpg.exceptions.DuplicateTableError):
         # Ignore concurrent table creation race conditions
         pass
@@ -380,7 +383,7 @@ async def get_chat_history_db(chat_id: str) -> list[dict]:
     try:
         await _ensure_tables(conn)
         rows = await conn.fetch(
-            "select content_json from orion_chat_messages where chat_id = $1 order by created_at asc",
+            "select content_json from orion_chat_messages where chat_id = $1 order by id asc",
             chat_id,
         )
         result = []

@@ -347,39 +347,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
         add_display = timeline.add
 
         if context.stream_mode == "continuous":
-            # --- Continuous (demo) mode ---
-            iteration = 0
-            while True:
-                is_stopped = await should_stop(redis, context.turn_id)
-                is_active = await is_active_turn(redis, context.chat_id, context.turn_id)
-                if is_stopped or not is_active:
-                    finalized = await finalize_state_if_active(
-                        redis,
-                        context.chat_id,
-                        context.turn_id,
-                        state_key,
-                        mapping={
-                            "status": "stopped",
-                            "updated_at": utc_now(),
-                            "result_json": json.dumps({"text": "".join(output_tokens), "stopped": True}),
-                        },
-                        ttl_seconds=settings.result_ttl_seconds,
-                    )
-                    if finalized:
-                        await context.emit_done("stopped")
-                    logging.info("Worker %s stopped continuous chat %s turn %s", consumer_name, context.chat_id, context.turn_id)
-                    break
-
-                iteration += 1
-                text = f"continuous stream item {iteration} from prompt: {context.prompt}"
-                for token in tokenize(text):
-                    if await should_stop(redis, context.turn_id) or not await is_active_turn(redis, context.chat_id, context.turn_id):
-                        break
-                    output_tokens.append(token)
-                    await context.emit_token(token)
-                    logging.info("Worker %s published token for chat %s: %s", consumer_name, context.chat_id, token)
-                    if settings.token_delay_ms > 0:
-                        await asyncio.sleep(settings.token_delay_ms / 1000)
+            raise ValueError("Continuous demo mode is disabled; use stream_mode=once for model responses.")
         else:
             # --- Single-shot mode: stream directly from LLM ---
             history = await load_history(
@@ -659,15 +627,11 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             consumer_name, context.chat_id, len(audio_bytes),
                         )
                 except Exception as tts_err:
-                    # Graceful degradation: log and inform user via chat token
+                    # Keep synthesis failures out of the assistant response.
                     logging.warning(
                         "Worker %s: TTS generation failed for chat %s (%s)",
                         consumer_name, context.chat_id, tts_err,
                     )
-                    try:
-                        await context.emit_token(f"\n\n*[⚠️ TTS Uyarısı: {str(tts_err)}]*")
-                    except Exception:
-                        pass
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text}

@@ -166,7 +166,6 @@ class ToolConversation:
             cancelled = False
             google_failure = None
             google_direct_result = None
-            media_seek_failure = None
             for call in calls:
                 function = call["function"]
                 name, arguments = function["name"], function["arguments"]
@@ -208,10 +207,8 @@ class ToolConversation:
                         item.update(status="completed", result=result)
                     if (name == 'media_control' and len(calls) == 1
                             and json.loads(arguments).get('action') == 'seek'
-                            and result.get('status') != 'ok'):
-                        media_seek_failure = result
-                        if result.get('status') != 'ambiguous':
-                            item['status'] = 'error'
+                            and result.get('status') not in ('ok', 'ambiguous')):
+                        item['status'] = 'error'
                 except ToolCancelled:
                     cancelled = True
                     if name == 'google_ai_mode' and google_preview:
@@ -239,21 +236,6 @@ class ToolConversation:
                 yield 'content_snapshot', prefix + round_content + self.final_content
                 return
             if cancelled or await stop_checker():
-                return
-            if media_seek_failure:
-                if media_seek_failure.get('status') == 'ambiguous':
-                    choices = media_seek_failure.get('playing') or media_seek_failure.get('tabs') or []
-                    names = [str(choice.get('title') or choice.get('service') or choice.get('tab_id'))
-                             for choice in choices[:5] if isinstance(choice, dict)]
-                    seconds = json.loads(calls[0]['function']['arguments']).get('seconds')
-                    position = (f'{int(seconds) // 60}:{int(seconds) % 60:02d}'
-                                if isinstance(seconds, (int, float)) and seconds >= 0 else 'istenen')
-                    self.final_content = (f'Hangi sekmeyi {position} konumuna alayım? '
-                                          + ' / '.join(names))
-                else:
-                    self.final_content = (media_seek_failure.get('message') or
-                                          'İstenen konuma alma işlemi doğrulanamadı.')
-                yield 'content_snapshot', prefix + self.final_content
                 return
             if google_failure:
                 self.final_content = google_failure

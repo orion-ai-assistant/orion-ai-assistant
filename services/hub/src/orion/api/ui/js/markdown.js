@@ -172,6 +172,26 @@ window.MarkdownView = {
             wrapper.appendChild(table);
         }
 
+        // Make ordered list numbers selectable as real text in the DOM
+        for (const ol of fragment.querySelectorAll('ol')) {
+            const startAttr = ol.getAttribute('start');
+            let count = startAttr ? parseInt(startAttr, 10) : 1;
+            if (isNaN(count)) count = 1;
+
+            for (const child of ol.children) {
+                if (child.tagName === 'LI') {
+                    const numSpan = document.createElement('span');
+                    numSpan.className = 'markdown-ol-number';
+                    numSpan.textContent = `${count}. `;
+                    const target = (child.firstElementChild && child.firstElementChild.tagName === 'P')
+                        ? child.firstElementChild
+                        : child;
+                    target.prepend(numSpan);
+                    count++;
+                }
+            }
+        }
+
         element.replaceChildren(fragment);
     }
 };

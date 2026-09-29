@@ -171,40 +171,70 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ambiguous_media_seek_asks_which_tab(self):
+    async def test_ambiguous_media_seek_returns_to_model_for_targeted_retry(self):
         conversation = self.conversation(['media_control'])
-        async def stream(messages, settings, **kwargs):
-            yield 'tool_calls', json.dumps([call(name='media_control',
-                arguments='{"action":"seek","seconds":60}')])
+        requests = []
         result = {'status': 'ambiguous', 'playing': [
-            {'title': 'Eylül Sonu - Yansımalar', 'tab_id': 'music'},
-            {'title': 'Kahraman Elektro Büyücü', 'tab_id': 'video'}]}
-        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=result)):
-            _ = [event async for event in conversation.stream([], RuntimeSettings(),
-                                      AsyncMock(return_value=False), stream)]
-        self.assertIn('Hangi sekmeyi 1:00 konumuna alayım?', conversation.final_content)
-        self.assertIn('Eylül Sonu', conversation.final_content)
-        self.assertIn('Kahraman Elektro', conversation.final_content)
-        self.assertEqual(conversation.activity[0]['status'], 'completed')
-
-    async def test_failed_media_seek_cannot_be_reported_as_success(self):
-        conversation = self.conversation(['media_control'])
-        requests = 0
+            {'title': 'Eylül Sonu - Yansımalar', 'service': 'ytmusic', 'tab_id': 'music'},
+            {'title': 'Karıncalar Faz Değiştiriyor', 'service': 'youtube', 'tab_id': 'video'}]}
         async def stream(messages, settings, **kwargs):
-            nonlocal requests
-            requests += 1
-            if requests == 1:
+            requests.append(json.loads(json.dumps(messages)))
+            if len(requests) == 1:
+                yield 'tool_calls', json.dumps([call(name='media_control',
+                    arguments='{"action":"seek","seconds":60}')])
+            elif len(requests) == 2:
+                yield 'tool_calls', json.dumps([call('retry', name='media_control',
+                    arguments='{"action":"seek","seconds":60,"target":"music"}')])
+            else:
+                yield 'content', 'Şarkıyı 1:00 konumuna aldım.'
+        with patch('orion.worker.services.tool_runner.execute_tool',
+                   AsyncMock(side_effect=[result, {'status': 'ok', 'current_time': 60}])) as execute:
+            events = [event async for event in conversation.stream(
+                [{'role': 'user', 'content': 'şarkıyı 1. dakikaya alsana'}], RuntimeSettings(),
+                AsyncMock(return_value=False), stream)]
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(json.loads(requests[1][-1]['content']), result)
+        self.assertEqual(requests[1][0]['content'], 'şarkıyı 1. dakikaya alsana')
+        self.assertEqual(json.loads(execute.call_args_list[1].args[1])['target'], 'music')
+        self.assertEqual(events[-1], ('content', 'Şarkıyı 1:00 konumuna aldım.'))
+        self.assertEqual([item['status'] for item in conversation.activity], ['completed', 'completed'])
+
+    async def test_ambiguous_media_seek_allows_model_clarification(self):
+        conversation = self.conversation(['media_control'])
+        requests = []
+        async def stream(messages, settings, **kwargs):
+            requests.append(json.loads(json.dumps(messages)))
+            if len(requests) == 1:
                 yield 'tool_calls', json.dumps([call(name='media_control',
                     arguments='{"action":"seek","seconds":60}')])
             else:
-                yield 'content', '1. dakikaya aldım.'
+                yield 'content', 'İki şarkı çalıyor, hangisini kastediyorsun?'
+        result = {'status': 'ambiguous', 'playing': [
+            {'title': 'Şarkı A', 'tab_id': 'a'}, {'title': 'Şarkı B', 'tab_id': 'b'}]}
+        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=result)):
+            _ = [event async for event in conversation.stream([], RuntimeSettings(),
+                                      AsyncMock(return_value=False), stream)]
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(conversation.final_content, 'İki şarkı çalıyor, hangisini kastediyorsun?')
+
+    async def test_failed_media_seek_returns_to_model_for_explanation(self):
+        conversation = self.conversation(['media_control'])
+        requests = []
+        async def stream(messages, settings, **kwargs):
+            requests.append(json.loads(json.dumps(messages)))
+            if len(requests) == 1:
+                yield 'tool_calls', json.dumps([call(name='media_control',
+                    arguments='{"action":"seek","seconds":60}')])
+            else:
+                yield 'content', 'The player position could not be verified.'
         failure = {'status': 'seek_unconfirmed', 'current_time': 60,
                    'message': 'Konum doğrulanamadı: oynatma ilerlemiyor.'}
         with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value=failure)):
             events = [event async for event in conversation.stream([], RuntimeSettings(),
                                         AsyncMock(return_value=False), stream)]
-        self.assertEqual(requests, 1)
-        self.assertEqual(conversation.final_content, failure['message'])
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(json.loads(requests[1][-1]["content"]), failure)
+        self.assertEqual(conversation.final_content, 'The player position could not be verified.')
         self.assertEqual(conversation.activity[0]['status'], 'error')
         self.assertNotIn('aldım', str(events))
 

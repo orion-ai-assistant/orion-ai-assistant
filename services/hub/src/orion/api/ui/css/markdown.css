@@ -7,9 +7,21 @@
 .markdown-content h1 { font-size: 1.65em; }
 .markdown-content h2 { font-size: 1.4em; }
 .markdown-content h3 { font-size: 1.2em; }
-.markdown-content ul, .markdown-content ol { padding-left: 1.6em; margin: .5em 0 1em; }
+.markdown-content ul { padding-left: 1.6em; margin: .5em 0 1em; }
+.markdown-content ol {
+    list-style: none;
+    padding-left: 0;
+    margin: .5em 0 1em;
+}
 .markdown-content li { margin: .3em 0; }
-.markdown-content li > ul, .markdown-content li > ol { margin: .3em 0; }
+.markdown-content li > p:last-child { margin-bottom: 0; }
+.markdown-content ol > li > .markdown-ol-number,
+.markdown-content ol > li > p > .markdown-ol-number {
+    user-select: text;
+    -webkit-user-select: text;
+}
+.markdown-content li > ul { margin: .3em 0; padding-left: 1.6em; }
+.markdown-content li > ol { margin: .3em 0; padding-left: 1.4em; }
 .markdown-content a { color: var(--accent-color, #8bbcff); text-decoration: underline; }
 .markdown-content blockquote { margin: 1em 0; padding: .2em 1em; border-left: 3px solid #64748b; }
 .markdown-content code { font-family: 'JetBrains Mono', monospace; font-size: .88em; background: #ffffff0c; padding: .15em .3em; border-radius: 4px; }
