@@ -38,7 +38,10 @@ assert.deepEqual(enKeys, trKeys, 'en and tr should have identical keys');
 // Verify apply handles data-i18n-placeholder and data-i18n-aria-label
 const placeholderNode = {dataset: {i18nPlaceholder: 'messagePlaceholder'}, placeholder: ''};
 const ariaLabelNode = {dataset: {i18nAriaLabel: 'add'}, setAttribute(name, val) { this[name] = val; }};
+const inputLabel = {dataset: {i18n: 'input'}, textContent: ''};
+const resultLabel = {dataset: {i18n: 'result'}, textContent: ''};
 context.document.querySelectorAll = selector => {
+    if (selector === '[data-i18n]') return [inputLabel, resultLabel];
     if (selector === '[data-i18n-placeholder]') return [placeholderNode];
     if (selector === '[data-i18n-aria-label]') return [ariaLabelNode];
     return [];
@@ -46,5 +49,11 @@ context.document.querySelectorAll = selector => {
 context.i18n.apply();
 assert.equal(placeholderNode.placeholder, 'Type a message or speak into the microphone…');
 assert.equal(ariaLabelNode['aria-label'], 'Add');
+assert.equal(inputLabel.textContent, 'Input');
+assert.equal(resultLabel.textContent, 'Result');
+context.ui.currentSettings = null;
+context.i18n.setLanguage('tr');
+assert.equal(inputLabel.textContent, 'Girdi');
+assert.equal(resultLabel.textContent, 'Sonuç');
 
 console.log('Web language selection, placeholder/aria-label binding, and key parity passed');

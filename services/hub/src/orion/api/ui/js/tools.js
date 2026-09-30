@@ -924,10 +924,6 @@ const ToolsUI = {
 
         try { args = JSON.parse(args); } catch (_) { /* Show malformed arguments verbatim. */ }
 
-        card.querySelector('pre').textContent = OrionI18n.t('input') + '\\n' + JSON.stringify(args, null, 2) +
-            (item.result === undefined ? '' : '\\n\\n' + OrionI18n.t('result') + '\\n' + JSON.stringify(item.result,
-                (key, value) => key === 'truncated' ? undefined : value, 2));
-
         card.querySelector('.google-session')?.remove();
 
 
@@ -938,6 +934,19 @@ const ToolsUI = {
 
             try { result = JSON.parse(result); } catch (_) { /* Keep plain text. */ }
 
+        }
+        const pre = card.querySelector('pre');
+        const inputLabel = document.createElement('span');
+        inputLabel.dataset.i18n = 'input';
+        inputLabel.textContent = OrionI18n.t('input');
+        pre.replaceChildren(inputLabel, document.createTextNode('\n' + JSON.stringify(args, null, 2)));
+        if (result !== undefined) {
+            const resultLabel = document.createElement('span');
+            resultLabel.dataset.i18n = 'result';
+            resultLabel.textContent = OrionI18n.t('result');
+            pre.append(document.createTextNode('\n\n'), resultLabel, document.createTextNode('\n' +
+                (typeof result === 'string' ? result : JSON.stringify(result,
+                    (key, value) => key === 'truncated' ? undefined : value, 2))));
         }
 
         const needsBrowser = result?.status === 'not_configured';
