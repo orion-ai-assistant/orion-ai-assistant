@@ -4,15 +4,16 @@ const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/main.js'), 'utf8');
 let visible = false, requests = 0, renders = 0, catalogs = 0, resolve;
+const savedSettings = {};
 const context = vm.createContext({
     document: { hidden: false, getElementById: () => ({ classList: { contains: () => visible } }), addEventListener() {} },
     window: {}, Auth: { getToken: () => 'test' }, AppState: { sseConnected: true },
     API: { getSettings: () => { requests++; return new Promise(r => { resolve = r; }); } },
     UI: { renderSettings: () => renders++, loadModelChoices: async () => catalogs++ },
-    audioToggle: null,
+    localStorage: {setItem: (key, value) => { savedSettings[key] = value; }},
     setInterval: (_, delay) => assert.equal(delay, 5000),
 });
-vm.runInContext(source.slice(source.indexOf('    let settingsLoading'), source.indexOf('    let userPollTimer')), context);
+vm.runInContext(source.slice(source.indexOf('    var settingsLoading'), source.indexOf('    let userPollTimer')), context);
 vm.runInContext('globalThis.poll = loadInitialSettings;', context);
 async function run() {
     const poll = context.poll;
@@ -23,6 +24,7 @@ async function run() {
     resolve({ tts_enabled: true });
     await initial;
     assert.equal(renders, 1);
+    assert.equal(savedSettings.orion_tts_enabled, 'true', 'Settings sync audio preference without a chat toggle');
     await context.window.loadInitialSettings();
     await poll();
     assert.equal(requests, 1, 'Initial background load runs only once');

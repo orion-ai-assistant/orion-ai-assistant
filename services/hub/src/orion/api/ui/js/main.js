@@ -283,32 +283,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     window.addEventListener('resize', () => UI.resizeMessageInput());
     UI.resizeMessageInput();
 
-    const audioToggle = document.getElementById('audio-toggle');
-    if (audioToggle) {
-        const savedAudio = localStorage.getItem("orion_tts_enabled");
-        if (savedAudio !== null) {
-            audioToggle.checked = savedAudio === "true";
-        }
-        audioToggle.addEventListener('change', async () => {
-            const isEnabled = audioToggle.checked;
-            localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
-
-            // Also update input in settings modal if open
-            const ttsEnabledInput = document.getElementById('setting-input-tts_enabled');
-            if (ttsEnabledInput) {
-                ttsEnabledInput.value = isEnabled ? "true" : "false";
-                ttsEnabledInput.dataset.original = isEnabled ? "true" : "false";
-            }
-
-            // Sync with backend settings
-            try {
-                await API.saveSettings("tts_enabled", isEnabled ? "true" : "false");
-            } catch (err) {
-                console.warn("Could not save tts_enabled to backend:", err);
-            }
-        });
-    }
-
     // Tab Switching
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -370,9 +344,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             if ((initialLoad || settingsVisible()) && data && !data.error) {
                 UI.renderSettings(data);
                 await UI.loadModelChoices(data, true);
-                if (audioToggle && data.tts_enabled !== undefined) {
+                if (data.tts_enabled !== undefined) {
                     const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
-                    audioToggle.checked = isEnabled;
                     localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
                 }
             }

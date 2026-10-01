@@ -644,8 +644,6 @@ const UI = {
                 }
                 if (key === 'tts_enabled') {
                     const enabled = val.toLowerCase() === 'true';
-                    const toggle = document.getElementById('audio-toggle');
-                    if (toggle) toggle.checked = enabled;
                     localStorage.setItem('orion_tts_enabled', String(enabled));
                 }
             } catch (error) {
@@ -1036,11 +1034,10 @@ const UI = {
                 select.parentElement.appendChild(notice);
             }
         }
-        notice.textContent = String(this.currentSettings?.tts_enabled).toLowerCase() === 'false'
-            ? OrionI18n.t('ttsDisabledNotice')
-            : model === 'local-tts' && (inaccessible || !voices.length)
-                ? OrionI18n.t('ttsUnavailableNotice')
-                : '';
+        notice.textContent = model === 'local-tts' && (inaccessible || !voices.length)
+            ? OrionI18n.t('ttsUnavailableNotice')
+            : '';
+        notice.hidden = !notice.textContent;
         if (userInitiated) {
             this.handleSettingChange('tts_voice');
         }

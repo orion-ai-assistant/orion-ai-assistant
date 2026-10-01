@@ -133,7 +133,7 @@ const API = {
         UI.clearInput();
 
         try {
-            const audioEnabled = document.getElementById('audio-toggle')?.checked || false;
+            const audioEnabled = String(UI.currentSettings?.tts_enabled ?? localStorage.getItem('orion_tts_enabled')).toLowerCase() === 'true';
             const response = await this._fetch(`/api/v1/chats/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

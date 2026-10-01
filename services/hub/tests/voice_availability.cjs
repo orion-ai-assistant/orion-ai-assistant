@@ -10,9 +10,16 @@ const voice = elements['setting-input-tts_voice'] = {
     replaceChildren(...nodes) { this.options = nodes; }, add(node) { this.options.push(node); },
 };
 elements['setting-input-tts_model'] = { value: 'local-tts' };
-const context = vm.createContext({ window: {}, Option, document: {
-    getElementById: id => elements[id], createElement: () => ({}),
+const context = vm.createContext({ window: {}, Option,
+    navigator: {languages: ['tr-TR']},
+    localStorage: {getItem: () => null},
+    document: {
+    addEventListener() {},
+    getElementById: id => elements[id], createElement: () => ({style: {}}),
 }});
+for (const file of ['locales/en.js', 'locales/tr.js', 'i18n.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js', file), 'utf8'), context);
+}
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
 const ui = context.ui;
 ui.currentSettings = { tts_enabled: true, tts_model: 'local-tts', tts_voice: 'zephyr2' };
@@ -46,6 +53,10 @@ assert.equal(voice.options[2].value, 'new-voice');
 assert.equal(elements['tts-availability'].textContent, '', 'Voices populated — no notice shown');
 ui.currentSettings.tts_enabled = false;
 ui.loadVoiceChoices(false);
-assert.match(elements['tts-availability'].textContent, /kapalı/);
-assert.ok(!elements['tts-availability'].textContent.includes('korunuyor'), 'No secondary korunuyor message');
+assert.equal(elements['tts-availability'].textContent, '', 'Disabled playback shows no notice when TTS is reachable');
+assert.equal(elements['tts-availability'].hidden, true);
+ui.routerCatalog.unavailable = ['local-tts-info'];
+ui.loadVoiceChoices(false);
+assert.equal(elements['tts-availability'].textContent, 'Orion TTS’ye erişilemiyor.', 'Outage is shown even when playback is disabled');
+assert.equal(elements['tts-availability'].hidden, false);
 console.log('Voice availability and recovery tests passed');
