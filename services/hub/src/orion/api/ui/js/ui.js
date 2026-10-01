@@ -479,12 +479,14 @@ const UI = {
         this.stopBtn.style.display = isVisible ? 'flex' : 'none';
         if (isVisible && AppState.isStopping(AppState.currentChatId)) {
             this.stopBtn.disabled = true;
-            this.stopBtn.textContent = OrionI18n.t('stopping');
+            this.stopBtn.setAttribute('aria-label', OrionI18n.t('stopping'));
+            this.stopBtn.title = OrionI18n.t('stopping');
             return;
         }
         if (isVisible) {
             this.stopBtn.disabled = false;
-            this.stopBtn.innerHTML = `<span class="stop-icon">■</span><span class="stop-text">${OrionI18n.t('stop')}</span>`;
+            this.stopBtn.setAttribute('aria-label', OrionI18n.t('stop'));
+            this.stopBtn.title = OrionI18n.t('stop');
         }
     },
     resizeMessageInput(followTail = false) {
@@ -616,18 +618,18 @@ const UI = {
                 if (data.error) throw new Error(typeof data.error === 'string' ? data.error : OrionI18n.t('invalidValue'));
                 if (key === 'router_api_key') {
                     const masked = data[key] || '';
-                    input.value = '';
-                    input.dataset.original = '';
-                    input.type = 'password';
-                    const icon = document.getElementById(`setting-secret-icon-${key}`);
-                    if (icon) icon.textContent = '👁️';
+                    input.dataset.original = val;
                     input.placeholder = masked ? OrionI18n.t('configuredRouterApiKey', masked) : OrionI18n.t('placeholderRouterApiKey');
                     const clearBtn = document.getElementById(`setting-secret-clear-${key}`);
                     if (clearBtn) clearBtn.hidden = !Boolean(masked);
                     if (this.currentSettings) this.currentSettings[key] = masked;
-                    input.classList.remove('dirty');
+                    const changed = input.value.trim() !== val;
+                    input.classList.toggle('dirty', changed);
                     this.settingSaveStatus(key, '');
-                    this.showToast(OrionI18n.t('saved'));
+                    if (!changed) this.showToast(OrionI18n.t('saved'));
+                    if (!document.getElementById('settings-view')?.classList.contains('active')) {
+                        this.clearSavedRouterApiKeyInput();
+                    }
                 } else {
                     input.dataset.original = val;
                     if (this.currentSettings) this.currentSettings[key] = data[key] ?? val;
@@ -664,15 +666,19 @@ const UI = {
     },
     toggleSecretVisibility(key) {
         const input = document.getElementById(`setting-input-${key}`);
-        const icon = document.getElementById(`setting-secret-icon-${key}`);
         if (!input) return;
-        if (input.type === 'password') {
-            input.type = 'text';
-            if (icon) icon.textContent = '🔒';
-        } else {
-            input.type = 'password';
-            if (icon) icon.textContent = '👁️';
-        }
+        input.type = input.type === 'password' ? 'text' : 'password';
+        const button = document.getElementById(`setting-secret-toggle-${key}`);
+        if (button) button.setAttribute('aria-pressed', String(input.type === 'text'));
+    },
+    clearSavedRouterApiKeyInput() {
+        const input = document.getElementById('setting-input-router_api_key');
+        if (!input || input.classList.contains('dirty')) return;
+        input.value = '';
+        input.dataset.original = '';
+        input.type = 'password';
+        const button = document.getElementById('setting-secret-toggle-router_api_key');
+        if (button) button.setAttribute('aria-pressed', 'false');
     },
     async clearRouterApiKey() {
         const input = document.getElementById('setting-input-router_api_key');
@@ -722,8 +728,6 @@ const UI = {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
                     if (key === 'router_api_key') {
                         const hasKey = Boolean(serverVal && serverVal.trim());
-                        el.value = '';
-                        el.dataset.original = '';
                         el.placeholder = hasKey ? OrionI18n.t('configuredRouterApiKey', serverVal) : OrionI18n.t('placeholderRouterApiKey');
                         const clearBtn = document.getElementById(`setting-secret-clear-${key}`);
                         if (clearBtn) clearBtn.hidden = !hasKey;
@@ -827,13 +831,13 @@ const UI = {
                             <div class="setting-secret-wrapper">
                                 <div class="setting-secret-input-box">
                                     <input type="password" id="setting-input-${key}" data-original="" value="" autocomplete="new-password" oninput="UI.handleSettingChange('${key}')" class="setting-input setting-secret-input" placeholder="${escapeSetting(maskedPlaceholder)}">
-                                    <button type="button" class="setting-secret-btn" onclick="UI.toggleSecretVisibility('${key}')" title="${OrionI18n.t('toggleApiKeyVisibility')}" aria-label="${OrionI18n.t('toggleApiKeyVisibility')}">
-                                        <span id="setting-secret-icon-${key}">👁️</span>
+                                    <button type="button" id="setting-secret-toggle-${key}" class="setting-secret-btn" onclick="UI.toggleSecretVisibility('${key}')" title="${OrionI18n.t('toggleApiKeyVisibility')}" aria-label="${OrionI18n.t('toggleApiKeyVisibility')}" aria-pressed="false">
+                                        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 4.5C7 4.5 3.1 7.6 1 12c2.1 4.4 6 7.5 11 7.5s8.9-3.1 11-7.5C20.9 7.6 17 4.5 12 4.5Zm0 12a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Zm0-7.2a2.7 2.7 0 1 0 0 5.4 2.7 2.7 0 0 0 0-5.4Z"/></svg>
+                                    </button>
+                                    <button type="button" id="setting-secret-clear-${key}" class="setting-secret-clear-btn" onclick="UI.clearRouterApiKey()" title="${OrionI18n.t('clearApiKey')}" aria-label="${OrionI18n.t('clearApiKey')}" ${hasKey ? '' : 'hidden'}>
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6v15h12V6"/></svg>
                                     </button>
                                 </div>
-                                <button type="button" id="setting-secret-clear-${key}" class="setting-secret-clear-btn" onclick="UI.clearRouterApiKey()" title="${OrionI18n.t('clearApiKey')}" ${hasKey ? '' : 'hidden'}>
-                                    ${OrionI18n.t('clearApiKey')}
-                                </button>
                             </div>`;
                     } else {
                         inputHtml = `<input type="text" id="setting-input-${key}" data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-input" placeholder="${placeholder}">`;

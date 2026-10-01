@@ -238,7 +238,8 @@ const API = {
         const stopBtn = document.getElementById('stop-btn');
         if (stopBtn) {
             stopBtn.disabled = true;
-            stopBtn.innerHTML = '<span class="stop-icon">\u23F3</span><span class="stop-text">Durduruluyor...</span>';
+            stopBtn.setAttribute('aria-label', OrionI18n.t('stopping'));
+            stopBtn.title = OrionI18n.t('stopping');
         }
 
         try {

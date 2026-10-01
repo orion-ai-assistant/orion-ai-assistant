@@ -321,6 +321,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             // Add active to clicked tab and corresponding view
             targetBtn.classList.add('active');
             const targetId = targetBtn.getAttribute('data-target');
+            if (targetId !== 'settings-view') UI.clearSavedRouterApiKeyInput();
             const viewEl = document.getElementById(targetId);
             if (viewEl) viewEl.classList.add('active');
 
