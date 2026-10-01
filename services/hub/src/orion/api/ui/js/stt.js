@@ -12,12 +12,11 @@ const STT = {
     lastLiveText: '',
     _listenerAttached: false,
     
-    // Router adresi ve portu (Router varsayılan portu 20128)
-    getRouterWsUrl(apiKey, language = 'tr', model = 'local-stt') {
-        const host = window.location.hostname || 'localhost';
+    // Hub proxy WebSocket adresi
+    getRouterWsUrl(authToken, language = 'tr', model = 'local-stt') {
+        const host = window.location.host;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const routerPort = 20128;
-        return `${protocol}//${host}:${routerPort}/v1/audio/transcriptions/stream?token=${encodeURIComponent(apiKey)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`;
+        return `${protocol}//${host}/api/v1/audio/transcriptions/stream?token=${encodeURIComponent(authToken)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`;
     },
 
     // Float32 Web Audio tamponunu 16kHz 16-bit Mono PCM'e dönüştürme
@@ -102,8 +101,8 @@ const STT = {
 
         this.attachInputListener();
 
-        // Router API Key'ini al
-        let routerApiKey = '';
+        // Hub Auth token
+        let authToken = '';
         let sttModel = 'local-stt';
         try {
             const settings = await API.getSettings();
@@ -117,8 +116,7 @@ const STT = {
                 alert('Canlı sesli yazma yalnızca local-stt modelini destekliyor. Ayarlardan yerel modeli seçin.');
                 return;
             }
-            const rawKey = (settings?.router_api_key || '').trim();
-            routerApiKey = (rawKey && rawKey !== 'sk-60f3eaf169d7c485-0icocf-0a3db541') ? rawKey : 'orion';
+            authToken = localStorage.getItem("orion_token") || '';
         } catch (e) {
             alert('Sesli yazma ayarları alınamadı: ' + e.message);
             return;
@@ -157,7 +155,7 @@ const STT = {
             const inputSampleRate = this.audioCtx.sampleRate;
 
             // 3. WebSocket Bağlantısı
-            const wsUrl = this.getRouterWsUrl(routerApiKey, 'tr', sttModel);
+            const wsUrl = this.getRouterWsUrl(authToken, 'tr', sttModel);
             this.ws = new WebSocket(wsUrl);
 
             this.ws.onopen = () => {

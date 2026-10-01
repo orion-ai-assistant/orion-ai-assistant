@@ -1,9 +1,11 @@
 import asyncio
 from typing import Any
 from services.shared.environment import get_env
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
+import websockets
+import urllib.parse
 
 from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusResponse, JobStopResponse
 from orion.contracts.constants import ROOM_USER_PREFIX # Prefix'i direkt buradan alıyoruz
@@ -15,6 +17,9 @@ from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
 from orion.api.auth_routes import get_current_user
+from orion.api.security import JWT_SECRET_KEY, ALGORITHM
+import jwt
+from services.shared.environment import get_router_base_urls
 
 router = APIRouter()
 
@@ -218,6 +223,82 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
         }
     )
+
+@router.websocket("/api/v1/audio/transcriptions/stream")
+async def stt_proxy(
+    websocket: WebSocket,
+    language: str = "tr",
+    model: str = "local-stt",
+    provider: str = "local"
+):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.accept()
+    
+    redis = websocket.app.state.redis
+    settings = await get_runtime_settings(redis, user_id)
+    router_api_key = settings.router_api_key or "orion"
+
+    router_url = get_router_base_urls()[0]
+    ws_base = router_url.replace("http://", "ws://").replace("https://", "wss://")
+    
+    params = urllib.parse.urlencode({
+        "token": router_api_key,
+        "language": language,
+        "model": model,
+        "provider": provider
+    })
+    target_ws_url = f"{ws_base}/v1/audio/transcriptions/stream?{params}"
+
+    try:
+        async with websockets.connect(target_ws_url) as router_ws:
+            async def client_to_router():
+                try:
+                    while True:
+                        message = await websocket.receive_bytes()
+                        await router_ws.send(message)
+                except WebSocketDisconnect:
+                    pass
+                except websockets.ConnectionClosed:
+                    pass
+
+            async def router_to_client():
+                try:
+                    while True:
+                        message = await router_ws.recv()
+                        if isinstance(message, str):
+                            await websocket.send_text(message)
+                        else:
+                            await websocket.send_bytes(message)
+                except WebSocketDisconnect:
+                    pass
+                except websockets.ConnectionClosed:
+                    pass
+
+            import asyncio
+            await asyncio.gather(
+                client_to_router(),
+                router_to_client()
+            )
+    except Exception as e:
+        try:
+            await websocket.send_text('{"type": "error", "message": "Router bağlantısı kurulamadı."}')
+            await websocket.close(code=1011)
+        except:
+            pass
+
 
 
 def _mask_settings_for_client(settings: RuntimeSettings) -> RuntimeSettings:
