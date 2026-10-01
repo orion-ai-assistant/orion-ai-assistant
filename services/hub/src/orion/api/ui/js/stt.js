@@ -4,6 +4,11 @@
  */
 const STT = {
     isStreaming: false,
+    isStarting: false,
+    _session: 0,
+    _cancelStartup: null,
+    diagnostics: null,
+    _diagnosticTimer: null,
     ws: null,
     audioCtx: null,
     mediaStream: null,
@@ -19,38 +24,34 @@ const STT = {
         return `${protocol}//${host}/api/v1/audio/transcriptions/stream?token=${encodeURIComponent(authToken)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`;
     },
 
-    // Float32 Web Audio tamponunu 16kHz 16-bit Mono PCM'e dönüştürme
-    downsampleTo16kPCM(inputData, inputSampleRate, targetSampleRate = 16000) {
-        if (inputSampleRate === targetSampleRate) {
-            const output = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) {
-                const s = Math.max(-1, Math.min(1, inputData[i]));
-                output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-            return output;
+    markListening() {
+        if (this.isStreaming || !this.diagnostics?.packets || this.ws?.readyState !== WebSocket.OPEN) return;
+        this.isStreaming = true;
+        this.isStarting = false;
+        const micBtn = document.getElementById('mic-btn');
+        if (micBtn) {
+            micBtn.classList.add('recording');
+            const idleIcon = document.getElementById('mic-icon-idle');
+            const recIcon = document.getElementById('mic-icon-recording');
+            if (idleIcon) idleIcon.style.display = 'none';
+            if (recIcon) recIcon.style.display = 'block';
         }
+        const inputField = document.getElementById('message-input');
+        if (inputField && !inputField.value) inputField.placeholder = 'Dinleniyor, konuşabilirsiniz...';
+    },
 
-        const sampleRateRatio = inputSampleRate / targetSampleRate;
-        const newLength = Math.round(inputData.length / sampleRateRatio);
-        const result = new Int16Array(newLength);
-        let offsetResult = 0;
-        let offsetBuffer = 0;
-
-        while (offsetResult < result.length) {
-            const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
-            let accum = 0;
-            let count = 0;
-            for (let i = offsetBuffer; i < nextOffsetBuffer && i < inputData.length; i++) {
-                accum += inputData[i];
-                count++;
-            }
-            const sample = count > 0 ? accum / count : 0;
-            const s = Math.max(-1, Math.min(1, sample));
-            result[offsetResult] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            offsetResult++;
-            offsetBuffer = nextOffsetBuffer;
-        }
-        return result;
+    logDiagnostics() {
+        if (!this.diagnostics) return;
+        const track = this.mediaStream?.getAudioTracks()[0];
+        console.debug('[STT] Ses ölçümü', {
+            ...this.diagnostics,
+            events: { ...this.diagnostics.events },
+            contextState: this.audioCtx?.state,
+            contextSampleRate: this.audioCtx?.sampleRate,
+            trackState: track?.readyState,
+            trackMuted: track?.muted,
+            websocketState: this.ws?.readyState,
+        });
     },
 
     // Kullanıcı elle inputa yazdığında veya sildiğinde STT taban metnini güncelle
@@ -84,7 +85,7 @@ const STT = {
     },
 
     async toggle() {
-        if (this.isStreaming) {
+        if (this.isStreaming || this.isStarting) {
             this.stop();
         } else {
             await this.start();
@@ -92,155 +93,201 @@ const STT = {
     },
 
     async start() {
-        if (this.isStreaming) return;
-
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (this.isStreaming || this.isStarting) return;
+        if (!navigator.mediaDevices?.getUserMedia) {
             alert('Tarayıcınız mikrofon erişimini desteklemiyor veya izin verilmedi.');
             return;
         }
-
         this.attachInputListener();
-
-        // Hub Auth token
-        let authToken = '';
-        let sttModel = 'local-stt';
-        try {
-            const settings = await API.getSettings();
-            if (settings.error) throw new Error(settings.error);
-            if (settings.stt_enabled === false || settings.stt_enabled === 'false') {
-                alert('Canlı sesli yazma ayarlardan kapalı.');
-                return;
-            }
-            sttModel = settings.stt_model || 'local-stt';
-            if (sttModel !== 'local-stt') {
-                alert('Canlı sesli yazma yalnızca local-stt modelini destekliyor. Ayarlardan yerel modeli seçin.');
-                return;
-            }
-            authToken = localStorage.getItem("orion_token") || '';
-        } catch (e) {
-            alert('Sesli yazma ayarları alınamadı: ' + e.message);
-            return;
-        }
-
-        const micBtn = document.getElementById('mic-btn');
+        this.isStarting = true;
+        const session = ++this._session;
         const inputField = document.getElementById('message-input');
-        
-        if (inputField) {
-            // Kullanıcının daha önceden yazmış olduğu metni koru
-            this.committedText = inputField.value;
-            this.lastLiveText = '';
-        } else {
-            this.committedText = '';
-            this.lastLiveText = '';
-        }
 
         try {
-            // 1. Mikrofon izni ve akışı
-            this.mediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    sampleRate: 16000,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                }
-            });
+            // Flutter VoiceInput: ayarlar -> WebSocket -> mikrofon -> record_web.
+            const settings = await API.getSettings();
+            if (session !== this._session) return;
+            if (settings.error) throw new Error('Sesli yazma ayarları alınamadı: ' + settings.error);
+            if (settings.stt_enabled === false || settings.stt_enabled === 'false') {
+                throw new Error('Canlı sesli yazma ayarlardan kapalı.');
+            }
+            const sttModel = settings.stt_model || 'local-stt';
+            if (sttModel !== 'local-stt') {
+                throw new Error('Canlı sesli yazma yalnızca local-stt modelini destekliyor. Ayarlardan yerel modeli seçin.');
+            }
+            const authToken = localStorage.getItem('orion_token') || '';
+            if (!authToken.trim()) throw new Error('Sesli yazma için Hub oturumuna tekrar giriş yapın.');
 
-            // 2. Audio Context & Script Processor (4096 sample @ 16kHz = 256ms chunk)
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            this.audioCtx = new AudioContextClass({ sampleRate: 16000 });
-            const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-            this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
-
-            const inputSampleRate = this.audioCtx.sampleRate;
-
-            // 3. WebSocket Bağlantısı
-            const wsUrl = this.getRouterWsUrl(authToken, 'tr', sttModel);
-            this.ws = new WebSocket(wsUrl);
-
-            this.ws.onopen = () => {
+            const ws = new WebSocket(this.getRouterWsUrl(authToken, 'tr', sttModel));
+            this.ws = ws;
+            let resolveReady, rejectReady;
+            const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+            const cancelStartup = () => rejectReady(new Error('Sesli yazma başlangıcı iptal edildi.'));
+            this._cancelStartup = cancelStartup;
+            const timeout = setTimeout(() => rejectReady(new Error('Sesli yazma bağlantısı zaman aşımına uğradı.')), 15000);
+            ws.onopen = () => {
+                if (session !== this._session) return;
                 console.log('[STT] Router WebSocket bağlandı.');
-                this.isStreaming = true;
-                if (micBtn) {
-                    micBtn.classList.add('recording');
-                    const idleIcon = document.getElementById('mic-icon-idle');
-                    const recIcon = document.getElementById('mic-icon-recording');
-                    if (idleIcon) idleIcon.style.display = 'none';
-                    if (recIcon) recIcon.style.display = 'block';
-                }
-                if (inputField && !inputField.value) {
-                    inputField.placeholder = "Dinleniyor, konuşabilirsiniz...";
-                }
+                resolveReady();
             };
-
-            this.ws.onmessage = (event) => {
+            ws.onmessage = (event) => {
+                if (session !== this._session) return;
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.type === 'live') {
-                        // Kullanıcı konuşurken anlık akan metin kullanıcının mevcut metninin yanına eklenir
-                        const liveText = (data.text || '').trim();
-                        if (inputField && liveText) {
-                            this.lastLiveText = liveText;
-                            const base = this.committedText ? this.committedText.trim() : '';
-                            inputField.value = base ? `${base} ${liveText}` : liveText;
-                            inputField.scrollLeft = inputField.scrollWidth;
-                        }
-                    } else if (data.type === 'final') {
-                        // Tamamlanan cümle kullanıcının metnine kalıcı olarak eklenir
-                        const finalChunk = (data.text || '').trim();
-                        if (finalChunk && inputField) {
-                            const base = this.committedText ? this.committedText.trim() : '';
-                            this.committedText = base ? `${base} ${finalChunk}` : finalChunk;
-                            inputField.value = this.committedText;
-                            this.lastLiveText = '';
-                            inputField.scrollLeft = inputField.scrollWidth;
-                        }
-                    } else if (data.type === 'error') {
+                    if (this.diagnostics && Object.hasOwn(this.diagnostics.events, data.type)) {
+                        this.diagnostics.events[data.type]++;
+                    }
+                    if (data.type === 'error') {
                         console.warn('[STT Hata]:', data.message);
+                        if (inputField) inputField.value = this.committedText;
                         this.stop();
+                        return;
                     }
-                } catch (e) {
-                    console.warn('[STT] WS mesajı çözülemedi:', e);
+                    // Flutter'daki gibi boş live olayları da önceki geçici metni temizler.
+                    if (data.type === 'live' || data.type === 'final') {
+                        const text = (data.text || '').trim();
+                        if (data.type === 'final') {
+                            this.committedText = [this.committedText, text].filter(Boolean).join(' ');
+                            this.lastLiveText = '';
+                        } else {
+                            this.lastLiveText = text;
+                        }
+                        if (inputField) {
+                            inputField.value = [this.committedText, this.lastLiveText].filter(Boolean).join(' ');
+                            if (typeof UI !== 'undefined') UI.resizeMessageInput(true);
+                            inputField.scrollLeft = inputField.scrollWidth;
+                        }
+                    }
+                } catch (error) {
+                    console.warn('[STT] WS mesajı çözülemedi:', error);
                 }
             };
-
-            this.ws.onerror = (err) => {
-                console.error('[STT WS Hata]:', err);
-                alert('Orion Router STT WebSocket bağlantısı kurulamadı. Router servisinin çalıştığından emin olun.');
-                this.stop();
-            };
-
-            this.ws.onclose = () => {
-                this.stop();
-            };
-
-            // 4. Mikrofon baytlarını canlı olarak WebSocket'e bas
-            this.processor.onaudioprocess = (e) => {
-                if (!this.isStreaming || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-
-                const inputData = e.inputBuffer.getChannelData(0);
-                const pcm16 = this.downsampleTo16kPCM(inputData, inputSampleRate, 16000);
-                if (pcm16.length > 0) {
-                    try {
-                        this.ws.send(pcm16.buffer);
-                    } catch (sendErr) {
-                        console.debug('[STT] Ses gönderilemedi:', sendErr);
-                    }
+            ws.onerror = () => {
+                if (session !== this._session) return;
+                rejectReady(new Error('Sesli yazma bağlantısı kurulamadı.'));
+                if (this.isStreaming) {
+                    this.stop();
+                    alert('Sesli yazma bağlantısı kesildi. Tekrar deneyin.');
                 }
             };
+            ws.onclose = () => {
+                if (session !== this._session) return;
+                rejectReady(new Error('Sesli yazma bağlantısı sunucu tarafından kapatıldı.'));
+                this.stop();
+            };
+            try {
+                await ready;
+            } finally {
+                clearTimeout(timeout);
+                if (this._cancelStartup === cancelStartup) this._cancelStartup = null;
+            }
+            if (session !== this._session) return;
+            this.committedText = inputField?.value || '';
+            this.lastLiveText = '';
 
+            const mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    autoGainControl: false,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 16000,
+                    sampleSize: 16,
+                    channelCount: 1,
+                }
+            });
+            if (session !== this._session) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                return;
+            }
+            this.mediaStream = mediaStream;
+            const track = mediaStream.getAudioTracks()[0];
+            const applied = track.getSettings();
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioContextClass(
+                applied.sampleRate ? { sampleRate: applied.sampleRate } : undefined
+            );
+            this.audioCtx = audioCtx;
+            if (!audioCtx.audioWorklet || !window.AudioWorkletNode) {
+                throw new Error('Tarayıcınız AudioWorklet desteklemiyor. Güncel Chrome ve HTTPS veya localhost kullanın.');
+            }
+            this.diagnostics = {
+                microphone: track.label,
+                trackSampleRate: applied.sampleRate,
+                channelCount: applied.channelCount,
+                echoCancellation: applied.echoCancellation,
+                noiseSuppression: applied.noiseSuppression,
+                autoGainControl: applied.autoGainControl,
+                outputSampleRate: 16000,
+                inputPacketSamples: 2048,
+                packetIntervalMs: 2048 / audioCtx.sampleRate * 1000,
+                recorder: 'record_web 1.3.0',
+                packets: 0, sentBytes: 0, rms: 0, peak: 0, clippedSamples: 0,
+                events: { live: 0, final: 0, error: 0 },
+            };
+            // Explicitly resume for browser autoplay policies. PCM processing is upstream record_web.
+            const resumeResult = audioCtx.resume().then(() => null, error => error);
+            await audioCtx.audioWorklet.addModule('js/stt-worklet.js?v=2');
+            if (session !== this._session) return;
+            const resumeError = await resumeResult;
+            if (session !== this._session) return;
+            if (resumeError) throw resumeError;
+            const source = audioCtx.createMediaStreamSource(mediaStream);
+            this.processor = new window.AudioWorkletNode(audioCtx, 'recorder.worklet', {
+                parameterData: { numChannels: 1, sampleRate: 16000, streamBufferSize: 2048 },
+            });
+            this.processor.port.onmessage = ({ data: pcm16 }) => {
+                if (session !== this._session || !pcm16?.length) return;
+                if (ws.readyState !== WebSocket.OPEN) return;
+                let energy = 0, peak = 0, clipped = 0;
+                for (const value of pcm16) {
+                    const sample = value / 32768;
+                    energy += sample * sample;
+                    peak = Math.max(peak, Math.abs(sample));
+                    if (value === -32768 || value === 32767) clipped++;
+                }
+                this.diagnostics.packets++;
+                this.diagnostics.rms = Math.sqrt(energy / pcm16.length);
+                this.diagnostics.peak = Math.max(this.diagnostics.peak, peak);
+                this.diagnostics.clippedSamples += clipped;
+                try {
+                    // record_web sends the same Int16Array buffer directly, without repacketizing.
+                    ws.send(pcm16.buffer);
+                    this.diagnostics.sentBytes += pcm16.byteLength;
+                    this.markListening();
+                } catch (error) {
+                    console.warn('[STT] Ses gönderilemedi:', error);
+                    this.stop();
+                }
+            };
+            this.processor.onprocessorerror = () => {
+                if (session !== this._session) return;
+                this.stop();
+                alert('Mikrofondan ses işlenemedi. Tekrar deneyin.');
+            };
             source.connect(this.processor);
-            this.processor.connect(this.audioCtx.destination);
-
-        } catch (err) {
-            console.error('[STT] Başlatma hatası:', err);
-            alert(`Mikrofon erişim hatası: ${err.message || err}`);
+            this.processor.connect(audioCtx.destination);
+            this._diagnosticTimer = setInterval(() => this.logDiagnostics(), 1000);
+        } catch (error) {
+            if (session !== this._session) return;
+            console.error('[STT] Başlatma hatası:', error);
             this.stop();
+            alert(`Sesli yazma başlatılamadı: ${error.message || error}`);
         }
     },
 
     stop() {
+        if (this._diagnosticTimer !== null) {
+            clearInterval(this._diagnosticTimer);
+            this._diagnosticTimer = null;
+            this.logDiagnostics();
+        }
+        ++this._session;
+        this.isStarting = false;
         this.isStreaming = false;
+        if (this._cancelStartup) {
+            this._cancelStartup();
+            this._cancelStartup = null;
+        }
 
         const micBtn = document.getElementById('mic-btn');
         const inputField = document.getElementById('message-input');
@@ -257,9 +304,13 @@ const STT = {
             inputField.placeholder = "Mesajınızı yazın veya mikrofona konuşun...";
             this.committedText = inputField.value;
             this.lastLiveText = '';
+            if (typeof UI !== 'undefined') UI.resizeMessageInput();
         }
 
         if (this.processor) {
+            this.processor.onprocessorerror = null;
+            this.processor.port.onmessage = null;
+            this.processor.port.close();
             try { this.processor.disconnect(); } catch {}
             this.processor = null;
         }

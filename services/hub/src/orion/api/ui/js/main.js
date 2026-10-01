@@ -254,7 +254,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const text = UI.messageInput.value.trim();
         API.sendMessage(text);
         if (window.STT) {
-            if (window.STT.isStreaming) window.STT.stop();
+            if (window.STT.isStreaming || window.STT.isStarting) window.STT.stop();
             window.STT.reset();
         }
     });
@@ -271,28 +271,17 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (text || (UI.selectedImages && UI.selectedImages.length > 0)) {
                 API.sendMessage(text);
                 if (window.STT) {
-                    if (window.STT.isStreaming) window.STT.stop();
+                    if (window.STT.isStreaming || window.STT.isStarting) window.STT.stop();
                     window.STT.reset();
                 }
             }
         }
     });
 
-    messageInputEl.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = (this.scrollHeight) + 'px';
-        if (this.value === '') {
-            this.style.height = '38px';
-        }
-    });
-
-    const originalClearInput2 = UI.clearInput.bind(UI);
-    UI.clearInput = function() {
-        originalClearInput2();
-        if (messageInputEl) {
-            messageInputEl.style.height = '38px';
-        }
-    };
+    messageInputEl.addEventListener('input', () => UI.resizeMessageInput());
+    messageInputEl.addEventListener('focus', () => UI.resizeMessageInput());
+    window.addEventListener('resize', () => UI.resizeMessageInput());
+    UI.resizeMessageInput();
 
     const audioToggle = document.getElementById('audio-toggle');
     if (audioToggle) {

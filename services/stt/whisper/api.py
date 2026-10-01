@@ -399,7 +399,10 @@ async def websocket_endpoint(
             # RMS and Silence detection (Gürültü zemini takibi - streaming.py ile aynı)
             rms = np.sqrt(np.mean(chunk_data ** 2))
             if noise_ema is None:
-                noise_ema = rms
+                # İlk paket konuşma olabilir: onu gürültü tabanı yapıp
+                # eşiği konuşmanın 2.5 katına çıkarma. Mevcut 0.001
+                # alt eşiğinden başla; sessiz paketlerle tabanı öğren.
+                noise_ema = min(float(rms), 0.001 / 2.5)
                 
             current_threshold = max(0.001, noise_ema * 2.5)
             

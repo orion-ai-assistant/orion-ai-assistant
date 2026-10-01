@@ -487,8 +487,21 @@ const UI = {
             this.stopBtn.innerHTML = `<span class="stop-icon">■</span><span class="stop-text">${OrionI18n.t('stop')}</span>`;
         }
     },
+    resizeMessageInput(followTail = false) {
+        const input = this.messageInput;
+        if (!input) return;
+        const styles = getComputedStyle(input);
+        const minHeight = parseFloat(styles.minHeight) || 38;
+        const maxHeight = parseFloat(styles.maxHeight) || 200;
+        input.style.height = 'auto';
+        const contentHeight = input.scrollHeight;
+        input.style.height = `${Math.min(maxHeight, Math.max(minHeight, contentHeight))}px`;
+        input.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
+        if (followTail) input.scrollTop = input.scrollHeight;
+    },
     clearInput() {
         this.messageInput.value = '';
+        this.resizeMessageInput();
     },
     showToast(message = OrionI18n.t('saved')) {
         if (!this._toast) {
