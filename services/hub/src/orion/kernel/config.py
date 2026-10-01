@@ -27,6 +27,23 @@ def is_protected_global_key(key: str) -> bool:
     return key.lower() in _allowed_keys
 
 
+def mask_api_key(key: str | None) -> str:
+    """Masks a secret API key for safe UI and API responses (e.g. sk-or••••••••789)."""
+    if not key:
+        return ""
+    val = str(key).strip()
+    if not val or val == "sk-60f3eaf169d7c485-0icocf-0a3db541":
+        return ""
+    if len(val) <= 8:
+        return "••••••••"
+    return f"{val[:4]}••••••••{val[-4:]}"
+
+
+def is_masked_key(val: str) -> bool:
+    """Checks whether a string is a masked representation of a secret key."""
+    return bool(val and ("•" in val or "…" in val or "***" in val))
+
+
 def _clean_legacy_value(key: str, val: str) -> str:
     if key == "router_api_key" and val == "sk-60f3eaf169d7c485-0icocf-0a3db541":
         return ""
@@ -61,7 +78,10 @@ def _normalize_overrides(overrides: Mapping[str, str]) -> dict[str, str]:
     for key, value in overrides.items():
         normalized_key = key.lower()
         if normalized_key in _allowed_keys:
-            normalized[normalized_key] = _clean_legacy_value(normalized_key, str(value))
+            cleaned = _clean_legacy_value(normalized_key, str(value))
+            if normalized_key == "router_api_key" and is_masked_key(cleaned):
+                continue
+            normalized[normalized_key] = cleaned
     return normalized
 
 

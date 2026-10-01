@@ -3471,3 +3471,64 @@ details[open] > .think-summary::before {
 
 .setting-retry[hidden] { display: none; }
 
+.setting-secret-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 1 420px;
+    width: 100%;
+}
+
+.setting-secret-input-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex: 1;
+    min-width: 0;
+}
+
+.setting-secret-input-box .setting-input {
+    width: 100%;
+    padding-right: 36px;
+}
+
+.setting-secret-btn {
+    position: absolute;
+    right: 8px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    font-size: 14px;
+    opacity: 0.65;
+    line-height: 1;
+    transition: opacity 0.2s ease;
+}
+
+.setting-secret-btn:hover {
+    opacity: 1;
+}
+
+.setting-secret-clear-btn {
+    padding: 7px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: var(--radius-md, 6px);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+}
+
+.setting-secret-clear-btn:hover {
+    background: rgba(239, 68, 68, 0.25);
+    color: #fca5a5;
+}
+
+.setting-secret-clear-btn[hidden] {
+    display: none;
+}
+
+

@@ -7,11 +7,20 @@ const button = {setAttribute(key, value) { this[key] = value; }};
 let rendered = false;
 const input = {value: '0.6', dataset: {original: '0.9'}, classList: {contains: () => true}};
 const dashboard = {innerHTML: '', querySelector: () => rendered ? input : null};
-const context = vm.createContext({window: {}, document: {
-    activeElement: null,
-    getElementById: id => ({'settings-dashboard': dashboard, 'setting-input-temperature': input,
-        'settings-panel-advanced': panel, 'settings-advanced-toggle': button})[id] || null,
-}});
+const context = vm.createContext({
+    window: {},
+    navigator: { languages: ['tr-TR'] },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    document: {
+        activeElement: null,
+        addEventListener: () => {},
+        getElementById: id => ({'settings-dashboard': dashboard, 'setting-input-temperature': input,
+            'settings-panel-advanced': panel, 'settings-advanced-toggle': button})[id] || null,
+    }
+});
+for (const file of ['locales/en.js', 'locales/tr.js', 'i18n.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js', file), 'utf8'), context);
+}
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
 context.ui.renderSettings({router_model_group: 'test', chat_title_model: '', router_api_key: '', tts_model: 'tts', stt_model: 'stt', temperature: null, thinking_level: '', system_prompt: '<instructions>&test', token_delay_ms: 3000, tts_enabled: true});
 const html = dashboard.innerHTML;

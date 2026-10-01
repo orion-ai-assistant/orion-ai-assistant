@@ -9,7 +9,7 @@ from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusR
 from orion.contracts.constants import ROOM_USER_PREFIX # Prefix'i direkt buradan alıyoruz
 from pydantic import BaseModel, Field, ValidationError
 
-from orion.kernel.config import RuntimeSettings, settings as factory_settings, get_runtime_settings, update_runtime_settings, _allowed_keys, get_all_users_settings, delete_runtime_setting, is_protected_global_key
+from orion.kernel.config import RuntimeSettings, settings as factory_settings, get_runtime_settings, update_runtime_settings, _allowed_keys, get_all_users_settings, delete_runtime_setting, is_protected_global_key, mask_api_key
 from orion.kernel.router_models import validate_model_updates, ModelNotFoundError
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
@@ -220,6 +220,12 @@ async def chat_stream(
     )
 
 
+def _mask_settings_for_client(settings: RuntimeSettings) -> RuntimeSettings:
+    if settings.router_api_key:
+        return settings.model_copy(update={"router_api_key": mask_api_key(settings.router_api_key)})
+    return settings
+
+
 @router.post("/api/v1/admin/settings", response_model=RuntimeSettings)
 async def update_settings(payload: SettingsUpdateRequest, request: Request, current_user: str = Depends(get_current_user)) -> RuntimeSettings:
     if payload.user_id != current_user and current_user != "global":
@@ -232,14 +238,15 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request, curr
         _check_admin_key(request)
 
     redis: Redis = request.app.state.redis
-    return await _save_settings_update(redis, payload)
+    settings = await _save_settings_update(redis, payload)
+    return _mask_settings_for_client(settings)
 
 @router.get("/api/v1/admin/settings", response_model=RuntimeSettings)
 async def get_settings(request: Request, current_user: str = Depends(get_current_user)) -> RuntimeSettings:
             
     redis: Redis = request.app.state.redis
     settings = await get_runtime_settings(redis, current_user)
-    return settings
+    return _mask_settings_for_client(settings)
 
 def _check_admin_key(request: Request):
     admin_key = get_env("ADMIN_API_KEY")
@@ -251,14 +258,19 @@ def _check_admin_key(request: Request):
 @router.get("/api/v1/admin/users/settings")
 async def get_all_settings(request: Request) -> dict[str, dict[str, str]]:
     _check_admin_key(request)
-    return await get_all_users_settings()
+    all_users = await get_all_users_settings()
+    for user_dict in all_users.values():
+        if "router_api_key" in user_dict:
+            user_dict["router_api_key"] = mask_api_key(user_dict["router_api_key"])
+    return all_users
 
 
 @router.post("/api/v1/admin/users/settings", response_model=RuntimeSettings)
 async def admin_update_settings(payload: SettingsUpdateRequest, request: Request) -> RuntimeSettings:
     _check_admin_key(request)
     await _validate_settings_update(payload.values)
-    return await _save_settings_update(request.app.state.redis, payload)
+    settings = await _save_settings_update(request.app.state.redis, payload)
+    return _mask_settings_for_client(settings)
 
 @router.delete("/api/v1/admin/users/{user_id}/settings/{key}")
 async def delete_user_setting_endpoint(user_id: str, key: str, request: Request):
@@ -313,9 +325,10 @@ async def reset_global_setting(key: str, request: Request) -> RuntimeSettings:
     if normalized_key not in defaults:
         raise HTTPException(status_code=400, detail=f"Geçersiz ayar anahtarı: {key}")
     redis: Redis = request.app.state.redis
-    return await update_runtime_settings(
+    settings = await update_runtime_settings(
         redis, {normalized_key: serialize_setting(defaults[normalized_key])}, SETTINGS_DEFAULT_USER
     )
+    return _mask_settings_for_client(settings)
 
 
 @router.get("/api/v1/models")

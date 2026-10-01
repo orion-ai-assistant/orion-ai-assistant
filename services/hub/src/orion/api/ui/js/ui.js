@@ -601,16 +601,32 @@ const UI = {
             try {
                 const data = await API.saveSettings(key, val);
                 if (data.error) throw new Error(typeof data.error === 'string' ? data.error : OrionI18n.t('invalidValue'));
-                input.dataset.original = val;
-                if (this.currentSettings) this.currentSettings[key] = data[key] ?? val;
-                if (key === 'tts_voice') {
-                    const model = document.getElementById('setting-input-tts_model')?.value || this.currentSettings?.tts_model;
-                    if (model) this.rememberVoice(model, val);
+                if (key === 'router_api_key') {
+                    const masked = data[key] || '';
+                    input.value = '';
+                    input.dataset.original = '';
+                    input.type = 'password';
+                    const icon = document.getElementById(`setting-secret-icon-${key}`);
+                    if (icon) icon.textContent = '👁️';
+                    input.placeholder = masked ? OrionI18n.t('configuredRouterApiKey', masked) : OrionI18n.t('placeholderRouterApiKey');
+                    const clearBtn = document.getElementById(`setting-secret-clear-${key}`);
+                    if (clearBtn) clearBtn.hidden = !Boolean(masked);
+                    if (this.currentSettings) this.currentSettings[key] = masked;
+                    input.classList.remove('dirty');
+                    this.settingSaveStatus(key, '');
+                    this.showToast(OrionI18n.t('saved'));
+                } else {
+                    input.dataset.original = val;
+                    if (this.currentSettings) this.currentSettings[key] = data[key] ?? val;
+                    if (key === 'tts_voice') {
+                        const model = document.getElementById('setting-input-tts_model')?.value || this.currentSettings?.tts_model;
+                        if (model) this.rememberVoice(model, val);
+                    }
+                    const changed = input.value.trim() !== val;
+                    input.classList.toggle('dirty', changed);
+                    this.settingSaveStatus(key, '');
+                    if (!changed) this.showToast(OrionI18n.t('saved'));
                 }
-                const changed = input.value.trim() !== val;
-                input.classList.toggle('dirty', changed);
-                this.settingSaveStatus(key, '');
-                if (!changed) this.showToast(OrionI18n.t('saved'));
                 if (key === 'tts_enabled') {
                     const enabled = val.toLowerCase() === 'true';
                     const toggle = document.getElementById('audio-toggle');
@@ -632,6 +648,40 @@ const UI = {
         if (!panel || !button) return;
         panel.hidden = !panel.hidden;
         button.setAttribute('aria-expanded', String(!panel.hidden));
+    },
+    toggleSecretVisibility(key) {
+        const input = document.getElementById(`setting-input-${key}`);
+        const icon = document.getElementById(`setting-secret-icon-${key}`);
+        if (!input) return;
+        if (input.type === 'password') {
+            input.type = 'text';
+            if (icon) icon.textContent = '🔒';
+        } else {
+            input.type = 'password';
+            if (icon) icon.textContent = '👁️';
+        }
+    },
+    async clearRouterApiKey() {
+        const input = document.getElementById('setting-input-router_api_key');
+        if (input) {
+            input.value = '';
+            input.dataset.original = '';
+            input.classList.remove('dirty');
+        }
+        this.settingSaveStatus('router_api_key', OrionI18n.t('saving'));
+        try {
+            await API.saveSettings('router_api_key', '');
+            if (this.currentSettings) this.currentSettings.router_api_key = '';
+            if (input) {
+                input.placeholder = OrionI18n.t('placeholderRouterApiKey');
+            }
+            const clearBtn = document.getElementById('setting-secret-clear-router_api_key');
+            if (clearBtn) clearBtn.hidden = true;
+            this.settingSaveStatus('router_api_key', '');
+            this.showToast(OrionI18n.t('saved'));
+        } catch (err) {
+            this.settingSaveStatus('router_api_key', OrionI18n.t('saveFailed', err.message), true);
+        }
     },
     renderSettings(settings) {
         this.currentSettings = settings;
@@ -657,7 +707,14 @@ const UI = {
                 const el = document.getElementById(`setting-input-${key}`);
                 if (el && document.activeElement !== el && !el.classList?.contains('dirty')) {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
-                    if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled' || key === 'google_ai_direct_stream') {
+                    if (key === 'router_api_key') {
+                        const hasKey = Boolean(serverVal && serverVal.trim());
+                        el.value = '';
+                        el.dataset.original = '';
+                        el.placeholder = hasKey ? OrionI18n.t('configuredRouterApiKey', serverVal) : OrionI18n.t('placeholderRouterApiKey');
+                        const clearBtn = document.getElementById(`setting-secret-clear-${key}`);
+                        if (clearBtn) clearBtn.hidden = !hasKey;
+                    } else if (key === 'tts_enabled' || key === 'ai_chat_titles_enabled' || key === 'stt_enabled' || key === 'google_ai_direct_stream') {
                         el.value = String(settings[key] ?? '').toLowerCase() === 'true' ? 'true' : 'false';
                         el.dataset.original = el.value;
                     } else {
@@ -750,6 +807,21 @@ const UI = {
                         `;
                     } else if (key === 'system_prompt') {
                         inputHtml = `<textarea id="setting-input-${key}" data-original="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-textarea" rows="4" placeholder="${placeholder}">${escapeSetting(val)}</textarea>`;
+                    } else if (key === 'router_api_key') {
+                        const hasKey = Boolean(val && val.trim());
+                        const maskedPlaceholder = hasKey ? OrionI18n.t('configuredRouterApiKey', val) : placeholder;
+                        inputHtml = `
+                            <div class="setting-secret-wrapper">
+                                <div class="setting-secret-input-box">
+                                    <input type="password" id="setting-input-${key}" data-original="" value="" autocomplete="new-password" oninput="UI.handleSettingChange('${key}')" class="setting-input setting-secret-input" placeholder="${escapeSetting(maskedPlaceholder)}">
+                                    <button type="button" class="setting-secret-btn" onclick="UI.toggleSecretVisibility('${key}')" title="${OrionI18n.t('toggleApiKeyVisibility')}" aria-label="${OrionI18n.t('toggleApiKeyVisibility')}">
+                                        <span id="setting-secret-icon-${key}">👁️</span>
+                                    </button>
+                                </div>
+                                <button type="button" id="setting-secret-clear-${key}" class="setting-secret-clear-btn" onclick="UI.clearRouterApiKey()" title="${OrionI18n.t('clearApiKey')}" ${hasKey ? '' : 'hidden'}>
+                                    ${OrionI18n.t('clearApiKey')}
+                                </button>
+                            </div>`;
                     } else {
                         inputHtml = `<input type="text" id="setting-input-${key}" data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" oninput="UI.handleSettingChange('${key}')" class="setting-input" placeholder="${placeholder}">`;
                     }
@@ -844,7 +916,8 @@ const UI = {
             ${OrionI18n.t('advanced')} <svg class="settings-advanced-chevron" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 7.5 5 5 5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <section id="settings-panel-advanced" data-settings-panel="advanced" aria-labelledby="settings-advanced-toggle" hidden>${sections.advanced}</section>`;
-        document.getElementById('ui-language').value = OrionI18n.language;
+        const uiLangEl = document.getElementById('ui-language');
+        if (uiLangEl) uiLangEl.value = OrionI18n.language;
     },
     async loadModelChoices(settings, silent = false) {
         window.ToolsUI?.renderSettings();
@@ -1045,11 +1118,13 @@ const UI = {
 };
 window.saveSetting = (key) => UI.saveSetting(key);
 // Force all links in chat / markdown to open in a new tab without leaving the chat interface
-document.addEventListener('click', (e) => {
-    const link = e.target.closest('#chat-area a, .markdown-content a, .message a');
-    if (link && link.href && !link.href.startsWith('javascript:')) {
-        e.preventDefault();
-        e.stopPropagation();
-        window.open(link.href, '_blank', 'noopener,noreferrer');
-    }
-}, true);
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('click', (e) => {
+        const link = e.target.closest('#chat-area a, .markdown-content a, .message a');
+        if (link && link.href && !link.href.startsWith('javascript:')) {
+            e.preventDefault();
+            e.stopPropagation();
+            window.open(link.href, '_blank', 'noopener,noreferrer');
+        }
+    }, true);
+}

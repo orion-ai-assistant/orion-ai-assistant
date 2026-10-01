@@ -82,6 +82,8 @@ window.orionUiLocales.en = {
     authDesc: 'Sign in to your account or create a new account to continue.',
     username: 'Username', password: 'Password', login: 'Sign In', register: 'Register',
     placeholderRouterApiKey: 'Orion Router API Key', placeholderSystemPrompt: 'System prompt…',
+    configuredRouterApiKey: 'Configured: {0} (Enter new key to change)',
+    clearApiKey: 'Remove', toggleApiKeyVisibility: 'Toggle key visibility',
     placeholderTtsVoice: 'Voice name…', placeholderTtsModel: 'Model name…',
     placeholderThinkingLevel: 'Thinking level…', placeholderRouterModelGroup: 'Model group…',
     interfaceLanguage: 'Interface Language', interfaceLanguageHint: 'Select the application language.'

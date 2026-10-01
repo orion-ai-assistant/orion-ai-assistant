@@ -82,6 +82,8 @@ window.orionUiLocales.tr = {
     authDesc: 'Devam etmek için hesabınıza giriş yapın veya yeni bir hesap oluşturun.',
     username: 'Kullanıcı Adı', password: 'Şifre', login: 'Giriş Yap', register: 'Kayıt Ol',
     placeholderRouterApiKey: 'Orion Router API Key', placeholderSystemPrompt: 'Sistem promptu...',
+    configuredRouterApiKey: 'Tanımlı: {0} (Değiştirmek için yeni anahtar girin)',
+    clearApiKey: 'Kaldır', toggleApiKeyVisibility: 'Anahtarı göster/gizle',
     placeholderTtsVoice: 'Ses adı...', placeholderTtsModel: 'Model adı...',
     placeholderThinkingLevel: 'Düşünce seviyesi...', placeholderRouterModelGroup: 'Model grubu...',
     interfaceLanguage: 'Arayüz Dili', interfaceLanguageHint: 'Uygulama dilini seçin.'
