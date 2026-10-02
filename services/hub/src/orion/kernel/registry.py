@@ -286,15 +286,7 @@ async def create_user(username: str, password_hash: str) -> bool:
 
 
 async def set_user_approval(username: str, approved: bool) -> bool:
-    conn = await _connect()
-    if conn is None:
-        raise RuntimeError("Database unavailable; approval was not saved")
-    try:
-        await _ensure_tables(conn)
-        result = await conn.execute("update orion_users set is_active=$2 where id=$1", username, approved)
-        return result == "UPDATE 1"
-    finally:
-        await conn.close()
+    return await set_user_active(username, approved)
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +488,18 @@ async def replace_initial_chat_title(chat_id: str, expected: str, title: str) ->
             "update orion_chats set title = $3 where id = $1 and title = $2",
             chat_id, expected, title,
         )
+        return result == "UPDATE 1"
+    finally:
+        await conn.close()
+
+
+async def set_user_active(username: str, active: bool) -> bool:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("User database unavailable")
+    try:
+        await _ensure_tables(conn)
+        result = await conn.execute("update orion_users set is_active = $2 where id = $1", username, active)
         return result == "UPDATE 1"
     finally:
         await conn.close()

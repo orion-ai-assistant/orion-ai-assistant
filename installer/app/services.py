@@ -1,4 +1,5 @@
 import os
+import secrets
 import re
 import subprocess
 import logging
@@ -18,6 +19,14 @@ GPU_VENDORS = {"nvidia", "amd"}
 # ==========================================
 # YARDIMCI FONKSİYONLAR
 # ==========================================
+def _ensure_hub_jwt_secret(g_vars: dict, added_global_vars: dict) -> None:
+    current = (g_vars.get("JWT_SECRET_KEY") or "").strip()
+    if not current or current == "super-secret-default-key-for-dev":
+        generated = secrets.token_urlsafe(48)
+        g_vars["JWT_SECRET_KEY"] = generated
+        added_global_vars["JWT_SECRET_KEY"] = generated
+
+
 def _get_context(service_id: str) -> tuple[dict | None, str, dict]:
     manifest, m_path = config.find_manifest(service_id)
     if not manifest: 
@@ -425,6 +434,9 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         new_api_key = "orionadmin"
         g_vars["ADMIN_API_KEY"] = new_api_key
         added_global_vars["ADMIN_API_KEY"] = new_api_key
+
+    if service_id == "orion-hub":
+        _ensure_hub_jwt_secret(g_vars, added_global_vars)
 
     # 2. Router-specific keys (only generated if installing orion-router)
     if service_id == "orion-router":

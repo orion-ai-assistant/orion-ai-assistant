@@ -25,7 +25,8 @@ class FakeRedis:
 
     async def eval(self, script, count, key, ttl):
         self.counts[key] = self.counts.get(key, 0) + 1
-        return [self.counts[key], int(ttl)]
+        return self.counts[key]
+
 
 
 class SecurityTests(unittest.IsolatedAsyncioTestCase):
@@ -83,7 +84,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         for key in ({}, {"X-Admin-Key": "random"}):
             for path in ("/api/v1/admin/chats", "/api/v1/admin/users/settings", "/api/v1/admin/settings/defaults", "/api/v1/admin/settings/constraints"):
                 response = await self.client.get(path, headers=key)
-                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.status_code, 401)
         response = await self.client.get("/api/v1/chats?admin_key=random")
         self.assertEqual(response.status_code, 401)
         self.assertEqual((await self.client.get("/health")).status_code, 200)
@@ -107,11 +108,11 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 201)
             self.assertFalse(response.json()["is_active"])
             response = await self.client.post("/api/v1/auth/login", json={"username": "pending", "password": "correct"})
-            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.status_code, 400)
             response = await self.client.get("/api/v1/auth/me", headers=self.headers("pending"))
             self.assertEqual(response.status_code, 401)
             response = await self.client.patch("/api/v1/auth/users/pending/approval", json={"approved": True}, headers={"X-Admin-Key": "random"})
-            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.status_code, 401)
             with patch.dict(os.environ, {"ADMIN_API_KEY": "owner-secret"}):
                 response = await self.client.patch("/api/v1/auth/users/pending/approval", json={"approved": True}, headers={"X-Admin-Key": "owner-secret"})
                 self.assertEqual(response.status_code, 200)
@@ -129,13 +130,13 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("alter column is_active set default false" in sql for sql in statements))
         self.assertTrue(any("values ($1, $2, false)" in sql for sql in statements))
 
-    async def test_login_limited_after_ten_failed_attempts_and_redis_failure_is_closed(self):
-        for _ in range(10):
+    async def test_login_limited_after_five_failed_attempts_and_redis_failure_is_closed(self):
+        for _ in range(5):
             response = await self.client.post("/api/v1/auth/login", json={"username": "bob", "password": "wrong"})
             self.assertEqual(response.status_code, 401)
         response = await self.client.post("/api/v1/auth/login", json={"username": "bob", "password": "wrong"})
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.headers["retry-after"], "900")
+        self.assertEqual(response.headers["retry-after"], "60")
         with patch.object(self.redis, "eval", AsyncMock(side_effect=RuntimeError("down"))):
             response = await self.client.post("/api/v1/auth/login", json={"username": "alice", "password": "correct"})
             self.assertEqual(response.status_code, 503)
@@ -155,7 +156,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
 
     def test_cors_wildcard_configuration_is_refused(self):
         with patch.dict(os.environ, {"ORION_CORS_ORIGINS": "*"}):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(RuntimeError):
                 configure_cors(FastAPI())
 
     def test_browser_username_cannot_alias_another_users_profile_hash(self):

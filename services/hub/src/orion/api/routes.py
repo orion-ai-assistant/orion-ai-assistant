@@ -16,8 +16,9 @@ from orion.kernel.router_models import validate_model_updates, ModelNotFoundErro
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
-from orion.api.auth_routes import get_current_user, authenticate_token
-from orion.api.security import require_admin
+from orion.api.auth_routes import get_current_user, require_active_user
+from orion.api.security import JWT_SECRET_KEY, ALGORITHM, valid_admin_key
+import jwt
 from services.shared.environment import get_router_base_urls
 
 router = APIRouter()
@@ -239,8 +240,13 @@ async def stt_proxy(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     try:
-        user_id = await authenticate_token(token)
-    except HTTPException:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        await require_active_user(user_id)
+        if not user_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except Exception:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -329,7 +335,8 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
     return _mask_settings_for_client(settings)
 
 def _check_admin_key(request: Request):
-    require_admin(request)
+    if not valid_admin_key(request.headers.get("X-Admin-Key")):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 @router.get("/api/v1/admin/users/settings")
 async def get_all_settings(request: Request) -> dict[str, dict[str, str]]:
