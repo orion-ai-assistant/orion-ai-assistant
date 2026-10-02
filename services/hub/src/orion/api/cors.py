@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 def configure_cors(app: FastAPI) -> None:
     """Allow local Flutter web clients and explicitly configured deployments."""
     origins = [origin.strip() for origin in os.getenv("ORION_CORS_ORIGINS", "").split(",") if origin.strip()]
+    if "*" in origins:
+        raise RuntimeError("ORION_CORS_ORIGINS must list explicit origins, not '*'")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

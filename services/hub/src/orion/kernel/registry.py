@@ -270,8 +270,8 @@ async def create_user(username: str, password_hash: str) -> bool:
         await _ensure_tables(conn)
         await conn.execute(
             """
-            insert into orion_users (id, password_hash)
-            values ($1, $2)
+            insert into orion_users (id, password_hash, is_active)
+            values ($1, $2, false)
             on conflict (id) do nothing
             """,
             username, password_hash,
@@ -483,6 +483,18 @@ async def replace_initial_chat_title(chat_id: str, expected: str, title: str) ->
             "update orion_chats set title = $3 where id = $1 and title = $2",
             chat_id, expected, title,
         )
+        return result == "UPDATE 1"
+    finally:
+        await conn.close()
+
+
+async def set_user_active(username: str, active: bool) -> bool:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("User database unavailable")
+    try:
+        await _ensure_tables(conn)
+        result = await conn.execute("update orion_users set is_active = $2 where id = $1", username, active)
         return result == "UPDATE 1"
     finally:
         await conn.close()
