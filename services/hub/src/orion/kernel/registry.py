@@ -103,10 +103,11 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
                 id text primary key,
                 password_hash text not null,
                 created_at timestamptz default now(),
-                is_active boolean default true
+                is_active boolean default false
             );
             """
         )
+        await conn.execute("alter table orion_users alter column is_active set default false")
         # --- Chats (metadata) ---
         await conn.execute(
             """
@@ -270,8 +271,8 @@ async def create_user(username: str, password_hash: str) -> bool:
         await _ensure_tables(conn)
         await conn.execute(
             """
-            insert into orion_users (id, password_hash)
-            values ($1, $2)
+            insert into orion_users (id, password_hash, is_active)
+            values ($1, $2, false)
             on conflict (id) do nothing
             """,
             username, password_hash,
@@ -280,6 +281,18 @@ async def create_user(username: str, password_hash: str) -> bool:
     except Exception:
         logger.exception("Failed to create user")
         return False
+    finally:
+        await conn.close()
+
+
+async def set_user_approval(username: str, approved: bool) -> bool:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Database unavailable; approval was not saved")
+    try:
+        await _ensure_tables(conn)
+        result = await conn.execute("update orion_users set is_active=$2 where id=$1", username, approved)
+        return result == "UPDATE 1"
     finally:
         await conn.close()
 

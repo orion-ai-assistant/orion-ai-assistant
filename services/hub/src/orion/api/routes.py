@@ -16,9 +16,8 @@ from orion.kernel.router_models import validate_model_updates, ModelNotFoundErro
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
-from orion.api.auth_routes import get_current_user
-from orion.api.security import JWT_SECRET_KEY, ALGORITHM
-import jwt
+from orion.api.auth_routes import get_current_user, authenticate_token
+from orion.api.security import require_admin
 from services.shared.environment import get_router_base_urls
 
 router = APIRouter()
@@ -187,6 +186,10 @@ async def chat_stream(
 ):
     redis: Redis = request.app.state.redis
     user_id = current_user
+    if request.query_params.get("user_id") not in (None, user_id):
+        raise HTTPException(403, "Access denied")
+    if request.query_params.get("chat_id"):
+        await ensure_chat_access(redis, user_id, request.query_params["chat_id"])
     channel = get_key(ROOM_USER_PREFIX, user_id) # Artık genel helper kullanıyoruz
     pubsub = redis.pubsub()
     await pubsub.subscribe(channel)
@@ -236,12 +239,8 @@ async def stt_proxy(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if not user_id:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-    except Exception:
+        user_id = await authenticate_token(token)
+    except HTTPException:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -330,11 +329,7 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
     return _mask_settings_for_client(settings)
 
 def _check_admin_key(request: Request):
-    admin_key = get_env("ADMIN_API_KEY")
-    if admin_key:
-        provided = request.headers.get("X-Admin-Key")
-        if provided != admin_key:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    require_admin(request)
 
 @router.get("/api/v1/admin/users/settings")
 async def get_all_settings(request: Request) -> dict[str, dict[str, str]]:
@@ -364,7 +359,7 @@ async def delete_user_setting_endpoint(user_id: str, key: str, request: Request)
     return {"status": "ok"}
 
 @router.get("/api/v1/admin/settings/schema")
-async def get_settings_schema() -> list[str]:
+async def get_settings_schema(current_user: str = Depends(get_current_user)) -> list[str]:
     return sorted(_allowed_keys)
 
 

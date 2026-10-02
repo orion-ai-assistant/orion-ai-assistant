@@ -84,8 +84,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     if payload.chat_id:
         access = await check_chat_access(redis, payload.user_id, chat_id)
         if not access.allowed:
-            await redis.publish(channel, StreamEvent.error(chat_id, chat_access_message(access.state)).model_dump_json())
-            return JobCreateResponse(chat_id=chat_id, status="failed", created_at=now, turn_id=None, generation_id=None)
+            raise HTTPException(404 if access.state == "not_found" else 403, chat_access_message(access.state))
 
     title = initial_chat_title(payload.input.text) if not payload.chat_id else access.meta.get("name", "Yeni sohbet")
 
@@ -173,12 +172,13 @@ async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None
     settings = await get_runtime_settings(redis, user_id)
     await ensure_chat_access(redis, user_id, chat_id)
     now = utc_now()
-    resolved_turn_id = turn_id
-    if not resolved_turn_id:
-        resolved_turn_id = await redis.get(get_key(ACTIVE_TURN_KEY_PREFIX, chat_id))
-    if not resolved_turn_id:
+    active_turn_id = await redis.get(get_key(ACTIVE_TURN_KEY_PREFIX, chat_id))
+    if not active_turn_id:
         state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
-        resolved_turn_id = state.get("active_turn_id")
+        active_turn_id = state.get("active_turn_id")
+    if turn_id and turn_id != active_turn_id:
+        raise HTTPException(404, "Turn not found in this chat")
+    resolved_turn_id = turn_id or active_turn_id
 
     if not resolved_turn_id:
         return JobStopResponse(chat_id=chat_id, turn_id=None, status="stopping", updated_at=now)

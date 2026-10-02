@@ -269,8 +269,6 @@ class BrowserManager:
             raise BrowserUnavailable('An authenticated Orion user is required')
         if isinstance(user_id, Path):
             self.directory = user_id
-        elif len(str(user_id)) == 64 and all(c in '0123456789abcdef' for c in str(user_id)):
-            self.directory = browser_root() / str(user_id)
         else:
             self.directory = browser_root() / hashlib.sha256(str(user_id).encode()).hexdigest()
         self.config = self.directory / 'config.json'

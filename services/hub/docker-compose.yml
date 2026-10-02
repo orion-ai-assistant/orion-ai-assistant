@@ -41,6 +41,8 @@ services:
       context: ../../
       dockerfile: services/hub/api.Dockerfile
     container_name: ${HUB_HOST}
+    environment:
+      ORION_HUB_MODE: remote
     restart: unless-stopped
     ports:
       - "${HUB_PORT}:${HUB_CONTAINER_PORT}"
