@@ -1,1 +1,2 @@
 - bütün diller için doğru jsonları eklicez ama bunu sonra yapıcaz.
+- [ ] [Flutter davet bağlantısı: uygulamada aç, yoksa web'e geç](files/flutter-davet-yonlendirme.md). Hub QR/davet API'si hazır; Flutter bağlantı entegrasyonu ve alan adı ilişkisi henüz yapılmadı. Ayrı sonraki iş; Tur 1 tamamlanma koşulu değil.

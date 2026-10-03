@@ -88,6 +88,9 @@ already open streams are not terminated yet (planned session-revocation work).
 
 ## Flutter contract (client work deferred)
 
+Tracked follow-up: [Flutter invitation link handling](../../../files/flutter-davet-yonlendirme.md).
+This is deferred work; the current QR opens the web dashboard.
+
 - Open the invite URL using an app/universal-link handler later. Without that
   Flutter integration, QR/link opens the web dashboard. Hub cannot determine
   whether the Flutter app is installed; no fabricated custom URI is launched.
