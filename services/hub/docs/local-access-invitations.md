@@ -20,6 +20,12 @@ before launch; custom secrets and the administrator password are preserved.
 Generating a new JWT key invalidates old user tokens; users sign in again.
 PostgreSQL and an already running Redis are reused.
 
+The private listener does not host dashboard files. Home/people chat links
+point to the public port; `/dashboard` and `/dashboard/*` on the private port
+redirect there, preserving path and query. The public listener's `/` redirects
+to `/dashboard/`. Private management pages serve their countdown script from
+`/owner-assets/auth_wait.js`, keeping owner login entirely on the private port.
+
 Docker publishes private `api` on **127.0.0.1:HUB_PORT only**, and `public_api`
 on `ORION_PUBLIC_PORT` (default 8910). The private container flag allows Docker's
 private NAT peer only in a container, with a loopback Host and no forwarded
@@ -28,7 +34,7 @@ Docker network; do not expose that private service directly. Public replicas
 and the load balancer use `public_app`, not the owner app.
 
 Point any tunnel/reverse proxy at **8910**, never the private listener at 8909.
-The public app uses a path allowlist and blocks the home, owner assets, admin,
+The public app uses a path allowlist and blocks the owner home, owner assets, admin,
 owner APIs, old approval APIs, browser controls, docs and administrator-key
 credentials even if the tunnel peer is localhost. Ordinary authenticated user
 settings endpoints remain available (`/api/v1/admin/settings` and schema are
@@ -61,6 +67,19 @@ the link constitutes the owner's approval for one account. The recipient
 only sees account creation; no owner password or admin page is involved.
 Account insert with `is_active=true` and invitation consumption occur in one
 transaction under a row lock. A conflict in username rolls back consumption.
+
+## Mobile web dashboard
+
+At widths up to 760px, navigation becomes a menu drawer with chat/settings
+access, backdrop, close button, Escape and focus containment. Selecting a chat
+or tab closes it; switching to desktop restores the normal sidebar. The chat
+composer uses the visible viewport height (VisualViewport when available),
+so the browser bar and software keyboard do not push its controls below the
+screen. Safe-area padding, 44px touch controls, scrollable messages/settings
+and 16px form inputs improve small-screen use. Existing desktop styles remain
+in place. Browser/mobile hardware verification is still required: no browser
+automation surface is connected here. Focused Python checks: 56 passed;
+countdown/registration/mobile behavior checks: 6 passed.
 Revoked, expired and used invitations cannot create users. Existing pending
 accounts can still be approved from the People list; active accounts can have
 access disabled. New open registrations are rejected before account creation.
@@ -114,7 +133,8 @@ Python suite: 257 passed, 13 skipped, the same 9 existing failures, 53 subtests.
 Compose YAML and private/public listener command checks passed. Native activation
 was verified after restart: private home/people/admin return 200, owner login
 with the existing configured key and logout work, unauthenticated people API
-returns 401, and public home/people/admin/owner API return 403. Public dashboard
+returns 401, and public people/admin/owner API return 403. Public root now redirects
+to the dashboard, and the private dashboard redirects to the public port. Public dashboard
 and both health endpoints return 200; registration without an invite is rejected.
 Six wrong login attempts return 429 with `Retry-After: 30`. Native startup reuses
 the existing databases and persists its new signing key; previous JWTs require

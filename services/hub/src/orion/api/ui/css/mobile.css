@@ -1,0 +1,88 @@
+/* Keep the composer inside the visible viewport, including an open keyboard. */
+.mobile-header, .mobile-sidebar-close, .sidebar-backdrop { display: none; }
+.main-content, .view, .chat-area { min-width: 0; min-height: 0; }
+
+@media (max-width: 760px) {
+    body { width: 100%; height: 100dvh; }
+    .app-layout {
+        position: fixed;
+        top: var(--mobile-top, 0px);
+        left: 0;
+        width: 100%;
+        height: var(--mobile-height, 100dvh);
+        padding-top: env(safe-area-inset-top, 0px);
+    }
+    .main-content { width: 100%; height: 100%; }
+    .main-content > .view { height: auto; flex: 1; }
+    .mobile-header {
+        display: flex; align-items: center; gap: 12px;
+        flex-shrink: 0; padding: 6px 12px;
+        border-bottom: 1px solid var(--border-subtle);
+        background: var(--bg-sidebar);
+    }
+    .mobile-header strong { font-size: 1rem; }
+    .mobile-menu-button, .mobile-sidebar-close {
+        display: grid; place-items: center;
+        min-width: 44px; min-height: 44px;
+        border: 1px solid var(--border-subtle); border-radius: 10px;
+        background: var(--bg-card); color: var(--text-primary);
+        cursor: pointer; font-size: 22px;
+    }
+    .sidebar {
+        position: absolute; top: 0; left: 0;
+        width: min(310px, calc(100% - 44px)); height: 100%;
+        z-index: 40; visibility: hidden; transform: translateX(-100%);
+        padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    }
+    .sidebar-header { flex-direction: row; align-items: center; justify-content: space-between; }
+    .brand-info { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .sidebar-bottom { flex-shrink: 0; }
+    .sidebar-middle { overflow-y: auto; }
+    .sidebar-user .btn-logout, .sidebar-nav .tab-btn { min-height: 44px; }
+    body.sidebar-open .sidebar { visibility: visible; transform: none; }
+    body.sidebar-open .sidebar-backdrop {
+        display: block; position: absolute; inset: 0;
+        z-index: 30; border: 0; background: #0009; cursor: pointer;
+    }
+    .chat-area { padding: 16px 12px 20px; gap: 16px; overscroll-behavior: contain; }
+    .welcome-hero { margin: 12px auto; padding: 8px; }
+    .welcome-title { font-size: clamp(1.5rem, 7vw, 2rem); }
+    .welcome-chips { flex-wrap: wrap; }
+    .prompt-chip { white-space: normal; min-height: 44px; }
+    .message.user, .user-message-group { max-width: 94%; }
+    .message { overflow-wrap: anywhere; }
+    .input-dock-container {
+        padding: 4px 8px max(8px, env(safe-area-inset-bottom, 0px));
+        background: var(--bg-base);
+    }
+    .input-dock { padding: 6px; border-radius: 20px; }
+    .input-dock-main { gap: 4px; }
+    .input-dock-actions, .composer-add { flex-shrink: 0; }
+    #composer-plus, .btn-send, .btn-stop, .mic-btn { width: 44px; height: 44px; flex-shrink: 0; }
+    .mic-btn { flex: 0 0 44px; margin-left: 0; }
+    .input-field-wrapper textarea { font-size: 16px; max-height: min(120px, 24dvh); padding: 8px 4px; }
+    #composer-menu { max-width: calc(100vw - 24px); }
+    #composer-menu button { min-height: 44px; }
+    .settings-view, .status-view { padding: 0 12px max(16px, env(safe-area-inset-bottom, 0px)); }
+    .view-header { gap: 12px; flex-wrap: wrap; }
+    .settings-card-header, .settings-card-body { padding-left: 12px; padding-right: 12px; }
+    .setting-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .setting-control { width: 100%; }
+    .setting-control input, .setting-control select, .setting-control textarea { font-size: 16px; }
+    .settings-view button { min-height: 44px; }
+    .search-input-group { flex-wrap: wrap; }
+    .search-input-group input { min-width: 0; width: 100%; font-size: 16px; }
+    .search-input-group button { min-height: 44px; }
+    .auth-modal {
+        top: var(--mobile-top, 0px); width: 100%;
+        height: var(--mobile-height, 100dvh); overflow-y: auto;
+        padding: max(16px, env(safe-area-inset-top, 0px)) 12px max(16px, env(safe-area-inset-bottom, 0px));
+        align-items: safe center;
+    }
+    .auth-card { width: 100%; padding: 24px 18px; flex-shrink: 0; }
+    .auth-input-group input { font-size: 16px; }
+    .auth-actions .btn { min-height: 44px; }
+    .tools-dialog { max-height: calc(var(--mobile-height, 100dvh) - 24px); }
+    .tools-layout { min-height: 0; overflow-y: auto; }
+    .tools-footer { flex-shrink: 0; flex-wrap: wrap; }
+}

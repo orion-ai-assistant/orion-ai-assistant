@@ -2,10 +2,10 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from orion.api.cors import configure_cors
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from redis.asyncio import Redis
 
 from orion.api.routes import router
@@ -15,7 +15,7 @@ from orion.api.browser_routes import router as browser_router
 from orion.api.owner_routes import router as owner_router
 from orion.api.access_boundary import AccessBoundary
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
-from services.shared.environment import get_redis_url
+from services.shared.environment import get_redis_url, get_env
 from orion.kernel.config import get_runtime_settings, seed_database_settings
 
 
@@ -60,6 +60,7 @@ def create_app(public=False):
     configure_cors(application)
     application.include_router(auth_router, prefix='/api/v1')
     application.include_router(router)
+    ui_dir = os.path.join(os.path.dirname(__file__), 'ui')
     if not public:
         application.include_router(google_ai_router)
         application.include_router(browser_router)
@@ -67,16 +68,37 @@ def create_app(public=False):
         owner_dir = os.path.join(os.path.dirname(__file__), 'owner_ui')
 
         @application.get('/', include_in_schema=False)
-        async def home():
-            return FileResponse(os.path.join(owner_dir, 'index.html'))
+        async def home(request: Request):
+            return owner_page('index.html', request)
+
+        def owner_page(filename, request):
+            with open(os.path.join(owner_dir, filename), encoding='utf-8') as page:
+                html = page.read()
+            target = str(request.url.replace(port=int(get_env('ORION_PUBLIC_PORT', default='8910', required=False)), path='/dashboard/', query=''))
+            return HTMLResponse(html.replace('href="/dashboard/"', 'href="' + target + '"'), headers={'Cache-Control': 'no-store'})
 
         @application.get('/manage/', include_in_schema=False)
-        async def manage():
-            return FileResponse(os.path.join(owner_dir, 'people.html'), headers={'Cache-Control': 'no-store'})
+        async def manage(request: Request):
+            return owner_page('people.html', request)
+
+        @application.get('/owner-assets/auth_wait.js', include_in_schema=False)
+        async def owner_countdown():
+            return FileResponse(os.path.join(ui_dir, 'js', 'auth_wait.js'))
+
+        @application.api_route('/dashboard', methods=['GET', 'HEAD'], include_in_schema=False)
+        @application.api_route('/dashboard/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
+        async def public_dashboard(request: Request):
+            target = request.url.replace(port=int(get_env('ORION_PUBLIC_PORT', default='8910', required=False)))
+            return RedirectResponse(str(target))
 
         application.mount('/owner-assets', StaticFiles(directory=owner_dir), name='owner-assets')
         application.mount('/admin', StaticFiles(directory=os.path.join(os.path.dirname(__file__), 'admin_ui'), html=True), name='admin')
-    application.mount('/dashboard', StaticFiles(directory=os.path.join(os.path.dirname(__file__), 'ui'), html=True), name='dashboard')
+    else:
+        @application.get('/', include_in_schema=False)
+        async def public_home():
+            return RedirectResponse('/dashboard/')
+
+        application.mount('/dashboard', StaticFiles(directory=ui_dir, html=True), name='dashboard')
     application.add_middleware(AccessBoundary, public=public)
     return application
 

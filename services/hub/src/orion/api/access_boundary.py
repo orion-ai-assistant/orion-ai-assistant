@@ -11,7 +11,7 @@ USER_SETTINGS = {'/api/v1/admin/settings', '/api/v1/admin/settings/schema'}
 
 
 def private_path(path: str) -> bool:
-    return (path == '/' or path == '/index.html' or path.startswith(('/manage', '/admin', '/owner-assets', '/api/v1/owner/'))
+    return (path == '/' or path == '/index.html' or path == '/dashboard' or path.startswith(('/dashboard/', '/manage', '/admin', '/owner-assets', '/api/v1/owner/'))
             or (path.startswith('/api/v1/admin/') and path.rstrip('/') not in USER_SETTINGS)
             or (path.startswith('/api/v1/auth/users/') and path.rstrip('/').endswith('/approval')))
 
@@ -31,6 +31,8 @@ def is_local(scope) -> bool:
 
 
 def public_path(path: str) -> bool:
+    if path == '/' or path == '/dashboard' or path.startswith('/dashboard/'):
+        return True
     if private_path(path):
         return False
     return (path in {'/health', '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/me', '/api/v1/auth/invitations/preview'}

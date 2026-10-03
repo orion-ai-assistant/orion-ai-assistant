@@ -45,6 +45,18 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def login(self, scope='people', password='owner-password'):
         return await self.client.post('/api/v1/owner/login', json={'password': password, 'scope': scope})
 
+    async def test_private_dashboard_redirects_to_public_port_and_owner_assets_stay_local(self):
+        with patch.dict(os.environ, {'ORION_PUBLIC_PORT': '8910'}):
+            for path in ['/dashboard', '/dashboard/', '/dashboard/js/main.js?version=1']:
+                result = await self.client.get(path)
+                self.assertEqual(result.status_code, 307)
+                self.assertEqual(result.headers['location'], 'http://localhost:8910' + path)
+            page = await self.client.get('/')
+            self.assertIn('href="http://localhost:8910/dashboard/"', page.text)
+        self.assertEqual((await self.client.get('/owner-assets/auth_wait.js')).status_code, 200)
+        page = await self.client.get('/manage/')
+        self.assertIn('/owner-assets/auth_wait.js', page.text)
+
     async def test_invitation_without_address_uses_current_pc_ip(self):
         await self.login()
         probe = Mock()
@@ -197,7 +209,10 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(public=True)
         app.state.redis = self.redis
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)), base_url='http://localhost:8910') as client:
-            for path in ['/', '/manage/', '/admin/', '/owner-assets/people.js', '/api/v1/owner/people', '/api/v1/auth/users/alice/approval', '/api/v1/admin/chats', '/api/v1/browser', '/docs']:
+            home = await client.get('/')
+            self.assertEqual(home.status_code, 307)
+            self.assertEqual(home.headers['location'], '/dashboard/')
+            for path in ['/manage/', '/admin/', '/owner-assets/people.js', '/api/v1/owner/people', '/api/v1/auth/users/alice/approval', '/api/v1/admin/chats', '/api/v1/browser', '/docs']:
                 self.assertEqual((await client.get(path)).status_code, 403, path)
             self.assertEqual((await client.get('/dashboard/')).status_code, 200)
             self.assertEqual((await client.get('/health')).status_code, 200)

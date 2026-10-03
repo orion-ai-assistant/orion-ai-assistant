@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
     <title>Orion Hub • AI Assistant</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="css/styles.css?v=2.1.1">
     <link rel="stylesheet" href="css/tools.css?v=11">
     <link rel="stylesheet" href="css/markdown.css?v=6">
+    <link rel="stylesheet" href="css/mobile.css?v=1">
     <style>.auth-actions [hidden]{display:none!important}</style>
 </head>
 <body>
@@ -40,8 +41,10 @@
     <!-- Main Application Layout -->
     <div class="app-layout">
         <!-- SOL PANEL: SIDEBAR (HER ZAMAN GÖRÜNÜR) -->
+        <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="Menüyü kapat" tabindex="-1"></button>
         <aside class="sidebar" id="app-sidebar">
             <div class="sidebar-header">
+                <button id="mobile-sidebar-close" class="mobile-sidebar-close" aria-label="Menüyü kapat" type="button">×</button>
                 <div class="brand">
                     <div class="brand-logo">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -143,6 +146,7 @@
 
         <!-- SAĞ PANEL: ANA İÇERİK ALANI -->
         <main class="main-content">
+            <header class="mobile-header"><button id="mobile-menu-toggle" class="mobile-menu-button" type="button" aria-label="Sohbetler ve ayarlar" aria-controls="app-sidebar" aria-expanded="false">☰</button><strong>Orion Hub</strong></header>
             <!-- 1. SOHBET GÖRÜNÜMÜ -->
             <div id="chat-view" class="view active chat-view">
                 <div class="chat-area" id="chat-area">
@@ -267,6 +271,7 @@
     <script src="js/tools.js?v=13"></script>
     <script src="js/stt.js?v=2.0.12"></script>
     <script src="js/sse.js?v=2.0.7"></script>
+    <script src="js/mobile.js?v=1"></script>
     <script src="js/main.js?v=2.0.12"></script>
 </body>
 </html>
