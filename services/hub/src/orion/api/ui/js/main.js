@@ -143,6 +143,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
 
     const initAuth = async () => {
+        if (Auth.invitationToken) {
+            document.getElementById('auth-modal').classList.add('show');
+            return false;
+        }
         const token = Auth.getToken();
         if (!token) {
             document.getElementById("auth-modal").classList.add("show");
@@ -178,6 +182,44 @@ document.addEventListener("DOMContentLoaded", async () => {
         errEl.style.display = "block";
     };
 
+    const showAuthFailure = error => {
+        if (error.retryAfter) {
+            AuthWait.start(document.getElementById('auth-error'),
+                [document.getElementById('auth-login-btn'), document.getElementById('auth-register-btn')], error.retryAfter);
+        } else showError(error.message);
+    };
+
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    Auth.invitationToken = fragment.get('invite');
+    const registerButton = document.getElementById('auth-register-btn');
+    const loginButton = document.getElementById('auth-login-btn');
+    const description = document.getElementById('auth-description');
+    description.removeAttribute('data-i18n');
+    registerButton.hidden = true;
+    if (Auth.invitationToken) {
+        loginButton.hidden = true;
+        description.textContent = 'Davet kontrol ediliyor…';
+        try {
+            const response = await fetch('/api/v1/auth/invitations/preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invitation_token: Auth.invitationToken})});
+            const data = await response.json();
+            if (!response.ok) {
+                const error = new Error(typeof data.detail === 'string' ? data.detail : 'Davet bağlantısı geçersiz.');
+                if (response.status === 429) error.retryAfter = AuthWait.retrySeconds(response);
+                throw error;
+            }
+            description.textContent = 'Orion’a davet edildin. Kullanıcı adı ve şifre seç; hesabın oluşturulunca sohbete geçeceksin.';
+            registerButton.hidden = false;
+            registerButton.removeAttribute('data-i18n');
+            registerButton.textContent = 'Hesap oluştur ve başla';
+            document.getElementById('auth-password').autocomplete = 'new-password';
+        } catch (error) {
+            description.textContent = 'Yeni bir davet bağlantısı için PC sahibiyle iletişime geç.';
+            showAuthFailure(error);
+        }
+    } else {
+        description.textContent = 'Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.';
+    }
+
     document.getElementById("auth-login-btn").addEventListener("click", async () => {
         const user = document.getElementById("auth-username").value.trim();
         const pass = document.getElementById("auth-password").value.trim();
@@ -191,7 +233,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             loadInitialSettings();
             if (window.loadChats) window.loadChats();
         } catch (error) {
-            showError(error.message);
+            showAuthFailure(error);
         }
     });
 
@@ -204,12 +246,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
         try {
             await Auth.register(user, pass);
-            await Auth.login(user, pass);
             await initAuth();
             loadInitialSettings();
             if (window.loadChats) window.loadChats();
         } catch (error) {
-            showError(error.message);
+            showAuthFailure(error);
         }
     });
 
@@ -308,9 +349,12 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (settingsCard) settingsCard.style.display = targetId === 'settings-view' ? 'flex' : 'none';
             if (statusCard) statusCard.style.display = targetId === 'status-view' ? 'flex' : 'none';
 
-            if (targetId === 'settings-view') {
-                loadInitialSettings();
-                window.ToolsUI?.refreshBrowserStatus?.();
+            if (targetId === 'settings-view') {
+
+                loadInitialSettings();
+
+                window.ToolsUI?.refreshBrowserStatus?.();
+
             }
         });
     });

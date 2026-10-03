@@ -108,6 +108,17 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
             """
         )
         await conn.execute("alter table orion_users alter column is_active set default false")
+        await conn.execute("""
+            create table if not exists orion_invitations (
+                id text primary key,
+                token_hash text unique not null,
+                label text not null default '',
+                expires_at timestamptz not null,
+                created_at timestamptz not null default now(),
+                used_by text,
+                revoked boolean not null default false
+            )
+        """)
         # --- Chats (metadata) ---
         await conn.execute(
             """

@@ -26,7 +26,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.env = patch.dict(os.environ, {'ADMIN_API_KEY': ''})
         self.env.start()
         self.redis = Mock()
-        self.redis.eval = AsyncMock(return_value=1)
+        self.redis.eval = AsyncMock(return_value=[1, 30])
         self.redis.hgetall = AsyncMock(return_value={'user_id': 'alice', 'chat_id': 'a'})
         self.redis.ping = AsyncMock(return_value=True)
         self.app = FastAPI()
@@ -77,8 +77,10 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(auth, 'create_user', side_effect=create), patch.object(auth, 'hash_password', return_value='hashed'), patch.object(auth, 'verify_password', return_value=True):
             data = {'username': 'pending', 'password': 'password'}
             response = await self.client.post('/api/v1/auth/register', json=data)
-            self.assertEqual(response.status_code, 201)
-            self.assertFalse(response.json()['is_active'])
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn('pending', self.users)
+            # Pre-existing pending accounts still require owner approval.
+            self.users['pending'] = {'id': 'pending', 'password_hash': 'hashed', 'is_active': False}
             self.assertEqual((await self.client.post('/api/v1/auth/login', json=data)).status_code, 400)
             token = security.create_access_token({'sub': 'pending'})
             self.assertEqual((await self.client.get('/api/v1/auth/me', headers={'Authorization': 'Bearer ' + token})).status_code, 401)
@@ -138,13 +140,14 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         async def evaluate(script, numkeys, key, seconds):
             self.assertIn("'EXPIRE'", script)
             counts[key] = counts.get(key, 0) + 1
-            return counts[key]
+            self.assertEqual(seconds, 30)
+            return [counts[key], 30]
         self.redis.eval.side_effect = evaluate
         for _ in range(5):
             self.assertEqual((await self.client.post('/api/v1/auth/login', json={'username':'missing','password':'bad'})).status_code, 401)
         response = await self.client.post('/api/v1/auth/login', json={'username':'missing','password':'bad'}, headers={'X-Forwarded-For':'new-ip'})
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.headers['retry-after'], '60')
+        self.assertEqual(response.headers['retry-after'], '30')
         self.redis.eval.side_effect = RuntimeError('redis down')
         self.assertEqual((await self.client.post('/api/v1/auth/login', json={'username':'new','password':'bad'})).status_code, 503)
 

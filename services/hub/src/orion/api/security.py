@@ -73,5 +73,7 @@ admin_key_matches = valid_admin_key
 
 
 def require_admin(request) -> None:
+    if getattr(request.state, 'owner_scope', None) == 'admin':
+        return
     if not valid_admin_key(request.headers.get("X-Admin-Key")):
         raise HTTPException(401, "Unauthorized")

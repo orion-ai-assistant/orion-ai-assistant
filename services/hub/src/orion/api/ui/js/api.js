@@ -31,7 +31,9 @@ const Auth = {
         });
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.detail || "Giriş başarısız.");
+            const error = new Error(data.detail || 'Giriş başarısız.');
+            if (response.status === 429) error.retryAfter = AuthWait.retrySeconds(response);
+            throw error;
         }
         this.setToken(data.access_token);
         return data;
@@ -41,12 +43,17 @@ const Auth = {
         const response = await fetch("/api/v1/auth/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password })
+            body: JSON.stringify({ username, password, invitation_token: this.invitationToken })
         });
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.detail || "Kayıt başarısız.");
+            const error = new Error(typeof data.detail === 'string' ? data.detail : 'Kullanıcı adı ve şifreyi kontrol et.');
+            if (response.status === 429) error.retryAfter = AuthWait.retrySeconds(response);
+            throw error;
         }
+        this.setToken(data.access_token);
+        this.invitationToken = null;
+        history.replaceState(null, '', location.pathname);
         return data;
     },
 

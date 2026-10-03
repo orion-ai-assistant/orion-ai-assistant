@@ -43,15 +43,35 @@ services:
     container_name: ${HUB_HOST}
     environment:
       ORION_HUB_MODE: remote
+      ORION_PRIVATE_DOCKER_LISTENER: "true"
     restart: unless-stopped
     ports:
-      - "${HUB_PORT}:${HUB_CONTAINER_PORT}"
+      - "127.0.0.1:${HUB_PORT}:${HUB_CONTAINER_PORT}"
     env_file:
       - ../.env.global
       - ../.env.global.local
     volumes:
       - ./src/orion/api/ui:/app/src/orion/api/ui
       - ./src/orion/api/admin_ui:/app/src/orion/api/admin_ui
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - orion-network
+
+  public_api:
+    build:
+      context: ../../
+      dockerfile: services/hub/api.Dockerfile
+    command: ["sh", "-c", "exec uvicorn orion.api.main:public_app --host 0.0.0.0 --port $${HUB_CONTAINER_PORT}"]
+    restart: unless-stopped
+    ports:
+      - "${ORION_PUBLIC_PORT:-8910}:${HUB_CONTAINER_PORT}"
+    env_file:
+      - ../.env.global
+      - ../.env.global.local
     depends_on:
       redis:
         condition: service_healthy

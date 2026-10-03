@@ -13,6 +13,8 @@ from orion.api.security import (
     ALGORITHM
 )
 from orion.kernel.registry import get_user_by_username, create_user, set_user_active, set_user_approval
+from orion.api.login_limits import limit_login, limit_attempts
+from orion.api import invitations
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -32,6 +34,12 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+class RegisterRequest(AuthRequest):
+    invitation_token: str | None = Field(default=None, min_length=20, max_length=128)
+
+class InvitationPreview(BaseModel):
+    invitation_token: str = Field(min_length=20, max_length=128)
+
 class UserProfile(BaseModel):
     username: str
     is_active: bool
@@ -50,6 +58,8 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
         token_str = request.query_params.get("token")
 
     if not token_str:
+        if getattr(request.state, 'owner_scope', None) == 'admin' and request.url.path.startswith('/api/v1/admin/'):
+            return 'global'
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -69,29 +79,27 @@ async def authenticate_token(token_str: str) -> str:
     return username
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(request: AuthRequest):
+@router.post('/invitations/preview')
+async def preview(payload: InvitationPreview, request: Request):
+    await limit_attempts(request, 'invite-preview', request.client.host, 30)
+    return await invitations.preview_invitation(payload.invitation_token)
+
+
+@router.post("/register", status_code=status.HTTP_201_CREATED, response_model=Token)
+async def register(request: RegisterRequest, http_request: Request):
+    await limit_attempts(http_request, 'registration', http_request.client.host, 10)
+    if not request.invitation_token:
+        raise HTTPException(403, 'Hesap oluşturmak için PC sahibinden davet bağlantısı alın.')
     if request.username == "global":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Reserved username."
         )
 
-    existing_user = await get_user_by_username(request.username)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
-
-    hashed_pw = hash_password(request.password)
-    success = await create_user(request.username, hashed_pw)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create user"
-        )
-    return {"message": "Registration pending owner approval", "is_active": False}
+    # Validate before expensive password hashing; the transaction validates again under lock.
+    await invitations.preview_invitation(request.invitation_token)
+    await invitations.redeem_invitation(request.invitation_token, request.username, hash_password(request.password))
+    return {'access_token': create_access_token({'sub': request.username}), 'token_type': 'bearer'}
 
 
 @router.post("/login", response_model=Token)
@@ -128,38 +136,13 @@ async def require_active_user(username: str) -> None:
         raise HTTPException(401, "Account inactive or awaiting owner approval")
 
 
-LOGIN_LIMIT_SCRIPT = """
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
-return count
-"""
-
-
-async def limit_login(request: Request, username: str) -> None:
-    import hashlib
-    import logging
-    # Trust the transport address, never user-supplied forwarding headers.
-    ip = request.client.host if request.client else "unknown"
-    redis = request.app.state.redis
-    for scope, value, threshold in (("account", username, 5), ("ip", ip, 10)):
-        key = "auth:login:" + scope + ":" + hashlib.sha256(value.encode()).hexdigest()
-        try:
-            count = await redis.eval(LOGIN_LIMIT_SCRIPT, 1, key, 60)
-        except Exception as exc:
-            logging.getLogger(__name__).exception("Login limiter unavailable")
-            raise HTTPException(503, "Login temporarily unavailable") from exc
-        if int(count) > threshold:
-            raise HTTPException(429, "Too many login attempts", headers={"Retry-After": "60"})
-
-
 class ApprovalRequest(BaseModel):
     is_active: bool = True
 
 
 @router.put("/users/{username}/approval")
 async def approve_user(username: str, payload: ApprovalRequest, request: Request):
-    if not valid_admin_key(request.headers.get("X-Admin-Key")):
-        raise HTTPException(401, "Unauthorized")
+    require_admin(request)
     if username == "global":
         raise HTTPException(404, "User not found")
     try:

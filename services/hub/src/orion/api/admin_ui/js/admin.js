@@ -102,7 +102,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const getHeaders = () => {
         return {
             "Content-Type": "application/json",
-            "X-Admin-Key": adminKeyInput.value.trim()
         };
     };
 
@@ -172,6 +171,7 @@ document.addEventListener("DOMContentLoaded", () => {
             });
 
             if (response.status === 401) {
+                if (OwnerGate.unlocked) OwnerGate.lock();
                 setAdminConnection(false, "Yetkilendirme gerekli.");
                 throw new Error("Unauthorized: Invalid Admin API Key");
             }
@@ -182,6 +182,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const data = await response.json();
             await defaultKeysPromise;
+            if (!defaultKeys.length) await fetchDefaultKeys();
             if (!Object.keys(defaultValues).length) await fetchDefaultValues();
             if (!Object.keys(settingConstraints).length) await fetchSettingConstraints();
             const catalogChanged = await fetchRouterCatalog();
@@ -685,6 +686,10 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     adminKeyInput.addEventListener("input", handleKeyInput);
+    document.addEventListener('owner-unlocked', () => {
+        adminKeyInput.value = 'owner-session';
+        handleKeyInput();
+    });
     adminKeyInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
             event.preventDefault();

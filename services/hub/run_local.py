@@ -4,6 +4,7 @@ import subprocess
 import signal
 import time
 import threading
+import socket
 
 # Dynamic path injection for services package imports (shared environment module)
 _hub_dir = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +59,16 @@ def main():
     # Environment config
     hub_port = get_env("HUB_PORT")
     env = os.environ.copy()
+    # A separate LAN/tunnel entry point never exposes local owner pages/APIs.
+    public_port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
+    if str(public_port) == str(hub_port):
+        raise RuntimeError('ORION_PUBLIC_PORT must differ from HUB_PORT')
+    if not env.get('JWT_SECRET_KEY') or env.get('JWT_SECRET_KEY') == 'super-secret-default-key-for-dev':
+        import secrets
+        env['JWT_SECRET_KEY'] = secrets.token_urlsafe(48)
+        overrides = os.path.join(_repo_root, 'services', '.env.global.local')
+        with open(overrides, 'a', encoding='utf-8') as configuration:
+            configuration.write('\n# Hub public entry point signing key\nJWT_SECRET_KEY=' + env['JWT_SECRET_KEY'] + '\n')
     
     hub_dir = os.path.dirname(os.path.abspath(__file__))
     from services.shared.browser_shutdown import allow_hub_browsers, stop_hub_browsers
@@ -79,6 +90,7 @@ def main():
     hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
     py_bin = hub_venv_py if os.path.exists(hub_venv_py) else sys.executable
     api_cmd = [py_bin, "-m", "uvicorn", "orion.api.main:app", "--host", "127.0.0.1", "--port", str(hub_port)]
+    public_cmd = [py_bin, '-m', 'uvicorn', 'orion.api.main:public_app', '--host', '0.0.0.0', '--port', str(public_port)]
     worker_cmd = [py_bin, "-m", "orion.worker.main"]
     redis_exe = os.path.join(base_dir, ".local_db", "redis", "redis-server.exe")
     
@@ -90,7 +102,15 @@ def main():
     processes = []
     all_pids = [os.getpid()]  # Include this process (run_local.py) itself
     
-    if os.path.exists(redis_exe):
+    redis_running = False
+    redis_port = get_env('REDIS_PORT')
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as redis_probe:
+            redis_probe.settimeout(0.3)
+            redis_running = redis_probe.connect_ex(('127.0.0.1', int(redis_port))) == 0
+    except OSError:
+        pass
+    if os.path.exists(redis_exe) and not redis_running:
         print("[*] Launching Portable Redis...")
         redis_dir = os.path.dirname(redis_exe)
         redis_port = get_env("REDIS_PORT")
@@ -126,6 +146,12 @@ def main():
     processes.append(api_proc)
     all_pids.append(api_proc.pid)
     threading.Thread(target=stream_logs, args=(api_proc, "[API]", log_file, log_lock), daemon=True).start()
+
+    public_proc = subprocess.Popen(public_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+    processes.append(public_proc)
+    all_pids.append(public_proc.pid)
+    threading.Thread(target=stream_logs, args=(public_proc, '[API]', log_file, log_lock), daemon=True).start()
+    print(f'[*] PC owner home: http://localhost:{hub_port}/; phone/tunnel entry point: port {public_port}')
     
     print("[*] Launching Worker...")
     worker_proc = subprocess.Popen(worker_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)

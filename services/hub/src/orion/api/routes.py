@@ -17,7 +17,7 @@ from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
 from orion.api.auth_routes import get_current_user, require_active_user
-from orion.api.security import JWT_SECRET_KEY, ALGORITHM, valid_admin_key
+from orion.api.security import JWT_SECRET_KEY, ALGORITHM, valid_admin_key, require_admin
 import jwt
 from services.shared.environment import get_router_base_urls
 
@@ -335,8 +335,7 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
     return _mask_settings_for_client(settings)
 
 def _check_admin_key(request: Request):
-    if not valid_admin_key(request.headers.get("X-Admin-Key")):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    require_admin(request)
 
 @router.get("/api/v1/admin/users/settings")
 async def get_all_settings(request: Request) -> dict[str, dict[str, str]]:

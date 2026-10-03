@@ -25,7 +25,7 @@ class FakeRedis:
 
     async def eval(self, script, count, key, ttl):
         self.counts[key] = self.counts.get(key, 0) + 1
-        return self.counts[key]
+        return [self.counts[key], ttl]
 
 
 
@@ -105,8 +105,9 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             return True
         with patch.object(auth_routes, "create_user", AsyncMock(side_effect=create)), patch.object(auth_routes, "set_user_approval", AsyncMock(side_effect=approve)):
             response = await self.client.post("/api/v1/auth/register", json={"username": "pending", "password": "correct"})
-            self.assertEqual(response.status_code, 201)
-            self.assertFalse(response.json()["is_active"])
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn('pending', self.users)
+            self.users['pending'] = {'id': 'pending', 'password_hash': 'hash', 'is_active': False}
             response = await self.client.post("/api/v1/auth/login", json={"username": "pending", "password": "correct"})
             self.assertEqual(response.status_code, 400)
             response = await self.client.get("/api/v1/auth/me", headers=self.headers("pending"))
@@ -136,7 +137,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 401)
         response = await self.client.post("/api/v1/auth/login", json={"username": "bob", "password": "wrong"})
         self.assertEqual(response.status_code, 429)
-        self.assertEqual(response.headers["retry-after"], "60")
+        self.assertEqual(response.headers["retry-after"], "30")
         with patch.object(self.redis, "eval", AsyncMock(side_effect=RuntimeError("down"))):
             response = await self.client.post("/api/v1/auth/login", json={"username": "alice", "password": "correct"})
             self.assertEqual(response.status_code, 503)

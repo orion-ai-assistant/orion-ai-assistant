@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Orion · Yönetim</title>
     <link rel="stylesheet" href="css/admin.css">
+    <link rel="stylesheet" href="/owner-assets/owner.css">
 </head>
-<body>
+<body class="owner-locked" data-owner-scope="admin">
     <div class="app-shell">
         <header class="topbar">
             <div class="brand-mark" aria-hidden="true">✦</div>
@@ -26,8 +27,9 @@
                     <p class="page-description">Varsayılan ayarları, kullanıcı tercihlerini ve sohbetleri tek yerden yönetin.</p>
                 </div>
                 <div class="auth-box">
-                    <label for="admin-key">Admin API Key</label>
-                    <input type="password" id="admin-key" placeholder="Yönetici anahtarını girin" autocomplete="off">
+                    <input type="hidden" id="admin-key">
+                    <a href="/">Başlangıç</a>
+                    <button type="button" id="owner-logout">Kilitle</button>
                 </div>
             </section>
 
@@ -103,6 +105,8 @@
         </article>
     </template>
 
-    <script src="js/admin.js"></script>
+    <script src="/dashboard/js/auth_wait.js"></script>
+    <script src="/owner-assets/gate.js"></script>
+    <script src="js/admin.js?v=2"></script>
 </body>
 </html>
