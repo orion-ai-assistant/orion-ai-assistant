@@ -58,7 +58,7 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
         token_str = request.query_params.get("token")
 
     if not token_str:
-        if getattr(request.state, 'owner_scope', None) == 'admin' and request.url.path.startswith('/api/v1/admin/'):
+        if getattr(request.state, 'owner_scope', None) == 'admin' and request.url.path.startswith(('/api/v1/admin/', '/api/v1/browser', '/api/v1/google-ai/session')):
             return 'global'
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

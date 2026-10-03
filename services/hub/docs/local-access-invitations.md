@@ -26,6 +26,17 @@ redirect there, preserving path and query. The public listener's `/` redirects
 to `/dashboard/`. Private management pages serve their countdown script from
 `/owner-assets/auth_wait.js`, keeping owner login entirely on the private port.
 
+The private listener also rejects normal client APIs with 403: user login,
+registration/profile, chats/messages/history, SSE, tools/models, and audio
+WebSocket connections. A valid user JWT or administrator credential does not
+enable these client APIs on the private listener. Shared settings/schema paths
+require administrator authority there; ordinary users access them on the public
+listener. Desktop browser/session controls on the private listener also require
+administrator authority. `/health` and `/ready` remain operational probes, not
+evidence that a port supports Flutter/chat. Flutter's saved Hub URL must use
+the public port (8910 by default); changing the Flutter build default is deferred
+client work. No API redirect silently forwards login passwords to another port.
+
 Docker publishes private `api` on **127.0.0.1:HUB_PORT only**, and `public_api`
 on `ORION_PUBLIC_PORT` (default 8910). The private container flag allows Docker's
 private NAT peer only in a container, with a loopback Host and no forwarded
@@ -79,7 +90,9 @@ screen. Safe-area padding, 44px touch controls, scrollable messages/settings
 and 16px form inputs improve small-screen use. Existing desktop styles remain
 in place. Browser/mobile hardware verification is still required: no browser
 automation surface is connected here. Focused Python checks: 56 passed;
-countdown/registration/mobile behavior checks: 6 passed.
+countdown/registration/mobile behavior checks: 6 passed. After management-only
+API enforcement, focused Python checks: 58 passed, including valid-JWT denial
+on the private port, WebSocket rejection and public-user/private-admin settings.
 Revoked, expired and used invitations cannot create users. Existing pending
 accounts can still be approved from the People list; active accounts can have
 access disabled. New open registrations are rejected before account creation.

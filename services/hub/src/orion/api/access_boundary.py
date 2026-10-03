@@ -8,6 +8,13 @@ from starlette.responses import JSONResponse
 OWNER_COOKIE = 'orion_owner'
 FORWARDED = {'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'cf-connecting-ip', 'x-real-ip'}
 USER_SETTINGS = {'/api/v1/admin/settings', '/api/v1/admin/settings/schema'}
+DESKTOP_MANAGEMENT = ('/api/v1/browser', '/api/v1/google-ai/session')
+
+
+def management_api(path: str) -> bool:
+    return (path.startswith(('/api/v1/owner/', '/api/v1/admin/'))
+            or any(path == prefix or path.startswith(prefix + '/') for prefix in DESKTOP_MANAGEMENT)
+            or (path.startswith('/api/v1/auth/users/') and path.rstrip('/').endswith('/approval')))
 
 
 def private_path(path: str) -> bool:
@@ -52,8 +59,10 @@ class AccessBoundary:
         path = scope['path']
         headers = dict(scope.get('headers', []))
         local = is_local(scope)
+        user_api_on_private = not self.public and path.startswith('/api/v1/') and not management_api(path)
         # The public listener never exposes owner routes, even through loopback tunnels.
-        denied = ((self.public and not public_path(path)) or (not self.public and private_path(path) and not local))
+        denied = (user_api_on_private or (self.public and not public_path(path))
+                  or (not self.public and path not in {'/health', '/ready'} and not local))
         # Administrator credentials must never turn a public chat request into global access.
         has_key = b'x-admin-key' in headers or 'admin_key' in parse_qs(scope.get('query_string', b'').decode('latin1'), keep_blank_values=True)
         if has_key and (self.public or not local):
@@ -61,7 +70,12 @@ class AccessBoundary:
         if denied:
             if scope['type'] == 'websocket':
                 return await send({'type': 'websocket.close', 'code': 1008})
-            return await JSONResponse({'detail': 'Bu bölüm yalnızca bu PC üzerinden kullanılabilir.'}, status_code=403)(scope, receive, send)
+            detail = 'Bu bölüm yalnızca bu PC üzerinden kullanılabilir.'
+            if user_api_on_private:
+                from services.shared.environment import get_env
+                port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
+                detail = f'Bu port yalnızca yönetim içindir. Hub bağlantısını genel kullanım portuna ({port}) değiştirin.'
+            return await JSONResponse({'detail': detail}, status_code=403)(scope, receive, send)
         scope.setdefault('state', {})['local_owner_access'] = local and not self.public
         if local and not self.public and scope['type'] == 'http':
             from starlette.requests import Request
@@ -78,12 +92,19 @@ class AccessBoundary:
                     except HTTPException as error:
                         return await JSONResponse({'detail': error.detail}, status_code=error.status_code, headers=error.headers)(scope, receive, send)
             # Protect owner login and every owner API from cross-origin browser requests.
-            if private_path(path) or has_key or OWNER_COOKIE in request.cookies:
+            if management_api(path) or private_path(path) or has_key or OWNER_COOKIE in request.cookies:
                 origin = request.headers.get('origin')
                 expected = str(request.base_url).rstrip('/')
                 if (origin and origin != expected) or request.headers.get('sec-fetch-site') == 'cross-site':
                     return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
             await authenticate_owner_session(request)
+            # Shared settings paths are user-facing on the public listener, but
+            # require administrator authority on the management listener.
+            if path.rstrip('/') in USER_SETTINGS or any(path == prefix or path.startswith(prefix + '/') for prefix in DESKTOP_MANAGEMENT):
+                from orion.api.security import valid_admin_key
+                provided = request.headers.get('X-Admin-Key') or request.query_params.get('admin_key')
+                if getattr(request.state, 'owner_scope', None) != 'admin' and not valid_admin_key(provided):
+                    return await JSONResponse({'detail': 'Bu port yalnızca yönetim içindir; yönetici girişi gerekli.'}, status_code=401)(scope, receive, send)
         async def secure_send(message):
             if message['type'] == 'http.response.start':
                 response_headers = list(message.get('headers', []))

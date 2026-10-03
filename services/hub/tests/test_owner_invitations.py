@@ -38,12 +38,46 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         self.env.start()
         self.app = create_app()
         self.app.state.redis = self.redis = Redis()
+        self.user_app = create_app(public=True)
+        self.user_app.state.redis = self.redis
+        self.user_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.user_app, client=('127.0.0.1', 4567)), base_url='http://localhost:8910')
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 4567)), base_url='http://localhost:8909')
     async def asyncTearDown(self):
         await self.client.aclose()
+        await self.user_client.aclose()
         self.env.stop()
     async def login(self, scope='people', password='owner-password'):
         return await self.client.post('/api/v1/owner/login', json={'password': password, 'scope': scope})
+
+    async def test_private_port_rejects_flutter_apis_even_with_valid_user_or_admin(self):
+        from orion.api.security import create_access_token
+        token = create_access_token({'sub': 'alice'})
+        await self.login(scope='admin')
+        lookup = AsyncMock(return_value={'id': 'alice', 'is_active': True})
+        with patch.object(auth_routes, 'get_user_by_username', lookup):
+            for headers in ({}, {'Authorization': 'Bearer ' + token}, {'X-Admin-Key': 'owner-password'}):
+                for method, path in [('POST', '/api/v1/auth/login'), ('POST', '/api/v1/auth/register'), ('GET', '/api/v1/auth/me'), ('GET', '/api/v1/chats'), ('POST', '/api/v1/chats/messages'), ('GET', '/api/v1/chat/stream'), ('GET', '/api/v1/models'), ('GET', '/api/v1/tools')]:
+                    response = await self.client.request(method, path, headers=headers)
+                    self.assertEqual(response.status_code, 403, path)
+                    self.assertIn('8910', response.json()['detail'])
+            lookup.assert_not_awaited()
+            response = await self.user_client.get('/api/v1/auth/me', headers={'Authorization': 'Bearer ' + token})
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual((await self.client.get('/health')).status_code, 200)
+        client = TestClient(self.app)
+        with self.assertRaises(WebSocketDisconnect):
+            with client.websocket_connect('/api/v1/audio/transcriptions/stream?token=' + token):
+                pass
+
+    async def test_private_shared_settings_need_admin_but_public_accepts_user(self):
+        from orion.api.security import create_access_token
+        headers = {'Authorization': 'Bearer ' + create_access_token({'sub': 'alice'})}
+        lookup = AsyncMock(return_value={'id': 'alice', 'is_active': True})
+        with patch.object(auth_routes, 'get_user_by_username', lookup):
+            self.assertEqual((await self.client.get('/api/v1/admin/settings/schema', headers=headers)).status_code, 401)
+            self.assertEqual((await self.user_client.get('/api/v1/admin/settings/schema', headers=headers)).status_code, 200)
+            await self.login(scope='admin')
+            self.assertEqual((await self.client.get('/api/v1/admin/settings/schema')).status_code, 200)
 
     async def test_private_dashboard_redirects_to_public_port_and_owner_assets_stay_local(self):
         with patch.dict(os.environ, {'ORION_PUBLIC_PORT': '8910'}):
@@ -111,11 +145,12 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_cookie_does_not_override_dashboard_bearer_identity(self):
         from orion.api.security import create_access_token
         await self.login(scope='admin')
+        self.user_client.cookies.update(self.client.cookies)
         with patch.object(auth_routes, 'get_user_by_username', AsyncMock(return_value={'id': 'alice', 'is_active': True})):
-            response = await self.client.get('/api/v1/auth/me', headers={'Authorization': 'Bearer ' + create_access_token({'sub': 'alice'})})
+            response = await self.user_client.get('/api/v1/auth/me', headers={'Authorization': 'Bearer ' + create_access_token({'sub': 'alice'})})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['username'], 'alice')
-        self.assertEqual((await self.client.get('/api/v1/chats')).status_code, 401)
+        self.assertEqual((await self.client.get('/api/v1/chats')).status_code, 403)
 
     async def test_raw_wrong_admin_keys_share_owner_limit(self):
         for _ in range(5):
@@ -125,9 +160,9 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_sufficiently_long_registration_still_requires_invitation(self):
         with patch.object(auth_routes, 'get_user_by_username', AsyncMock()) as lookup:
             for _ in range(10):
-                response = await self.client.post('/api/v1/auth/register', json={'username': 'new', 'password': 'password'})
+                response = await self.user_client.post('/api/v1/auth/register', json={'username': 'new', 'password': 'password'})
                 self.assertEqual(response.status_code, 403)
-            response = await self.client.post('/api/v1/auth/register', json={'username': 'new', 'password': 'password'})
+            response = await self.user_client.post('/api/v1/auth/register', json={'username': 'new', 'password': 'password'})
         self.assertEqual(response.status_code, 429)
         lookup.assert_not_awaited()
 
@@ -190,18 +225,18 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_invite_cannot_create_account_valid_invite_returns_login_token(self):
         with patch.object(auth_routes, 'get_user_by_username', AsyncMock()) as lookup:
-            response = await self.client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password'})
+            response = await self.user_client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password'})
         self.assertEqual(response.status_code, 403)
         lookup.assert_not_awaited()
         with patch.object(invitations, 'preview_invitation', AsyncMock(return_value={})), patch.object(invitations, 'redeem_invitation', AsyncMock()) as redeem:
-            response = await self.client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password', 'invitation_token': 'a' * 43})
+            response = await self.user_client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password', 'invitation_token': 'a' * 43})
         self.assertEqual(response.status_code, 201)
         self.assertIn('access_token', response.json())
         self.assertEqual(redeem.call_args.args[:2], ('a' * 43, 'alice'))
 
     async def test_invalid_revoked_or_expired_invite_does_not_hash_or_create_user(self):
         with patch.object(invitations, 'preview_invitation', AsyncMock(side_effect=HTTPException(410, 'invalid'))), patch.object(auth_routes, 'hash_password') as hashing:
-            response = await self.client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password', 'invitation_token': 'a' * 43})
+            response = await self.user_client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password', 'invitation_token': 'a' * 43})
         self.assertEqual(response.status_code, 410)
         hashing.assert_not_called()
 
