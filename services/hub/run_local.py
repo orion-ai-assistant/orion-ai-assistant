@@ -125,7 +125,6 @@ def main():
     pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
     pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
     if os.path.exists(pg_ctl) and os.path.exists(pg_data):
-        import socket
         pg_running = False
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
