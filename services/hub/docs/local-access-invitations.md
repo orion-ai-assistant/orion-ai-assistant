@@ -40,11 +40,19 @@ listener. Correct listener isolation is part of the deployment contract.
 
 ## Inviting and managing people
 
-Unlock People and invitations; enter the phone-reachable public URL, such as
-`http://192.168.1.20:8910` or your HTTPS domain. Choose 30 minutes, 24 hours or
-7 days and create a one-account invitation. Copy/share its URL or scan the QR.
+Unlock People and invitations, choose 30 minutes, 24 hours or 7 days, then
+create a one-account invitation. The PC's current IPv4 network address and
+`ORION_PUBLIC_PORT` are detected automatically; no address input is needed.
+The detected address is displayed for reference. Copy/share the URL or scan
+the QR. Phone and PC must be on the same reachable LAN for a LAN invitation.
 QR generation is local, with no third-party QR service. There is no localhost
-phone link. The public URL can be prefilled with `ORION_PUBLIC_URL`.
+phone link. A configured `ORION_PUBLIC_URL` takes precedence for tunnel/domain
+deployments. Docker requires this setting because a container cannot discover
+the host's phone-reachable address reliably. Native detection uses a UDP route
+probe without sending packets, with hostname IPv4 resolution as a fallback.
+No network address results in a clear error rather than an unusable loopback
+link. The address is resolved again on each invitation, so IP changes are
+picked up for newly created links; old links still contain their original IP.
 
 The link is `<public-url>/dashboard/#invite=<random-token>`. Its secret is in
 the URL fragment, not the request path/query or Referrer. PostgreSQL stores

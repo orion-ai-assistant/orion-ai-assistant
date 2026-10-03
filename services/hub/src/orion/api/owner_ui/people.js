@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
         error.hidden = true;
         const data = await api('/people');
         const address = document.getElementById('public-url');
-        if (!address.value) address.value = data.public_url;
+        address.textContent = 'Davet adresi: ' + data.public_url;
         const users = document.getElementById('people-list'); users.replaceChildren();
         if (!data.users.length) users.textContent = 'Henüz kullanıcı yok. İlk kişiyi davet ederek başlayabilirsin.';
         data.users.forEach(user => renderRecord(users, user.id, `${user.is_active ? 'Aktif' : 'Onay bekliyor veya erişimi kapalı'} · ${date(user.created_at)}`, user.is_active ? 'Erişimi kapat' : 'Erişim ver', async () => {
@@ -45,7 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
         event.preventDefault(); error.hidden = true;
         const button = document.getElementById('invite-submit'); button.disabled = true;
         try {
-            const data = await api('/invitations', {method: 'POST', body: JSON.stringify({public_url: document.getElementById('public-url').value, label: document.getElementById('invite-label').value, expires_minutes: Number(document.getElementById('invite-duration').value)})});
+            const data = await api('/invitations', {method: 'POST', body: JSON.stringify({label: document.getElementById('invite-label').value, expires_minutes: Number(document.getElementById('invite-duration').value)})});
             document.getElementById('invite-link').value = data.url;
             const svg = new Blob([data.qr_svg], {type: 'image/svg+xml'}), image = document.createElement('img');
             image.alt = 'Davet bağlantısı QR kodu'; image.width = image.height = 230;

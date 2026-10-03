@@ -45,6 +45,29 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def login(self, scope='people', password='owner-password'):
         return await self.client.post('/api/v1/owner/login', json={'password': password, 'scope': scope})
 
+    async def test_invitation_without_address_uses_current_pc_ip(self):
+        await self.login()
+        probe = Mock()
+        probe.__enter__ = Mock(return_value=probe)
+        probe.__exit__ = Mock(return_value=False)
+        probe.getsockname.return_value = ('192.168.1.102', 1234)
+        with patch.dict(os.environ, {'ORION_PUBLIC_URL': '', 'ORION_PUBLIC_PORT': '8910'}), patch.object(owner_routes.os.path, 'exists', return_value=False), patch.object(owner_routes.socket, 'socket', return_value=probe), patch.object(invitations, 'create_invitation', AsyncMock()):
+            response = await self.client.post('/api/v1/owner/invitations', json={'label': 'Phone'})
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.json()['url'].startswith('http://192.168.1.102:8910/dashboard/#invite='))
+        probe.send.assert_not_called()
+
+    def test_configured_tunnel_address_takes_precedence(self):
+        with patch.dict(os.environ, {'ORION_PUBLIC_URL': 'https://orion.example/'}), patch.object(owner_routes.socket, 'socket') as probe:
+            self.assertEqual(owner_routes.invitation_address(), 'https://orion.example')
+            probe.assert_not_called()
+
+    def test_no_network_does_not_generate_localhost_invitation(self):
+        with patch.dict(os.environ, {'ORION_PUBLIC_URL': ''}), patch.object(owner_routes.os.path, 'exists', return_value=False), patch.object(owner_routes.socket, 'socket', side_effect=OSError), patch.object(owner_routes.socket, 'getaddrinfo', return_value=[(0,0,0,'',('127.0.0.1',0))]):
+            with self.assertRaises(HTTPException) as failure:
+                owner_routes.invitation_address()
+        self.assertEqual(failure.exception.status_code, 503)
+
     async def test_owner_password_required_and_shared_with_admin(self):
         self.assertEqual((await self.client.get('/api/v1/owner/people')).status_code, 401)
         self.assertEqual((await self.login(password='wrong')).status_code, 401)
