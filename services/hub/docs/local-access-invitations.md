@@ -104,4 +104,11 @@ Final checks: focused security/owner/invitation/CORS 52 passed; isolated real
 PostgreSQL/Redis 3 passed; new UI countdown/registration tests 3 passed. Full
 Python suite: 257 passed, 13 skipped, the same 9 existing failures, 53 subtests.
 Compose YAML and private/public listener command checks passed. Native activation
-is verified separately with HTTP checks after restart.
+was verified after restart: private home/people/admin return 200, owner login
+with the existing configured key and logout work, unauthenticated people API
+returns 401, and public home/people/admin/owner API return 403. Public dashboard
+and both health endpoints return 200; registration without an invite is rejected.
+Six wrong login attempts return 429 with `Retry-After: 30`. Native startup reuses
+the existing databases and persists its new signing key; previous JWTs require
+login again. No tunnel configuration exists in this repository: an external
+tunnel must target the public listener on 8910, not the private owner listener.
