@@ -42,6 +42,20 @@ class BrowserRoutesTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'BrowserManager', return_value=manager):
             self.assertEqual((await self.client.post('/api/v1/browser/resume')).status_code, 409)
 
+    async def test_explicit_chrome_is_not_overridden_by_brave_header(self):
+        manager = Mock(open_manual=AsyncMock())
+        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'BrowserManager', return_value=manager):
+            response = await self.client.post('/api/v1/browser/open', json={'browser': 'chrome'}, headers={'X-Client-Browser': 'brave'})
+        self.assertEqual(response.status_code, 200)
+        manager.open_manual.assert_awaited_once_with('chrome')
+
+    async def test_saved_choice_wins_when_browser_is_not_explicit(self):
+        manager = Mock(open_manual=AsyncMock(), status=AsyncMock(return_value={'saved': True, 'browser': 'edge'}))
+        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'BrowserManager', return_value=manager):
+            response = await self.client.post('/api/v1/browser/open', json={}, headers={'X-Client-Browser': 'brave'})
+        self.assertEqual(response.status_code, 200)
+        manager.open_manual.assert_awaited_once_with('edge')
+
     async def test_disconnected_resume_cannot_return_ready_message(self):
         manager = Mock()
         manager.resume = AsyncMock(side_effect=BrowserUnavailable('connection closed'))

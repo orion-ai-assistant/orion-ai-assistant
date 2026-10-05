@@ -59,6 +59,8 @@ function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000 } = 
         open() { this.readyState = 1; this.onopen(); }
     }
     const sandbox = {
+        HubPicker: {apiPath: path => path},
+        Auth: {getToken: () => 'token'},
         window: { AudioContext, AudioWorkletNode, location: { host: 'localhost:8909', protocol: 'http:' } },
         navigator: { mediaDevices: { getUserMedia(config) { micRequests++; constraints.push(config); return mic.promise; } } },
         API: { getSettings: () => settings.promise },

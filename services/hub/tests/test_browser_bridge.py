@@ -63,6 +63,27 @@ asyncio.run(run())
         self.assertEqual(self.connect.await_count, 1)
         self.connection.send.assert_not_awaited()
 
+    async def test_external_shutdown_closes_api_owned_socket_and_blocks_reconnect(self):
+        await SharedConnection(self.endpoint).rpc('connect')
+        code = '''import asyncio, sys
+from pathlib import Path
+from orion.browser import manager
+manager.browser_root = lambda: Path(sys.argv[1])
+from orion.browser.shutdown import close_all
+asyncio.run(close_all())
+'''
+        process = await asyncio.create_subprocess_exec(sys.executable, '-c', code,
+            str(self.root), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, error = await asyncio.wait_for(process.communicate(), 15)
+        self.assertEqual(process.returncode, 0, error.decode(errors='replace'))
+        self.connection.close.assert_awaited_once()
+        self.connection.send.assert_not_awaited()
+        self.assertTrue((self.root / '.stopping').exists())
+        self.assertFalse((await SharedConnection(self.endpoint).rpc('status'))['connected'])
+        with self.assertRaises(BrowserUnavailable):
+            await SharedConnection(self.endpoint).rpc('connect')
+        self.connect.assert_awaited_once()
+
     async def test_private_bridge_rejects_missing_token_and_browser_origin(self):
         descriptor = json.loads((self.root / 'bridge.json').read_text())
         async with aiohttp.ClientSession() as http:

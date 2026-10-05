@@ -1,4 +1,6 @@
 import asyncio
+import aiohttp
+from contextlib import suppress
 from typing import Any
 from services.shared.environment import get_env
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
@@ -200,9 +202,11 @@ async def chat_stream(
         try:
             while not await request.is_disconnected():
                 try:
-                    # Heartbeat ile mesajları ayır - timeout'u kaldırdık
-                    message = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True),
+                    # Redis must wait for data. An outer wait_for does not make
+                    # get_message's default timeout=0 block: it floods idle
+                    # clients with heartbeats and delays real events behind them.
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
                         timeout=settings.sse_heartbeat_seconds,
                     )
                     
@@ -235,12 +239,14 @@ async def stt_proxy(
     model: str = "local-stt",
     provider: str = "local"
 ):
-    token = websocket.query_params.get("token")
+    token = websocket.query_params.get("token") or websocket.headers.get('authorization', '').removeprefix('Bearer ')
     if not token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+        if getattr(websocket.app.state, 'mobile', False) and payload.get('device_id') != getattr(websocket.state, 'device_id', None):
+            raise ValueError('Account token is not bound to this device')
         user_id = payload.get("sub")
         await require_active_user(user_id)
         if not user_id:
@@ -260,7 +266,6 @@ async def stt_proxy(
     ws_base = router_url.replace("http://", "ws://").replace("https://", "wss://")
     
     params = urllib.parse.urlencode({
-        "token": router_api_key,
         "language": language,
         "model": model,
         "provider": provider
@@ -268,7 +273,8 @@ async def stt_proxy(
     target_ws_url = f"{ws_base}/v1/audio/transcriptions/stream?{params}"
 
     try:
-        async with websockets.connect(target_ws_url) as router_ws:
+        from orion.kernel.pinned_router import PinnedWebSocket
+        async with PinnedWebSocket(target_ws_url, headers={'Authorization': 'Bearer ' + router_api_key}) as router_ws:
             async def client_to_router():
                 try:
                     while True:
@@ -276,7 +282,7 @@ async def stt_proxy(
                         await router_ws.send(message)
                 except WebSocketDisconnect:
                     pass
-                except websockets.ConnectionClosed:
+                except (websockets.ConnectionClosed, aiohttp.ClientConnectionError):
                     pass
 
             async def router_to_client():
@@ -289,14 +295,19 @@ async def stt_proxy(
                             await websocket.send_bytes(message)
                 except WebSocketDisconnect:
                     pass
-                except websockets.ConnectionClosed:
+                except (websockets.ConnectionClosed, aiohttp.ClientConnectionError):
                     pass
 
             import asyncio
-            await asyncio.gather(
-                client_to_router(),
-                router_to_client()
-            )
+            tasks = {asyncio.create_task(client_to_router()), asyncio.create_task(router_to_client())}
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                with suppress(RuntimeError, WebSocketDisconnect):
+                    await websocket.close()
     except Exception as e:
         try:
             await websocket.send_text('{"type": "error", "message": "Router bağlantısı kurulamadı."}')

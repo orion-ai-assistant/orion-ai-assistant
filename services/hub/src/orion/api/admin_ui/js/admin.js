@@ -27,24 +27,24 @@ document.addEventListener("DOMContentLoaded", () => {
     let catalogSignature = "";
     const fetchDefaultKeys = async () => {
         try {
-            const res = await fetch("/api/v1/admin/settings/schema");
+            const res = await OwnerAPI.fetch("/api/v1/admin/settings/schema");
             if (res.ok) defaultKeys = await res.json();
         } catch { /* ignore */ }
     };
     const defaultKeysPromise = fetchDefaultKeys();
     const fetchDefaultValues = async () => {
-        const res = await fetch("/api/v1/admin/settings/defaults", { headers: getHeaders() });
+        const res = await OwnerAPI.fetch("/api/v1/admin/settings/defaults", { headers: getHeaders() });
         if (res.ok) defaultValues = await res.json();
     };
     const fetchSettingConstraints = async () => {
-        const res = await fetch("/api/v1/admin/settings/constraints", { headers: getHeaders() });
+        const res = await OwnerAPI.fetch("/api/v1/admin/settings/constraints", { headers: getHeaders() });
         if (res.ok) settingConstraints = await res.json();
     };
     const fetchRouterCatalog = async () => {
         if (Date.now() - catalogCheckedAt < 15000) return false;
         catalogCheckedAt = Date.now();
         try {
-            const res = await fetch("/api/v1/admin/models", { headers: getHeaders() });
+            const res = await OwnerAPI.fetch("/api/v1/admin/models", { headers: getHeaders() });
             if (!res.ok) throw new Error("Router model listesi alınamadı");
             const catalog = await res.json();
             const signature = JSON.stringify(catalog);
@@ -166,7 +166,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         try {
-            const response = await fetch("/api/v1/admin/users/settings", {
+            const response = await OwnerAPI.fetch("/api/v1/admin/users/settings", {
                 headers: getHeaders()
             });
 
@@ -217,7 +217,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         try {
-            const response = await fetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/settings/${encodeURIComponent(key)}`, {
+            const response = await OwnerAPI.fetch(`/api/v1/admin/users/${encodeURIComponent(userId)}/settings/${encodeURIComponent(key)}`, {
                 method: "DELETE",
                 headers: getHeaders()
             });
@@ -251,7 +251,7 @@ document.addEventListener("DOMContentLoaded", () => {
             };
             payload.values[key] = value;
 
-            const response = await fetch("/api/v1/admin/users/settings", {
+            const response = await OwnerAPI.fetch("/api/v1/admin/users/settings", {
                 method: "POST",
                 headers: getHeaders(),
                 body: JSON.stringify(payload)
@@ -273,7 +273,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!adminConnected) return;
         if (!confirm(`${key} fabrika varsayılanına sıfırlansın mı?`)) return;
         try {
-            const response = await fetch(`/api/v1/admin/settings/global/${encodeURIComponent(key)}/reset`, {
+            const response = await OwnerAPI.fetch(`/api/v1/admin/settings/global/${encodeURIComponent(key)}/reset`, {
                 method: "POST",
                 headers: getHeaders()
             });
@@ -745,7 +745,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!silent && historyPanel) historyPanel.style.display = "none";
 
         try {
-            const res = await fetch("/api/v1/admin/chats", { headers: getHeaders() });
+            const res = await OwnerAPI.fetch("/api/v1/admin/chats", { headers: getHeaders() });
             if (res.status === 401) {
                 setAdminConnection(false, "Yetkilendirme gerekli.");
                 throw new Error("Unauthorized: Invalid Admin API Key");
@@ -802,7 +802,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const previousScroll = silent && listEl ? listEl.scrollTop : 0;
 
         try {
-            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chat.chat_id)}/history`, { headers: getHeaders() });
+            const res = await OwnerAPI.fetch(`/api/v1/admin/chats/${encodeURIComponent(chat.chat_id)}/history`, { headers: getHeaders() });
             if (res.status === 401) {
                 setAdminConnection(false, "Yetkilendirme gerekli.");
                 throw new Error("Unauthorized: Invalid Admin API Key");
@@ -913,7 +913,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (!confirm(`"${chatId}" sohbetini kalıcı olarak silmek istediğinize emin misiniz?`)) return;
         try {
-            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}`, { method: "DELETE", headers: getHeaders() });
+            const res = await OwnerAPI.fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}`, { method: "DELETE", headers: getHeaders() });
             if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || "Silinemedi");
             rowEl.remove();
             allChatsData = allChatsData.filter(c => c.chat_id !== chatId);
@@ -931,7 +931,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         chatRenameInProgress = true;
         try {
-            const res = await fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}/rename`, {
+            const res = await OwnerAPI.fetch(`/api/v1/admin/chats/${encodeURIComponent(chatId)}/rename`, {
                 method: "PATCH",
                 headers: getHeaders(),
                 body: JSON.stringify({ name: newName })

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from collections.abc import Callable
+from urllib.parse import urlsplit
 
 try:
     from dotenv import load_dotenv
@@ -70,12 +71,26 @@ def get_postgres_url() -> str:
 
 
 def get_router_base_urls() -> list[str]:
+    # Trust storage holds UUID + SPKI independently from the current address.
+    from orion.kernel.local_security import SecurityStore
+    trusted = SecurityStore().routers()
+    from services.shared.router_connection import read_connection
+    selected = read_connection()
+    if selected:
+        match = next((entry for entry in trusted if entry['id'] == selected.get('id')), None)
+        if not match or (selected.get('fp') and selected['fp'] != match['fp']):
+            raise RuntimeError('Kayıtlı Router güveni bulunamadı; bağlantı otomatik değiştirilmedi.')
+        return [match['url']]
+    if trusted:
+        if len(trusted) != 1:
+            raise RuntimeError('Birden fazla güvenilen Router var; panelden kullanacağınız Router’ı seçin.')
+        return [trusted[0]['url']]
     host = get_env("ROUTER_HOST")
-    port = get_env("ROUTER_PORT")
+    port = get_env("ORION_ROUTER_TLS_PORT", default="9443", required=False)
     if host and port:
         if not os.path.exists("/.dockerenv") and host == "router":
             host = "127.0.0.1"
-        return [f"http://{host}:{port}"]
+        return [f"https://{host}:{port}"]
     raise RuntimeError("Missing ROUTER_HOST or ROUTER_PORT")
 
 

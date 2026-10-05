@@ -70,7 +70,7 @@ function renderCompletionPanel() {
     listEl.innerHTML = services.map(service => {
         const state = getServiceRuntimeState(service);
         return `
-            <div class="completion-status-item">
+            <div class="completion-status-item" data-service-id="${service.id}">
                 <div>
                     <div class="completion-service-name">${window.t_service_name(service)}</div>
                     <div class="completion-service-meta">${service.category.toUpperCase()}</div>
@@ -81,6 +81,20 @@ function renderCompletionPanel() {
                 </div>
             </div>`;
     }).join('');
+    for (const service of services) {
+        if (!service.is_running || !service.launch_url) continue;
+        try {
+            const url = new URL(service.launch_url);
+            if (url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) continue;
+            const row = Array.from(listEl.children).find(element => element.dataset.serviceId === service.id);
+            const link = document.createElement('a');
+            link.href = url.href;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = window.orionLang === 'tr' ? 'Paneli aç' : 'Open dashboard';
+            row?.querySelector('div')?.append(link);
+        } catch { /* An invalid configured launch address is not rendered. */ }
+    }
 }
 
 const openCompletionPanel = () => {

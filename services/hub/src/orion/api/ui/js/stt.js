@@ -21,7 +21,8 @@ const STT = {
     getRouterWsUrl(authToken, language = 'tr', model = 'local-stt') {
         const host = window.location.host;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${protocol}//${host}/api/v1/audio/transcriptions/stream?token=${encodeURIComponent(authToken)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`;
+        const path = HubPicker.apiPath(`/api/v1/audio/transcriptions/stream?token=${encodeURIComponent(authToken)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`);
+        return `${protocol}//${host}${path}`;
     },
 
     markListening() {
@@ -115,7 +116,7 @@ const STT = {
             if (sttModel !== 'local-stt') {
                 throw new Error('Canlı sesli yazma yalnızca local-stt modelini destekliyor. Ayarlardan yerel modeli seçin.');
             }
-            const authToken = localStorage.getItem('orion_token') || '';
+            const authToken = Auth.getToken() || '';
             if (!authToken.trim()) throw new Error('Sesli yazma için Hub oturumuna tekrar giriş yapın.');
 
             const ws = new WebSocket(this.getRouterWsUrl(authToken, 'tr', sttModel));

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from .core import detect_hardware
 
 # ---------------------------------------------------------------------------
@@ -7,6 +8,10 @@ from .core import detect_hardware
 # ---------------------------------------------------------------------------
 INSTALLER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT  = os.path.dirname(INSTALLER_DIR)
+# `python -m app` starts inside installer, but shared runtime packages live
+# at the repository root. Resolve them independently of the launch directory.
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 SERVICES_DIR  = os.path.join(PROJECT_ROOT, "services")
 UI_DIR        = os.path.join(INSTALLER_DIR, "app", "ui")
 
@@ -66,6 +71,11 @@ def _load_global_env() -> dict[str, str]:
         except Exception:
             pass
 
+    env.setdefault('ORION_ROUTER_TLS_PORT', '9443')
+    # Browser launch links use only this PC's guarded HTTP UI. Router network
+    # transport still uses ORION_ROUTER_TLS_PORT and the pinned TLS policy.
+    env['HUB_LAUNCH_URL'] = f'http://127.0.0.1:{env.get("ORION_LOCAL_PORT", "8910")}/manage'
+    env['ROUTER_LAUNCH_URL'] = f'http://127.0.0.1:{env.get("ORION_ROUTER_LOCAL_PORT", "20128")}/dashboard'
     # HOST+PORT'tan URL'leri otomatik türet — global.env'de elle yazma
     for key, host in list(env.items()):
         if not key.endswith("_HOST") or not host:
@@ -73,8 +83,11 @@ def _load_global_env() -> dict[str, str]:
         base = key[:-5]
         port_key = f"{base}_PORT"
         port_val = env.get(port_key)
+        if base == 'ROUTER':
+            port_val = env.get('ORION_ROUTER_TLS_PORT', '9443')
         if port_val:
-            env.setdefault(f"{base}_BASE_URL", f"http://{host}:{port_val}")
+            scheme = 'https' if base in {'HUB', 'ROUTER', 'API_2', 'NGINX', 'INSTALLER'} else 'http'
+            env.setdefault(f"{base}_BASE_URL", f"{scheme}://{host}:{port_val}")
 
     if env.get("REDIS_HOST") and env.get("REDIS_PORT"):
         env.setdefault("REDIS_URL", f"redis://{env['REDIS_HOST']}:{env['REDIS_PORT']}/0")

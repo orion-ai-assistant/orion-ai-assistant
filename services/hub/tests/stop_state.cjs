@@ -2,8 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const context = vm.createContext({ performance, console, window: {}, document: {
-    getElementById: () => ({ disabled: false, innerHTML: '' })
+const context = vm.createContext({ performance, console, window: {},
+    OrionI18n: {t: key => key}, HubPicker: {apiPath: path => path}, document: {
+    getElementById: () => ({ disabled: false, innerHTML: '', setAttribute() {} })
 }});
 for (const file of ['config.js', 'api.js', 'sse.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js', file), 'utf8'), context);

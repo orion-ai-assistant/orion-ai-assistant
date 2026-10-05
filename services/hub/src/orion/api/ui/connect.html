@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Orion bağlantısı</title><style>body{font-family:system-ui;background:#111720;color:#eaf1ff;margin:0;padding:28px}main{max-width:460px;margin:8vh auto}a{display:block;padding:16px;margin:16px 0;border-radius:12px;background:#a7b6ff;color:#102040;text-decoration:none}p{line-height:1.6}[hidden]{display:none!important}</style></head><body><main><h1>Orion’a bağlan</h1><p id="message">Orion uygulaması kuruluysa uygulamada aç. Bilgisayarda veya uygulama kurulu değilse tarayıcıdan devam edebilirsin.</p><a id="app" hidden>Orion uygulamasında devam et</a><a id="browser" hidden>Tarayıcıda devam et</a><p>Hub açık ve bu cihazdan ulaşılabilir olmalı. Tarayıcı bağlantısı sertifika uyarısı gösterebilir.</p></main><script>
+(() => {
+ const encoded = new URLSearchParams(location.hash.slice(1)).get('data');
+ // The fragment stays on this device: no pairing code is sent to the server.
+ history.replaceState(null, '', location.pathname);
+ try {
+  if (!encoded || encoded.length > 8192 || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error();
+  const bytes = Uint8Array.from(atob(encoded.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4-encoded.length%4)%4)), c=>c.charCodeAt(0));
+  const data = JSON.parse(new TextDecoder().decode(bytes));
+  if (data.v !== 1 || typeof data.id !== 'string' || typeof data.code !== 'string' || !/^https:\/\//.test(data.url) || typeof data.fp !== 'string') throw new Error();
+  const app = document.getElementById('app'); app.href = 'orion://pair?data=' + encoded; app.hidden = false;
+  if (typeof data.invitation_token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(data.invitation_token)) {
+   const browser = document.getElementById('browser'); browser.href = '/dashboard/#invite=' + encodeURIComponent(data.invitation_token); browser.hidden = false;
+  }
+ } catch { document.getElementById('message').textContent = 'Bağlantı geçersiz. PC’den yeni bir bağlantı oluştur.'; }
+})();
+</script></body></html>

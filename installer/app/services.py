@@ -3,6 +3,7 @@ import secrets
 import re
 import subprocess
 import logging
+import sys
 from . import config
 from .core import i18n
 from .utils import docker_utils, system_utils, model_resolver
@@ -15,6 +16,19 @@ _CONFLICT_PATTERN = re.compile(r'container name "(/[^"]+)" is already in use', r
 
 MANAGED_HOSTS = {"REDIS_HOST", "POSTGRES_HOST", "HUB_HOST", "WORKER_HOST", "API_2_HOST", "NGINX_HOST", "EMBED_HOST"}
 GPU_VENDORS = {"nvidia", "amd"}
+
+
+def _register_local_router_trust_source(router_dir):
+    """Record installer-owned filesystem provenance; never accept a network pin."""
+    source = os.path.join(config.PROJECT_ROOT, 'services', 'hub', 'src')
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    try:
+        from orion.kernel.router_bootstrap import register_local_router_installation
+        from services.shared.router_installation import registered_router_root
+        register_local_router_installation(registered_router_root() or router_dir)
+    except (OSError, ValueError, ImportError) as error:
+        logging.getLogger(__name__).warning('Local Router public identity registration pending: %s', error)
 
 # ==========================================
 # YARDIMCI FONKSİYONLAR
@@ -142,10 +156,15 @@ def get_services() -> list[dict]:
                 is_installed = os.path.exists(venv_path)
             
             proc_running = False
+            if data.get('id') == 'orion-router':
+                from services.shared.router_installation import registered_router_root
+                registered = registered_router_root()
+                if registered:
+                    root_marker = os.path.normcase(os.path.abspath(registered))
+                    proc_running = any(root_marker in os.path.normcase(line) and any(command in line.lower() for command in ('cli.py prod', 'main.py', 'orion.py prod', 'manager.py prod')) for line in local_processes_out.splitlines())
             if os.name == 'nt':
                 if data.get("id") == "orion-router":
-                    if "manager.py prod" in local_processes_out or "orion.py prod" in local_processes_out:
-                        proc_running = True
+                    pass  # Root-qualified detection above avoids unrelated Hub managers.
                 else:
                     # Use s_dir with trailing slash to avoid matching llama-cpp with llama-cpp-embed
                     s_dir_slash = s_dir + os.sep
@@ -153,8 +172,7 @@ def get_services() -> list[dict]:
                         proc_running = True
             else:
                 if data.get("id") == "orion-router":
-                    if "manager.py prod" in local_processes_out or "orion.py prod" in local_processes_out:
-                        proc_running = True
+                    pass
 
                 else:
                     # In linux we check ps aux output
@@ -314,6 +332,10 @@ def get_services() -> list[dict]:
                 "installed_mmproj": installed_env_vars.get("MMPROJ_FILE", ""),
                 "installed_hardware": installed_hardware
             })
+        if data.get('id') == 'orion-hub':
+            data['launch_url'] = config._load_global_env().get('HUB_LAUNCH_URL', 'http://127.0.0.1:8910/manage')
+        elif data.get('id') == 'orion-router':
+            data['launch_url'] = config._load_global_env().get('ROUTER_LAUNCH_URL', 'http://127.0.0.1:20128/dashboard')
         services.append(data)
         
     # Sıralama mantığı: Hub/Core -> Order -> Name
@@ -431,7 +453,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
     # 1. ADMIN_API_KEY for Hub API
     has_api_key = g_vars.get("ADMIN_API_KEY")
     if not has_api_key or not has_api_key.strip():
-        new_api_key = "orionadmin"
+        new_api_key = "orion"
         g_vars["ADMIN_API_KEY"] = new_api_key
         added_global_vars["ADMIN_API_KEY"] = new_api_key
 
@@ -681,9 +703,11 @@ def start_local_service(service_id: str) -> bool:
         plat, path = find_orionrouter_script()
         if not path:
             return False
-        router_dir = os.path.dirname(path)
+        from services.shared.router_installation import registered_router_root
+        router_dir = registered_router_root() or os.path.dirname(path)
         # Port konfigürasyonunu ve dashboard build'ini senkronize et
         _sync_router_config_and_dashboard(router_dir)
+        _register_local_router_trust_source(router_dir)
         # Varsa eski/artık kilit dosyalarını temizle
         for lock_file in [".orion.prod.lock", ".orion.pid"]:
             lock_path = os.path.join(router_dir, lock_file)
@@ -1079,11 +1103,13 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
                 subprocess.run(["powershell", "-c", "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) local -NoStart; exit 0"], check=True)
                 if appdata:
                     _sync_router_config_and_dashboard(os.path.join(appdata, "OrionRouter"))
+                    _register_local_router_trust_source(os.path.join(appdata, "OrionRouter"))
             else:
                 subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local --no-start"], check=True)
-                r_dir = os.path.expanduser("~/.local/share/OrionRouter")
+                r_dir = os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router'))
                 if os.path.exists(r_dir):
                     _sync_router_config_and_dashboard(r_dir)
+                    _register_local_router_trust_source(r_dir)
             start_local_service(service_id)
             return
             
@@ -1267,7 +1293,12 @@ def run_installation(
         config.INSTALLING_SERVICES.discard(service_id)
 
 def find_orionrouter_script():
-    import os
+    from services.shared.router_installation import registered_router_root
+    registered = registered_router_root()
+    if registered:
+        script = os.path.join(registered, 'orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
+        if os.path.isfile(script):
+            return 'win' if os.name == 'nt' else 'unix', script
     if os.name == 'nt':
         appdata = os.environ.get("LOCALAPPDATA", "")
         if appdata:
@@ -1275,7 +1306,7 @@ def find_orionrouter_script():
             if os.path.exists(ps1_path):
                 return "win", ps1_path
     else:
-        sh_path = os.path.expanduser("~/.local/share/OrionRouter/orionrouter")
+        sh_path = os.path.join(os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router')), 'orionrouter')
         if os.path.exists(sh_path):
             return "unix", sh_path
             

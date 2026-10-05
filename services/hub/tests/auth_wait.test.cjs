@@ -35,6 +35,7 @@ test('invitation registration passes token, saves login token, and clears invite
     const saved = new Map(); let body, replaced;
     const sandbox = {window: {}, localStorage: {setItem: (key, value) => saved.set(key, value)}, history: {replaceState: (...args) => replaced = args[2]}, location: {pathname: '/dashboard/'}, fetch: async (url, options) => {body = JSON.parse(options.body); return {ok: true, json: async () => ({access_token: 'new-user-token'})};}};
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/api.js'), 'utf8') + ';globalThis.auth = Auth;', sandbox);
+    sandbox.HubPicker = {apiPath: path => path, connected: true};
     sandbox.auth.invitationToken = 'invitation';
     await sandbox.auth.register('alice', 'password');
     assert.equal(body.invitation_token, 'invitation');

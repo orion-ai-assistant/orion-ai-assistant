@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
 from aiohttp import web
 
@@ -7,6 +8,14 @@ from orion.browser import CDPConnectionLost, CDPError, CDPSession, CDPTimeout
 
 
 class CDPSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_before_reader_starts_still_closes_websocket(self):
+        http, socket = AsyncMock(), AsyncMock()
+        socket.closed = False
+        client = CDPSession(http, socket)
+        await client.close()
+        socket.close.assert_awaited_once()
+        http.close.assert_awaited_once()
+
     async def asyncSetUp(self):
         self.messages = asyncio.Queue()
         self.connected = asyncio.get_running_loop().create_future()

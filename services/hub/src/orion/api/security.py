@@ -62,9 +62,45 @@ def validate_security_configuration() -> None:
         logging.getLogger(__name__).warning("Development JWT secret in use: loopback-only local development; configure JWT_SECRET_KEY before remote access")
 
 
+def owner_password_hash():
+    from orion.kernel.local_security import security_dir
+    path = security_dir() / 'owner-password.hash'
+    if path.exists():
+        return path.read_text(encoding='ascii').strip()
+    return None
+
+
+def migrate_legacy_owner_default():
+    """Explicit installer/deployment migration; preserve every custom credential."""
+    if owner_password_hash() or not valid_admin_key('orionadmin'):
+        return False
+    from orion.kernel.local_security import security_dir, identity_lock, atomic_write
+    directory = security_dir()
+    with identity_lock(directory):
+        if owner_password_hash():
+            return False
+        atomic_write(directory / 'owner-password.hash', hash_password('orion').encode('ascii'))
+    return True
+
+
+def admin_credential_fingerprint():
+    import hashlib
+    # A password change invalidates owner sessions on every Hub process.
+    value = owner_password_hash() or get_env('ADMIN_API_KEY', required=False) or ''
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def valid_admin_key(provided: str | None) -> bool:
+    if not provided:
+        return False
+    saved = owner_password_hash()
+    if saved:
+        try:
+            return verify_password(provided, saved)
+        except ValueError:
+            return False
     configured = get_env("ADMIN_API_KEY", required=False)
-    return bool(configured and provided and hmac.compare_digest(provided.encode("utf-8"), configured.encode("utf-8")))
+    return bool(configured and hmac.compare_digest(provided.encode("utf-8"), configured.encode("utf-8")))
 
 
 # Existing phase-1 helper names remain compatible with the consolidated policy.

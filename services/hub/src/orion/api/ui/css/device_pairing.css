@@ -1,0 +1,11 @@
+.sidebar-nav [hidden], #settings-view [hidden], .device-pair-dialog [hidden] { display: none !important; }
+.device-pair-dialog { max-width: 430px; width: calc(100% - 40px); border: 1px solid #394452; border-radius: 20px; padding: 28px; color: #eef3f6; background: #151b24; }
+.device-pair-dialog::backdrop { background: #0009; }
+.device-pair-dialog h2 { margin: 0 22px 14px 0; font-size: 22px; }
+.device-pair-dialog p { line-height: 1.5; color: #b7c2ce; }
+.device-pair-dialog [data-error] { color: #ffb3a5; }
+.device-pair-dialog label { display: block; margin: 16px 0; }
+.device-pair-dialog input:not([type=checkbox]) { display: block; box-sizing: border-box; width: 100%; padding: 12px; margin-top: 8px; border: 1px solid #475364; border-radius: 10px; background: #0d131c; color: inherit; }
+.device-pair-dialog [data-qr] { display: block; margin: 20px auto; width: 250px; max-width: 100%; background: white; border-radius: 8px; }
+.device-pair-close { position: absolute; top: 12px; right: 12px; background: transparent; border: 0; color: inherit; font-size: 28px; cursor: pointer; }
+#pair-device-settings { margin: 20px 0; }

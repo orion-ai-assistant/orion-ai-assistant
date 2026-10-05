@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("up", "up-lb", "up-ai", "build", "down", "logs", "ps", "restart", "test")]
     [string]$Command,
-    [string]$BaseUrl = "http://localhost:8909"
+    [string]$BaseUrl = "http://127.0.0.1:8910"
 )
 
 # Kullanım:

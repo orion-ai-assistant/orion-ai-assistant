@@ -53,10 +53,10 @@ class TTSEngine:
     def encode_voice(self, audio_path: str, text: str) -> Any:
         raise NotImplementedError
 
-    def generate(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
+    def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
         raise NotImplementedError
 
-    def generate_stream(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
+    def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
         raise NotImplementedError
 
     def cleanup(self):
@@ -75,8 +75,7 @@ class VoxCPMEngine(TTSEngine):
             model_id,
             load_denoiser=False, # ZipEnhancer (modelscope) devredışı
             vae_device=vae_device,
-            local_files_only=True,
-            attn_implementation="flash_attention_2"
+            local_files_only=True
         )
 
     def encode_voice(self, audio_path: str, text: str) -> Any:
@@ -87,7 +86,7 @@ class VoxCPMEngine(TTSEngine):
             reference_wav_path=audio_path
         )
 
-    def generate(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
+    def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
         self.set_seed(seed)
         final_text = f"({instruct}){text}" if instruct else text
         inference_timesteps = steps if steps else (10 if self.low_vram else 15)
@@ -124,7 +123,7 @@ class VoxCPMEngine(TTSEngine):
         
         return (self.model.tts_model.sample_rate, audio_data)
 
-    def generate_stream(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
+    def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
         self.set_seed(seed)
         final_text = f"({instruct}){text}" if instruct else text
         inference_timesteps = steps if steps else (10 if self.low_vram else 15)
@@ -186,7 +185,7 @@ class OmniVoiceEngine(TTSEngine):
             ref_text=ref_text
         )
 
-    def generate(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
+    def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
         from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
         self.set_seed(seed)
 
@@ -224,7 +223,7 @@ class OmniVoiceEngine(TTSEngine):
         audio_data = (audio_list[0].flatten() * 32767).astype(np.int16)
         return (24000, audio_data)
 
-    def generate_stream(self, text: str, voice_cache: Any = None, instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
+    def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
         sr, audio_data = self.generate(
             text=text, voice_cache=voice_cache, instruct=instruct, 
             speed=speed, guidance_scale=guidance_scale, steps=steps, 

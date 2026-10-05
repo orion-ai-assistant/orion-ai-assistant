@@ -1,4 +1,5 @@
 import os
+import ipaddress
 import platform
 import signal
 import socket
@@ -11,21 +12,47 @@ import webbrowser
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from . import config
 from .routes import router
 
+
+def installer_identity():
+    # Installer and Hub share the persistent identity; no browser trust bypass.
+    source = os.path.join(config.PROJECT_ROOT, 'services', 'hub', 'src')
+    if source not in sys.path:
+        sys.path.insert(0, source)
+    settings = config._load_global_env()
+    for key in ('ORION_SECURITY_DIR', 'ORION_MOBILE_ADVERTISE_HOST', 'ORION_HUB_NAME'):
+        if settings.get(key):
+            os.environ.setdefault(key, settings[key])
+    from orion.kernel.local_security import tls_identity
+    return tls_identity()
+
 # Global tarayıcı süreç referansı
 browser_process = None
+startup_time = time.monotonic()
+ui_served = False
+
+
+def lifecycle_log(message):
+    print(f"[LIFECYCLE +{time.monotonic() - startup_time:.3f}s pid={os.getpid()}] {message}", flush=True)
+
+
+class InstallerServer(uvicorn.Server):
+    def handle_exit(self, sig, frame):
+        # Log at receipt, before Uvicorn shutdown and its signal replay.
+        lifecycle_log(f"Uvicorn signal={signal.Signals(sig).name} ({sig}); ui_served={ui_served}")
+        super().handle_exit(sig, frame)
 
 # ---------------------------------------------------------------------------
 # Sinyal Yönetimi ve Temizlik İşlemleri
 # ---------------------------------------------------------------------------
 def handle_exit(sig, frame):
+    lifecycle_log(f"Installer exit handler signal={signal.Signals(sig).name} ({sig})")
     config.SHOULD_EXIT = True
     print("\n[SYSTEM] Kapatma sinyali alındı, görevler durduruluyor...")
     
@@ -69,11 +96,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Installer API", lifespan=lifespan)
 
-# CORS ve Önbellek (Cache) Engelleme Middleware'leri
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# The installer is a same-origin, same-PC application; it never needs LAN CORS.
 
 @app.middleware("http")
 async def no_cache(request: Request, call_next):
+    try:
+        headers = request.scope.get('headers', [])
+        hosts = [value.decode('latin1') for name, value in headers if name.lower() == b'host']
+        from urllib.parse import urlsplit
+        authority = urlsplit('http://' + hosts[0]) if len(hosts) == 1 else None
+        peer = ipaddress.ip_address(request.client.host).is_loopback
+        host_ok = (authority is not None and authority.hostname in {'127.0.0.1', 'localhost', '::1'}
+                   and not authority.username and not authority.password and not authority.path
+                   and not authority.query and not authority.fragment
+                   and (authority.port or 80) == request.scope['server'][1])
+        forwarded = {'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
+                     'x-real-ip', 'cf-connecting-ip'}
+        origins = request.headers.getlist('origin')
+        origin_ok = not origins or (len(origins) == 1 and origins[0] == f'{request.url.scheme}://{hosts[0]}')
+        allowed = peer and host_ok and origin_ok and request.headers.get('sec-fetch-site') != 'cross-site'
+        allowed = allowed and not any(name in request.headers for name in forwarded)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        allowed = False
+    if not allowed:
+        return JSONResponse({'detail': 'Installer is available only on this PC.'}, status_code=403)
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -84,6 +130,9 @@ app.include_router(router)
 
 @app.get("/")
 def index():
+    global ui_served
+    ui_served = True
+    lifecycle_log('GET /: installer HTML requested')
     return FileResponse(f"{config.UI_DIR}/index.html")
 
 app.mount("/ui", StaticFiles(directory=config.UI_DIR), name="ui")
@@ -96,10 +145,12 @@ shutdown_timer: threading.Timer = None
 shutdown_lock = threading.Lock()
 
 def schedule_shutdown(delay: float = 2.0):
+    lifecycle_log(f"Shutdown timer scheduled: delay={delay}s; ui_served={ui_served}")
     global shutdown_timer
     with shutdown_lock:
         cancel_shutdown_unlocked()
         def perform_shutdown():
+            lifecycle_log('Shutdown timer fired; synthesizing SIGINT via interrupt_main')
             print("\n[SYSTEM] Arayüz kapatıldı. Sunucu durduruluyor...")
             try:
                 handle_exit(signal.SIGINT, None)
@@ -121,12 +172,14 @@ def cancel_shutdown():
         cancel_shutdown_unlocked()
 
 @app.post("/api/shutdown")
-def shutdown():
+def shutdown(request: Request):
+    lifecycle_log(f"POST /api/shutdown received; peer={request.client.host if request.client else 'unknown'}; ui_served={ui_served}")
     schedule_shutdown()
     return {"status": "success", "message": "Shutdown scheduled"}
 
 @app.post("/api/keepalive")
 def keepalive():
+    lifecycle_log('POST /api/keepalive received; cancelling shutdown timer')
     cancel_shutdown()
     return {"status": "success", "message": "Shutdown cancelled"}
 
@@ -221,6 +274,14 @@ def open_app_window(host: str, port: int):
         # Python'un evrensel kütüphanesiyle normal bir sekme aç (Garanti çözüm)
         if not opened:
             webbrowser.open(url)
+
+        process = browser_process
+        if process is not None:
+            lifecycle_log(f"Browser launcher started: pid={process.pid}; parent={os.getpid()}")
+            # Chromium may hand off to an existing instance. Exit is evidence,
+            # never an instruction to stop the installer.
+            result = process.wait()
+            lifecycle_log(f"Browser launcher exited: pid={process.pid}; returncode={result}; ui_served={ui_served}")
 
     threading.Thread(target=wait_and_open, daemon=True).start()
 
@@ -337,6 +398,8 @@ if __name__ == "__main__":
     print(f"\n[SYSTEM] Orion Installer başlatıldı.")
     print(f"[SYSTEM] Arayüz otomatik olarak açılacaktır.")
     print(f"[SYSTEM] Eğer otomatik açılmazsa, tarayıcınızdan şu adrese gidebilirsiniz: http://127.0.0.1:{PORT}\n")
+    print('[SYSTEM] Installer yalnızca bu PC üzerinde çalışır; LAN servisleri HTTPS kullanır.')
 
+    lifecycle_log(f"Installer starting; parent={os.getppid()}; uvicorn={uvicorn.__version__}")
     open_app_window("127.0.0.1", PORT)
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    InstallerServer(uvicorn.Config(app, host="127.0.0.1", port=PORT, proxy_headers=False)).run()

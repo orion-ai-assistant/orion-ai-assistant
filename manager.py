@@ -44,7 +44,21 @@ def _read_env_files():
     return result
 
 def load_env_port(key):
-    val = _read_env_files().get(key)
+    values = _read_env_files()
+    if key == 'ROUTER_PORT':
+        # The Router owns its TLS listener port; old Hub routing ports are not it.
+        val = os.getenv('ORION_ROUTER_TLS_PORT') or values.get('ORION_ROUTER_TLS_PORT', '9443')
+        _, script = find_orionrouter_script()
+        if script:
+            for filename in ('.env', '.env.local'):
+                candidate = os.path.join(os.path.dirname(os.path.abspath(script)), filename)
+                if os.path.isfile(candidate):
+                    with open(candidate, encoding='utf-8') as settings:
+                        for line in settings:
+                            if line.strip().startswith('ORION_ROUTER_TLS_PORT='):
+                                val = line.strip().split('=', 1)[1].strip().strip('"\'')
+    else:
+        val = values.get(key)
     if val is None:
         raise RuntimeError(f"Missing required port env var: {key}")
     try:
@@ -263,6 +277,8 @@ def cmd_run(alias, extra_args):
         proc = subprocess.Popen(cmd, cwd=target_cwd)
         proc.wait()
     except KeyboardInterrupt:
+        if alias == 'installer':
+            print(f"[LIFECYCLE manager pid={os.getpid()}] KeyboardInterrupt received; installer pid={proc.pid if proc else 'not started'}", flush=True)
         print("\n[!] Durduruldu.")
         if proc:
             try:
@@ -302,6 +318,12 @@ def get_mode_from_args(args):
     return "docker"
 
 def find_orionrouter_script():
+    from services.shared.router_installation import registered_router_root
+    registered = registered_router_root()
+    if registered:
+        script = os.path.join(registered, 'orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
+        if os.path.isfile(script):
+            return 'win' if os.name == 'nt' else 'unix', script
     if os.name == 'nt':
         appdata = os.environ.get("LOCALAPPDATA", "")
         if appdata:
@@ -309,7 +331,7 @@ def find_orionrouter_script():
             if os.path.exists(ps1_path):
                 return "win", ps1_path
     else:
-        sh_path = os.path.expanduser("~/.local/share/OrionRouter/orionrouter")
+        sh_path = os.path.join(os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router')), 'orionrouter')
         if os.path.exists(sh_path):
             return "unix", sh_path
 

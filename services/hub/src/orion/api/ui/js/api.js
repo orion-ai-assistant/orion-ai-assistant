@@ -2,16 +2,17 @@
  * API Request Handlers and Authentication
  */
 const Auth = {
+    tokenKey: 'orion_token',
     getToken() {
-        return localStorage.getItem("orion_token");
+        return localStorage.getItem(this.tokenKey);
     },
     
     setToken(token) {
-        localStorage.setItem("orion_token", token);
+        localStorage.setItem(this.tokenKey, token);
     },
     
     clearToken() {
-        localStorage.removeItem("orion_token");
+        localStorage.removeItem(this.tokenKey);
     },
 
     getAuthHeaders(additionalHeaders = {}) {
@@ -24,7 +25,8 @@ const Auth = {
     },
 
     async login(username, password) {
-        const response = await fetch("/api/v1/auth/login", {
+        const namespace = this.tokenKey;
+        const response = await fetch(HubPicker.apiPath("/api/v1/auth/login"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username, password })
@@ -35,12 +37,14 @@ const Auth = {
             if (response.status === 429) error.retryAfter = AuthWait.retrySeconds(response);
             throw error;
         }
+        if (namespace !== this.tokenKey || !HubPicker.connected) throw new Error('Hub değişti. Seçili Hub’a yeniden giriş yap.');
         this.setToken(data.access_token);
         return data;
     },
 
     async register(username, password) {
-        const response = await fetch("/api/v1/auth/register", {
+        const namespace = this.tokenKey;
+        const response = await fetch(HubPicker.apiPath("/api/v1/auth/register"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username, password, invitation_token: this.invitationToken })
@@ -51,6 +55,7 @@ const Auth = {
             if (response.status === 429) error.retryAfter = AuthWait.retrySeconds(response);
             throw error;
         }
+        if (namespace !== this.tokenKey || !HubPicker.connected) throw new Error('Hub değişti. Seçili Hub’a yeniden giriş yap.');
         this.setToken(data.access_token);
         this.invitationToken = null;
         history.replaceState(null, '', location.pathname);
@@ -58,13 +63,16 @@ const Auth = {
     },
 
     async getMe() {
-        const response = await fetch("/api/v1/auth/me", {
+        const namespace = this.tokenKey;
+        const response = await fetch(HubPicker.apiPath("/api/v1/auth/me"), {
             headers: this.getAuthHeaders()
         });
         if (!response.ok) {
             throw new Error("Oturum süresi dolmuş veya geçersiz.");
         }
-        return await response.json();
+        const data = await response.json();
+        if (namespace !== this.tokenKey || !HubPicker.connected) throw new Error('Hub değişti.');
+        return data;
     },
     
     handleUnauthorized() {
@@ -80,6 +88,7 @@ const API = {
     sendInFlight: false,
 
     async _fetch(url, options = {}) {
+        const namespace = Auth.tokenKey;
         if (!url.startsWith("/api/v1/auth") && !AppState.sseConnected) {
             return new Response(JSON.stringify({ detail: "Bağlantı yok. Yeniden bağlanılıyor." }), {
                 status: 503,
@@ -87,7 +96,8 @@ const API = {
             });
         }
         options.headers = Auth.getAuthHeaders({"Accept-Language": OrionI18n.language, ...(options.headers || {})});
-        const response = await fetch(url, options);
+        const response = await fetch(HubPicker.apiPath(url), options);
+        if (namespace !== Auth.tokenKey) throw new Error('Hub değişti.');
         if (response.status === 401) {
             Auth.handleUnauthorized();
         }

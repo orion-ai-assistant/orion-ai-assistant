@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orion · Router bağlantısı</title><link rel="stylesheet" href="/owner-assets/owner.css"></head>
+<body class="owner-locked" data-owner-scope="admin" data-owner-title="Router bağlantısı"><main class="wrap owner-content"><a class="brand" href="/">✦ <span>ORION</span></a><div class="page-header"><h1>Router bağlantısı</h1><a href="/dashboard/">Sohbet</a><button type="button" id="owner-logout">Kilitle</button></div>
+<p class="hint">Ağda Router ara veya HTTPS adresini yaz. Kayıtlı Router için mevcut güven kullanılır. Yeni bir Router seçersen kendi ekranındaki UUID ve SPKI parmak izini doğrulaman gerekir.</p>
+<p id="router-current" role="status">Bağlantı kontrol ediliyor…</p><p id="router-error" class="notice" role="alert" hidden></p>
+<label>Router ekranındaki SPKI SHA-256<input id="router-fp" pattern="[0-9a-f]{64}" maxlength="64"></label><button type="button" id="router-refresh">Ağdaki Router’ları bul</button><div id="router-list" class="home-grid"></div>
+<form id="router-manual"><label>Elle Router adresi<input id="router-address" type="url" placeholder="https://localhost:9443" required></label><label>Router UUID<input id="router-manual-id" required></label><button type="submit">Bağlantıyı kontrol et ve kaydet</button></form>
+<p class="footnote">Bağlantılar HTTPS üzerinden kaydedilmiş SPKI parmak iziyle doğrulanır. API anahtarını Gelişmiş yönetim → global ayarlar bölümünden değiştirebilirsin.</p></main>
+<script src="/owner-assets/base.js?v=1"></script><script src="/owner-assets/auth_wait.js"></script><script src="/owner-assets/gate.js?v=3"></script><script src="/owner-assets/router.js?v=1"></script></body></html>

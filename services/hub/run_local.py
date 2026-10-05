@@ -61,6 +61,21 @@ def main():
     env = os.environ.copy()
     # A separate LAN/tunnel entry point never exposes local owner pages/APIs.
     public_port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
+    local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
+    public_port = int(get_env('ORION_WEB_PORT', default=public_port, required=False))
+    if public_port == local_port:
+        public_port = 8911
+    env['ORION_PUBLIC_PORT'] = str(public_port)
+    env['ORION_LOCAL_PORT'] = str(local_port)
+    mobile_port = get_env('ORION_MOBILE_PORT', default='8443', required=False)
+    try:
+        sys.path.insert(0, os.path.join(_hub_dir, 'src'))
+        from orion.kernel.local_installation import register_native_hub
+        register_native_hub(_repo_root, int(mobile_port))
+    except (OSError, ValueError, ImportError) as error:
+        print(f'[!] Local desktop registration unavailable: {type(error).__name__}; phone QR remains available')
+    if len({int(hub_port), int(public_port), int(mobile_port), local_port}) != 4:
+        raise RuntimeError('Hub HTTPS ports must differ')
     if str(public_port) == str(hub_port):
         raise RuntimeError('ORION_PUBLIC_PORT must differ from HUB_PORT')
     if not env.get('JWT_SECRET_KEY') or env.get('JWT_SECRET_KEY') == 'super-secret-default-key-for-dev':
@@ -89,8 +104,16 @@ def main():
     # Commands
     hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
     py_bin = hub_venv_py if os.path.exists(hub_venv_py) else sys.executable
-    api_cmd = [py_bin, "-m", "uvicorn", "orion.api.main:app", "--host", "127.0.0.1", "--port", str(hub_port)]
-    public_cmd = [py_bin, '-m', 'uvicorn', 'orion.api.main:public_app', '--host', '0.0.0.0', '--port', str(public_port)]
+    api_cmd = [py_bin, '-m', 'orion.api.web_server', '--host', '127.0.0.1', '--port', str(hub_port)]
+    public_cmd = [py_bin, '-m', 'orion.api.web_server', '--public', '--host', '0.0.0.0', '--port', str(public_port)]
+    mobile_cmd = [py_bin, '-m', 'orion.api.mobile_server']
+    local_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(local_port)]
+    shortcuts_enabled = get_env('ORION_LOCAL_SHORTCUTS', default='1', required=False).lower() not in {'0', 'false', 'off', 'no'}
+    shortcuts_port = int(get_env('ORION_LOCAL_SHORTCUT_PORT', default='80', required=False))
+    if shortcuts_enabled and shortcuts_port in {int(public_port), int(hub_port), int(mobile_port), local_port}:
+        raise RuntimeError('Local shortcut port must differ from other Hub listeners')
+    # Always local, even with legacy LAN/gateway environment settings present.
+    shortcuts_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(shortcuts_port)]
     worker_cmd = [py_bin, "-m", "orion.worker.main"]
     redis_exe = os.path.join(base_dir, ".local_db", "redis", "redis-server.exe")
     
@@ -150,8 +173,27 @@ def main():
     processes.append(public_proc)
     all_pids.append(public_proc.pid)
     threading.Thread(target=stream_logs, args=(public_proc, '[API]', log_file, log_lock), daemon=True).start()
-    print(f'[*] PC owner home: http://localhost:{hub_port}/; phone/tunnel entry point: port {public_port}')
+    print(f'[*] PC owner home: https://localhost:{hub_port}/; phone/tunnel entry point: port {public_port}')
+    local_proc = subprocess.Popen(local_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+    processes.append(local_proc)
+    all_pids.append(local_proc.pid)
+    threading.Thread(target=stream_logs, args=(local_proc, '[API]', log_file, log_lock), daemon=True).start()
+    print(f'[*] Local management: http://127.0.0.1:{local_port}/manage')
+
+    if shortcuts_enabled:
+        shortcut_proc = subprocess.Popen(shortcuts_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+        processes.append(shortcut_proc)
+        all_pids.append(shortcut_proc.pid)
+        threading.Thread(target=stream_logs, args=(shortcut_proc, '[API]', log_file, log_lock), daemon=True).start()
+        suffix = '' if shortcuts_port == 80 else f':{shortcuts_port}'
+        print(f'[*] Local entry: http://localhost{suffix}/; chat: /hub; owner panel: /panel; Router: /orionrouter')
     
+    mobile_proc = subprocess.Popen(mobile_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+    processes.append(mobile_proc)
+    all_pids.append(mobile_proc.pid)
+    threading.Thread(target=stream_logs, args=(mobile_proc, '[API]', log_file, log_lock), daemon=True).start()
+    print(f'[*] Mobile pinned HTTPS: port {mobile_port}')
+
     print("[*] Launching Worker...")
     worker_proc = subprocess.Popen(worker_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
     processes.append(worker_proc)

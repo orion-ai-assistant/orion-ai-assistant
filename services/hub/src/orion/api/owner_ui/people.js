@@ -2,7 +2,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const error = document.getElementById('people-error');
     const showError = failure => { error.hidden = false; error.textContent = failure.message; };
     const api = async (path, options={}) => {
-        const response = await fetch('/api/v1/owner' + path, { ...options, headers: {'Content-Type': 'application/json'} });
+        const response = await OwnerAPI.fetch('/api/v1/owner' + path, { ...options, headers: {'Content-Type': 'application/json'} });
         if (response.status === 401) { OwnerGate.lock(); throw new Error('Yönetim oturumun sona erdi.'); }
         const data = await response.json();
         if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'İşlem tamamlanamadı. Sunucu adresini ve alanları kontrol et.');
@@ -20,7 +20,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         container.append(row);
     };
+    let refreshing = false;
     const refresh = async () => {
+        if (refreshing || !OwnerGate.unlocked) return;
+        refreshing = true;
+        try {
         error.hidden = true;
         const data = await api('/people');
         const address = document.getElementById('public-url');
@@ -38,8 +42,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const status = invite.used_by ? `${invite.used_by} tarafından kullanıldı` : invite.revoked ? 'İptal edildi' : available ? 'Kullanılabilir' : 'Süresi doldu';
             renderRecord(invites, invite.label || 'Davet', `${status} · Son geçerlilik: ${date(invite.expires_at)}`, available ? 'İptal et' : null, () => api('/invitations/' + invite.id, {method: 'DELETE'}));
         });
+        } finally { refreshing = false; }
     };
     document.addEventListener('owner-unlocked', () => refresh().catch(showError));
+    // An invitation can be accepted on another device or in another tab.
+    const updateWhenVisible = () => {
+        if (!document.hidden && OwnerGate.unlocked) refresh().catch(showError);
+    };
+    const timer = setInterval(updateWhenVisible, 5000);
+    document.addEventListener('visibilitychange', updateWhenVisible);
+    window.addEventListener('focus', updateWhenVisible);
+    window.addEventListener('pagehide', () => clearInterval(timer), {once: true});
     document.getElementById('refresh-people').onclick = () => refresh().catch(showError);
     document.getElementById('invite-form').onsubmit = async event => {
         event.preventDefault(); error.hidden = true;

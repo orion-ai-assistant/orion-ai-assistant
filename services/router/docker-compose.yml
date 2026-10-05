@@ -5,10 +5,10 @@ services:
     container_name: router
     restart: unless-stopped
     ports:
-      - "${ROUTER_PORT}:${ROUTER_CONTAINER_PORT}"
+      - "${ORION_ROUTER_TLS_PORT:-9443}:${ORION_ROUTER_TLS_PORT:-9443}"
     environment:
-      # PORT yerine ROUTER_PORT kullanıyoruz ki uygulama doğru portta çalışsın
-      - ROUTER_PORT=${ROUTER_CONTAINER_PORT}
+      - ORION_ROUTER_TLS_PORT=${ORION_ROUTER_TLS_PORT:-9443}
+      - ORION_ROUTER_TLS_DIR=/app/persistent/tls
       - POSTGRES_HOST=router-db
       - POSTGRES_PORT=5432
       - POSTGRES_DB=orion_router

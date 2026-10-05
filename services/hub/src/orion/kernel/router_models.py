@@ -3,6 +3,7 @@ import os
 import time
 
 import aiohttp
+from orion.kernel.pinned_router import router_session
 from services.shared.environment import get_router_base_urls
 
 
@@ -53,7 +54,7 @@ async def _refresh_models() -> dict:
     global _model_catalog_cache, _model_cached_at
     key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
     names = ['models', 'model-groups']
-    async with aiohttp.ClientSession() as session:
+    async with router_session() as session:
         results = await asyncio.gather(*(
             _fetch_section(session, get_router_base_urls(), name, key) for name in names
         ))
@@ -92,7 +93,7 @@ async def get_router_catalog(force_refresh: bool = False, include_voices: bool =
             return _catalog_cache
     key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
     names = ['voices', 'local-tts-info']
-    async with aiohttp.ClientSession() as session:
+    async with router_session() as session:
         model_catalog, *results = await asyncio.gather(
             get_router_catalog(force_refresh=force_refresh, include_voices=False),
             *(_fetch_section(session, get_router_base_urls(), name, key) for name in names),

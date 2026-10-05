@@ -152,7 +152,7 @@ async def watch_browser_reconnect():
     log = logging.getLogger(__name__)
     root = browser_root()
     # Track which browsers were seen as connected on the last iteration.
-    previously_connected: dict[str, bool] = {}
+    previous_endpoints: dict[str, str | None] = {}
     while not (root / '.stopping').exists():
         await asyncio.sleep(5)
         try:
@@ -160,17 +160,18 @@ async def watch_browser_reconnect():
                 if not directory.is_dir() or directory.is_symlink() or not re.fullmatch(r'[a-f0-9]{64}', directory.name):
                     continue
                 config = BrowserManager._read(directory / 'config.json')
-                if config.get('mode') != 'existing' or not config.get('enabled'):
+                if (config.get('mode') != 'existing' or not config.get('enabled')
+                        or not config.get('autoconnect', True)):
                     continue
                 choice = config.get('browser')
                 if choice not in ('chrome', 'edge', 'brave'):
                     continue
                 key = directory.name
                 endpoint = discover_endpoint(choice)
-                was_connected = previously_connected.get(key, False)
-                is_connected = endpoint is not None
-                previously_connected[key] = is_connected
-                if is_connected and not was_connected:
+                previous = previous_endpoints.get(key)
+                current = endpoint[1] if endpoint else None
+                previous_endpoints[key] = current
+                if current and current != previous:
                     # Browser just came back — attempt silent resume.
                     log.info('Browser %s restarted; auto-reconnecting…', choice)
                     try:
@@ -212,7 +213,8 @@ async def restore_saved_browsers():
         except (BrowserUnavailable, OSError):
             logging.getLogger(__name__).warning('Could not restore saved %s browser', choice)
     # Kick off the reconnect watcher regardless of whether any browser was launched.
-    asyncio.create_task(watch_browser_reconnect())
+    # Keep the watcher owned by the lifespan's restore_task so shutdown cancels it.
+    await watch_browser_reconnect()
 
 
 _connections = {}
@@ -303,7 +305,7 @@ class BrowserManager:
         autoconnect = saved and bool(config.get('autoconnect', True))
         active_choice = (config.get('browser') if saved else None) or client_browser or self.browser_choice()
         endpoint = discover_endpoint(active_choice)
-        if not endpoint and client_browser and client_browser != active_choice:
+        if not saved and not endpoint and client_browser and client_browser != active_choice:
             alt_endpoint = discover_endpoint(client_browser)
             if alt_endpoint:
                 endpoint = alt_endpoint

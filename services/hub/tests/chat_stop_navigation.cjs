@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const button = { style: {}, disabled: false, innerHTML: '' };
-const context = vm.createContext({ performance, console, window: {}, document: {
+const button = { style: {}, disabled: false, innerHTML: '', setAttribute() {} };
+const context = vm.createContext({ performance, console, window: {},
+    OrionI18n: {t: key => key}, HubPicker: {apiPath: path => path},
+    localStorage: {getItem: () => null}, document: {
     getElementById: () => button,
 }});
 for (const file of ['config.js', 'ui.js', 'api.js', 'sse.js']) {

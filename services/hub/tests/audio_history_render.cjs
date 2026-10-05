@@ -11,6 +11,8 @@ class Element {
         else this.children.splice(index, 0, child);
     }
     setAttribute() {}
+    addEventListener(name, callback) { (this.listeners ??= {})[name] = callback; }
+    play() { this.plays = (this.plays || 0) + 1; return Promise.resolve(); }
     querySelector(selector) {
         const matches = element => selector.startsWith('.')
             ? element.className.split(' ').includes(selector.slice(1)) : element.tagName === selector;
@@ -23,7 +25,8 @@ class Element {
     }
 }
 const chatArea = new Element('div');
-const context = vm.createContext({ window: {}, AppState: { currentChatId: 'chat' }, document: {
+function requestAnimationFrame(callback) { callback(); }
+const context = vm.createContext({ requestAnimationFrame, performance, console, MarkdownView: {create: text => Object.assign(new Element('div'), {textContent: text})}, OrionI18n: {t: key => key === 'secondsShort' ? 'sn' : key}, window: {}, AppState: { currentChatId: 'chat' }, document: {
     getElementById: id => id === 'chat-area' ? chatArea : null,
     createElement: tag => new Element(tag),
     createTextNode: text => Object.assign(new Element('#text'), { textContent: text }),
@@ -42,4 +45,10 @@ assert.equal(chatArea.children[1].querySelector('.audio-arrival-time').textConte
 assert.equal(chatArea.children[1].children[1].className, 'message-meta');
 assert.equal(chatArea.children[1].children[2].className, 'audio-player-container');
 assert.equal(chatArea.children[2].querySelector('audio'), null);
+const live = new Element('div');
+context.ui.appendAudio('chat', {audio:'c3BlZWNo', format:'mp3'}, true, live);
+const playing = live.querySelector('audio');
+assert.equal(playing.src, 'data:audio/mpeg;base64,c3BlZWNo');
+assert.equal(playing.plays, 1, 'Play begins immediately without a synchronization timer');
+playing.listeners.playing();
 console.log('History restores each message audio without autoplay or duplicates');

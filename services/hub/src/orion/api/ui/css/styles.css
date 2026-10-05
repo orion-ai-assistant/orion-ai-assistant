@@ -3544,3 +3544,26 @@ details[open] > .think-summary::before {
 }
 
 
+
+/* Login: one visible Hub name, with discovery tucked into a compact selector. */
+.hub-picker { margin-top: 22px; text-align: left; border-top: 1px solid var(--border-color, rgba(255,255,255,.1)); padding-top: 16px; }
+.hub-picker-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: .85rem; }
+.hub-picker-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.hub-current { color: var(--text-secondary); min-width: 0; overflow-wrap: anywhere; }
+.hub-current strong { color: var(--text-primary); font-weight: 600; }
+.hub-change, .hub-refresh { padding: 7px 10px; border: 1px solid rgba(255,255,255,.14); border-radius: 8px; background: rgba(255,255,255,.04); color: var(--text-primary); font: inherit; font-size: .78rem; cursor: pointer; }
+.hub-change { border-color: rgba(16,185,129,.4); color: #10b981; }
+.hub-change:hover, .hub-refresh:hover { background: rgba(255,255,255,.09); }
+.hub-picker button:focus-visible { outline: 2px solid #10b981; outline-offset: 5px; border-radius: 4px; }
+.hub-picker-content { margin-top: 12px; }
+.auth-card .hub-picker-status { margin: 0 0 10px; font-size: .8rem; line-height: 1.5; }
+.hub-list { display: block; width: 100%; padding: 10px 12px; border: 1px solid var(--border-color, rgba(255,255,255,.12)); border-radius: 8px; background: var(--bg-secondary, #181c21); color: var(--text-primary); font: inherit; font-size: .85rem; }
+.hub-list:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }
+.hub-refresh { display: flex; align-items: center; justify-content: center; padding: 6px; border: 0; background: transparent; }
+.hub-refresh.refreshing svg { animation: hub-refresh-spin 1s linear infinite; }
+@keyframes hub-refresh-spin { to { transform: rotate(360deg); } }
+.hub-option { width: 100%; padding: 11px 12px; border: 1px solid var(--border-color, rgba(255,255,255,.12)); border-radius: 10px; background: rgba(255,255,255,.025); color: var(--text-primary); font: inherit; font-size: .85rem; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.hub-option:hover, .hub-option:focus-visible { border-color: #10b981; background: rgba(16,185,129,.06); }
+.hub-option.selected { border-color: rgba(16,185,129,.45); color: #10b981; }
+.hub-refresh:hover { color: var(--text-primary); }
+.hub-refresh:disabled { opacity: .6; cursor: wait; }

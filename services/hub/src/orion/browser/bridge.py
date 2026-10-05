@@ -53,18 +53,23 @@ class BrowserBridge:
         return self
 
     async def close(self):
-        from .manager import _connections
-        for connection in self.connections.values():
-            await connection.close()
-        self.connections.clear()
-        for key, connection in list(_connections.items()):
-            if key[0] is asyncio.get_running_loop() and connection.closed:
-                _connections.pop(key, None)
+        await self.disconnect_all()
         if self.runner:
             await self.runner.cleanup()
         with suppress(OSError):
             descriptor_path().unlink()
         self.lease.__exit__(None, None, None)
+
+    async def disconnect_all(self):
+        from .manager import _connections
+        async with self.lock:
+            for connection in self.connections.values():
+                await connection.close()
+            self.connections.clear()
+            for key, connection in list(_connections.items()):
+                if key[0] is asyncio.get_running_loop():
+                    await connection.close()
+                    _connections.pop(key, None)
 
     async def handle(self, request):
         from .manager import discover_endpoint, get_direct_connection, BrowserUnavailable, browser_root
@@ -78,6 +83,11 @@ class BrowserBridge:
             operation = data['operation']
             if not isinstance(endpoint, str):
                 raise ValueError('Invalid endpoint')
+            if operation == 'shutdown':
+                # The external stop helper cannot see this process's sockets.
+                (browser_root() / '.stopping').touch()
+                await self.disconnect_all()
+                return web.json_response({'result': {'disconnected': True}})
             connection = self.connections.get(endpoint)
             if operation == 'status':
                 return web.json_response({'result': {'connected': bool(connection and not connection.closed)}})
@@ -92,6 +102,8 @@ class BrowserBridge:
             if operation == 'connect':
                 # Reconnecting can prompt the user; only Settings asks for it.
                 async with self.lock:
+                    if (browser_root() / '.stopping').exists():
+                        raise BrowserUnavailable('Orion Hub kapanıyor.')
                     valid = [discover_endpoint(name) for name in ('chrome', 'edge', 'brave')]
                     if endpoint not in [entry[1] for entry in valid if entry]:
                         raise BrowserUnavailable('Tarayıcı bağlantısı değişti; lütfen yeniden bağlanın.')

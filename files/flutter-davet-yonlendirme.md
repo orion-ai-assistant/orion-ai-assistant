@@ -3,6 +3,11 @@
 Durum: **Bekliyor.** Kullanıcı bu işi sonraya bıraktı. Hub tarafı hazır;
 Flutter uygulaması henüz davet bağlantısını karşılamıyor. Bu belge işi takip
 eder; mevcut Faz 3'ün QR/eşleştirme kapsamını otomatik genişletmez.
+Faz 6 native mobil uygulaması için [Flutter deviri](faz-6-flutter-devir.md) ve
+[üç repo ortak sözleşmesi](orion-yerel-giris-kesif-sozlesmesi.md) geçerlidir:
+cihaz eşleştirmesi davet/hesap kaydından ayrıdır; mobil davet preview/register/login
+yalnızca pinli HTTPS üzerinden yapılır. Mobil kullanıcı oturumu HTTP portunda
+reddedilir. Bu belgedeki web davet bağlantısı cihaz eşleştirmesinin yerine geçmez.
 
 ## Hedef
 

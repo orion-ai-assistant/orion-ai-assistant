@@ -59,7 +59,7 @@ class LiveInvitations(unittest.IsolatedAsyncioTestCase):
             await conn.close()
         self.app = create_app(public=True)
         self.app.state.redis = self.namespace
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 1234)), base_url='http://localhost:8910')
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 1234)), base_url='https://localhost:8910')
     async def asyncTearDown(self):
         await self.client.aclose()
         self.patch.stop()

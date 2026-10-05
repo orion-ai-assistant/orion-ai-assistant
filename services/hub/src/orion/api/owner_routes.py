@@ -14,7 +14,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from services.shared.environment import get_env
-from orion.api.access_boundary import OWNER_COOKIE
+from orion.api.access_boundary import OWNER_COOKIE, owner_cookie_name
 from orion.api.login_limits import limit_attempts
 from orion.api.security import valid_admin_key
 from orion.api import invitations
@@ -25,11 +25,12 @@ SESSION_SECONDS = 15 * 60
 
 
 def fingerprint():
-    return hashlib.sha256((get_env('ADMIN_API_KEY', required=False) or '').encode()).hexdigest()
+    from orion.api.security import admin_credential_fingerprint
+    return admin_credential_fingerprint()
 
 
 async def authenticate_owner_session(request: Request):
-    token = request.cookies.get(OWNER_COOKIE)
+    token = request.cookies.get(owner_cookie_name(request.scope))
     if not token or len(token) > 128:
         return
     try:
@@ -68,20 +69,20 @@ async def login(payload: OwnerLogin, request: Request, response: Response):
                                           json.dumps({'scope': payload.scope, 'fingerprint': fingerprint()}), ex=SESSION_SECONDS)
     except Exception as exc:
         raise HTTPException(503, 'Yönetim oturumu açılamıyor.') from exc
-    response.set_cookie(OWNER_COOKIE, token, max_age=SESSION_SECONDS, httponly=True, samesite='strict', secure=request.url.scheme == 'https')
+    response.set_cookie(owner_cookie_name(request.scope), token, max_age=SESSION_SECONDS, httponly=True, samesite='strict', secure=request.scope['scheme'] == 'https', path=request.scope.get('root_path') or '/')
     response.headers['Cache-Control'] = 'no-store'
     return {'scope': payload.scope, 'expires_in': SESSION_SECONDS}
 
 
 @router.post('/logout')
 async def logout(request: Request, response: Response):
-    token = request.cookies.get(OWNER_COOKIE)
+    token = request.cookies.get(owner_cookie_name(request.scope))
     if token:
         try:
             await request.app.state.redis.delete('auth:owner:' + hashlib.sha256(token.encode()).hexdigest())
         except Exception as exc:
             raise HTTPException(503, 'Oturum kapatılamıyor.') from exc
-    response.delete_cookie(OWNER_COOKIE)
+    response.delete_cookie(owner_cookie_name(request.scope), path=request.scope.get('root_path') or '/')
     return {'ok': True}
 
 
@@ -103,9 +104,9 @@ class InviteRequest(BaseModel):
         if value is None:
             return None
         uri = urlsplit(value.strip())
-        if (uri.scheme not in {'http', 'https'} or not uri.hostname or uri.username or uri.password
+        if (uri.scheme != 'https' or not uri.hostname or uri.username or uri.password
                 or uri.query or uri.fragment or uri.path not in {'', '/'}):
-            raise ValueError('Sunucu adresi http:// veya https:// ile başlamalı ve yalnızca adres/port içermeli.')
+            raise ValueError('Sunucu adresi https:// ile başlamalı ve yalnızca adres/port içermeli.')
         if uri.hostname in {'localhost', '127.0.0.1', '::1'}:
             raise ValueError('Telefonun erişebildiği PC adresini yazın; localhost telefondaki cihazı ifade eder.')
         return value.strip().rstrip('/')
@@ -137,8 +138,10 @@ def invitation_address():
     for address in addresses:
         ip = ipaddress.ip_address(address)
         if not (ip.is_loopback or ip.is_unspecified or ip.is_link_local or ip.is_multicast):
-            port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
-            return f'http://{address}:{port}'
+            port = get_env('ORION_WEB_PORT', default=get_env('ORION_PUBLIC_PORT', default='8911', required=False), required=False)
+            if str(port) == str(get_env('ORION_LOCAL_PORT', default='8910', required=False)):
+                port = '8911'
+            return f'https://{address}:{port}'
     raise HTTPException(503, 'PC’nin yerel ağ adresi bulunamadı. Ağ bağlantısını kontrol edip yeniden dene.')
 
 

@@ -161,29 +161,7 @@ const ToolsUI = {
 
         });
 
-        setTimeout(async () => {
 
-            try {
-
-                const cur = await this.currentBrowser();
-
-                const data = await this.request('/api/v1/browser');
-
-                const target = cur || (data && data.browser) || 'chrome';
-
-                const shouldAuto = Boolean(data && data.saved && data.autoconnect !== false);
-
-                if (shouldAuto && (!data.running || data.browser !== target)) {
-
-                    await this.request('/api/v1/browser/open', 'POST', {browser: target});
-
-                }
-
-                await this.refreshBrowserStatus?.();
-
-            } catch (_) {}
-
-        }, 500);
 
     },
 
@@ -273,6 +251,27 @@ const ToolsUI = {
 
         this.renderBrowserSession(browserCard.querySelector('.settings-card-body'));
 
+        if (HubPicker.self?.local_entry) this.renderConnection(host);
+
+    },
+
+    async renderConnection(host) {
+        const card = document.createElement('section');
+        card.className = 'settings-card tool-settings-card';
+        const title = document.createElement('h3'); title.textContent = 'Başka bilgisayardan erişim';
+        const copy = document.createElement('p'); copy.className = 'setting-hint';
+        copy.textContent = 'Bu PC’deki Hub’ın güncel HTTPS ağ adresi. Aynı ağdaki başka bilgisayarda açabilirsin; IP adresi değişebilir.';
+        const addresses = document.createElement('div'); addresses.className = 'settings-card-body';
+        card.append(title, copy, addresses); host.append(card);
+        try {
+            const data = await HubPicker.json('/api/v1/discovery/connection');
+            for (const url of data.urls) {
+                const link = document.createElement('a'); link.textContent = url; link.href = url;
+                link.target = '_blank'; link.rel = 'noopener noreferrer';
+                const row = document.createElement('p'); row.append(link); addresses.append(row);
+            }
+            if (!data.urls.length) addresses.textContent = 'Yerel ağ adresi bulunamadı.';
+        } catch (error) { addresses.textContent = error.message; }
     },
 
     renderGoogleOptions(target, settings) {
@@ -359,13 +358,22 @@ const ToolsUI = {
             hint.style.display = 'block';
         };
 
-        select.addEventListener('change', () => { select.dataset.userChanged = 'true'; clearHint(); });
+        select.addEventListener('change', () => { select.dataset.userChanged = 'true'; isConnected = false; actionBtn.textContent = OrionI18n.t('connectBrowser'); actionBtn.className = 'btn btn-primary'; clearHint(); });
 
         const refresh = async () => {
-            const data = await this.request('/api/v1/browser');
+            if (HubPicker.selected?.id !== HubPicker.self?.id) {
+                row.replaceChildren();
+                const message = document.createElement('p'); message.className = 'setting-hint';
+                message.textContent = OrionI18n.t('browserOwnerOnly'); row.append(message);
+                return;
+            }
+            const response = await fetch('/api/v1/browser', {headers: Auth.getAuthHeaders({'X-Client-Browser': (await this.currentBrowser()) || ''})});
+            if (response.status === 403) { row.replaceChildren(); const message = document.createElement('p'); message.className = 'setting-hint'; message.textContent = OrionI18n.t('browserOwnerOnly'); row.append(message); return; }
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.detail || 'Tarayıcı durumu alınamadı.');
             const currentBrowser = await this.currentBrowser();
             if (!current()) return;
-            const activeBrowser = (data.running && data.browser) || currentBrowser || data.suggested_browser || 'chrome';
+            const activeBrowser = (data.saved && data.browser) || currentBrowser || data.suggested_browser || 'chrome';
             if (select.dataset.userChanged !== 'true') select.value = activeBrowser;
             isConnected = Boolean(data && data.running);
             actionBtn.textContent = isConnected ? OrionI18n.t('disconnect') : OrionI18n.t('connectBrowser');
@@ -850,7 +858,7 @@ const ToolsUI = {
 
                 const cur = await this.currentBrowser();
 
-                await this.request('/api/v1/browser/open', 'POST', {browser: cur || data.browser || 'chrome'});
+                await this.request('/api/v1/browser/open', 'POST', {browser: (data.saved && data.browser) || cur || data.suggested_browser || 'chrome'});
 
                 await this.refreshBrowserStatus?.();
 
@@ -992,66 +1000,18 @@ const ToolsUI = {
 
 
 
-        let connectBtn = target.querySelector(`.tool-connect-btn[data-call-key="${key}"]`);
-
+        let hint = target.querySelector(`.tool-browser-owner-hint[data-call-key="${key}"]`);
         if (needsBrowser) {
-
-            if (!connectBtn) {
-
-                connectBtn = document.createElement('button');
-
-                connectBtn.type = 'button';
-
-                connectBtn.className = 'tool-connect-btn tools-button tools-button-primary';
-
-                connectBtn.dataset.callKey = key;
-
-                connectBtn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin:8px 0 10px;font-size:12px;font-weight:600;padding:7px 15px;border-radius:9px;cursor:pointer;';
-
-                connectBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg> ' + OrionI18n.t('connectBrowser');
-
-                connectBtn.onclick = async (e) => {
-
-                    e.preventDefault();
-
-                    e.stopPropagation();
-
-                    connectBtn.disabled = true;
-
-                    connectBtn.textContent = OrionI18n.t('connecting');
-
-                    try {
-
-                        const cur = await ToolsUI.currentBrowser();
-
-                        await ToolsUI.request('/api/v1/browser/open', 'POST', {browser: cur || 'chrome'});
-
-                        connectBtn.textContent = OrionI18n.t('connectedShort');
-
-                        connectBtn.style.background = '#059669';
-
-                        await ToolsUI.refreshBrowserStatus?.();
-
-                    } catch (err) {
-
-                        connectBtn.disabled = false;
-
-                        connectBtn.textContent = 'Yeniden dene';
-
-                    }
-
-                };
-
-                card.insertAdjacentElement('afterend', connectBtn);
-
+            if (!hint) {
+                hint = document.createElement('p');
+                hint.className = 'tool-browser-owner-hint setting-hint';
+                hint.dataset.callKey = key;
+                card.insertAdjacentElement('afterend', hint);
             }
-
-        } else if (connectBtn) {
-
-            connectBtn.remove();
-
+            hint.textContent = OrionI18n.t('browserOwnerOnly');
+        } else {
+            hint?.remove();
         }
-
     },
 
     liveActivity(chatId, item) {

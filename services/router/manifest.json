@@ -19,7 +19,7 @@
     "cpu": "docker-compose.yml"
   },
   "host_env": "ROUTER_HOST",
-  "port_env": "ROUTER_PORT",
+  "port_env": "ORION_ROUTER_TLS_PORT",
   "container_name": "router",
   "order": 90,
   "status": "enabled"

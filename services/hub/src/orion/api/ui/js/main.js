@@ -142,7 +142,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         `;
     };
 
-    const initAuth = async () => {
+    const initAuth = async (verifiedUser = null) => {
+        if (!HubPicker.connected) {
+            document.getElementById('auth-modal').classList.add('show');
+            return false;
+        }
         if (Auth.invitationToken) {
             document.getElementById('auth-modal').classList.add('show');
             return false;
@@ -153,7 +157,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             return false;
         }
         try {
-            const user = await Auth.getMe();
+            const user = verifiedUser || await Auth.getMe();
+            HubPicker.rememberSuccess();
             AppConfig.setUserId(user.username);
             document.getElementById("user-profile-badge").textContent = user.username;
             document.getElementById("auth-modal").classList.remove("show");
@@ -168,6 +173,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             }
 
             SSE.connect();
+            DevicePairing.start();
             return true;
         } catch (error) {
             document.getElementById("auth-modal").classList.add("show");
@@ -191,6 +197,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const fragment = new URLSearchParams(location.hash.slice(1));
     Auth.invitationToken = fragment.get('invite');
+    await HubPicker.init({invitation: Boolean(Auth.invitationToken)});
     const registerButton = document.getElementById('auth-register-btn');
     const loginButton = document.getElementById('auth-login-btn');
     const description = document.getElementById('auth-description');
@@ -200,7 +207,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         loginButton.hidden = true;
         description.textContent = 'Davet kontrol ediliyor…';
         try {
-            const response = await fetch('/api/v1/auth/invitations/preview', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invitation_token: Auth.invitationToken})});
+            const response = await fetch(HubPicker.apiPath('/api/v1/auth/invitations/preview'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({invitation_token: Auth.invitationToken})});
             const data = await response.json();
             if (!response.ok) {
                 const error = new Error(typeof data.detail === 'string' ? data.detail : 'Davet bağlantısı geçersiz.');
@@ -221,36 +228,56 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     document.getElementById("auth-login-btn").addEventListener("click", async () => {
+        if (!HubPicker.connected || HubPicker.authenticating) return;
         const user = document.getElementById("auth-username").value.trim();
         const pass = document.getElementById("auth-password").value.trim();
         if (!user || !pass) {
             showError("Kullanıcı adı ve şifre zorunludur.");
             return;
         }
+        HubPicker.authenticating = true;
+        HubPicker.updateButtons();
+        const label = loginButton.textContent;
+        loginButton.textContent = 'Giriş yapılıyor…';
+        const namespace = Auth.tokenKey;
         try {
             await Auth.login(user, pass);
-            await initAuth();
+            if (namespace !== Auth.tokenKey || !HubPicker.connected) return;
+            await initAuth({username: user});
             loadInitialSettings();
             if (window.loadChats) window.loadChats();
         } catch (error) {
             showAuthFailure(error);
+        } finally {
+            HubPicker.authenticating = false;
+            HubPicker.updateButtons();
+            loginButton.textContent = label;
+            if (!document.getElementById('auth-error')._authWaitTimer) loginButton.disabled = !HubPicker.connected;
         }
     });
 
     document.getElementById("auth-register-btn").addEventListener("click", async () => {
+        if (!HubPicker.connected || HubPicker.authenticating) return;
         const user = document.getElementById("auth-username").value.trim();
         const pass = document.getElementById("auth-password").value.trim();
         if (!user || !pass) {
             showError("Kullanıcı adı ve şifre zorunludur.");
             return;
         }
+        const namespace = Auth.tokenKey;
+        HubPicker.authenticating = true;
+        HubPicker.updateButtons();
         try {
             await Auth.register(user, pass);
-            await initAuth();
+            if (namespace !== Auth.tokenKey || !HubPicker.connected) return;
+            await initAuth({username: user});
             loadInitialSettings();
             if (window.loadChats) window.loadChats();
         } catch (error) {
             showAuthFailure(error);
+        } finally {
+            HubPicker.authenticating = false;
+            HubPicker.updateButtons();
         }
     });
 
@@ -277,6 +304,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.getElementById('logout-btn').addEventListener('click', () => {
         window.ToolsUI?.resetDraft();
         SSE.disconnect();
+        DevicePairing.stop();
         if (window.stopUserPolling) window.stopUserPolling();
         settingsInitialRequested = false;
         // State temizliği

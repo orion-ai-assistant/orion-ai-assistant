@@ -340,6 +340,7 @@ const UI = {
     },
     appendAudio(chatId, audioData, autoPlay = true, targetDiv = null) {
         if (!chatId || !audioData || !audioData.audio) return;
+        const audioStarted = performance.now();
         const state = this._getOrCreateChatState(chatId);
         const botDiv = targetDiv || state.botDiv;
         if (!botDiv) return;
@@ -352,7 +353,11 @@ const UI = {
         audioElement.autoplay = autoPlay && chatId === AppState.currentChatId;
         audioElement.setAttribute('aria-label', OrionI18n.t('playVoiceResponse'));
         const fmt = audioData.format || 'wav';
-        audioElement.src = `data:audio/${fmt};base64,${audioData.audio}`;
+        const mime = fmt === 'mp3' ? 'audio/mpeg' : `audio/${fmt}`;
+        audioElement.src = `data:${mime};base64,${audioData.audio}`;
+        audioElement.addEventListener('playing', () => {
+            console.debug(`Orion audio format=${fmt} start_ms=${Math.round(performance.now() - audioStarted)}`);
+        }, {once: true});
         audioContainer.appendChild(audioElement);
         if (audioData.arrival_ms != null) {
             const timing = document.createElement('div');

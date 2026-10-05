@@ -10,6 +10,7 @@ window.orionUiLocales.tr = {
     saveFailed: 'Kaydedilemedi: {0}', categoryTools: '{0} fonksiyonları', category: '{0} kategorisi',
     browser: 'Tarayıcı', browserHint: 'Mevcut açık tarayıcınızdaki oturumları kullanarak yerel tarayıcı işlemlerini yürütür.',
     googleDirect: 'Google yanıtını doğrudan akıt',
+    browserOwnerOnly: 'Tarayıcı seçimini Hub bilgisayarında dashboard’u açarak yönetebilirsin.',
     googleDirectHint: 'Açıkken Google yanıtı oluştukça ekrana aktarılır; Orion modeli yeniden yazmaz. Kapalıyken Google sonucu Orion modeline verilir. Tüm sohbetlerde geçerlidir.',
     orionBrowser: 'Orion tarayıcısı', browserHelp: 'Otomatik bağlanamazsa: Yeni sekmede <code>{0}</code> sayfasını açıp <em>Uzaktan hata ayıklamayı etkinleştir</em> kutusunu işaretleyin, ardından <strong>Tarayıcıya bağlan</strong> düğmesine basın ve ekrana gelecek pencereden izin verin.',
     disconnect: 'Bağlantıyı kes', disconnecting: 'Bağlantı kesiliyor…', connected: 'Bağlantı açık. Araçlar aynı bağlantıyı kullanır; tarayıcıyı küçültebilirsiniz.',

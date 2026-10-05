@@ -80,3 +80,6 @@ services/tts/omnivoice-gguf/bin/cpu/
 services/tts/omnivoice-gguf/bin/cuda/
 services/tts/omnivoice-gguf/build/
 services/tts/omnivoice-gguf/.extract_staging/
+# Persistent local TLS private identity and paired-device/trust database
+files/security/
+.uv-cache/

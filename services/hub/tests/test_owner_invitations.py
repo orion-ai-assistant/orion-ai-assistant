@@ -40,8 +40,8 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         self.app.state.redis = self.redis = Redis()
         self.user_app = create_app(public=True)
         self.user_app.state.redis = self.redis
-        self.user_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.user_app, client=('127.0.0.1', 4567)), base_url='http://localhost:8910')
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 4567)), base_url='http://localhost:8909')
+        self.user_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.user_app, client=('127.0.0.1', 4567)), base_url='https://localhost:8910')
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 4567)), base_url='https://localhost:8909')
     async def asyncTearDown(self):
         await self.client.aclose()
         await self.user_client.aclose()
@@ -84,9 +84,9 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             for path in ['/dashboard', '/dashboard/', '/dashboard/js/main.js?version=1']:
                 result = await self.client.get(path)
                 self.assertEqual(result.status_code, 307)
-                self.assertEqual(result.headers['location'], 'http://localhost:8910' + path)
+                self.assertEqual(result.headers['location'], 'http://127.0.0.1:8910' + ('/js/main.js?version=1' if 'js/' in path else '/hub'))
             page = await self.client.get('/')
-            self.assertIn('href="http://localhost:8910/dashboard/"', page.text)
+            self.assertIn('href="http://127.0.0.1:8910/hub"', page.text)
         self.assertEqual((await self.client.get('/owner-assets/auth_wait.js')).status_code, 200)
         page = await self.client.get('/manage/')
         self.assertIn('/owner-assets/auth_wait.js', page.text)
@@ -100,7 +100,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {'ORION_PUBLIC_URL': '', 'ORION_PUBLIC_PORT': '8910'}), patch.object(owner_routes.os.path, 'exists', return_value=False), patch.object(owner_routes.socket, 'socket', return_value=probe), patch.object(invitations, 'create_invitation', AsyncMock()):
             response = await self.client.post('/api/v1/owner/invitations', json={'label': 'Phone'})
         self.assertEqual(response.status_code, 201)
-        self.assertTrue(response.json()['url'].startswith('http://192.168.1.102:8910/dashboard/#invite='))
+        self.assertTrue(response.json()['url'].startswith('https://192.168.1.102:8911/dashboard/#invite='))
         probe.send.assert_not_called()
 
     def test_configured_tunnel_address_takes_precedence(self):
@@ -179,7 +179,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_external_and_forwarded_owner_requests_denied(self):
         for peer, host, headers in [('192.168.1.8', 'localhost:8909', {}), ('127.0.0.1', 'public.example', {}), ('127.0.0.1', 'localhost:8909', {'X-Forwarded-For': '1.2.3.4'})]:
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=(peer, 1234)), base_url='http://' + host) as client:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=(peer, 1234)), base_url='https://' + host) as client:
                 for path in ['/', '/manage/', '/admin/', '/api/v1/owner/people', '/api/v1/admin/chats']:
                     self.assertEqual((await client.get(path, headers=headers)).status_code, 403, path)
 
@@ -211,7 +211,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post('/api/v1/owner/invitations', json={'public_url': 'https://example.com'})
         self.assertEqual(response.status_code, 401)
         await self.login()
-        for url in ['http://localhost:8910', 'javascript:alert(1)', 'https://secret@example.com', 'https://example.com/?x=1', 'http://127.0.0.1', 'https://example.com/dashboard']:
+        for url in ['https://localhost:8910', 'javascript:alert(1)', 'https://secret@example.com', 'https://example.com/?x=1', 'http://127.0.0.1', 'https://example.com/dashboard']:
             response = await self.client.post('/api/v1/owner/invitations', json={'public_url': url})
             self.assertEqual(response.status_code, 422, url)
 
@@ -243,13 +243,19 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_public_listener_blocks_owner_even_when_tunnel_is_loopback(self):
         app = create_app(public=True)
         app.state.redis = self.redis
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)), base_url='http://localhost:8910') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)), base_url='https://localhost:8910') as client:
             home = await client.get('/')
-            self.assertEqual(home.status_code, 307)
-            self.assertEqual(home.headers['location'], '/dashboard/')
-            for path in ['/manage/', '/admin/', '/owner-assets/people.js', '/api/v1/owner/people', '/api/v1/auth/users/alice/approval', '/api/v1/admin/chats', '/api/v1/browser', '/docs']:
-                self.assertEqual((await client.get(path)).status_code, 403, path)
-            self.assertEqual((await client.get('/dashboard/')).status_code, 200)
+            self.assertEqual(home.status_code, 200)
+            self.assertNotIn('location', home.headers)
+            for path in ['/manage/', '/admin/', '/owner-assets/people.js', '/api/v1/owner/people', '/api/v1/auth/users/alice/approval', '/api/v1/admin/chats', '/docs']:
+                self.assertEqual((await client.get(path)).status_code, 404 if path == '/docs' else 403, path)
+            self.assertEqual((await client.get('/api/v1/browser')).status_code, 401)
+            legacy = await client.get('/dashboard/')
+            self.assertEqual(legacy.status_code, 307)
+            self.assertEqual(legacy.headers['location'], '/')
+            favicon = await client.get('/favicon.ico')
+            self.assertEqual(favicon.status_code, 200)
+            self.assertIn('image/svg+xml', favicon.headers['content-type'])
             self.assertEqual((await client.get('/health')).status_code, 200)
             for path in ['/api/v1/chats?admin_key=owner-password', '/api/v1/chats?%61dmin_key=owner-password']:
                 self.assertEqual((await client.get(path)).status_code, 403)

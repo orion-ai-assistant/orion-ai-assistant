@@ -66,6 +66,13 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if getattr(request.app.state, 'mobile', False):
+        try:
+            payload = jwt.decode(token_str, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+            if payload.get('device_id') != getattr(request.state, 'device_id', None):
+                raise HTTPException(401, 'Account token is not bound to this device')
+        except jwt.PyJWTError as error:
+            raise HTTPException(401, 'Invalid account token') from error
     return await authenticate_token(token_str)
 
 
@@ -99,7 +106,10 @@ async def register(request: RegisterRequest, http_request: Request):
     # Validate before expensive password hashing; the transaction validates again under lock.
     await invitations.preview_invitation(request.invitation_token)
     await invitations.redeem_invitation(request.invitation_token, request.username, hash_password(request.password))
-    return {'access_token': create_access_token({'sub': request.username}), 'token_type': 'bearer'}
+    claims = {'sub': request.username}
+    if getattr(http_request.app.state, 'mobile', False):
+        claims['device_id'] = http_request.state.device_id
+    return {'access_token': create_access_token(claims), 'token_type': 'bearer'}
 
 
 @router.post("/login", response_model=Token)
@@ -116,7 +126,10 @@ async def login(request: AuthRequest, http_request: Request):
     if not user.get("is_active", False):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user")
 
-    access_token = create_access_token(data={"sub": user["id"]})
+    claims = {"sub": user["id"]}
+    if getattr(http_request.app.state, 'mobile', False):
+        claims['device_id'] = http_request.state.device_id
+    access_token = create_access_token(data=claims)
     return {"access_token": access_token, "token_type": "bearer"}
 
 

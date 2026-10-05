@@ -44,6 +44,7 @@ services:
     environment:
       ORION_HUB_MODE: remote
       ORION_PRIVATE_DOCKER_LISTENER: "true"
+      ORION_SECURITY_DIR: /app/security
     restart: unless-stopped
     ports:
       - "127.0.0.1:${HUB_PORT}:${HUB_CONTAINER_PORT}"
@@ -53,6 +54,7 @@ services:
     volumes:
       - ./src/orion/api/ui:/app/src/orion/api/ui
       - ./src/orion/api/admin_ui:/app/src/orion/api/admin_ui
+      - hub_security:/app/security
     depends_on:
       redis:
         condition: service_healthy
@@ -65,8 +67,12 @@ services:
     build:
       context: ../../
       dockerfile: services/hub/api.Dockerfile
-    command: ["sh", "-c", "exec uvicorn orion.api.main:public_app --host 0.0.0.0 --port $${HUB_CONTAINER_PORT}"]
+    command: ["python", "-m", "orion.api.web_server", "--public"]
     restart: unless-stopped
+    environment:
+      ORION_SECURITY_DIR: /app/security
+    volumes:
+      - hub_security:/app/security
     ports:
       - "${ORION_PUBLIC_PORT:-8910}:${HUB_CONTAINER_PORT}"
     env_file:
@@ -86,9 +92,38 @@ services:
       dockerfile: services/hub/worker.Dockerfile
     container_name: ${WORKER_HOST}
     restart: unless-stopped
+    environment:
+      ORION_SECURITY_DIR: /app/security
+    volumes:
+      - hub_security:/app/security
     env_file:
       - ../.env.global
       - ../.env.global.local
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - orion-network
+
+  mobile_api:
+    build:
+      context: ../../
+      dockerfile: services/hub/api.Dockerfile
+    command: ["python", "-m", "orion.api.mobile_server"]
+    restart: unless-stopped
+    environment:
+      ORION_SECURITY_DIR: /app/security
+      ORION_MOBILE_PORT: ${ORION_MOBILE_PORT:-8443}
+      ORION_MOBILE_ADVERTISE_HOST: ${ORION_MOBILE_ADVERTISE_HOST:-}
+    ports:
+      - "${ORION_MOBILE_PORT:-8443}:${ORION_MOBILE_PORT:-8443}"
+    env_file:
+      - ../.env.global
+      - ../.env.global.local
+    volumes:
+      - hub_security:/app/security
     depends_on:
       redis:
         condition: service_healthy
@@ -106,3 +141,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  hub_security:

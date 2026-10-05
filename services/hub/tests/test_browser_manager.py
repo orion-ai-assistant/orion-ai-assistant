@@ -20,6 +20,15 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.patcher.stop)
         self.manager = BrowserManager('alice')
 
+    async def test_saved_browser_is_not_replaced_when_closed(self):
+        self.manager.directory.mkdir()
+        self.manager._write(self.manager.config, {'mode': 'existing', 'enabled': True, 'browser': 'edge'})
+        with patch('orion.browser.manager.discover_endpoint', return_value=None) as discover:
+            status = await self.manager.status(client_browser='brave')
+        self.assertEqual(status['browser'], 'edge')
+        self.assertFalse(status['available'])
+        discover.assert_called_once_with('edge')
+
     async def test_manual_mode_blocks_automation_before_connecting(self):
         self.manager.directory.mkdir()
         self.manager._write(self.manager.config, {'mode': 'existing', 'manual': True, 'enabled': True})

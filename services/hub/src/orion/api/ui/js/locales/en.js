@@ -10,6 +10,7 @@ window.orionUiLocales.en = {
     saveFailed: 'Could not save: {0}', categoryTools: '{0} tools', category: '{0} category',
     browser: 'Browser', browserHint: 'Uses your existing browser session to perform browser actions.',
     googleDirect: 'Stream the Google answer directly',
+    browserOwnerOnly: 'Open the dashboard on the Hub computer to choose and connect its browser.',
     googleDirectHint: 'Stream the Google answer as it arrives without rewriting it with Orion. When off, Orion receives the result. Applies to all chats.',
     orionBrowser: 'Orion browser', browserHelp: 'If automatic connection fails, open <code>{0}</code> in a new tab, enable <em>Remote debugging</em>, then select <strong>Connect to browser</strong> and grant access.',
     disconnect: 'Disconnect', disconnecting: 'Disconnecting…', connected: 'Connected. Tools share this connection; you can minimize the browser.',

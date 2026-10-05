@@ -20,7 +20,7 @@ const SSE = {
             return;
         }
 
-        AppState.eventSource = new EventSource(`/api/v1/chat/stream?token=${token}`);
+        AppState.eventSource = new EventSource(HubPicker.apiPath(`/api/v1/chat/stream?token=${encodeURIComponent(token)}`));
 
         AppState.sseConnectTimer = setTimeout(() => {
             AppState.sseConnectTimer = null;

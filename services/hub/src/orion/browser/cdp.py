@@ -133,7 +133,13 @@ class CDPSession:
             self._reader.cancel()
         with suppress(asyncio.CancelledError):
             await self._reader
-        await self._http.close()
+        try:
+            # The reader may have been cancelled before it entered its finally.
+            with suppress(TimeoutError, aiohttp.ClientError, OSError):
+                async with asyncio.timeout(2):
+                    await self._socket.close()
+        finally:
+            await self._http.close()
 
     async def __aenter__(self):
         return self

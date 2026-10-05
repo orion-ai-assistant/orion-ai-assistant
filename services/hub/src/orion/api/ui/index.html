@@ -4,18 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
     <title>Orion Hub • AI Assistant</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css?v=2.1.1">
+    <link rel="stylesheet" href="css/styles.css?v=2.1.4">
     <link rel="stylesheet" href="css/tools.css?v=11">
     <link rel="stylesheet" href="css/markdown.css?v=6">
     <link rel="stylesheet" href="css/mobile.css?v=1">
-    <style>.auth-actions [hidden]{display:none!important}</style>
+    <link rel="stylesheet" href="css/device_pairing.css?v=2">
+    <style>.auth-actions [hidden]{display:none!important}.auth-modal.show ~ .app-layout{visibility:hidden;pointer-events:none}</style>
 </head>
 <body>
     <!-- Auth Modal -->
-    <div id="auth-modal" class="auth-modal">
+    <div id="auth-modal" class="auth-modal show">
         <div class="auth-card">
             <div class="auth-brand">
                 <div class="auth-brand-icon">✦</div>
@@ -31,10 +33,23 @@
                     <input type="password" id="auth-password" data-i18n-placeholder="password" placeholder="Şifre" autocomplete="current-password">
                 </div>
                 <div class="auth-actions">
-                    <button id="auth-login-btn" class="btn btn-primary" data-i18n="login">Giriş Yap</button>
-                    <button id="auth-register-btn" class="btn btn-secondary" data-i18n="register">Kayıt Ol</button>
+                    <button id="auth-login-btn" class="btn btn-primary" data-i18n="login" disabled>Giriş Yap</button>
+                    <button id="auth-register-btn" class="btn btn-secondary" data-i18n="register" hidden disabled>Kayıt Ol</button>
                 </div>
             </div>
+            <section class="hub-picker" aria-label="Hub bağlantısı">
+                <div class="hub-picker-header">
+                    <label for="hub-list">Bağlanılacak Hub</label>
+                    <div class="hub-picker-actions">
+                        <button id="hub-refresh" type="button" class="hub-refresh" title="Listeyi yenile" aria-label="Listeyi yenile"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 8a7 7 0 0 1 12-2l2 3M4 15l2 3a7 7 0 0 0 12-2"/></svg></button>
+                    </div>
+                </div>
+                <div id="hub-picker" class="hub-picker-content">
+                    <strong id="hub-current-name" hidden>Kontrol ediliyor…</strong>
+                    <p id="hub-status" class="hub-picker-status" role="status" hidden></p>
+                    <select id="hub-list" class="hub-list" aria-label="Bağlanılacak Hub"><option>Kontrol ediliyor…</option></select>
+                </div>
+            </section>
         </div>
     </div>
 
@@ -220,6 +235,8 @@
                 <div id="settings-dashboard" class="settings-dashboard-grid">
                     <div class="loading-spinner-state" data-i18n="settingsLoading">Ayarlar yükleniyor...</div>
                 </div>
+                <button id="owner-password-settings" type="button" class="btn btn-secondary" hidden>Yönetici şifresi</button>
+                <button id="pair-device-settings" type="button" class="btn btn-secondary" hidden>Telefon / cihaz bağla · QR oluştur</button>
             </div>
 
             <!-- 3. İŞ (JOB) DURUMU GÖRÜNÜMÜ -->
@@ -258,8 +275,8 @@
     </div>
 
     <!-- Scripts split by modules -->
-    <script src="js/locales/en.js"></script>
-    <script src="js/locales/tr.js"></script>
+    <script src="js/locales/en.js?v=3"></script>
+    <script src="js/locales/tr.js?v=3"></script>
     <script src="js/i18n.js"></script>
     <script src="js/config.js?v=2.0.7"></script>
     <script src="js/vendor/marked.js?v=18.0.14"></script>
@@ -267,11 +284,13 @@
     <script src="js/markdown.js?v=6"></script>
     <script src="js/ui.js?v=2.0.15"></script>
     <script src="js/auth_wait.js?v=1"></script>
-    <script src="js/api.js?v=2.0.8"></script>
-    <script src="js/tools.js?v=13"></script>
-    <script src="js/stt.js?v=2.0.12"></script>
-    <script src="js/sse.js?v=2.0.7"></script>
+    <script src="js/api.js?v=2.0.10"></script>
+    <script src="js/hub_picker.js?v=6"></script>
+    <script src="js/tools.js?v=16"></script>
+    <script src="js/stt.js?v=2.0.13"></script>
+    <script src="js/sse.js?v=2.0.8"></script>
     <script src="js/mobile.js?v=1"></script>
-    <script src="js/main.js?v=2.0.12"></script>
+    <script src="js/device_pairing.js?v=2"></script>
+    <script src="js/main.js?v=2.0.18"></script>
 </body>
 </html>

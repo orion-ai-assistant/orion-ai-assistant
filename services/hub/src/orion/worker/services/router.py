@@ -23,7 +23,7 @@ from typing import Any
 import aiohttp
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
 
-from services.shared.environment import get_router_base_urls, get_tts_base_urls
+from services.shared.environment import get_router_base_urls
 from orion.contracts.settings import RuntimeSettings
 from orion.kernel.router_models import get_model_provider
 
@@ -49,8 +49,10 @@ async def get_session() -> ClientSession:
     """Mevcut paylaşımlı ClientSession'ı döner; henüz yoksa oluşturur."""
     global _session
     if _session is None or _session.closed:
-        connector = TCPConnector(limit=100, limit_per_host=20, enable_cleanup_closed=True)
-        _session = ClientSession(connector=connector)
+        from orion.kernel.router_bootstrap import bootstrap_local_router
+        await bootstrap_local_router()
+        from orion.kernel.pinned_router import router_session
+        _session = router_session()
     return _session
 
 
@@ -423,11 +425,9 @@ tei_embed = generate_embeddings
 # ---------------------------------------------------------------------------
 
 def _tts_urls(path: str = "/v1/audio/speech") -> list[str]:
-    """TTS servis endpointleri (Router öncelikli, fallback olarak doğrudan TTS servisi)."""
+    """TTS travels exclusively through the trusted HTTPS Router."""
     urls: list[str] = []
     for base in get_router_base_urls():
-        urls.append(f"{_base_url(base)}{path}")
-    for base in get_tts_base_urls():
         urls.append(f"{_base_url(base)}{path}")
     return urls
 
@@ -496,7 +496,6 @@ async def generate_tts(
     timeout = _request_timeout(timeout_sec)
 
     router_urls = [f"{_base_url(base)}/v1/audio/speech" for base in get_router_base_urls()]
-    local_tts_urls = [f"{_base_url(base)}/v1/audio/speech" for base in get_tts_base_urls()]
 
     # 1. Router Call
     router_err = None
@@ -507,8 +506,16 @@ async def generate_tts(
                     data = await response.read()
                     sr_header = response.headers.get("X-Sample-Rate")
                     sample_rate = int(sr_header) if sr_header and sr_header.isdigit() else None
-                    ct = response.headers.get("Content-Type", "")
-                    fmt = "wav" if "wav" in ct else response_format
+                    ct = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                    # Report the returned media, not just the requested format.
+                    # Otherwise a provider's MP3/OGG response is sent to native
+                    # players as audio/wav and may fail during preparation.
+                    fmt = {
+                        "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
+                        "audio/vnd.wave": "wav", "audio/mpeg": "mp3", "audio/mp3": "mp3",
+                        "audio/ogg": "ogg", "audio/opus": "opus", "audio/aac": "aac",
+                        "audio/flac": "flac", "audio/x-flac": "flac", "audio/pcm": "pcm",
+                    }.get(ct, response_format)
                     return data, fmt, sample_rate
                 else:
                     err_text = await response.text()
@@ -527,21 +534,6 @@ async def generate_tts(
 
     if provider != "local" and router_err:
         raise router_err
-
-    # 2. Local TTS fallback (ONLY for local models like voxcpm2 when router is unreachable)
-    if provider == "local":
-        for url in local_tts_urls:
-            try:
-                async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
-                    if response.status == 200:
-                        data = await response.read()
-                        sr_header = response.headers.get("X-Sample-Rate")
-                        sample_rate = int(sr_header) if sr_header and sr_header.isdigit() else None
-                        ct = response.headers.get("Content-Type", "")
-                        fmt = "wav" if "wav" in ct else response_format
-                        return data, fmt, sample_rate
-            except Exception:
-                continue
 
     if router_err:
         raise router_err
