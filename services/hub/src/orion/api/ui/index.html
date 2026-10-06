@@ -230,16 +230,17 @@
                 <div class="view-header">
                     <div>
                         <h2 data-i18n="userSettings">Kullanıcı Ayarları</h2>
-                        <p data-i18n="settingsIntro">Model parametreleri, TTS ve sistem ayarlarını özelleştirin.</p>
                     </div>
-                    <button type="button" class="catalog-refresh" id="refresh-models" title="Model ve ses listesini yenile" onclick="UI.loadModelChoices(UI.currentSettings)"><span aria-hidden="true">↻</span> <span data-i18n="refresh">Yenile</span></button>
                 </div>
 
 
+                <section id="pair-device-panel" class="settings-card device-connection-panel" hidden>
+                    <div class="settings-card-header"><div class="settings-card-icon">▣</div><div><h3>Telefon / cihaz bağla</h3><p>QR’ı okut veya bağlantıyla Orion uygulamasını aç.</p></div></div>
+                    <div class="settings-card-body"><button id="pair-device-settings" type="button" class="btn btn-secondary" hidden>QR / bağlantı oluştur</button></div>
+                </section>
                 <div id="settings-dashboard" class="settings-dashboard-grid">
                     <div class="loading-spinner-state" data-i18n="settingsLoading">Ayarlar yükleniyor...</div>
                 </div>
-                <button id="pair-device-settings" type="button" class="btn btn-secondary" hidden>Telefon / cihaz bağla · QR oluştur</button>
             </div>
 
             <!-- 3. İŞ (JOB) DURUMU GÖRÜNÜMÜ -->

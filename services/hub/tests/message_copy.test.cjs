@@ -8,13 +8,13 @@ test('message copy preserves raw Markdown and prevents duplicate actions', async
     const copied = [];
     const nodes = [];
     const context = {window: {},
-        document: {getElementById: () => null, createElement: () => ({setAttribute() {}})},
+        document: {getElementById: () => null, createElement: () => ({setAttribute() {}, appendChild(node) { nodes.push(node); }})},
         navigator: {clipboard: {writeText: async text => copied.push(text)}},
         OrionI18n: {t: () => 'Mesajı kopyala'},
         setTimeout: () => {},
     };
     vm.runInNewContext(source + ';globalThis.ui = UI;', context);
-    const div = {querySelector: () => nodes[0], appendChild: node => nodes.push(node)};
+    const div = {querySelector: selector => selector === '.message-copy' ? nodes[0] : {appendChild: node => nodes.push(node)}, appendChild: node => nodes.push(node)};
     const raw = '**kalın** 1. sayı\nhttps://example.com/?a=1&b=2';
     context.ui.addMessageCopy(div, () => raw);
     context.ui.addMessageCopy(div, () => 'duplicate');
@@ -26,7 +26,7 @@ test('message copy preserves raw Markdown and prevents duplicate actions', async
 
 test('completed message keeps its own text when the next response reuses chat state', async () => {
     const copied = [], buttons = [];
-    const div = {querySelector: () => buttons[0], appendChild: node => buttons.push(node), classList:{contains: () => false}};
+    const div = {querySelector: selector => selector === '.message-copy' ? buttons[0] : {appendChild: node => buttons.push(node)}, appendChild: node => buttons.push(node), classList:{contains: () => false}};
     const state = {botDiv:div, contentNodes:[{markdownSource:'**first response**'}]};
     const context = {window:{}, document:{getElementById: () => ({querySelectorAll:()=>[]}), createElement:()=>({setAttribute(){}})},
       navigator:{clipboard:{writeText:async text=>copied.push(text)}}, OrionI18n:{t:()=>''}, setTimeout:()=>{}, CSS:{escape:x=>x},

@@ -5,6 +5,19 @@
     window.OwnerAPI = {
         base,
         url(path) { return path.startsWith('/') && !path.startsWith('//') ? base + path : path; },
-        fetch(path, options) { return window.fetch(this.url(path), options); }
+        sessionKey: 'orion_owner_tab:' + base,
+        session() {
+            try {
+                const record = JSON.parse(sessionStorage.getItem(this.sessionKey) || 'null');
+                return record?.expires > Date.now() ? record : null;
+            } catch (_) { return null; }
+        },
+        clearSession() { sessionStorage.removeItem(this.sessionKey); },
+        fetch(path, options = {}) {
+            const headers = new Headers(options.headers);
+            const session = this.session();
+            if (session) headers.set('X-Orion-Owner-Session', session.token);
+            return window.fetch(this.url(path), {...options, headers});
+        }
     };
 })();

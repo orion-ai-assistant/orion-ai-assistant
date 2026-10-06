@@ -30,7 +30,7 @@ def fingerprint():
 
 
 async def authenticate_owner_session(request: Request):
-    token = request.cookies.get(owner_cookie_name(request.scope))
+    token = request.headers.get('X-Orion-Owner-Session') or request.cookies.get(owner_cookie_name(request.scope))
     if not token or len(token) > 128:
         return
     try:
@@ -38,6 +38,8 @@ async def authenticate_owner_session(request: Request):
         record = json.loads(raw) if raw else {}
     except Exception:
         # Owner credentials fail closed; normal bearer authentication still works.
+        return
+    if record.get('tab_session') and not request.headers.get('X-Orion-Owner-Session'):
         return
     if record.get('fingerprint') == fingerprint() and record.get('scope') in {'people', 'admin'}:
         request.state.owner_scope = record['scope']
@@ -54,6 +56,7 @@ def require_owner(request: Request, scope=None):
 class OwnerLogin(BaseModel):
     password: str = Field(min_length=1, max_length=512)
     scope: Literal['people', 'admin']
+    tab_session: bool = False
 
 
 @router.post('/login')
@@ -66,17 +69,27 @@ async def login(payload: OwnerLogin, request: Request, response: Response):
     token = secrets.token_urlsafe(32)
     try:
         await request.app.state.redis.set('auth:owner:' + hashlib.sha256(token.encode()).hexdigest(),
-                                          json.dumps({'scope': payload.scope, 'fingerprint': fingerprint()}), ex=SESSION_SECONDS)
+                                          json.dumps({'scope': payload.scope, 'fingerprint': fingerprint(), 'tab_session': payload.tab_session}), ex=SESSION_SECONDS)
     except Exception as exc:
         raise HTTPException(503, 'Yönetim oturumu açılamıyor.') from exc
-    response.set_cookie(owner_cookie_name(request.scope), token, max_age=SESSION_SECONDS, httponly=True, samesite='strict', secure=request.scope['scheme'] == 'https', path=request.scope.get('root_path') or '/')
+    if not payload.tab_session:
+        response.set_cookie(owner_cookie_name(request.scope), token, max_age=SESSION_SECONDS, httponly=True, samesite='strict', secure=request.scope['scheme'] == 'https', path=request.scope.get('root_path') or '/')
     response.headers['Cache-Control'] = 'no-store'
-    return {'scope': payload.scope, 'expires_in': SESSION_SECONDS}
+    result = {'scope': payload.scope, 'expires_in': SESSION_SECONDS}
+    if payload.tab_session:
+        result['token'] = token
+    return result
+
+
+@router.get('/session')
+async def session(request: Request):
+    require_owner(request)
+    return {'scope': request.state.owner_scope}
 
 
 @router.post('/logout')
 async def logout(request: Request, response: Response):
-    token = request.cookies.get(owner_cookie_name(request.scope))
+    token = request.headers.get('X-Orion-Owner-Session') or request.cookies.get(owner_cookie_name(request.scope))
     if token:
         try:
             await request.app.state.redis.delete('auth:owner:' + hashlib.sha256(token.encode()).hexdigest())

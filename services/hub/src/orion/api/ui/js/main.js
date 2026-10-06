@@ -686,3 +686,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     // --- End Image Upload Logic ---
 
 });
+
+// Keep Select All within the assistant message currently being read.
+let activeAssistantMessage = null;
+document.addEventListener('pointerdown', event => {
+    activeAssistantMessage = event.target.closest('.message.bot');
+});
+document.addEventListener('keydown', event => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
+    if (event.target.closest('input, textarea, [contenteditable="true"]')) return;
+    const selection = window.getSelection();
+    const selectedMessage = selection?.anchorNode?.parentElement?.closest('.message.bot');
+    const message = activeAssistantMessage?.isConnected ? activeAssistantMessage : selectedMessage;
+    if (!message) return;
+    event.preventDefault();
+    const range = document.createRange(); range.selectNodeContents(message);
+    selection.removeAllRanges(); selection.addRange(range);
+});

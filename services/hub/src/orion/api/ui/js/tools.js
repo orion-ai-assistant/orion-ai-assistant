@@ -261,8 +261,10 @@ const ToolsUI = {
         const title = document.createElement('h3'); title.textContent = 'Başka bilgisayardan erişim';
         const copy = document.createElement('p'); copy.className = 'setting-hint';
         copy.textContent = 'Bu PC’deki Hub’ın güncel HTTPS ağ adresi. Aynı ağdaki başka bilgisayarda açabilirsin; IP adresi değişebilir.';
-        const addresses = document.createElement('div'); addresses.className = 'settings-card-body';
-        card.append(title, copy, addresses); host.append(card);
+        const addresses = document.createElement('div'); addresses.className = 'settings-card-body connection-addresses';
+        const header = document.createElement('div'); header.className = 'settings-card-header';
+        const description = document.createElement('div'); description.append(title, copy); header.append(description);
+        card.append(header, addresses); host.append(card);
         try {
             const data = await HubPicker.json('/api/v1/discovery/connection');
             for (const url of data.urls) {

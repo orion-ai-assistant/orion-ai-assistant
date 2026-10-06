@@ -38,7 +38,7 @@
   }
   let countdown;
   document.getElementById('create-pair').onclick = () => run(async () => {
-    const pair = await api('/pairing', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({allow_registration: document.getElementById('pair-allow-registration').checked})});
+    const pair = await api('/pairing', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({allow_registration: true})});
     document.getElementById('pair-result').hidden = false;
     // SVG originates exclusively from the locally authenticated QR generator.
     document.getElementById('pair-qr').innerHTML = pair.qr_svg;

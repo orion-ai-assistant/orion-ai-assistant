@@ -132,6 +132,21 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         with patch('orion.api.routes.get_all_chats_admin', AsyncMock(return_value=[])):
             self.assertEqual((await self.client.get('/api/v1/admin/chats')).status_code, 200)
 
+    async def test_tab_session_requires_its_header_and_expires(self):
+        response = await self.client.post('/api/v1/owner/login', json={
+            'password': 'owner-password', 'scope': 'admin', 'tab_session': True})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('set-cookie', response.headers)
+        self.assertEqual(response.json()['expires_in'], 900)
+        token = response.json()['token']
+        headers = {'X-Orion-Owner-Session': token}
+        self.assertEqual((await self.client.get('/api/v1/owner/session')).status_code, 401)
+        self.assertEqual((await self.client.get('/api/v1/owner/session', headers=headers)).status_code, 200)
+        self.client.cookies.set(OWNER_COOKIE, token)
+        self.assertEqual((await self.client.get('/api/v1/owner/session')).status_code, 401)
+        await self.redis.delete('auth:owner:' + hashlib.sha256(token.encode()).hexdigest())
+        self.assertEqual((await self.client.get('/api/v1/owner/session', headers=headers)).status_code, 401)
+
     async def test_owner_wrong_password_countdown_uses_remaining_ttl(self):
         for _ in range(5):
             self.assertEqual((await self.login(password='wrong')).status_code, 401)

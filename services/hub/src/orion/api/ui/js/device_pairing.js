@@ -8,6 +8,7 @@ const DevicePairing = {
     start() {
         this.stop();
         const available = this.available();
+        const panel = document.getElementById("pair-device-panel"); if (panel) panel.hidden = !available;
         ['pair-device-settings', 'owner-password-settings'].forEach(id => {
             const button = document.getElementById(id);
             if (!button) return;
@@ -33,6 +34,7 @@ const DevicePairing = {
         });
     },
     stop() {
+        const panel = document.getElementById("pair-device-panel"); if (panel) panel.hidden = true;
         this.epoch++; this.source?.close(); this.source = null; this.request = null;
         this.clearQr(); this.dialog?.close(); this.pending.clear();
         ['pair-device-settings', 'owner-password-settings'].forEach(id => {

@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/main.js'), 'utf8');
+const handlers = {};
+const message = {isConnected: true};
+let selected, prevented = 0;
+const selection = {removeAllRanges() {}, addRange: range => selected = range.node};
+const context = {document: {addEventListener: (type, handler) => handlers[type] = handler,
+    createRange: () => ({selectNodeContents(node) {this.node = node;}})}, window: {getSelection: () => selection}};
+vm.runInNewContext(source.slice(source.indexOf('// Keep Select All')), context);
+const target = {closest: selector => selector === '.message.bot' ? message : null};
+handlers.pointerdown({target});
+handlers.keydown({key: 'a', ctrlKey: true, target, preventDefault() {prevented++;}});
+assert.equal(selected, message);
+assert.equal(prevented, 1);
+handlers.keydown({key: 'a', ctrlKey: true, target: {closest: () => ({})}, preventDefault() {prevented++;}});
+assert.equal(prevented, 1, 'Inputs retain native Select All');
+handlers.pointerdown({target: {closest: () => null}});
+handlers.keydown({key: 'a', ctrlKey: true, target: {closest: () => null}, preventDefault() {prevented++;}});
+assert.equal(prevented, 1, 'Sidebar does not activate a message selection');
+console.log('Select All stays within the active assistant message and respects inputs');

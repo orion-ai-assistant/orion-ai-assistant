@@ -57,7 +57,9 @@ const UI = {
                 setTimeout(() => { button.textContent = '⧉'; }, 1500);
             } catch (_) { button.title = 'Kopyalanamadı. Metni seçerek kopyalayabilirsin.'; }
         };
-        div.appendChild(button);
+        let meta = div.querySelector('.message-meta');
+        if (!meta) { meta = document.createElement('div'); meta.className = 'message-meta'; div.appendChild(meta); }
+        meta.appendChild(button);
     },
     createAttachmentCard(item) {
         const file = typeof item === 'string' ? { data: item, name: OrionI18n.t('file') } : item;
@@ -161,7 +163,6 @@ const UI = {
             div.textContent = text;
             group.appendChild(div);
         }
-        if (text) this.addMessageCopy(group, () => text);
         this.chatArea.appendChild(group);
         this.scrollToBottom();
     },
@@ -405,7 +406,11 @@ const UI = {
         const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
         if (!meta) return;
         const previous = botDiv.querySelector('.message-meta');
-        if (previous) previous.replaceWith(meta);
+        if (previous) {
+            const copy = previous.querySelector(".message-copy");
+            if (copy) meta.appendChild(copy);
+            previous.replaceWith(meta);
+        }
         else botDiv.appendChild(meta);
     },
     finishGeneration(chatId, hasTokens = true, metrics = null) {

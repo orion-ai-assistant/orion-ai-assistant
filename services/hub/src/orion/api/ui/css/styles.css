@@ -3569,3 +3569,9 @@ details[open] > .think-summary::before {
 .hub-refresh:disabled { opacity: .6; cursor: wait; }
 
 .message-copy{border:0;background:transparent;color:var(--text-secondary);cursor:pointer;padding:6px 10px;border-radius:8px;font-size:16px}.message-copy:hover{background:var(--bg-secondary)}.message-copy:focus-visible{outline:2px solid var(--accent-color)}
+
+.device-connection-panel { margin-bottom: 24px; }
+.connection-addresses a { color: var(--text-primary); text-decoration: none; overflow-wrap: anywhere; }
+.connection-addresses a:hover { text-decoration: underline; }
+.message-meta .message-copy { padding: 3px 5px; font-size: 13px; }
+.message.bot .tool-activity summary { user-select: text; -webkit-user-select: text; }
