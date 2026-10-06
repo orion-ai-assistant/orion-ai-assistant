@@ -128,3 +128,14 @@ async def bootstrap_local_router():
     except Exception as error:
         logger.info('Local Router bootstrap remains untrusted: %s', error)
         return {'status': 'untrusted', 'reason': str(error)}
+
+
+async def local_router_identity():
+    """Read installer-owned public files for an explicit same-PC selection."""
+    candidate = await asyncio.to_thread(read_local_router_candidate)
+    if candidate is None:
+        return None
+    certificate = x509.load_pem_x509_certificate(Path(candidate['certificate_path']).read_bytes())
+    identity = str(UUID(Path(candidate['identity_path']).read_text(encoding='ascii').strip()))
+    fp = spki_fingerprint(certificate.public_bytes(serialization.Encoding.DER))
+    return {'id': identity, 'fp': fp, 'url': f'https://127.0.0.1:{candidate["tls_port"]}', 'name': 'Bu bilgisayardaki Router'}

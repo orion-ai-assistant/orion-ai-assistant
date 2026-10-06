@@ -15,6 +15,8 @@ from orion.api.security import (
 from orion.kernel.registry import get_user_by_username, create_user, set_user_active, set_user_approval
 from orion.api.login_limits import limit_login, limit_attempts
 from orion.api import invitations
+from orion.api.access_boundary import is_local
+import asyncio
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -95,7 +97,9 @@ async def preview(payload: InvitationPreview, request: Request):
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=Token)
 async def register(request: RegisterRequest, http_request: Request):
     await limit_attempts(http_request, 'registration', http_request.client.host, 10)
-    if not request.invitation_token:
+    local_registration = (not getattr(http_request.app.state, 'mobile', False)
+                          and is_local(http_request.scope))
+    if not request.invitation_token and not local_registration:
         raise HTTPException(403, 'Hesap oluşturmak için PC sahibinden davet bağlantısı alın.')
     if request.username == "global":
         raise HTTPException(
@@ -104,8 +108,18 @@ async def register(request: RegisterRequest, http_request: Request):
         )
 
     # Validate before expensive password hashing; the transaction validates again under lock.
-    await invitations.preview_invitation(request.invitation_token)
-    await invitations.redeem_invitation(request.invitation_token, request.username, hash_password(request.password))
+    if request.invitation_token:
+        await invitations.preview_invitation(request.invitation_token)
+        await invitations.redeem_invitation(request.invitation_token, request.username,
+                                            await asyncio.to_thread(hash_password, request.password))
+    else:
+        from orion.kernel.registry import create_local_user
+        try:
+            created = await create_local_user(request.username, await asyncio.to_thread(hash_password, request.password))
+        except RuntimeError as error:
+            raise HTTPException(503, 'Hesap veritabanına erişilemiyor.') from error
+        if not created:
+            raise HTTPException(409, 'Bu kullanıcı adı zaten kullanılıyor.')
     claims = {'sub': request.username}
     if getattr(http_request.app.state, 'mobile', False):
         claims['device_id'] = http_request.state.device_id

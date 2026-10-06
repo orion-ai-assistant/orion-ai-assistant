@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css?v=2.1.4">
+    <link rel="stylesheet" href="css/styles.css?v=2.1.5">
     <link rel="stylesheet" href="css/tools.css?v=11">
     <link rel="stylesheet" href="css/markdown.css?v=6">
     <link rel="stylesheet" href="css/mobile.css?v=1">
@@ -21,7 +21,7 @@
         <div class="auth-card">
             <div class="auth-brand">
                 <div class="auth-brand-icon">✦</div>
-                <h2>Orion Hub</h2>
+                <h2 id="auth-title">Orion Hub</h2>
             </div>
             <p id="auth-description">Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.</p>
             <div id="auth-error" class="auth-error" role="status" aria-live="polite" style="display: none;"></div>
@@ -32,10 +32,14 @@
                 <div class="auth-input-group">
                     <input type="password" id="auth-password" data-i18n-placeholder="password" placeholder="Şifre" autocomplete="current-password">
                 </div>
+                <div id="auth-confirm-group" class="auth-input-group" hidden>
+                    <input type="password" id="auth-confirm-password" placeholder="Şifreyi tekrar yaz" autocomplete="new-password" aria-label="Şifreyi tekrar yaz">
+                </div>
                 <div class="auth-actions">
                     <button id="auth-login-btn" class="btn btn-primary" data-i18n="login" disabled>Giriş Yap</button>
                     <button id="auth-register-btn" class="btn btn-secondary" data-i18n="register" hidden disabled>Kayıt Ol</button>
                 </div>
+                <div class="auth-actions"><button id="auth-back-login-btn" type="button" class="btn btn-secondary" hidden>Hesabım var · giriş yap</button></div>
             </div>
             <section class="hub-picker" aria-label="Hub bağlantısı">
                 <div class="hub-picker-header">
@@ -235,7 +239,6 @@
                 <div id="settings-dashboard" class="settings-dashboard-grid">
                     <div class="loading-spinner-state" data-i18n="settingsLoading">Ayarlar yükleniyor...</div>
                 </div>
-                <button id="owner-password-settings" type="button" class="btn btn-secondary" hidden>Yönetici şifresi</button>
                 <button id="pair-device-settings" type="button" class="btn btn-secondary" hidden>Telefon / cihaz bağla · QR oluştur</button>
             </div>
 
@@ -275,22 +278,22 @@
     </div>
 
     <!-- Scripts split by modules -->
-    <script src="js/locales/en.js?v=3"></script>
-    <script src="js/locales/tr.js?v=3"></script>
+    <script src="js/locales/en.js?v=5"></script>
+    <script src="js/locales/tr.js?v=5"></script>
     <script src="js/i18n.js"></script>
     <script src="js/config.js?v=2.0.7"></script>
     <script src="js/vendor/marked.js?v=18.0.14"></script>
     <script src="js/vendor/purify.js?v=3.4.16"></script>
     <script src="js/markdown.js?v=6"></script>
-    <script src="js/ui.js?v=2.0.15"></script>
+    <script src="js/ui.js?v=2.0.17"></script>
     <script src="js/auth_wait.js?v=1"></script>
     <script src="js/api.js?v=2.0.10"></script>
-    <script src="js/hub_picker.js?v=6"></script>
+    <script src="js/hub_picker.js?v=8"></script>
     <script src="js/tools.js?v=16"></script>
     <script src="js/stt.js?v=2.0.13"></script>
     <script src="js/sse.js?v=2.0.8"></script>
     <script src="js/mobile.js?v=1"></script>
     <script src="js/device_pairing.js?v=2"></script>
-    <script src="js/main.js?v=2.0.18"></script>
+    <script src="js/main.js?v=2.0.20"></script>
 </body>
 </html>

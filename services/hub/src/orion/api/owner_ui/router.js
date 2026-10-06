@@ -12,8 +12,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const show = selected => {
         if (!selected) { current.textContent = 'Mevcut Router ayarları kullanılıyor. Yeni Router seçmek için ağda ara veya elle adres yaz.'; return; }
-        current.textContent = selected.name + (selected.url ? ` · ${selected.url} · Kayıtlı` : ' · Bulunamadı');
-        current.title = selected.id || '';
+        current.replaceChildren();
+        current.className = 'connection-status';
+        const dot = document.createElement('span'); dot.className = 'status-dot';
+        const text = document.createElement('span');
+        const name = document.createElement('span'); name.className = 'router-current-name'; name.textContent = selected.name;
+        const address = document.createElement('span'); address.className = 'router-current-url'; address.textContent = selected.url || 'Bağlantı bekleniyor';
+        text.append(name, address); current.append(dot, text); current.title = selected.id || '';
     };
     async function operation(work) {
         refresh.disabled = true;
@@ -31,11 +36,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const data = await request('/discover');
         list.replaceChildren();
         for (const router of data.routers) {
-            const button = document.createElement('button'); button.type = 'button';
-            button.textContent = `${router.name} · ${router.url}`;
+            const card = document.createElement('article'); card.className = 'router-card';
+            const details = document.createElement('div'); details.className = 'router-details';
+            const title = document.createElement('h3'); title.textContent = router.name;
+            const address = document.createElement('p'); address.textContent = router.url;
+            const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = router.same_pc ? 'Bu bilgisayar · otomatik doğrulama' : 'Ağda bulundu';
+            details.append(title, address, badge);
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Bağlan';
             button.disabled = Boolean(router.conflict);
-            button.onclick = () => operation(() => save({id: router.id}));
-            list.append(button);
+            button.onclick = () => operation(async () => { button.disabled = true; button.textContent = 'Bağlanıyor…'; try { await save({id: router.id}); button.textContent = 'Bağlandı'; } finally { button.disabled = false; if (button.textContent !== 'Bağlandı') button.textContent = 'Bağlan'; } });
+            card.append(details, button); list.append(card);
         }
         if (!data.routers.length) list.textContent = 'Router bulunamadı. Aynı ağda açık olduğundan emin ol veya elle adres yaz.';
     });
@@ -43,5 +53,8 @@ document.addEventListener('DOMContentLoaded', () => {
         event.preventDefault();
         return operation(() => save({manual_url: document.getElementById('router-address').value.trim(), manual_id: document.getElementById('router-manual-id').value.trim()}));
     };
-    document.addEventListener('owner-unlocked', () => operation(async () => show((await request('')).selected)));
+    document.addEventListener('owner-unlocked', async () => {
+        await operation(async () => show((await request('')).selected));
+        refresh.click();
+    });
 });

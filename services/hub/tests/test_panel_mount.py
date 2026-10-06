@@ -33,10 +33,13 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
         )
         self.environment = patch.dict(os.environ, {'ADMIN_API_KEY':'owner-password'})
         self.environment.start()
+        self.password_hash = patch('orion.api.security.owner_password_hash', return_value=None)
+        self.password_hash.start()
 
     async def asyncTearDown(self):
         await self.client.aclose()
         self.environment.stop()
+        self.password_hash.stop()
 
     async def login(self, **headers):
         return await self.client.post('/panel/api/v1/owner/login',
@@ -70,7 +73,7 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
                      '/panel/owner-assets/gate.js', '/panel/owner-assets/people.js',
                      '/panel/admin/css/admin.css', '/panel/admin/js/admin.js']:
             self.assertEqual((await self.client.get(path)).status_code, 200, path)
-        for path in ['/panel/manage/', '/panel/admin/']:
+        for path in ['/panel/manage/', '/panel/admin/', '/panel/router/', '/panel/manage/security']:
             response = await self.client.get(path)
             self.assertIn('/panel/owner-assets/base.js', response.text)
             self.assertIn('href="/panel/"', response.text)

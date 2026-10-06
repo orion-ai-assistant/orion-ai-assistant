@@ -1,5 +1,6 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.tr = {
+    copyMessage: 'Mesajı kopyala',
     languageName: 'Türkçe',
     language: 'Dil', settings: 'Ayarlar', chat: 'Sohbet', jobStatus: 'İş Durumu',
     newChat: 'Yeni Sohbet', chats: 'SOHBETLER', userSettings: 'Kullanıcı Ayarları',

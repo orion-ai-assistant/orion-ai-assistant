@@ -35,4 +35,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (response.ok) location.reload();
     });
     input.focus();
+    if (document.body.dataset.autoDefault === 'true') {
+        OwnerAPI.fetch('/api/v1/owner/secure/password-info').then(r => r.ok ? r.json() : {}).then(info => {
+            if (info.default_password === 'orion' && !button.disabled) {
+                input.value = 'orion';
+                gate.querySelector('form').requestSubmit();
+            }
+        }).catch(() => {});
+    }
 });

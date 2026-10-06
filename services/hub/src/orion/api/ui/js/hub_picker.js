@@ -98,7 +98,10 @@ const HubPicker = {
         this.connected = false;
         this.updateButtons();
         // Never reuse a password typed for another Hub.
-        for (const id of ['auth-username', 'auth-password']) document.getElementById(id).value = '';
+        for (const id of ['auth-username', 'auth-password', 'auth-confirm-password']) {
+            const field = document.getElementById(id);
+            if (field) field.value = '';
+        }
         if (record.id !== this.self.id) {
             const destination = new URL(record.url, location.origin);
             if (destination.protocol !== 'https:' || destination.username || destination.password) return;

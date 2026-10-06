@@ -514,3 +514,19 @@ async def set_user_active(username: str, active: bool) -> bool:
         return result == "UPDATE 1"
     finally:
         await conn.close()
+
+
+async def create_local_user(username: str, password_hash: str) -> bool:
+    """Create an active account atomically on the private local listener."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError('User database unavailable')
+    try:
+        await _ensure_tables(conn)
+        result = await conn.execute(
+            'insert into orion_users (id,password_hash,is_active) values ($1,$2,true) on conflict (id) do nothing',
+            username, password_hash,
+        )
+        return result == 'INSERT 0 1'
+    finally:
+        await conn.close()

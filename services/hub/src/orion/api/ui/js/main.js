@@ -202,6 +202,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     const loginButton = document.getElementById('auth-login-btn');
     const description = document.getElementById('auth-description');
     description.removeAttribute('data-i18n');
+    let registrationMode = false;
+    const setRegistrationMode = enabled => {
+        registrationMode = enabled;
+        document.getElementById('auth-title').textContent = enabled ? 'Yeni hesap oluştur' : 'Orion Hub';
+        document.getElementById('auth-confirm-group').hidden = !enabled;
+        document.getElementById('auth-back-login-btn').hidden = !enabled;
+        document.getElementById('auth-confirm-password').value = '';
+        document.getElementById('auth-password').value = '';
+        document.getElementById('auth-password').autocomplete = enabled ? 'new-password' : 'current-password';
+        loginButton.hidden = enabled;
+        registerButton.removeAttribute('data-i18n');
+        registerButton.classList.toggle('btn-primary', enabled);
+        registerButton.classList.toggle('btn-secondary', !enabled);
+        registerButton.textContent = enabled ? 'Hesap oluştur ve başla' : 'Kayıt Ol';
+        description.textContent = enabled ? 'Kullanıcı adı ve şifre seç. Hesabın oluşturulunca sohbete geçeceksin.' : 'Hesabınla giriş yap veya yeni hesap oluştur.';
+    };
+    document.getElementById('auth-back-login-btn').onclick = () => setRegistrationMode(false);
     registerButton.hidden = true;
     if (Auth.invitationToken) {
         loginButton.hidden = true;
@@ -218,19 +235,23 @@ document.addEventListener("DOMContentLoaded", async () => {
             registerButton.hidden = false;
             registerButton.removeAttribute('data-i18n');
             registerButton.textContent = 'Hesap oluştur ve başla';
-            document.getElementById('auth-password').autocomplete = 'new-password';
+            setRegistrationMode(true);
         } catch (error) {
             description.textContent = 'Yeni bir davet bağlantısı için PC sahibiyle iletişime geç.';
             showAuthFailure(error);
         }
     } else {
-        description.textContent = 'Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.';
+        const localRegistration = HubPicker.self?.registration_allowed === true && HubPicker.selected?.id === HubPicker.self?.id;
+        registerButton.hidden = !localRegistration;
+        description.textContent = localRegistration
+            ? 'Hesabınla giriş yap veya bu bilgisayarda yeni hesap oluştur.'
+            : 'Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.';
     }
 
     document.getElementById("auth-login-btn").addEventListener("click", async () => {
         if (!HubPicker.connected || HubPicker.authenticating) return;
         const user = document.getElementById("auth-username").value.trim();
-        const pass = document.getElementById("auth-password").value.trim();
+        const pass = document.getElementById("auth-password").value;
         if (!user || !pass) {
             showError("Kullanıcı adı ve şifre zorunludur.");
             return;
@@ -258,10 +279,15 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     document.getElementById("auth-register-btn").addEventListener("click", async () => {
         if (!HubPicker.connected || HubPicker.authenticating) return;
+        if (!registrationMode) { setRegistrationMode(true); return; }
         const user = document.getElementById("auth-username").value.trim();
-        const pass = document.getElementById("auth-password").value.trim();
+        const pass = document.getElementById("auth-password").value;
         if (!user || !pass) {
             showError("Kullanıcı adı ve şifre zorunludur.");
+            return;
+        }
+        if (pass !== document.getElementById('auth-confirm-password').value) {
+            showError('Şifreler eşleşmiyor.');
             return;
         }
         const namespace = Auth.tokenKey;
@@ -269,6 +295,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         HubPicker.updateButtons();
         try {
             await Auth.register(user, pass);
+            setRegistrationMode(false);
+            registerButton.hidden = HubPicker.self?.registration_allowed !== true;
             if (namespace !== Auth.tokenKey || !HubPicker.connected) return;
             await initAuth({username: user});
             loadInitialSettings();

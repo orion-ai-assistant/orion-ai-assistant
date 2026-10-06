@@ -49,6 +49,21 @@ class RouterBootstrapTests(unittest.IsolatedAsyncioTestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    async def test_explicit_same_pc_selection_needs_no_typed_fingerprint(self):
+        from types import SimpleNamespace
+        import asyncio
+        from orion.api.router_connection import Selection, select, discover
+        from services.shared.router_connection import read_connection
+        manager = SimpleNamespace(lock=asyncio.Lock(), directory=SimpleNamespace(list=unittest.mock.AsyncMock(return_value=[])))
+        with patch('orion.api.router_connection.association', return_value=manager):
+            records = await discover(None)
+            self.assertEqual(records['routers'][0]['id'], self.tls['id'])
+            self.assertNotIn('fp', records['routers'][0])
+            result = await select(Selection(id=self.tls['id']), None)
+        self.assertTrue(result['identity_verified'])
+        self.assertEqual(read_connection()['fp'], self.tls['fp'])
+        self.assertEqual(self.requests, 1)
+
     async def test_fresh_install_trusts_only_verified_filesystem_identity(self):
         self.assertEqual(self.store.routers(), [])
         result = await bootstrap_local_router()

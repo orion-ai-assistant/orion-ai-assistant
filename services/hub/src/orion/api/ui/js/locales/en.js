@@ -1,5 +1,6 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.en = {
+    copyMessage: 'Copy message',
     languageName: 'English',
     language: 'Language', settings: 'Settings', chat: 'Chat', jobStatus: 'Job status',
     newChat: 'New chat', chats: 'CHATS', userSettings: 'User settings',

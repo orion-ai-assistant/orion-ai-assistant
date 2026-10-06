@@ -103,7 +103,8 @@ class HubDirectory:
 
 @router.get('/self')
 async def current_hub(request: Request):
-    return {**await asyncio.to_thread(local_identity), 'desktop': desktop_available(request),
+    from orion.api.access_boundary import is_local
+    return {**await asyncio.to_thread(local_identity), 'registration_allowed': is_local(request.scope) and not getattr(request.app.state, 'mobile', False), 'desktop': desktop_available(request),
             'local_entry': request.app.state.local_entry}
 
 

@@ -42,6 +42,23 @@ const UI = {
         `;
         return meta;
     },
+    addMessageCopy(div, readText) {
+        if (div.querySelector('.message-copy')) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'message-copy';
+        button.textContent = '⧉';
+        button.title = OrionI18n.t('copyMessage');
+        button.setAttribute('aria-label', OrionI18n.t('copyMessage'));
+        button.onclick = async () => {
+            try {
+                await navigator.clipboard.writeText(readText());
+                button.textContent = '✓';
+                setTimeout(() => { button.textContent = '⧉'; }, 1500);
+            } catch (_) { button.title = 'Kopyalanamadı. Metni seçerek kopyalayabilirsin.'; }
+        };
+        div.appendChild(button);
+    },
     createAttachmentCard(item) {
         const file = typeof item === 'string' ? { data: item, name: OrionI18n.t('file') } : item;
         const card = document.createElement('button');
@@ -144,6 +161,7 @@ const UI = {
             div.textContent = text;
             group.appendChild(div);
         }
+        if (text) this.addMessageCopy(group, () => text);
         this.chatArea.appendChild(group);
         this.scrollToBottom();
     },
@@ -189,6 +207,7 @@ const UI = {
             const meta = this.createMetricsElement(metrics.first_token_ms, metrics.total_ms);
             if (meta) div.appendChild(meta);
         }
+        this.addMessageCopy(div, () => content || '');
         if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
         this.chatArea.appendChild(div);
         this.scrollToBottom();
@@ -429,6 +448,10 @@ const UI = {
             if (metaEl && !botDivRef.querySelector('.message-meta')) {
                 botDivRef.appendChild(metaEl);
             }
+        }
+        if (botDivRef) {
+            const rawText = (state.contentNodes || []).map(node => node.markdownSource || '').join('\n');
+            this.addMessageCopy(botDivRef, () => rawText);
         }
         state.botDiv = null;
         // Update stop button if this is the active chat

@@ -74,7 +74,17 @@ async def status(request: Request):
 
 @router.get('/discover')
 async def discover(request: Request):
-    return {'routers': await association(request).directory.list()}
+    manager = association(request)
+    from orion.kernel.router_bootstrap import local_router_identity
+    records = await manager.directory.list()
+    try:
+        local = await local_router_identity()
+    except Exception:
+        local = None
+    if local:
+        records = [entry for entry in records if entry['id'] != local['id']]
+        records.insert(0, {**{key: value for key, value in local.items() if key != 'fp'}, 'same_pc': True})
+    return {'routers': records}
 
 
 class Selection(BaseModel):
@@ -99,7 +109,14 @@ async def select(payload: Selection, request: Request):
     manager = association(request)
     async with manager.lock:
         if payload.id:
+            from orion.kernel.router_bootstrap import local_router_identity
+            try:
+                local = await local_router_identity()
+            except Exception:
+                local = None
             records = await manager.directory.list()
+            if local and str(payload.id) == local['id']:
+                records = [local]
             matches = [entry for entry in records if entry['id'] == str(payload.id)]
             if len(matches) != 1 or matches[0].get('conflict'):
                 raise HTTPException(409, 'Seçilen Router bulunamadı veya kimliği çakışıyor.')
@@ -108,7 +125,7 @@ async def select(payload: Selection, request: Request):
             record = {'id': str(payload.manual_id), 'name': 'Orion Router', 'url': payload.manual_url}
         base = validate_url(record['url'])
         known = next((entry for entry in SecurityStore().routers() if entry['id'] == record['id']), None)
-        fingerprint = payload.fp or (known['fp'] if known else None)
+        fingerprint = payload.fp or record.get('fp') or (known['fp'] if known else None)
         if fingerprint is None:
             raise HTTPException(400, 'Yeni Router için kendi ekranındaki SPKI parmak izini girin.')
         try:
