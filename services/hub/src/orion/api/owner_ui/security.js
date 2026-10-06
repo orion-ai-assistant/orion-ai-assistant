@@ -82,16 +82,6 @@
       status.textContent = 'Metin seçildi. Ctrl+C veya cihazının kopyalama komutuyla kopyala.';
     }
   });
-  document.getElementById('owner-password-form').onsubmit = event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const payload = {current_password: form.elements.current.value, new_password: form.elements.next.value};
-    form.reset();
-    run(async () => {
-      await api('/password', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-      location.reload();
-    });
-  };
   document.getElementById('secure-refresh').onclick = () => run(refresh);
   document.addEventListener('owner-unlocked', () => run(refresh));
 })();

@@ -3570,8 +3570,18 @@ details[open] > .think-summary::before {
 
 .message-copy{border:0;background:transparent;color:var(--text-secondary);cursor:pointer;padding:6px 10px;border-radius:8px;font-size:16px}.message-copy:hover{background:var(--bg-secondary)}.message-copy:focus-visible{outline:2px solid var(--accent-color)}
 
-.device-connection-panel { margin-bottom: 24px; }
+.device-connection-panel { flex: 0 0 auto; width: 100%; max-width: 860px; margin: 24px auto 0; }
 .connection-addresses a { color: var(--text-primary); text-decoration: none; overflow-wrap: anywhere; }
 .connection-addresses a:hover { text-decoration: underline; }
 .message-meta .message-copy { padding: 3px 5px; font-size: 13px; }
 .message.bot .tool-activity summary { user-select: text; -webkit-user-select: text; }
+
+.audio-player-container { user-select: none; -webkit-user-select: none; }
+
+.auth-mode-tabs{display:flex;margin:24px 0;border:1px solid var(--border-subtle);border-radius:12px;overflow:hidden}.auth-mode-tabs button{flex:1;padding:12px;border:0;background:transparent;color:var(--text-secondary);font:600 14px var(--font-sans);cursor:pointer}.auth-mode-tabs button[aria-selected="true"]{background:rgba(16,185,129,.15);color:#2ed6ab}.auth-mode-tabs button:disabled{opacity:.45;cursor:default}.auth-card [hidden]{display:none!important}.auth-brand{justify-content:flex-start}.auth-card{text-align:left;max-width:460px}.auth-actions .btn{width:100%;padding:14px;text-align:center}.hub-discovery-dialog{width:calc(100% - 40px);max-width:460px;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:18px;padding:24px}.hub-discovery-dialog::backdrop{background:#0009}.hub-discovery-dialog h3{margin:0}.hub-list option{padding:12px}.settings-refresh{border:0;background:transparent;color:var(--text-secondary);font-size:24px;cursor:pointer;padding:6px 10px;border-radius:8px}.settings-refresh:hover{background:var(--bg-card)}.settings-refresh:disabled{opacity:.5;cursor:wait}.device-connection-info{flex:1;min-width:0}.device-connection-panel .settings-card-header{border-bottom:0;flex-wrap:wrap}.device-connection-panel #pair-device-settings{flex-shrink:0;align-self:center}
+
+.hub-picker-header .hub-change{display:inline-flex;align-items:center;gap:6px}
+
+.hub-results{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow-y:auto;margin:16px 0}.hub-result{display:flex;align-items:center;gap:12px;width:100%;padding:14px;text-align:left;border:1px solid var(--border-subtle);border-radius:12px;background:transparent;color:var(--text-primary);font:inherit;cursor:pointer}.hub-result:hover,.hub-result:focus-visible{border-color:#10b981;background:rgba(16,185,129,.06)}.hub-result:disabled{opacity:.45;cursor:default}.hub-result-icon{font-size:24px;color:var(--text-secondary)}.hub-result-info{display:flex;flex-direction:column;flex:1;min-width:0}.hub-result-info>span,.hub-discovery-status{color:var(--text-secondary);font-size:12px;overflow-wrap:anywhere}.hub-result-current{font-size:12px;color:#10b981}.hub-dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:16px}
+
+.hub-discovery-dialog{background:#181b22;backdrop-filter:none}

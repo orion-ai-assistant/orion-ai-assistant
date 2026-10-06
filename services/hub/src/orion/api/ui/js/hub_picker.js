@@ -21,7 +21,8 @@ const HubPicker = {
         this.status.hidden = !text;
     },
     expand(open) {
-        this.details.hidden = false;
+        if (open && !this.details.open) this.details.showModal();
+        else if (!open && this.details.open) this.details.close();
     },
     async json(path) {
         const response = await fetch(path, {cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(7000)});
@@ -39,11 +40,10 @@ const HubPicker = {
         this.list = document.getElementById('hub-list');
         this.details = document.getElementById('hub-picker');
         this.refreshButton = document.getElementById('hub-refresh');
-        this.refreshButton.onclick = () => this.refresh({manual: true}).catch(error => this.message(error.message));
-        this.list.onchange = () => {
-            const record = (this.records || []).find(item => item.id === this.list.value);
-            if (record) this.choose(record);
-        };
+        this.refreshButton.onclick = () => { this.expand(true); this.refresh({manual: true}).catch(error => this.message(error.message)); };
+        document.getElementById('hub-picker-close').onclick = () => this.expand(false);
+        this.rescanButton = document.getElementById('hub-rescan');
+        this.rescanButton.onclick = () => this.refresh({manual: true}).catch(error => this.message(error.message));
         this.connected = false;
         try {
             this.self = await this.json('/api/v1/discovery/self');
@@ -82,7 +82,10 @@ const HubPicker = {
     updateButtons() {
         const waiting = Boolean(document.getElementById('auth-error')._authWaitTimer);
         for (const id of ['auth-login-btn', 'auth-register-btn']) document.getElementById(id).disabled = !this.connected || this.authenticating || waiting;
-        this.list.disabled = Boolean(this.authenticating || waiting);
+        for (const item of this.list.querySelectorAll?.('button') || []) item.disabled = item.dataset.blocked === 'true' || Boolean(this.authenticating || waiting);
+        const loginTab = document.getElementById('auth-login-tab'), registerTab = document.getElementById('auth-register-tab');
+        if (loginTab) loginTab.disabled = Boolean(this.authenticating || waiting);
+        if (registerTab) registerTab.disabled = Boolean(!this.registrationAllowed || this.authenticating || waiting);
     },
     async choose(record) {
         if (this.authenticating) return;
@@ -94,6 +97,11 @@ const HubPicker = {
             this.message('Aynı kimliği duyuran birden fazla Hub var. Bu cihaz seçilemiyor.');
             return;
         }
+        if (record.id !== this.self.id) {
+            const destination = new URL(record.url, location.origin);
+            if (destination.protocol !== 'https:' || destination.username || destination.password) { this.message('Hub’ın HTTPS adresi geçersiz.'); return; }
+        }
+        this.expand(false);
         const revision = this.choiceRevision = (this.choiceRevision || 0) + 1;
         this.connected = false;
         this.updateButtons();
@@ -134,31 +142,35 @@ const HubPicker = {
     },
     renderList() {
         this.list.replaceChildren();
-        const current = this.connected ? this.selected?.id : this.saved();
-        if (!(this.records || []).some(record => record.id === current && !record.conflict)) {
-            const placeholder = document.createElement('option');
-            placeholder.value = ''; placeholder.disabled = true; placeholder.selected = true;
-            placeholder.textContent = current ? 'Kayıtlı Hub bulunamadı' : 'Hub seç';
-            this.list.append(placeholder);
-        }
         for (const record of this.records || []) {
-            const button = document.createElement('option');
-            button.value = record.id;
-            button.textContent = this.label(record);
-            if (record.id === this.selected?.id && this.connected) {
-                button.selected = true;
-            }
-            button.disabled = Boolean(record.conflict) || (this.invitation && record.id !== this.self.id);
-            button.title = record.conflict ? 'Kimlik çakışması' : record.id;
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'hub-result';
+            const blocked = Boolean(record.conflict) || (this.invitation && record.id !== this.self?.id);
+            button.dataset.blocked = String(blocked); button.disabled = blocked || Boolean(this.authenticating);
+            const icon = document.createElement('span'); icon.className = 'hub-result-icon'; icon.textContent = '▣'; icon.setAttribute('aria-hidden', 'true');
+            const info = document.createElement('span'); info.className = 'hub-result-info';
+            const title = document.createElement('strong'); title.textContent = this.label(record);
+            const address = document.createElement('span');
+            address.textContent = record.conflict ? 'Kimlik çakışması' : record.id === this.self?.id && this.self?.local_entry ? 'Bu cihaz' : new URL(record.url, location.origin).host;
+            info.append(title, address); button.append(icon, info);
+            if (record.id === this.selected?.id && this.connected) { const mark = document.createElement('span'); mark.className = 'hub-result-current'; mark.textContent = 'Bağlı'; button.append(mark); }
+            button.onclick = () => this.choose(record);
             this.list.append(button);
         }
+        this.scanStatus();
+    },
+    scanStatus() {
+        const status = document.getElementById('hub-discovery-status');
+        if (status) { status.textContent = this.busy ? 'Hub’lar aranıyor…' : !(this.records || []).length ? 'Hub bulunamadı.' : ''; status.hidden = !status.textContent; }
+        if (this.rescanButton) this.rescanButton.disabled = Boolean(this.busy);
     },
     async refresh({resume = !this.connected, manual = false} = {}) {
         if (this.busy) return;
         this.busy = true;
+        this.scanStatus();
         const started = Date.now();
         const previous = new Set((this.records || []).map(record => record.id));
-        this.refreshButton.disabled = true;
+        this.refreshButton.disabled = manual;
         this.refreshButton.classList.add('refreshing');
         this.refreshButton.setAttribute('aria-busy', 'true');
         try {
@@ -185,13 +197,14 @@ const HubPicker = {
             this.updateButtons();
             if (manual && this.connected) {
                 const added = this.records.filter(record => !previous.has(record.id));
-                this.message(added.length ? `Yeni Hub bulundu: ${added.map(record => this.label(record)).join(', ')}. Listeden seçebilirsiniz.` : 'Liste güncel');
+                this.message(added.length ? `Yeni Hub bulundu: ${added.map(record => this.label(record)).join(', ')}. Listeden seçebilirsiniz.` : '');
                 clearTimeout(this.messageTimer);
                 this.messageTimer = setTimeout(() => this.message(), 4000);
             }
         } finally {
             if (manual) await new Promise(resolve => setTimeout(resolve, Math.max(0, 1000 - (Date.now() - started))));
             this.busy = false;
+            this.scanStatus();
             this.refreshButton.disabled = false;
             this.refreshButton.classList.remove('refreshing');
             this.refreshButton.setAttribute('aria-busy', 'false');

@@ -203,11 +203,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     const description = document.getElementById('auth-description');
     description.removeAttribute('data-i18n');
     let registrationMode = false;
+    let canRegister = HubPicker.self?.registration_allowed === true && HubPicker.selected?.id === HubPicker.self?.id;
+    const loginTab = document.getElementById('auth-login-tab');
+    const registerTab = document.getElementById('auth-register-tab');
     const setRegistrationMode = enabled => {
+        if (enabled && !canRegister) return;
         registrationMode = enabled;
+        HubPicker.registrationAllowed = canRegister;
+        loginTab.setAttribute('aria-selected', String(!enabled));
+        registerTab.setAttribute('aria-selected', String(enabled));
+        registerTab.disabled = !canRegister;
+        document.getElementById('auth-error').style.display = 'none';
         document.getElementById('auth-title').textContent = enabled ? 'Yeni hesap oluştur' : 'Orion Hub';
         document.getElementById('auth-confirm-group').hidden = !enabled;
-        document.getElementById('auth-back-login-btn').hidden = !enabled;
+
         document.getElementById('auth-confirm-password').value = '';
         document.getElementById('auth-password').value = '';
         document.getElementById('auth-password').autocomplete = enabled ? 'new-password' : 'current-password';
@@ -215,10 +224,13 @@ document.addEventListener("DOMContentLoaded", async () => {
         registerButton.removeAttribute('data-i18n');
         registerButton.classList.toggle('btn-primary', enabled);
         registerButton.classList.toggle('btn-secondary', !enabled);
-        registerButton.textContent = enabled ? 'Hesap oluştur ve başla' : 'Kayıt Ol';
+        registerButton.textContent = 'Hesap oluştur';
+        registerButton.hidden = !enabled;
         description.textContent = enabled ? 'Kullanıcı adı ve şifre seç. Hesabın oluşturulunca sohbete geçeceksin.' : 'Hesabınla giriş yap veya yeni hesap oluştur.';
     };
-    document.getElementById('auth-back-login-btn').onclick = () => setRegistrationMode(false);
+    loginTab.onclick = () => setRegistrationMode(false);
+    registerTab.onclick = () => setRegistrationMode(true);
+    setRegistrationMode(false);
     registerButton.hidden = true;
     if (Auth.invitationToken) {
         loginButton.hidden = true;
@@ -235,6 +247,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             registerButton.hidden = false;
             registerButton.removeAttribute('data-i18n');
             registerButton.textContent = 'Hesap oluştur ve başla';
+            canRegister = true;
             setRegistrationMode(true);
         } catch (error) {
             description.textContent = 'Yeni bir davet bağlantısı için PC sahibiyle iletişime geç.';
@@ -242,7 +255,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
     } else {
         const localRegistration = HubPicker.self?.registration_allowed === true && HubPicker.selected?.id === HubPicker.self?.id;
-        registerButton.hidden = !localRegistration;
+        canRegister = localRegistration;
+        setRegistrationMode(false);
         description.textContent = localRegistration
             ? 'Hesabınla giriş yap veya bu bilgisayarda yeni hesap oluştur.'
             : 'Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.';
@@ -296,7 +310,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         try {
             await Auth.register(user, pass);
             setRegistrationMode(false);
-            registerButton.hidden = HubPicker.self?.registration_allowed !== true;
+            registerButton.hidden = true;
             if (namespace !== Auth.tokenKey || !HubPicker.connected) return;
             await initAuth({username: user});
             loadInitialSettings();
@@ -406,6 +420,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (statusCard) statusCard.style.display = targetId === 'status-view' ? 'flex' : 'none';
 
             if (targetId === 'settings-view') {
+                DevicePairing.renderControls();
 
                 loadInitialSettings();
 
@@ -434,16 +449,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     var settingsLoading = false;
     var settingsInitialRequested = false;
     function settingsVisible() { return !document.hidden && document.getElementById('settings-view')?.classList.contains('active'); }
-    async function loadInitialSettings(initial = false) {
+    async function loadInitialSettings(initial = false, manual = false) {
         const initialLoad = initial === true && !settingsInitialRequested;
         if ((!settingsVisible() && !initialLoad) || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
         if (initialLoad) settingsInitialRequested = true;
         settingsLoading = true;
+        const refreshButton = document.getElementById('settings-refresh');
+        if (refreshButton) refreshButton.disabled = true;
         try {
             const data = await API.getSettings();
             if ((initialLoad || settingsVisible()) && data && !data.error) {
+                DevicePairing.renderControls();
                 UI.renderSettings(data);
-                await UI.loadModelChoices(data, true);
+                await UI.loadModelChoices(data, !manual);
                 if (data.tts_enabled !== undefined) {
                     const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
                     localStorage.setItem("orion_tts_enabled", isEnabled ? "true" : "false");
@@ -451,8 +469,10 @@ document.addEventListener("DOMContentLoaded", async () => {
             }
         } finally {
             settingsLoading = false;
+            if (refreshButton) refreshButton.disabled = false;
         }
     };
+    document.getElementById('settings-refresh').onclick = () => loadInitialSettings(false, true);
     window.loadInitialSettings = () => loadInitialSettings(true);
     setInterval(() => loadInitialSettings(), 5000);
     document.addEventListener('visibilitychange', () => loadInitialSettings());
@@ -687,19 +707,31 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 });
 
-// Keep Select All within the assistant message currently being read.
-let activeAssistantMessage = null;
+// Drag selection may span messages; Select All belongs to the clicked message.
+let activeMessage = null;
+const messageSelector = '.message.bot, .message.user';
 document.addEventListener('pointerdown', event => {
-    activeAssistantMessage = event.target.closest('.message.bot');
+    activeMessage = event.target.closest(messageSelector);
 });
 document.addEventListener('keydown', event => {
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
     if (event.target.closest('input, textarea, [contenteditable="true"]')) return;
     const selection = window.getSelection();
-    const selectedMessage = selection?.anchorNode?.parentElement?.closest('.message.bot');
-    const message = activeAssistantMessage?.isConnected ? activeAssistantMessage : selectedMessage;
-    if (!message) return;
+    const selectedMessage = selection?.anchorNode?.parentElement?.closest(messageSelector);
+    const message = activeMessage?.isConnected ? activeMessage : selectedMessage;
+    if (!message || !selection) return;
+    const walker = document.createTreeWalker(message, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+            return node.parentElement?.closest('.audio-player-container, .message-meta, button, [hidden]')
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+        }
+    });
+    let first = null, last = null, node;
+    while ((node = walker.nextNode())) { first ||= node; last = node; }
     event.preventDefault();
-    const range = document.createRange(); range.selectNodeContents(message);
-    selection.removeAllRanges(); selection.addRange(range);
+    selection.removeAllRanges();
+    if (!first) return;
+    const range = document.createRange();
+    range.setStart(first, 0); range.setEnd(last, last.textContent.length);
+    selection.addRange(range);
 });

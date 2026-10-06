@@ -8,11 +8,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css?v=2.1.5">
+    <link rel="stylesheet" href="css/styles.css?v=2.1.11">
     <link rel="stylesheet" href="css/tools.css?v=11">
     <link rel="stylesheet" href="css/markdown.css?v=6">
     <link rel="stylesheet" href="css/mobile.css?v=1">
-    <link rel="stylesheet" href="css/device_pairing.css?v=2">
+    <link rel="stylesheet" href="css/device_pairing.css?v=4">
     <style>.auth-actions [hidden]{display:none!important}.auth-modal.show ~ .app-layout{visibility:hidden;pointer-events:none}</style>
 </head>
 <body>
@@ -24,6 +24,7 @@
                 <h2 id="auth-title">Orion Hub</h2>
             </div>
             <p id="auth-description">Hesabınla giriş yap. Yeni hesap için PC sahibinden davet bağlantısı al.</p>
+            <div class="auth-mode-tabs" role="tablist" aria-label="Hesap işlemi"><button id="auth-login-tab" type="button" role="tab" aria-selected="true">Giriş yap</button><button id="auth-register-tab" type="button" role="tab" aria-selected="false" disabled>Kayıt ol</button></div>
             <div id="auth-error" class="auth-error" role="status" aria-live="polite" style="display: none;"></div>
             <div class="auth-form">
                 <div class="auth-input-group">
@@ -39,20 +40,11 @@
                     <button id="auth-login-btn" class="btn btn-primary" data-i18n="login" disabled>Giriş Yap</button>
                     <button id="auth-register-btn" class="btn btn-secondary" data-i18n="register" hidden disabled>Kayıt Ol</button>
                 </div>
-                <div class="auth-actions"><button id="auth-back-login-btn" type="button" class="btn btn-secondary" hidden>Hesabım var · giriş yap</button></div>
             </div>
             <section class="hub-picker" aria-label="Hub bağlantısı">
-                <div class="hub-picker-header">
-                    <label for="hub-list">Bağlanılacak Hub</label>
-                    <div class="hub-picker-actions">
-                        <button id="hub-refresh" type="button" class="hub-refresh" title="Listeyi yenile" aria-label="Listeyi yenile"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 8a7 7 0 0 1 12-2l2 3M4 15l2 3a7 7 0 0 0 12-2"/></svg></button>
-                    </div>
-                </div>
-                <div id="hub-picker" class="hub-picker-content">
-                    <strong id="hub-current-name" hidden>Kontrol ediliyor…</strong>
-                    <p id="hub-status" class="hub-picker-status" role="status" hidden></p>
-                    <select id="hub-list" class="hub-list" aria-label="Bağlanılacak Hub"><option>Kontrol ediliyor…</option></select>
-                </div>
+                <div class="hub-picker-header"><span class="hub-current">Bağlı Hub: <strong id="hub-current-name">Kontrol ediliyor…</strong></span><button id="hub-refresh" type="button" class="hub-change"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8a15 15 0 0 1 18 0M6 12a10 10 0 0 1 12 0M9 16a5 5 0 0 1 6 0"/><circle cx="12" cy="20" r="1"/></svg> Cihazları ara</button></div>
+                <p id="hub-status" class="hub-picker-status" role="status" hidden></p>
+                <dialog id="hub-picker" class="hub-discovery-dialog" aria-labelledby="hub-discovery-title"><h3 id="hub-discovery-title">Cihazları ara</h3><p>Bağlanmak istediğin Hub’ı seç.</p><p id="hub-discovery-status" class="hub-discovery-status" role="status" hidden></p><div id="hub-list" class="hub-results" aria-label="Bulunan Hub’lar"></div><div class="hub-dialog-actions"><button id="hub-picker-close" type="button" class="hub-change">Kapat</button><button id="hub-rescan" type="button" class="hub-change">Yeniden tara</button></div></dialog>
             </section>
         </div>
     </div>
@@ -231,12 +223,12 @@
                     <div>
                         <h2 data-i18n="userSettings">Kullanıcı Ayarları</h2>
                     </div>
+                    <button id="settings-refresh" type="button" class="settings-refresh" title="Ayarları yenile" aria-label="Ayarları yenile">↻</button>
                 </div>
 
 
-                <section id="pair-device-panel" class="settings-card device-connection-panel" hidden>
-                    <div class="settings-card-header"><div class="settings-card-icon">▣</div><div><h3>Telefon / cihaz bağla</h3><p>QR’ı okut veya bağlantıyla Orion uygulamasını aç.</p></div></div>
-                    <div class="settings-card-body"><button id="pair-device-settings" type="button" class="btn btn-secondary" hidden>QR / bağlantı oluştur</button></div>
+                <section id="pair-device-panel" class="settings-card device-connection-panel">
+                    <div class="settings-card-header"><div class="settings-card-icon">▣</div><div class="device-connection-info"><h3>Cihaz bağla</h3><p id="pair-device-hint">QR veya link</p></div><button id="pair-device-settings" type="button" class="btn btn-secondary">Oluştur</button></div>
                 </section>
                 <div id="settings-dashboard" class="settings-dashboard-grid">
                     <div class="loading-spinner-state" data-i18n="settingsLoading">Ayarlar yükleniyor...</div>
@@ -289,12 +281,12 @@
     <script src="js/ui.js?v=2.0.17"></script>
     <script src="js/auth_wait.js?v=1"></script>
     <script src="js/api.js?v=2.0.10"></script>
-    <script src="js/hub_picker.js?v=8"></script>
+    <script src="js/hub_picker.js?v=11"></script>
     <script src="js/tools.js?v=16"></script>
     <script src="js/stt.js?v=2.0.13"></script>
     <script src="js/sse.js?v=2.0.8"></script>
     <script src="js/mobile.js?v=1"></script>
-    <script src="js/device_pairing.js?v=2"></script>
-    <script src="js/main.js?v=2.0.20"></script>
+    <script src="js/device_pairing.js?v=7"></script>
+    <script src="js/main.js?v=2.0.23"></script>
 </body>
 </html>

@@ -115,7 +115,7 @@ return 1
 async def pairing_capabilities(request: Request, current_user: str = Depends(get_current_user)):
     from orion.api.access_boundary import is_desktop_peer
     local = is_desktop_peer(request.scope)
-    return JSONResponse({'can_manage_local': local,
+    return JSONResponse({'can_manage_local': local, 'can_create_pairing': local or request.scope.get('scheme') == 'https',
                          'management_url': f'http://127.0.0.1:{int(os.getenv("ORION_LOCAL_PORT", "8910"))}/panel' if local else None},
                         headers={'Cache-Control': 'no-store'})
 
@@ -290,7 +290,29 @@ class CreatePairing(BaseModel):
 @owner_router.post('/pairing')
 async def create_pairing(request: Request, payload: CreatePairing | None = None):
     require_owner(request)
-    request_id = payload.request_id if payload else None
+    return await build_pairing(request, payload.request_id if payload else None)
+
+
+class RemotePairing(BaseModel):
+    password: str = Field(min_length=1, max_length=512)
+
+
+@pairing_router.post('/api/v1/pair/create')
+async def create_remote_pairing(payload: RemotePairing, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.api.access_boundary import FORWARDED
+    from orion.api.login_limits import limit_attempts
+    from orion.api.security import valid_admin_key
+    if request.scope.get('scheme') != 'https' or any(header in request.headers for header in FORWARDED):
+        raise HTTPException(403, 'Uzaktan QR oluşturmak için doğrudan HTTPS bağlantısı gerekli.')
+    await limit_attempts(request, 'owner-pair-account', current_user, 5)
+    await limit_attempts(request, 'owner', request.client.host if request.client else 'unknown', 5)
+    await limit_attempts(request, 'owner-pair-global', 'all', 20)
+    if not await asyncio.to_thread(valid_admin_key, payload.password):
+        raise HTTPException(403, 'Yönetici şifresi yanlış.')
+    return JSONResponse(await build_pairing(request), headers={'Cache-Control': 'no-store'})
+
+
+async def build_pairing(request: Request, request_id: str | None = None):
     if request_id and not await request.app.state.redis.exists('orion:pairing:request:' + request_id):
         raise HTTPException(410, 'Eşleştirme isteğinin süresi doldu.')
     hub = tls_identity()

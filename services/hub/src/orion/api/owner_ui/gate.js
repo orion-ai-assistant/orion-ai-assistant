@@ -3,7 +3,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const scope = document.body.dataset.ownerScope;
     const gate = document.createElement('section');
     gate.className = 'gate';
-    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. İki yönetim ekranında da aynı şifre kullanılır.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512" autofocus></label><button type="submit">Yönetimi aç</button></form><p class="notice" role="alert" hidden></p><p><a href="${OwnerAPI.url('/')}">← Başlangıca dön</a></p>`;
+    gate.hidden = true;
+    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. Bu sekmedeki yönetim oturumu 15 dakika geçerlidir.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">Yönetimi aç</button></form><p class="notice" role="alert" hidden></p><p><a href="${OwnerAPI.base === '/panel' ? '/' : OwnerAPI.url('/')}">← Başlangıca dön</a></p>`;
     document.body.appendChild(gate);
     const input = gate.querySelector('input'), button = gate.querySelector('button'), error = gate.querySelector('[role="alert"]');
     function unlock() {
@@ -36,7 +37,12 @@ document.addEventListener('DOMContentLoaded', () => {
             else OwnerAPI.clearSession();
         } catch (_) { OwnerAPI.clearSession(); }
     }
-    restore();
+    restore().then(() => {
+        if (!OwnerGate.unlocked) {
+            gate.hidden = false;
+            input.focus();
+        }
+    });
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden && OwnerGate.unlocked && !OwnerAPI.session()) OwnerGate.lock();
     });
@@ -65,5 +71,4 @@ document.addEventListener('DOMContentLoaded', () => {
         const response = await OwnerAPI.fetch('/api/v1/owner/logout', {method: 'POST'});
         if (response.ok) OwnerGate.lock();
     });
-    input.focus();
 });

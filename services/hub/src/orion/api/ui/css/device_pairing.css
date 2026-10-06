@@ -8,4 +8,4 @@
 .device-pair-dialog input:not([type=checkbox]) { display: block; box-sizing: border-box; width: 100%; padding: 12px; margin-top: 8px; border: 1px solid #475364; border-radius: 10px; background: #0d131c; color: inherit; }
 .device-pair-dialog [data-qr] { display: block; margin: 20px auto; width: 250px; max-width: 100%; background: white; border-radius: 8px; }
 .device-pair-close { position: absolute; top: 12px; right: 12px; background: transparent; border: 0; color: inherit; font-size: 28px; cursor: pointer; }
-#pair-device-settings { margin: 20px 0; }
+#pair-device-settings { margin: 0; padding: 12px 18px; align-self: flex-start; }
