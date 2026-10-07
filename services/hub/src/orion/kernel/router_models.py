@@ -139,6 +139,27 @@ async def get_model_provider(name: str, capability: str) -> str | None:
     raise ModelNotFoundError(
         f"Model bulunamadı: {name}. Modeli Orion Router’a ekleyin ve etkinleştirin (Modeller sayfası)."
     )
+
+
+async def get_account_catalog(user_id, include_voices=True):
+    """Account permission decisions must never share the global catalog cache."""
+    from orion.kernel.router_accounts import selected_router, ensure_account, request_router
+    record = await selected_router()
+    key = await ensure_account(user_id, record)
+    async def fetch(section):
+        return await request_router(record, 'GET', '/api/v1/hubs/account-catalog/' + section, account_key=key)
+    model_data, groups = await asyncio.gather(fetch('models'), fetch('model-groups'))
+    models = [{'name': m['name'], 'provider': m.get('provider'), 'capability': m.get('capability')}
+              for m in model_data['models']]
+    models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat')}
+                  for g in groups['groups'])
+    voices, unavailable = {}, []
+    if include_voices:
+        try:
+            voices = (await fetch('voices'))['voices']
+        except RuntimeError:
+            unavailable.append('voices')
+    return {'models': models, 'voices': voices, 'unavailable': unavailable}
 async def validate_model_updates(updates: dict[str, str]) -> None:
     """Validate model settings when they change, outside the message hot path."""
     model_capabilities = {

@@ -28,6 +28,10 @@ window.RouterProviders = {
         const message = card.querySelector('[data-message]');
         const initialContext = context();
         let routerId;
+        let chosenRouter;
+        const routerSelector = document.createElement('select');
+        routerSelector.className = 'setting-select'; routerSelector.setAttribute('aria-label', 'Router');
+        form.prepend(routerSelector);
         const valid = () => card.isConnected && context() === initialContext;
         const request = async (path, options = {}) => {
             const response = await API._fetch('/api/v1/router/providers' + path, options);
@@ -38,29 +42,59 @@ window.RouterProviders = {
         };
         const load = async () => {
             const data = await request('');
-            routerId = data.router_id;
+            const routers = data.routers || [data];
+            const selected = routers.find(r => r.router_id === chosenRouter) || routers[0] || data;
+            chosenRouter = selected.router_id; routerId = selected.router_id;
+            input.value = '';
+            routerSelector.replaceChildren(...routers.filter(r => r.connected).map(r => new Option(r.router_name, r.router_id)));
+            routerSelector.value = routerId || '';
             card.querySelector('[data-status]').textContent = data.connected ? `${data.router_name} · ${en ? 'Connected' : 'Bağlı'}` : data.message;
             if (data.managed) {
                 const row = document.getElementById('setting-input-router_api_key')?.closest('.setting-row');
                 if (row) { row.hidden = true; row.style.display = 'none'; }
             }
             form.hidden = !data.connected;
-            selector.replaceChildren(...(data.providers || []).filter(p => p !== 'local').map(p => new Option(p, p)));
+            selector.replaceChildren(...(selected.providers || []).filter(p => p !== 'local').map(p => new Option(p, p)));
             form.querySelector('button').disabled = selector.options.length === 0;
             const configured = card.querySelector('[data-configured]'); configured.replaceChildren();
-            for (const provider of data.configured || []) {
+            const total = document.createElement('p'); total.textContent = `${data.active_routers || 0} Router · ${data.active_keys || 0} aktif anahtar`; configured.append(total);
+            for (const info of routers) {
+                const heading = document.createElement('h4'); heading.textContent = info.router_name; configured.append(heading);
+                if (info.dashboard_url) {
+                    let url; try { url = new URL(info.dashboard_url); } catch {}
+                    if (url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+                        const line = document.createElement('p');
+                        if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) line.textContent = 'Router bu cihazda çalışıyor';
+                        else {
+                            const link = document.createElement('a'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = url.host + ' · yerel ağ adresi';
+                            const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Kopyala'; copy.onclick = () => navigator.clipboard.writeText(url.href).catch(() => {}); line.append(link, copy);
+                        }
+                        configured.append(line);
+                    }
+                }
+                for (const count of info.summary || []) {
+                    const line = document.createElement('p'); line.textContent = `${count.provider} · ${count.shared} ortak · ${count.private} size özel`; configured.append(line);
+                }
+                for (const item of info.personal_keys || []) {
+                    const line = document.createElement('p'); line.textContent = `${item.provider} · ${item.label || ''} · ${item.is_active ? 'Aktif' : 'Yönetici tarafından kapatıldı'}${item.admin_updated ? ' · Yönetici tarafından güncellendi' : ''}`; configured.append(line);
+                }
+            }
+            const note = document.createElement('p'); note.textContent = 'Bu form tek kişisel anahtar ekler. Toplu ekleme ve ayrıntılı yönetim Router ekranındadır.'; configured.append(note);
+            for (const provider of selected.configured || []) {
                 const row = document.createElement('p');
                 row.append(document.createTextNode(provider + ' · ' + (en ? 'Saved ' : 'Kayıtlı ')));
                 const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'btn-secondary'; remove.textContent = en ? 'Remove' : 'Kaldır';
                 remove.onclick = async () => {
                     remove.disabled = true; message.textContent = '';
-                    try { await request('/' + encodeURIComponent(provider) + '?router_id=' + encodeURIComponent(routerId), {method: 'DELETE'}); await load(); }
+                    const targetRouter = routerId;
+                    try { await request('/' + encodeURIComponent(provider) + '?router_id=' + encodeURIComponent(targetRouter), {method: 'DELETE'}); await load(); }
                     catch (error) { if (valid()) message.textContent = error.message; }
                     finally { remove.disabled = false; }
                 };
                 row.append(remove); configured.append(row);
             }
         };
+        routerSelector.onchange = () => { chosenRouter = routerSelector.value; input.value = ''; load().catch(error => { if (valid()) message.textContent = error.message; }); };
         form.onsubmit = async event => {
             event.preventDefault();
             const key = input.value.trim(); input.value = '';

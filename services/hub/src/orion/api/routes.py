@@ -426,8 +426,10 @@ async def reset_global_setting(key: str, request: Request) -> RuntimeSettings:
 
 @router.get("/api/v1/models")
 async def chat_models_endpoint(current_user: str = Depends(get_current_user), include_voices: bool = True):
-    from orion.kernel.router_models import get_router_catalog
+    from orion.kernel.router_models import get_router_catalog, get_account_catalog
     try:
+        if current_user != 'global':
+            return await get_account_catalog(current_user, include_voices)
         return await get_router_catalog(force_refresh=True, include_voices=include_voices)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

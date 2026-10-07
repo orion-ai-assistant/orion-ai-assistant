@@ -18,6 +18,22 @@ RECORD = {'id': ROUTER, 'name': 'Router', 'url': 'https://127.0.0.1:9443', 'fp':
 
 
 class AccountTests(unittest.IsolatedAsyncioTestCase):
+    async def test_account_catalog_never_reuses_permission_cache_or_admin_credentials(self):
+        from orion.kernel.router_models import get_account_catalog
+        async def result(record, method, path, **kwargs):
+            return {'models': [{'name': 'allowed', 'provider': 'openai', 'capability': 'chat'}]} if path.endswith('/models') else {'groups': []}
+        with patch.object(accounts, 'selected_router', AsyncMock(return_value=RECORD)), patch.object(
+            accounts, 'ensure_account', AsyncMock(return_value='account-fixture')) as ensure, patch.object(
+            accounts, 'request_router', AsyncMock(side_effect=result)) as request:
+            first = await get_account_catalog('user', False)
+            second = await get_account_catalog('user', False)
+        self.assertEqual(first, second)
+        self.assertEqual(request.await_count, 4)
+        self.assertEqual(ensure.await_count, 2)
+        for call in request.await_args_list:
+            self.assertEqual(call.kwargs['account_key'], 'account-fixture')
+            self.assertNotIn('admin_password', call.kwargs)
+
     def test_credentials_are_scoped_to_hub_router_and_account(self):
         with patch.object(accounts, '_material', return_value=(b'a' * 32, {'id': HUB})):
             first = accounts._credential(ROUTER, 'account', HUB)
@@ -87,6 +103,43 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ProviderRoutesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_offline_selected_router_does_not_hide_other_connected_routers(self):
+        other = {**RECORD, 'id': OTHER, 'name': 'Other Router'}
+        with patch.object(router_providers, 'account', AsyncMock(return_value=(RECORD, 'first-account'))), patch.object(
+            router_providers, 'SecurityStore', return_value=SimpleNamespace(routers=lambda: [RECORD, other])), patch.object(
+            router_providers, '_state', return_value={'connected': True}), patch.object(
+            router_providers, 'ensure_account', AsyncMock(return_value='other-account')), patch.object(
+            router_providers, 'request_router', AsyncMock(side_effect=[accounts.RouterAccountError('offline'), {'active_keys': 2}])):
+            response = await self.client.get('/api/v1/router/providers')
+        self.assertTrue(response.json()['connected'])
+        self.assertEqual(response.json()['router_id'], OTHER)
+        self.assertEqual(response.json()['active_keys'], 2)
+        self.assertFalse(response.json()['routers'][0]['connected'])
+
+    async def test_multiple_routers_use_authenticated_account_and_aggregate_counts(self):
+        records = [RECORD, {**RECORD, 'id': OTHER, 'name': 'Other Router'}]
+        remote = AsyncMock(side_effect=[{'summary': [{'provider': 'openai', 'shared': 2, 'private': 1}], 'active_keys': 3},
+                                       {'summary': [{'provider': 'openai', 'shared': 0, 'private': 2}], 'active_keys': 2}])
+        with patch.object(router_providers, 'account', AsyncMock(return_value=(RECORD, 'first-account'))), patch.object(
+            router_providers, 'SecurityStore', return_value=SimpleNamespace(routers=lambda: records)), patch.object(
+            router_providers, '_state', return_value={'connected': True}), patch.object(
+            router_providers, 'ensure_account', AsyncMock(return_value='other-account')) as ensure, patch.object(
+            router_providers, 'request_router', remote):
+            response = await self.client.get('/api/v1/router/providers?user_id=someone-else')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['active_keys'], 5)
+        self.assertEqual(response.json()['active_routers'], 2)
+        self.assertEqual(len(response.json()['routers']), 2)
+        ensure.assert_awaited_once_with('user', records[1])
+        self.assertEqual(remote.await_args_list[1].kwargs['account_key'], 'other-account')
+        self.assertNotIn('account', response.text)
+
+    async def test_invalid_credential_does_not_echo_secret_in_validation_error(self):
+        secret = 'secret-fixture-' * 700
+        response = await self.client.put('/api/v1/router/providers/openrouter', json={'api_key': secret, 'router_id': ROUTER})
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn('secret-fixture', response.text)
+
     async def asyncSetUp(self):
         self.app = FastAPI()
         self.app.include_router(router_providers.router)
