@@ -17,7 +17,7 @@ class SelectionSecurityTests(unittest.IsolatedAsyncioTestCase):
         store = MagicMock()
         store.routers.return_value = trusted
         verifier = AsyncMock(return_value={'id': ID, 'name': 'Router', 'fp': FP}, side_effect=verification_error)
-        with patch('orion.api.router_connection.association', return_value=manager), patch('orion.api.router_connection.SecurityStore', return_value=store), patch('orion.api.router_connection.verify_router', verifier), patch('orion.api.router_connection.write_connection') as write:
+        with patch('orion.kernel.router_bootstrap.local_router_identity', AsyncMock(return_value=None)), patch('orion.kernel.router_models.clear_catalog_cache'), patch('orion.api.router_connection.association', return_value=manager), patch('orion.api.router_connection.SecurityStore', return_value=store), patch('orion.api.router_connection.verify_router', verifier), patch('orion.api.router_connection.write_connection') as write:
             result = await select(Selection(id=ID, fp=fingerprint), object())
             return result, verifier, write, store
 

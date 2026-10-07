@@ -10,11 +10,12 @@ from pydantic import BaseModel, Field, model_validator
 
 from orion.api.hub_directory import HubDirectory
 from orion.api.owner_routes import require_owner
+from orion.api.router_providers import CredentialRoute
 from orion.kernel.local_security import SecurityStore
 from orion.kernel.pinned_router import verify_router, resolve_trusted_routers
 from services.shared.router_connection import read_connection, write_connection, validate_url
 
-router = APIRouter(prefix='/api/v1/owner/router')
+router = APIRouter(prefix='/api/v1/owner/router', route_class=CredentialRoute)
 logger = logging.getLogger(__name__)
 SERVICE_TYPE = '_orion-router-tls._tcp.local.'
 
@@ -37,16 +38,18 @@ class RouterAssociation:
 
     async def refresh(self):
         async with self.lock:
+            # A corrupt selection is not an absent selection. Read before any
+            # bootstrap can write state, and let the owner repair it explicitly.
+            previous = await asyncio.to_thread(read_connection)
             from orion.kernel.router_bootstrap import bootstrap_local_router
             await bootstrap_local_router()
             await resolve_trusted_routers()
             trusted = SecurityStore().routers()
-            try:
-                previous = await asyncio.to_thread(read_connection)
-            except RuntimeError:
-                previous = None
             if previous:
-                return next((entry for entry in trusted if entry['id'] == previous.get('id')), None)
+                selected = next((entry for entry in trusted if entry['id'] == previous.get('id')), None)
+                if selected and previous.get('fp') and previous['fp'] != selected['fp']:
+                    raise RuntimeError('Kayıtlı Router parmak izi güven kaydıyla eşleşmiyor.')
+                return selected
             if len(trusted) == 1:
                 selected = {**trusted[0], 'mode': 'manual', 'last_seen': time.time()}
                 await asyncio.to_thread(write_connection, selected)
@@ -69,7 +72,11 @@ def association(request):
 
 @router.get('')
 async def status(request: Request):
-    selected = await association(request).refresh()
+    manager = association(request)
+    try:
+        selected = await manager.refresh()
+    except RuntimeError as error:
+        raise HTTPException(503, 'Router bağlantı kaydı geçersiz; panelden kontrol edin.') from error
     from orion.kernel.router_accounts import ensure_connection, request_router, RouterAccountError
     access = False
     message = 'Bu Hub’ın model bağlantısı henüz kurulmamış.'

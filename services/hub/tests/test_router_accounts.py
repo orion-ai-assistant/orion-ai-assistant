@@ -20,14 +20,17 @@ RECORD = {'id': ROUTER, 'name': 'Router', 'url': 'https://127.0.0.1:9443', 'fp':
 class AccountTests(unittest.IsolatedAsyncioTestCase):
     async def test_account_catalog_never_reuses_permission_cache_or_admin_credentials(self):
         from orion.kernel.router_models import get_account_catalog
+        permitted = [{'name': 'allowed', 'provider': 'openai', 'capability': 'chat'}]
         async def result(record, method, path, **kwargs):
-            return {'models': [{'name': 'allowed', 'provider': 'openai', 'capability': 'chat'}]} if path.endswith('/models') else {'groups': []}
+            return {'models': list(permitted)} if path.endswith('/models') else {'groups': []}
         with patch.object(accounts, 'selected_router', AsyncMock(return_value=RECORD)), patch.object(
             accounts, 'ensure_account', AsyncMock(return_value='account-fixture')) as ensure, patch.object(
             accounts, 'request_router', AsyncMock(side_effect=result)) as request:
             first = await get_account_catalog('user', False)
+            permitted.clear()
             second = await get_account_catalog('user', False)
-        self.assertEqual(first, second)
+        self.assertEqual(first['models'][0]['name'], 'allowed')
+        self.assertEqual(second['models'], [])
         self.assertEqual(request.await_count, 4)
         self.assertEqual(ensure.await_count, 2)
         for call in request.await_args_list:

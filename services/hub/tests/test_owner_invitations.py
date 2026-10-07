@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -34,13 +36,26 @@ class Redis:
 
 class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.env = patch.dict(os.environ, {'ADMIN_API_KEY': 'owner-password'})
+        temporary = TemporaryDirectory(dir=Path(__file__).parent)
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.env = patch.dict(os.environ, {
+            'ADMIN_API_KEY': 'owner-password', 'ORION_SECURITY_DIR': str(root / 'security'),
+            'ORION_ROUTER_CONNECTION_FILE': str(root / 'connection.json'),
+            'LOCALAPPDATA': str(root / 'local'),
+        })
+        provision = patch('orion.kernel.router_accounts.provision_if_available', AsyncMock())
+        provision.start()
+        self.addCleanup(provision.stop)
+        database = patch('orion.kernel.registry._connect', AsyncMock(side_effect=AssertionError('Unexpected database access')))
+        database.start()
+        self.addCleanup(database.stop)
         self.env.start()
         self.app = create_app()
         self.app.state.redis = self.redis = Redis()
         self.user_app = create_app(public=True)
         self.user_app.state.redis = self.redis
-        self.user_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.user_app, client=('127.0.0.1', 4567)), base_url='https://localhost:8910')
+        self.user_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.user_app, client=('192.0.2.25', 4567)), base_url='https://localhost:8910')
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('127.0.0.1', 4567)), base_url='https://localhost:8909')
     async def asyncTearDown(self):
         await self.client.aclose()
@@ -86,7 +101,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.status_code, 307)
                 self.assertEqual(result.headers['location'], 'http://127.0.0.1:8910' + ('/js/main.js?version=1' if 'js/' in path else '/hub'))
             page = await self.client.get('/')
-            self.assertIn('href="http://127.0.0.1:8910/hub"', page.text)
+            self.assertIn('href="http://127.0.0.1:8910/panel/"', page.text)
         self.assertEqual((await self.client.get('/owner-assets/auth_wait.js')).status_code, 200)
         page = await self.client.get('/manage/')
         self.assertIn('/owner-assets/auth_wait.js', page.text)
