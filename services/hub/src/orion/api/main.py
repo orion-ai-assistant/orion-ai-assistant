@@ -88,6 +88,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     configure_cors(application)
     application.include_router(auth_router, prefix='/api/v1')
     application.include_router(router)
+    from orion.api.router_providers import router as provider_router
+    application.include_router(provider_router)
     from orion.api.mobile_security import mobile_router, pairing_router, owner_router as secure_owner_router, MobileBoundary, LegacyDeviceBoundary
     if public or mobile:
         application.include_router(pairing_router)

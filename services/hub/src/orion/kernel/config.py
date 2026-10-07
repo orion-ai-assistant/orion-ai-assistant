@@ -117,6 +117,7 @@ async def _get_effective_overrides(user_id: str) -> dict[str, str]:
 
 
 async def get_runtime_settings(redis: Redis | None = None, user_id: str | None = None) -> RuntimeSettings:
+    from orion.kernel.router_accounts import account_settings
     # 1. Base case: No user specified, return hardcoded env defaults
     if not user_id:
         return build_runtime_settings()
@@ -125,7 +126,7 @@ async def get_runtime_settings(redis: Redis | None = None, user_id: str | None =
     if redis is not None:
         cached_overrides = await _read_overrides_from_redis(redis, user_id)
         if cached_overrides:
-            return build_runtime_settings(cached_overrides)
+            return await account_settings(build_runtime_settings(cached_overrides), user_id)
 
     # 3. Cache Miss: Fetch from DB
     # Fetch global defaults and user-specific overrides from DB
@@ -141,7 +142,7 @@ async def get_runtime_settings(redis: Redis | None = None, user_id: str | None =
             await redis.hset(key, mapping=normalized)
             await redis.expire(key, runtime_settings.redis_cache_ttl_seconds)
             
-    return runtime_settings
+    return await account_settings(runtime_settings, user_id)
 
 async def seed_database_settings(redis: Redis) -> None:
     """Add missing schema defaults to the global settings on every startup."""

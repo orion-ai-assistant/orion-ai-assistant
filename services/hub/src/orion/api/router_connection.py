@@ -69,7 +69,43 @@ def association(request):
 
 @router.get('')
 async def status(request: Request):
-    return {'selected': await association(request).refresh(), 'identity_verified': True}
+    selected = await association(request).refresh()
+    from orion.kernel.router_accounts import ensure_connection, request_router, RouterAccountError
+    access = False
+    message = 'Bu Hub’ın model bağlantısı henüz kurulmamış.'
+    if selected:
+        try:
+            await ensure_connection(selected)
+            await request_router(selected, 'GET', '/api/v1/hubs/status')
+            access = True
+            message = 'Router bağlı. Kullanıcı erişimleri otomatik oluşturulur.'
+        except RouterAccountError as error:
+            message = str(error)
+    return {'selected': selected, 'identity_verified': bool(selected),
+            'access_ready': access, 'message': message}
+
+
+class RouterPassword(BaseModel):
+    password: str = Field(min_length=1, max_length=1024)
+    router_id: UUID
+
+
+@router.post('/access')
+async def authorize(payload: RouterPassword, request: Request):
+    association(request)
+    from orion.api.login_limits import limit_attempts
+    await limit_attempts(request, 'router-password', request.client.host, 10)
+    from orion.kernel.router_accounts import selected_router, connect_router, RouterAccountError
+    try:
+        record = await selected_router()
+        if record['id'] != str(payload.router_id):
+            raise HTTPException(409, 'Seçilen Router değişti. Bağlantı ekranını yenileyin.')
+        await connect_router(record, payload.password)
+    except RouterAccountError as error:
+        raise HTTPException(400, str(error)) from error
+    from orion.kernel import router_models
+    router_models.clear_catalog_cache()
+    return {'access_ready': True}
 
 
 @router.get('/discover')
@@ -137,4 +173,6 @@ async def select(payload: Selection, request: Request):
                     'last_seen': time.time()}
         await asyncio.to_thread(SecurityStore().trust_router, identity, base)
         await asyncio.to_thread(write_connection, selected)
+        from orion.kernel.router_models import clear_catalog_cache
+        clear_catalog_cache()
     return {'selected': selected, 'identity_verified': True}

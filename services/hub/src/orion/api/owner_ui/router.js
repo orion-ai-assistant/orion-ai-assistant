@@ -4,6 +4,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const list = document.getElementById('router-list');
     const refresh = document.getElementById('router-refresh');
     const manual = document.getElementById('router-manual');
+    const access = document.getElementById('router-access');
+    const password = document.getElementById('router-password');
+    let currentRouterId;
+    async function loadStatus() {
+        const data = await request('');
+        show(data.selected);
+        currentRouterId = data.selected?.id;
+        document.getElementById('router-access-status').textContent = data.message;
+        access.hidden = !data.selected || data.access_ready;
+    }
     async function request(path, options) {
         const response = await OwnerAPI.fetch('/api/v1/owner/router' + path, options);
         const data = await response.json();
@@ -11,7 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return data;
     }
     const show = selected => {
-        if (!selected) { current.textContent = 'Mevcut Router ayarları kullanılıyor. Yeni Router seçmek için ağda ara veya elle adres yaz.'; return; }
+        if (!selected) { current.textContent = 'Bu Hub’ın model bağlantısı henüz kurulmamış. Router seçerek bağlan.'; return; }
         current.replaceChildren();
         current.className = 'connection-status';
         const dot = document.createElement('span'); dot.className = 'status-dot';
@@ -23,14 +33,16 @@ document.addEventListener('DOMContentLoaded', () => {
     async function operation(work) {
         refresh.disabled = true;
         manual.querySelector('button').disabled = true;
+        access.querySelector('button').disabled = true;
         error.hidden = true;
         try { await work(); }
         catch (failure) { error.textContent = failure.message; error.hidden = false; }
-        finally { refresh.disabled = false; manual.querySelector('button').disabled = false; }
+        finally { refresh.disabled = false; manual.querySelector('button').disabled = false; access.querySelector('button').disabled = false; }
     }
     async function save(selection) {
         const fp = document.getElementById('router-fp').value.trim();
         show((await request('', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...selection, ...(fp ? {fp} : {})})})).selected);
+        await loadStatus();
     }
     refresh.onclick = () => operation(async () => {
         const data = await request('/discover');
@@ -54,7 +66,16 @@ document.addEventListener('DOMContentLoaded', () => {
         return operation(() => save({manual_url: document.getElementById('router-address').value.trim(), manual_id: document.getElementById('router-manual-id').value.trim()}));
     };
     document.addEventListener('owner-unlocked', async () => {
-        await operation(async () => show((await request('')).selected));
+        await operation(loadStatus);
         refresh.click();
     });
+    access.onsubmit = event => {
+        event.preventDefault();
+        operation(async () => {
+            const secret = password.value;
+            password.value = '';
+            await request('/access', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password: secret, router_id: currentRouterId})});
+            await loadStatus();
+        });
+    };
 });

@@ -120,6 +120,8 @@ async def register(request: RegisterRequest, http_request: Request):
             raise HTTPException(503, 'Hesap veritabanına erişilemiyor.') from error
         if not created:
             raise HTTPException(409, 'Bu kullanıcı adı zaten kullanılıyor.')
+    from orion.kernel.router_accounts import provision_if_available
+    await provision_if_available(request.username)
     claims = {'sub': request.username}
     if getattr(http_request.app.state, 'mobile', False):
         claims['device_id'] = http_request.state.device_id

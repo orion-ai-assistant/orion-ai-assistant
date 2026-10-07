@@ -20,14 +20,26 @@ _CATALOG_TTL_SECONDS = 15.0
 _catalog_sections: dict[str, dict] = {}
 _SECTION_TIMEOUT_SECONDS = 5.0
 _LOCAL_TTS_TIMEOUT_SECONDS = 4.0
+_catalog_generation = 0
+
+
+def clear_catalog_cache():
+    global _catalog_cache, _model_catalog_cache, _catalog_cached_at, _model_cached_at, _model_refresh_task, _catalog_generation
+    _catalog_generation += 1
+    _model_refresh_task = None
+    _catalog_cache = _model_catalog_cache = None
+    _catalog_cached_at = _model_cached_at = 0.0
+    _catalog_sections.clear()
 
 
 async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict | None:
+    from orion.kernel.router_accounts import catalog_credentials
+    prefix, headers = await catalog_credentials(key)
     async def fetch():
         for base in bases:
-            url = base.rstrip('/').removesuffix('/v1') + '/dashboard/api/' + name
+            url = base.rstrip('/').removesuffix('/v1') + prefix + name
             try:
-                async with session.get(url, headers={'x-admin-key': key}) as response:
+                async with session.get(url, headers=headers) as response:
                     response.raise_for_status()
                     data = await response.json()
                     if not isinstance(data, dict) or data.get('error'):
@@ -52,12 +64,15 @@ async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict
 
 async def _refresh_models() -> dict:
     global _model_catalog_cache, _model_cached_at
+    generation = _catalog_generation
     key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
     names = ['models', 'model-groups']
     async with router_session() as session:
         results = await asyncio.gather(*(
             _fetch_section(session, get_router_base_urls(), name, key) for name in names
         ))
+    if generation != _catalog_generation:
+        raise RuntimeError('Router bağlantısı değişti. Model listesini yenileyin.')
     unavailable = []
     for name, result in zip(names, results):
         if result is None:
@@ -79,6 +94,7 @@ async def _refresh_models() -> dict:
 async def get_router_catalog(force_refresh: bool = False, include_voices: bool = True) -> dict:
     """Model validation and model pickers never need to wait for voice services."""
     global _catalog_cache, _catalog_cached_at, _model_refresh_task
+    generation = _catalog_generation
     if not include_voices:
         if not force_refresh and _model_catalog_cache is not None:
             if time.monotonic() - _model_cached_at < _CATALOG_TTL_SECONDS:
@@ -98,6 +114,8 @@ async def get_router_catalog(force_refresh: bool = False, include_voices: bool =
             get_router_catalog(force_refresh=force_refresh, include_voices=False),
             *(_fetch_section(session, get_router_base_urls(), name, key) for name in names),
         )
+    if generation != _catalog_generation:
+        raise RuntimeError('Router bağlantısı değişti. Model listesini yenileyin.')
     unavailable = list(model_catalog['unavailable'])
     for name, result in zip(names, results):
         if result is None:

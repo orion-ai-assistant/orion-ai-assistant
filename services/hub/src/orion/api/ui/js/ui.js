@@ -703,6 +703,7 @@ const UI = {
         if (button) button.setAttribute('aria-pressed', String(input.type === 'text'));
     },
     clearSavedRouterApiKeyInput() {
+        window.RouterProviders?.clearInput();
         const input = document.getElementById('setting-input-router_api_key');
         if (!input || input.classList.contains('dirty')) return;
         input.value = '';
@@ -751,6 +752,7 @@ const UI = {
         // Eğer zaten render edilmişse sadece değişmemiş olan değerleri güncelle
         const alreadyRendered = Boolean(dashboard.querySelector('[id^="setting-input-"]'));
         if (alreadyRendered) {
+            window.RouterProviders?.mount();
             const oldTtsModel = document.getElementById('setting-input-tts_model')?.value;
             Object.keys(settings).forEach(key => {
                 if (key === 'tts_voice') return;
@@ -966,6 +968,7 @@ const UI = {
         <section id="settings-panel-advanced" data-settings-panel="advanced" aria-labelledby="settings-advanced-toggle" hidden>${sections.advanced}</section>`;
         const uiLangEl = document.getElementById('ui-language');
         if (uiLangEl) uiLangEl.value = OrionI18n.language;
+        window.RouterProviders?.mount();
     },
     async loadModelChoices(settings, silent = false) {
         window.ToolsUI?.renderSettings();

@@ -111,13 +111,13 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                 page = await client.get(path)
                 self.assertEqual(page.status_code, 200)
                 self.assertIn('auth-modal show', page.text)
-                self.assertIn('src="/js/hub_picker.js?v=4"', page.text)
+                self.assertRegex(page.text, r'src="/js/hub_picker\.js\?v=\d+"')
                 self.assertIn('href="/css/styles.css', page.text)
             for path in ['/panel', '/panel/', '/panel/manage/', '/panel/admin/']:
                 page = await client.get(path)
                 self.assertEqual(page.status_code, 200, path)
                 self.assertNotIn('location', page.headers)
-                self.assertIn('href="/hub"', page.text)
+                self.assertIn('href="/panel/"', page.text)
                 self.assertNotIn('orion.local', page.text)
                 self.assertNotIn(':8909', page.text)
             for path in ['/js/main.js', '/css/styles.css', '/favicon.ico']:

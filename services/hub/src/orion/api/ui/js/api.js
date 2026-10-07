@@ -12,6 +12,7 @@ const Auth = {
     },
     
     clearToken() {
+        window.RouterProviders?.reset();
         localStorage.removeItem(this.tokenKey);
     },
 
