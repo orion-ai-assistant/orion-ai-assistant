@@ -227,6 +227,8 @@ Router testleri `dev/test-orion-router` altında. Önce `test_hub_accounts.py` f
 
 ## Hub'daki 21 başarısız test nedir?
 
+Bu testlerin tek tek güncel karşılıkları, fixture düzeltmeleri ve kabul şartları ayrı [Hub testlerini güncelleme planında](<D:/krstlcm Workspace/DevProjects/orion-ai-assistant/docs/hub-test-modernization-plan-2026-10-07.md>) yazıldı. Yeni oturumda test düzeltme işi için o belgeyi kullan.
+
 **Bunlar 21 yeni canlı uygulama hatası gözlemi değil, üç test dosyasındaki başarısız assertion/fixture çalışmalarıdır.** Hepsi başlangıç Hub commit'i `2956d108...` kaynaklarıyla da tekrarlandı. Kök nedenlerin önemli bölümü eski test mock'larının güncel güvenilir Router / TLS akışıyla uyumsuzluğu. Bununla birlikte “hepsi önemsiz” veya “bağlantı akışında hiçbir sorun olamaz” sonucu çıkarılmamalı; güncel akışa uygun izole testler yazılarak kalan davranış farkları incelenmeli.
 
 Karşılaştırma nasıl yapıldı: mevcut modüller import edildikten sonra bu çalışmada değişen `orion.kernel.router_models`, `orion.api.router_providers`, `orion.api.routes` modülleri, başlangıç Git HEAD kaynaklarıyla bellek içinde yeniden yüklendi. Dosyalar checkout edilmedi, yerel değişikliklere dokunulmadı. Aynı üç test dosyasında aynı 21 test yine başarısız oldu. Bağlantı, environment, pin ve güven kaydı kaynakları bu özellik çalışmasında zaten değiştirilmemişti.
