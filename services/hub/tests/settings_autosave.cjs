@@ -15,7 +15,7 @@ function field(key, value, tagName = 'INPUT') {
     return input;
 }
 const requests = [];
-const context = vm.createContext({window: {}, localStorage: {setItem() {}},
+const context = vm.createContext({OrionI18n: {t: key => ({saving:'Kaydediliyor…',saved:'Kaydedildi',saveFailed:'Kaydedilemedi'}[key] || key)}, window: {}, localStorage: {setItem() {}},
     document: {getElementById: id => elements[id] || null},
     setTimeout(fn) { timers.set(++timerId, fn); return timerId; },
     clearTimeout(id) { timers.delete(id); },

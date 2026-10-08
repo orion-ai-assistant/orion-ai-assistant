@@ -259,18 +259,16 @@ const ToolsUI = {
         const card = document.createElement('section');
         card.className = 'settings-card tool-settings-card';
         const title = document.createElement('h3'); title.textContent = 'Başka bilgisayardan erişim';
-        const copy = document.createElement('p'); copy.className = 'setting-hint';
-        copy.textContent = 'Bu PC’deki Hub’ın güncel HTTPS ağ adresi. Aynı ağdaki başka bilgisayarda açabilirsin; IP adresi değişebilir.';
-        const addresses = document.createElement('div'); addresses.className = 'settings-card-body connection-addresses';
-        const header = document.createElement('div'); header.className = 'settings-card-header';
-        const description = document.createElement('div'); description.append(title, copy); header.append(description);
-        card.append(header, addresses); host.append(card);
+        const addresses = document.createElement('div'); addresses.className = 'connection-addresses';
+        const header = document.createElement('div'); header.className = 'settings-card-header connection-header';
+        header.append(title, addresses);
+        card.append(header); host.append(card);
         try {
             const data = await HubPicker.json('/api/v1/discovery/connection');
             for (const url of data.urls) {
                 const link = document.createElement('a'); link.textContent = url; link.href = url;
                 link.target = '_blank'; link.rel = 'noopener noreferrer';
-                const row = document.createElement('p'); row.append(link); addresses.append(row);
+                addresses.append(link);
             }
             if (!data.urls.length) addresses.textContent = 'Yerel ağ adresi bulunamadı.';
         } catch (error) { addresses.textContent = error.message; }

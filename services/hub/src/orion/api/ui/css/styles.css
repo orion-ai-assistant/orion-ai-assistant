@@ -3614,3 +3614,25 @@ details[open] > .think-summary::before {
 #hub-panel-card {margin-bottom:16px}
 .router-provider-card .settings-card-body,#hub-panel-card .settings-card-body {display:block;padding:16px 20px}
 #hub-panel-card .router-address {margin:0}
+
+/* Settings cards stay full size inside the scrollable view. */
+.settings-view > .settings-card {flex-shrink:0;width:100%;max-width:860px}
+.settings-view > .settings-dashboard-grid,.settings-view > .view-header {flex-shrink:0}
+#hub-panel-card .settings-card-header h3,.connection-header h3 {flex:1;min-width:0}
+.router-provider-card .settings-card-header .router-address,#hub-panel-card .router-address {margin:0}
+.router-identity > strong {flex:1;min-width:0}
+.router-saved-key {display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.router-saved-key code {color:var(--text-secondary);font-size:12px}
+.connection-header {gap:16px;border-bottom:0}
+.connection-addresses {display:flex;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+.connection-addresses a,.router-address a {white-space:nowrap;font-size:13px}
+.connection-addresses a {color:var(--primary);text-decoration:none}
+.connection-addresses a:hover {text-decoration:underline}
+
+.connection-header h3 {white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.connection-addresses {max-width:55%}
+.connection-addresses a {overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.router-provider-card .settings-card-header [data-router-link],#hub-panel-card [data-hub-panel] {flex-shrink:0}
+
+.router-hub-heading {flex:1;min-width:0}
+.router-hub-heading .router-hint {margin:4px 0 0;font-size:12px}

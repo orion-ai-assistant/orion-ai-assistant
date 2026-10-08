@@ -448,19 +448,25 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Load initial settings
     var settingsLoading = false;
     var settingsInitialRequested = false;
+    var settingsSnapshot = null;
+    var settingsContext = null;
     function settingsVisible() { return !document.hidden && document.getElementById('settings-view')?.classList.contains('active'); }
     async function loadInitialSettings(initial = false, manual = false) {
+        const accountContext = Auth.tokenKey + ':' + Auth.getToken();
+        if(settingsContext!==accountContext){settingsContext=accountContext;settingsInitialRequested=false;settingsSnapshot=null;}
         const initialLoad = initial === true && !settingsInitialRequested;
         if ((!settingsVisible() && !initialLoad) || settingsLoading || !Auth.getToken() || !AppState.sseConnected) return;
         if (initialLoad) settingsInitialRequested = true;
         settingsLoading = true;
         const refreshButton = document.getElementById('settings-refresh');
-        if (refreshButton) refreshButton.disabled = true;
+        if (manual && refreshButton) refreshButton.disabled = true;
         try {
             const data = await API.getSettings();
-            if ((initialLoad || settingsVisible()) && data && !data.error) {
+            if (settingsContext===accountContext && Auth.tokenKey + ':' + Auth.getToken()===accountContext && (initialLoad || settingsVisible()) && data && !data.error) {
                 DevicePairing.renderControls();
-                UI.renderSettings(data);
+                const snapshot=JSON.stringify(data);
+                if(snapshot!==settingsSnapshot){UI.renderSettings(data);settingsSnapshot=snapshot;}
+                else window.RouterProviders?.mount();
                 await UI.loadModelChoices(data, !manual);
                 if (data.tts_enabled !== undefined) {
                     const isEnabled = String(data.tts_enabled).toLowerCase() === 'true';
@@ -469,7 +475,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             }
         } finally {
             settingsLoading = false;
-            if (refreshButton) refreshButton.disabled = false;
+            if (manual && refreshButton) refreshButton.disabled = false;
         }
     };
     document.getElementById('settings-refresh').onclick = () => loadInitialSettings(false, true);

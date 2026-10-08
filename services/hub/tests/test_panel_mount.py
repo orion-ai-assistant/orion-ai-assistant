@@ -64,6 +64,15 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Path=/panel', logout.headers['set-cookie'])
         self.assertEqual((await self.client.get('/panel/api/v1/owner/people')).status_code, 401)
 
+    async def test_clicked_navigation_opens_gate_but_cannot_read_api_or_submit_login(self):
+        headers={'Sec-Fetch-Site':'cross-site','Sec-Fetch-Mode':'navigate',
+                 'Sec-Fetch-Dest':'document','Sec-Fetch-User':'?1'}
+        response=await self.client.get('/panel',headers=headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual((await self.client.get('/panel/api/v1/owner/people',headers=headers)).status_code,403)
+        self.assertEqual((await self.login(**headers)).status_code,403)
+        self.assertEqual((await self.client.get('/panel',headers={**headers,'Sec-Fetch-Mode':'cors'})).status_code,403)
+
     async def test_cross_origin_login_is_rejected(self):
         self.assertEqual((await self.login(Origin='https://evil.example')).status_code, 403)
         self.assertEqual((await self.login(**{'Sec-Fetch-Site':'cross-site'})).status_code, 403)
@@ -79,7 +88,10 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('href="/panel/"', response.text)
         for path in ['/panel', '/panel/manage/']:
             response = await self.client.get(path)
-            self.assertIn('href="/hub"', response.text)
+            self.assertIn('href="/panel/"', response.text)
+            if path == '/panel':
+                self.assertIn('href="/panel/manage/"', response.text)
+                self.assertIn('href="/panel/admin/"', response.text)
             self.assertNotIn('localhost:8910', response.text)
         response = await self.client.get('/panel/admin')
         self.assertEqual(response.status_code, 307)

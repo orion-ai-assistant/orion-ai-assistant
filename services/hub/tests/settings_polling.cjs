@@ -32,6 +32,7 @@ async function run() {
     assert.equal(requests, 1, 'Initial background load runs only once');
     visible = true;
     const pending = poll();
+    assert.notEqual(refreshButton.disabled, true, 'Automatic refresh does not animate or disable the header button');
     await poll();
     assert.equal(requests, 2, 'Do not overlap requests');
     visible = false;
@@ -43,7 +44,7 @@ async function run() {
     const refresh = poll();
     resolve({ tts_enabled: true });
     await refresh;
-    assert.equal(renders, 2);
+    assert.equal(renders, 1, 'Unchanged snapshots keep rendered controls intact');
     assert.equal(catalogs, 2);
     context.document.hidden = true;
     await poll();

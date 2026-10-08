@@ -172,7 +172,13 @@ class AccessBoundary:
             if management_api(path) or private_path(path) or has_key or owner_cookie_name(scope) in request.cookies:
                 origin = request.headers.get('origin')
                 expected = f'{request.url.scheme}://{request.url.netloc}'
-                if ((origin and origin != expected) and not web_origin) or request.headers.get('sec-fetch-site') == 'cross-site':
+                # A user-followed link may open the HTML gate from the public Hub.
+                # This exception never includes API requests, subresources or writes.
+                navigation = (request.method == 'GET' and path in {'/', '/index.html', '/manage', '/manage/', '/admin', '/admin/', '/router', '/router/'}
+                              and not origin and request.headers.get('sec-fetch-mode') == 'navigate'
+                              and request.headers.get('sec-fetch-dest') == 'document'
+                              and request.headers.get('sec-fetch-user') == '?1')
+                if not navigation and (((origin and origin != expected) and not web_origin) or request.headers.get('sec-fetch-site') == 'cross-site'):
                     return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
             await authenticate_owner_session(request)
             # Shared settings paths are user-facing on the public listener, but
