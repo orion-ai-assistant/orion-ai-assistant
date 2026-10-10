@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const context = vm.createContext({ performance, console, window: {},
+    setTimeout: () => 1, clearTimeout() {},
     OrionI18n: {t: key => key}, HubPicker: {apiPath: path => path}, document: {
     getElementById: () => ({ disabled: false, innerHTML: '', setAttribute() {} })
 }});

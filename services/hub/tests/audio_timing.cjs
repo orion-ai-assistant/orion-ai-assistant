@@ -5,6 +5,7 @@ const path = require('node:path');
 let now = 100;
 const rendered = [];
 const context = vm.createContext({ performance: { now: () => now }, console, window: {},
+    setTimeout: () => 1, clearTimeout() {},
     UI: { showTextMetrics: (_, data) => rendered.push(['text', data.total_ms]),
         appendAudio: (_, data, autoplay) => rendered.push(['audio', data.arrival_ms, autoplay]),
         setStopButtonVisible() {} },

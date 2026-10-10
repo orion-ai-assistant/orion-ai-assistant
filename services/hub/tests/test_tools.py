@@ -190,6 +190,43 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tool_reported_failure_blocks_second_call_in_same_batch(self):
+        conversation = self.conversation()
+        rounds = 0
+
+        async def stream(messages, settings, **kwargs):
+            nonlocal rounds
+            rounds += 1
+            if rounds == 1:
+                yield 'tool_calls', json.dumps([call('one'), call('two')])
+            else:
+                yield 'content', 'Previous tool outcome is uncertain.'
+
+        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(return_value={'status': 'unknown'})) as execute:
+            _ = [event async for event in conversation.stream([], RuntimeSettings(),
+                 AsyncMock(return_value=False), stream)]
+        execute.assert_awaited_once()
+        self.assertEqual([item['status'] for item in conversation.activity], ['error', 'error'])
+
+    async def test_failed_tool_is_not_automatically_reexecuted_in_same_turn(self):
+        conversation = self.conversation()
+        requests = []
+
+        async def stream(messages, settings, **kwargs):
+            requests.append(kwargs)
+            if len(requests) <= 2:
+                yield 'tool_calls', json.dumps([call(f'call_{len(requests)}')])
+            else:
+                yield 'content', 'Tool result could not be confirmed.'
+
+        with patch('orion.worker.services.tool_runner.execute_tool', AsyncMock(side_effect=TimeoutError('uncertain'))) as execute:
+            _ = [event async for event in conversation.stream([], RuntimeSettings(),
+                 AsyncMock(return_value=False), stream)]
+        execute.assert_awaited_once()
+        self.assertNotIn('tools', requests[1])
+        self.assertEqual([item['status'] for item in conversation.activity], ['error', 'error'])
+        self.assertIn('automatic retry is disabled', conversation.activity[1]['result']['error']['message'])
+
     async def test_ambiguous_media_seek_returns_to_model_for_targeted_retry(self):
         conversation = self.conversation(['media_control'])
         requests = []

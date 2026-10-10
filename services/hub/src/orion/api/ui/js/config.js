@@ -11,6 +11,7 @@ const AppState = {
     currentChatId: null,
     chatSelectionVersion: 0,
     activeTurns: new Map(),
+    retryPrompts: new Map(),
     eventSource: null,
     sseConnected: false,
     sseShouldReconnect: false,
@@ -83,6 +84,7 @@ const AppState = {
         const existing = this.activeTurns.get(chatId);
         if (existing && turnId && existing.turnId === turnId) {
             existing.status = "generating";
+            window.watchGeneration?.(chatId);
             return true;
         }
         this.activeTurns.set(chatId, {
@@ -94,6 +96,7 @@ const AppState = {
         if (!this.generationStartedAt.has(chatId)) {
             this.generationStartedAt.set(chatId, performance.now());
         }
+        window.watchGeneration?.(chatId);
         return true;
     },
     stopGenerating(chatId, turnId = null) {

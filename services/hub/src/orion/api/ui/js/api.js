@@ -196,6 +196,7 @@ const API = {
                         AppState.currentChatId = data.chat_id;
                     }
                     AppState.bindOptimisticUserMessage(data.chat_id);
+                    AppState.retryPrompts.set(data.chat_id, text);
                     const turnId = data.turn_id || data.generation_id || null;
                     if (!adoptedFromSse) {
                         AppState.startGenerating(data.chat_id, turnId);
@@ -305,7 +306,7 @@ const API = {
     async getChatHistory(chatId) {
         if (!chatId) return;
         try {
-            const response = await this._fetch(`/api/v1/chats/${chatId}/history`);
+            const response = await this._fetch(`/api/v1/chats/${chatId}/history`, {signal: AbortSignal.timeout(10000)});
             if (response.status === 401) return { error: "Oturum süresi doldu." };
             const data = await response.json();
             if (!response.ok) return { error: data.detail || data.error || "Sohbet geçmişi alınamadı." };

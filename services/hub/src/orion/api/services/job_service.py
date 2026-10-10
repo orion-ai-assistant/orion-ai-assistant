@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
+import time
 from uuid import uuid4
 from fastapi import HTTPException
 from redis.asyncio import Redis
@@ -16,6 +17,7 @@ from orion.contracts.http import JobCreateRequest, JobCreateResponse, JobStatusR
 from orion.contracts.queue import JobQueueRecord
 from orion.kernel.chat_titles import initial_chat_title
 from orion.kernel.config import get_runtime_settings
+from orion.kernel.job_safety import job_key, WAITING_KEY, QUEUE_TIMEOUT_SECONDS, INIT_JOURNAL
 from orion.kernel.registry import (
     upsert_chat, rename_chat_db, touch_chat_db, get_user_chats_db, get_chat_db,
     get_chat_history_db, delete_chat_db
@@ -133,7 +135,14 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe.delete(stop_key)
     pipe.set(active_turn_key, turn_id, ex=active_turn_ttl)
     pipe.hset(state_key, mapping=status_mapping)
-    pipe.expire(state_key, settings.result_ttl_seconds)
+    # No expiry until a terminal result: missing journals never authorize replay.
+    # A retried admission transaction must never reset an existing started or
+    # terminal marker after an ambiguous Redis response.
+    pipe.eval(INIT_JOURNAL, 1, job_key(turn_id), turn_id, chat_id,
+              json.dumps({'turn_id': turn_id, 'chat_id': chat_id, 'channel': channel}))
+    pipe.zadd(WAITING_KEY, {turn_id: time.time() + QUEUE_TIMEOUT_SECONDS})
+    pipe.hdel(state_key, 'error', 'result_json')
+    pipe.expire(state_key, max(settings.result_ttl_seconds, QUEUE_TIMEOUT_SECONDS + 60))
     pipe.publish(channel, StreamEvent.user_message(chat_id=chat_id, text=payload.input.text, turn_id=turn_id, attachments=payload.input.display_attachments(), display_text=payload.input.metadata.get("display_text", payload.input.text)).model_dump_json())
     pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued", turn_id=turn_id).model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
@@ -210,7 +219,9 @@ async def get_job(redis: Redis, user_id: str, chat_id: str) -> JobStatusResponse
         created_at=raw["created_at"],
         updated_at=raw["updated_at"],
         result=json.loads(raw["result_json"]) if raw.get("result_json") else None,
-        error=raw.get("error")
+        error=raw.get("error"),
+        turn_id=raw.get('active_turn_id'),
+        retry_text=raw.get('current_prompt') if raw['status'] == 'failed' else None,
     )
 
 # ---------------------------------------------------------------------------

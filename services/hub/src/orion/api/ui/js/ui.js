@@ -212,6 +212,7 @@ const UI = {
         if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
         this.chatArea.appendChild(div);
         this.scrollToBottom();
+        return div;
     },
     createBotMessagePlaceholder(chatId, isWaiting = true) {
         if (!chatId) return;
@@ -412,6 +413,20 @@ const UI = {
             previous.replaceWith(meta);
         }
         else botDiv.appendChild(meta);
+    },
+    offerRetry(chatId, div, text) {
+        if (!div || !text || div.querySelector('.message-retry')) return;
+        const button = document.createElement('button');
+        button.className = 'message-retry';
+        button.textContent = 'Mesajı yeniden hazırla';
+        button.title = 'Göndermeden önce önceki araç sonucunu kontrol edin. Ekleri gerekiyorsa yeniden ekleyin.';
+        button.onclick = () => {
+            if (chatId !== AppState.currentChatId) return;
+            this.messageInput.value = text;
+            this.messageInput.focus();
+            this.resizeMessageInput();
+        };
+        div.appendChild(button);
     },
     finishGeneration(chatId, hasTokens = true, metrics = null) {
         if (!chatId) return;

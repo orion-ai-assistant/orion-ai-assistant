@@ -103,6 +103,7 @@ class ToolConversation:
         self.direct_tool_call_id = None
         self.rounds = 0
         self.research_used = False
+        self.failed_tools = set()
 
     async def stream(self, messages, settings, stop_checker, stream_fn):
         registry = get_registry()
@@ -114,7 +115,7 @@ class ToolConversation:
         seen_ids = set()
         while not await stop_checker():
             schemas = [registry.tools[name].schema() for name in sorted(self.enabled)
-                       if not (self.research_used and name in WEB_TOOLS)]
+                       if name not in self.failed_tools and not (self.research_used and name in WEB_TOOLS)]
             calls = []
             round_content = ""
             kwargs = {"stop_checker": stop_checker}
@@ -180,6 +181,8 @@ class ToolConversation:
                         raise ValueError("Google AI Mode failed; further web calls were skipped")
                     if cancelled or await stop_checker():
                         raise ToolCancelled()
+                    if name in self.failed_tools:
+                        raise ValueError('This tool previously failed or has an uncertain result in this turn; automatic retry is disabled')
                     if name not in self.enabled or name not in registry.tools:
                         raise ValueError("Tool is not enabled or registered")
                     if self.research_used and name in WEB_TOOLS:
@@ -223,6 +226,13 @@ class ToolConversation:
                         item.update(status="cancelled", result={"error": {"type": "cancelled", "message": "Tool execution cancelled"}})
                 except Exception as exc:
                     item.update(status="error", result={"error": {"type": type(exc).__name__, "message": str(exc)[:2000] or "Tool timed out"}})
+                outcome = item.get('result')
+                if item['status'] == 'completed' and isinstance(outcome, dict) and (
+                    outcome.get('error') or outcome.get('status') in {'failed', 'error', 'timeout', 'unknown'}
+                ):
+                    item['status'] = 'error'
+                if item['status'] == 'error':
+                    self.failed_tools.add(name)
                 result_message = {"role": "tool", "tool_call_id": call["id"],
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
                 messages.append(result_message)

@@ -21,7 +21,7 @@ from orion.kernel.config import get_runtime_settings, seed_database_settings
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def service_lifespan(app: FastAPI):
     from orion.api.security import validate_security_configuration
     validate_security_configuration()
     if app.state.public:
@@ -74,6 +74,20 @@ async def lifespan(app: FastAPI):
             await restore_task
         await bridge.close()
         await app.state.redis.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # All API entry points monitor queues, independently of Worker availability.
+    from orion.kernel.job_safety import queue_watchdog
+    async with service_lifespan(app):
+        watchdog = asyncio.create_task(queue_watchdog(app.state.redis))
+        try:
+            yield
+        finally:
+            watchdog.cancel()
+            with suppress(asyncio.CancelledError):
+                await watchdog
 
 
 def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=False, local_http=False):

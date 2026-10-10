@@ -22,6 +22,7 @@ from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import model_history
 from orion.worker.services.tool_display import DisplayTimeline
 from orion.contracts.events import StreamEvent
+from orion.kernel.job_safety import job_key, WAITING_KEY, TERMINAL_TTL
 
 
 def utc_now() -> str:
@@ -214,6 +215,9 @@ async def append_history(
     pipe = redis.pipeline()
     for message in messages:
         pipe.rpush(key, json.dumps(message))
+    turn_id = messages[0].get('turn_id')
+    if turn_id:
+        pipe.hset(job_key(turn_id), 'history_saved', '1')
     # Cache full UI history; model_history applies a turn-safe context boundary.
     pipe.expire(key, settings.redis_cache_ttl_seconds)
     await pipe.execute()
@@ -292,6 +296,13 @@ async def finalize_state_if_active(
             pipe.multi()
             pipe.hset(state_key, mapping=mapping)
             pipe.expire(state_key, ttl_seconds)
+            pipe.hset(job_key(turn_id), mapping={
+                'phase': 'terminal', 'status': mapping['status'],
+                'updated_at': mapping['updated_at'], 'error': mapping.get('error', ''),
+                'result_json': mapping.get('result_json', '{}'),
+            })
+            pipe.expire(job_key(turn_id), TERMINAL_TTL)
+            pipe.zrem(WAITING_KEY, turn_id)
             pipe.delete(active_key)
             pipe.delete(_turn_stop_key(turn_id))
             await pipe.execute()
@@ -642,7 +653,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         logging.warning("Could not publish TTS warning for chat %s", context.chat_id)
 
             thinking_text = "".join(thinking_tokens)
-            assistant_entry = {"role": "assistant", "content": final_text}
+            assistant_entry = {"role": "assistant", "content": final_text, "turn_id": context.turn_id}
             if conversation.activity:
                 assistant_entry["tool_activity"] = conversation.activity
                 assistant_entry["model_content"] = conversation.final_content

@@ -48,6 +48,50 @@ def write_pids(pid_path, pids):
     except Exception as e:
         print(f"[!] Could not write PID file: {e}", file=sys.stderr)
 
+
+class WorkerSupervisor:
+    """Restart only an exited Worker, with a finite lifetime restart budget."""
+
+    def __init__(self, worker, start_worker, replace_worker, stopping, report):
+        self.worker = worker
+        self.start_worker = start_worker
+        self.replace_worker = replace_worker
+        self.stopping = stopping
+        self.report = report
+        self.attempts = 0
+        self.restart_at = None
+        self.exhausted = False
+
+    def check(self):
+        if self.stopping.is_set() or self.exhausted:
+            return
+        exit_code = self.worker.poll()
+        if exit_code is None:
+            return
+        if self.attempts >= 5:
+            self.exhausted = True
+            self.report("Worker restart limit reached (5 attempts); automatic restarts disabled")
+            return
+        now = time.monotonic()
+        if self.restart_at is None:
+            delay = min(2 ** self.attempts, 30)
+            self.restart_at = now + delay
+            self.report(f"Worker exited with code {exit_code}; restart {self.attempts + 1}/5 in {delay}s")
+            return
+        if now < self.restart_at or self.stopping.is_set():
+            return
+        self.attempts += 1
+        self.restart_at = None
+        try:
+            replacement = self.start_worker()
+        except OSError as exc:
+            self.report(f"Worker restart {self.attempts}/5 failed: {exc}")
+            return
+        self.replace_worker(self.worker, replacement)
+        self.worker = replacement
+        self.report(f"Worker restarted (PID {replacement.pid}, attempt {self.attempts}/5)")
+
+
 def main():
     if os.name == 'nt':
         os.system("")  # Enable ANSI colors in Windows cmd
@@ -123,6 +167,7 @@ def main():
     log_lock = threading.Lock()
     
     processes = []
+    stopping = threading.Event()
     all_pids = [os.getpid()]  # Include this process (run_local.py) itself
     
     redis_running = False
@@ -195,16 +240,35 @@ def main():
     print(f'[*] Mobile pinned HTTPS: port {mobile_port}')
 
     print("[*] Launching Worker...")
-    worker_proc = subprocess.Popen(worker_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+    def start_worker():
+        proc = subprocess.Popen(worker_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
+        threading.Thread(target=stream_logs, args=(proc, "[WORKER]", log_file, log_lock), daemon=True).start()
+        return proc
+
+    worker_proc = start_worker()
     processes.append(worker_proc)
     all_pids.append(worker_proc.pid)
-    threading.Thread(target=stream_logs, args=(worker_proc, "[WORKER]", log_file, log_lock), daemon=True).start()
+
+    def replace_worker(previous, replacement):
+        processes[processes.index(previous)] = replacement
+        all_pids[all_pids.index(previous.pid)] = replacement.pid
+        write_pids(pid_path, all_pids)
+
+    def report_worker(message):
+        with log_lock:
+            log_file.write(f"[WORKER] {message}\n")
+            log_file.flush()
+        print(f"[WORKER] {message}")
+
+    supervisor = WorkerSupervisor(worker_proc, start_worker, replace_worker, stopping, report_worker)
     
     # Write ALL PIDs to hub.pid so manager.py stop can cleanly kill them all
     write_pids(pid_path, all_pids)
     print("[*] Tailing logs (Close this window to leave processes running in background)...\n" + "-"*40)
     
     def handle_shutdown(*args):
+        # Set this before terminating children, so shutdown cannot trigger a restart.
+        stopping.set()
         stop_hub_browsers(hub_dir)
         for p in processes:
             try:
@@ -225,20 +289,23 @@ def main():
                 pass
         sys.exit(0)
         
-    signal.signal(signal.SIGINT, handle_shutdown)
-    signal.signal(signal.SIGTERM, handle_shutdown)
+    def request_shutdown(*args):
+        stopping.set()
+
+    signal.signal(signal.SIGINT, request_shutdown)
+    signal.signal(signal.SIGTERM, request_shutdown)
     if hasattr(signal, 'SIGBREAK'):
-        signal.signal(signal.SIGBREAK, handle_shutdown)
+        signal.signal(signal.SIGBREAK, request_shutdown)
     
     try:
-        while True:
-            time.sleep(1)
+        while not stopping.wait(1):
             if all(p.poll() is not None for p in processes):
                 break
+            supervisor.check()
     except KeyboardInterrupt:
         pass
-    
-    handle_shutdown()
+    finally:
+        handle_shutdown()
 
 if __name__ == "__main__":
     main()

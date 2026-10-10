@@ -2,6 +2,57 @@
  * Server-Sent Events Connection Handler
  */
 const SSE = {
+    statusWatches: new Map(),
+
+    watchGeneration(chatId) {
+        if (this.statusWatches.has(chatId)) return;
+        const watch = { unavailableSince: null, timer: null };
+        this.statusWatches.set(chatId, watch);
+        const poll = async () => {
+            const active = AppState.getActiveTurn(chatId);
+            if (!active || !Auth.getToken()) {
+                this.statusWatches.delete(chatId);
+                return;
+            }
+            const namespace = Auth.tokenKey;
+            try {
+                // Status polling must work even when SSE itself is disconnected.
+                const response = await fetch(HubPicker.apiPath(`/api/v1/chats/${encodeURIComponent(chatId)}`), {
+                    headers: Auth.getAuthHeaders(), signal: AbortSignal.timeout(5000)
+                });
+                if (!response.ok) throw new Error('Status unavailable');
+                const status = await response.json();
+                if (namespace !== Auth.tokenKey || AppState.getActiveTurn(chatId) !== active) return;
+                if (status.turn_id && active.turnId && status.turn_id !== active.turnId) return;
+                watch.unavailableSince = null;
+                if (['failed', 'completed', 'stopped'].includes(status.status)) {
+                    const turn = status.turn_id || active.turnId;
+                    if (status.status !== 'failed' && status.result?.text != null) {
+                        this.processEvent({type: 'snapshot', chat_id: chatId, turn_id: turn,
+                            data: {content: status.result.text}});
+                    }
+                    this.processEvent({type: status.status === 'failed' ? 'error' : 'done',
+                        chat_id: chatId, turn_id: turn, data: {
+                            status: status.status, message: status.error || 'İşlem tamamlanamadı.',
+                            retry_text: status.retry_text,
+                            ...(status.result?.metrics || {})}});
+                }
+            } catch (error) {
+                if (namespace !== Auth.tokenKey || AppState.getActiveTurn(chatId) !== active) return;
+                watch.unavailableSince ??= performance.now();
+                if (performance.now() - watch.unavailableSince >= 30000) {
+                    this.processEvent({type: 'error', chat_id: chatId, turn_id: active.turnId,
+                        data: {message: 'Sunucudan işlem durumu alınamadı. İşlem devam ediyor olabilir; yeniden göndermeden önce bağlantıyı ve araç sonucunu kontrol edin.'}});
+                }
+            } finally {
+                if (this.statusWatches.get(chatId) === watch && AppState.getActiveTurn(chatId) && namespace === Auth.tokenKey) {
+                    watch.timer = setTimeout(poll, 3000);
+                } else if (this.statusWatches.get(chatId) === watch) this.statusWatches.delete(chatId);
+            }
+        };
+        watch.timer = setTimeout(poll, 3000);
+    },
+
     connect() {
         AppState.sseShouldReconnect = true;
         AppState.sseConnected = false;
@@ -88,6 +139,8 @@ const SSE = {
     },
 
     disconnect() {
+        for (const watch of this.statusWatches.values()) clearTimeout(watch.timer);
+        this.statusWatches.clear();
         AppState.sseShouldReconnect = false;
         AppState.sseConnected = false;
         if (AppState.sseReconnectTimer) {
@@ -229,6 +282,7 @@ const SSE = {
             }
         }
         else if (data.type === "user_message") {
+            AppState.retryPrompts.set(chatId, data.data.text);
             // A new turn must never reuse a leftover live bot element from a
             // stopped generation.
             const activeState = UI._chatDivs[chatId];
@@ -267,6 +321,8 @@ const SSE = {
             
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
+                UI.offerRetry(chatId, UI._chatDivs[chatId]?.botDiv,
+                    data.data.retry_text ?? AppState.retryPrompts.get(chatId));
             }
             UI.finishGeneration(chatId, true, data.data);
             AppState.clearGenerationMetrics(chatId);
@@ -287,3 +343,4 @@ const SSE = {
 };
 
 window.processSseEvent = (data) => SSE.processEvent(data);
+window.watchGeneration = (chatId) => SSE.watchGeneration(chatId);

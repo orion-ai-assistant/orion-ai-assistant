@@ -84,8 +84,12 @@ document.addEventListener("DOMContentLoaded", async () => {
                             }
                         }
                     } else {
-                        UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio,
+                        const div = UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio,
                             msg.tool_activity || [], msg.display_parts);
+                        if (msg.failed_turn) {
+                            const user = history.slice(0, idx).reverse().find(item => item.role === 'user');
+                            UI.offerRetry(chatId, div, typeof user?.content === 'string' ? user.content : user?.display_text);
+                        }
                     }
                 }
             });

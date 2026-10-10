@@ -79,6 +79,8 @@ class JobCreateResponse(BaseModel):
 
 class JobStatusResponse(BaseModel):
     chat_id: str
+    turn_id: str | None = None
+    retry_text: str | None = None
     status: Literal["queued", "processing", "completed", "failed", "stopped"]
     created_at: str
     updated_at: str
