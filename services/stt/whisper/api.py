@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import uuid
@@ -381,9 +382,27 @@ async def websocket_endpoint(
     try:
         while True:
             # Expecting binary audio data (PCM 16-bit 16kHz Mono)
-            data = await websocket.receive_bytes()
-            if not data:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            finishing = False
+            finish_id = None
+            data = message.get("bytes")
+            if message.get("text"):
+                try:
+                    control = json.loads(message["text"])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(control, dict) or control.get("type") != "finish":
+                    continue
+                finishing = True
+                finish_id = control.get("id")
+            if not data and not finishing:
                 continue
+            if finishing and len(accumulated_audio) == 0:
+                await websocket.send_json({"type": "finished", "id": finish_id})
+                continue
+            data = data or b""
                 
             # Convert bytes to float32 numpy array [-1.0, 1.0]
             # Assuming client sends int16 PCM
@@ -397,7 +416,7 @@ async def websocket_endpoint(
                 context_text = ""
                 
             # RMS and Silence detection (Gürültü zemini takibi - streaming.py ile aynı)
-            rms = np.sqrt(np.mean(chunk_data ** 2))
+            rms = np.sqrt(np.mean(chunk_data ** 2)) if len(chunk_data) else 0.0
             if noise_ema is None:
                 # İlk paket konuşma olabilir: onu gürültü tabanı yapıp
                 # eşiği konuşmanın 2.5 katına çıkarma. Mevcut 0.001
@@ -418,13 +437,13 @@ async def websocket_endpoint(
             accumulated_audio = np.concatenate((accumulated_audio, chunk_data))
             audio_duration = len(accumulated_audio) / RATE
 
-            sentence_ended = (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
+            sentence_ended = finishing or (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
             
             now = time.perf_counter()
             elapsed = now - last_transcribe_time
             dynamic_interval = max(MIN_TRANSCRIBE_INTERVAL, last_infer_duration * 1.5)
             
-            should_transcribe = (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
+            should_transcribe = finishing or (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
             
             if not should_transcribe:
                 continue
@@ -525,6 +544,9 @@ async def websocket_endpoint(
                 silence_duration = 0.0
                 last_transcribe_time = 0.0
                 speech_start_time = None
+
+            if finishing:
+                await websocket.send_json({"type": "finished", "id": finish_id})
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
