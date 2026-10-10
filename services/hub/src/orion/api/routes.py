@@ -241,7 +241,8 @@ async def stt_proxy(
     websocket: WebSocket,
     language: str = "tr",
     model: str = "local-stt",
-    provider: str = "local"
+    provider: str = "local",
+    prompt: str | None = None,
 ):
     token = websocket.query_params.get("token") or websocket.headers.get('authorization', '').removeprefix('Bearer ')
     if not token:
@@ -272,7 +273,8 @@ async def stt_proxy(
     params = urllib.parse.urlencode({
         "language": language,
         "model": model,
-        "provider": provider
+        "provider": provider,
+        **({"prompt": prompt.strip()} if prompt and prompt.strip() else {}),
     })
     target_ws_url = f"{ws_base}/v1/audio/transcriptions/stream?{params}"
 
@@ -282,8 +284,15 @@ async def stt_proxy(
             async def client_to_router():
                 try:
                     while True:
-                        message = await websocket.receive_bytes()
-                        await router_ws.send(message)
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            break
+                        if message.get("bytes") is not None:
+                            await router_ws.send(message["bytes"])
+                        elif message.get("text") is not None:
+                            # Finish is ordered after the last PCM packet. Keep
+                            # the reverse stream alive until STT acknowledges.
+                            await router_ws.send(message["text"])
                 except WebSocketDisconnect:
                     pass
                 except (websockets.ConnectionClosed, aiohttp.ClientConnectionError):
