@@ -35,7 +35,7 @@ test('missed Pub/Sub error is recovered by HTTP and ends the typing indicator', 
     assert.equal(harness.state.getActiveTurn('chat'), null);
     assert.equal(harness.finished, 1);
     assert.match(harness.messages[0], /Kuyruk zaman aşımı/);
-    assert.equal(harness.retries[0][2], 'hello');
+    assert.equal(harness.retries.length, 0, 'Errors do not add a preparation button');
     assert.equal(harness.timers.length, 0);
 });
 
@@ -83,20 +83,4 @@ test('disconnect cancels polling even when a request is in flight', async () => 
     release({ok: true, json: async () => ({status: 'processing', turn_id: 'turn'})});
     await polling;
     assert.equal(harness.timers.length, 0);
-});
-
-test('retry button restores the text for review and never submits it automatically', () => {
-    const buttons = [];
-    const input = {value: '', focus() {}};
-    const context = {window: {}, document: {getElementById: () => input,
-        createElement: () => ({})}, AppState: {currentChatId: 'chat'}};
-    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + ';globalThis.ui = UI;', context);
-    context.ui.resizeMessageInput = () => {};
-    const div = {querySelector: () => buttons[0], appendChild: button => buttons.push(button)};
-    context.ui.offerRetry('chat', div, 'Review this request');
-    context.ui.offerRetry('chat', div, 'Duplicate');
-    assert.equal(buttons.length, 1);
-    assert.equal(input.value, '');
-    buttons[0].onclick();
-    assert.equal(input.value, 'Review this request');
 });

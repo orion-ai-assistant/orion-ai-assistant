@@ -17,7 +17,7 @@ from orion.kernel.config import RuntimeSettings, settings as factory_settings, g
 from orion.kernel.router_models import validate_model_updates, ModelNotFoundError
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
-from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
+from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, get_turn_audio, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
 from orion.api.auth_routes import get_current_user, require_active_user
 from orion.api.security import JWT_SECRET_KEY, ALGORITHM, valid_admin_key, require_admin
 import jwt
@@ -144,8 +144,12 @@ async def list_chats_endpoint(request: Request, current_user: str = Depends(get_
     return await get_user_chats(request.app.state.redis, current_user)
 
 @router.get("/api/v1/chats/{chat_id}/history", response_model=list[dict])
-async def get_chat_history_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)) -> list[dict]:
-    return await get_chat_history(request.app.state.redis, current_user, chat_id)
+async def get_chat_history_endpoint(chat_id: str, request: Request, include_audio: bool = True, current_user: str = Depends(get_current_user)) -> list[dict]:
+    return await get_chat_history(request.app.state.redis, current_user, chat_id, include_audio=include_audio)
+
+@router.get("/api/v1/chats/{chat_id}/turns/{turn_id}/audio", response_model=dict)
+async def get_turn_audio_endpoint(chat_id: str, turn_id: str, request: Request, current_user: str = Depends(get_current_user)) -> dict:
+    return await get_turn_audio(request.app.state.redis, current_user, chat_id, turn_id)
 
 class ChatRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)

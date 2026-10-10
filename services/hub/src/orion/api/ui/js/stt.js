@@ -94,6 +94,9 @@ const STT = {
     },
 
     async start() {
+        window.PcmSpeech?.stop();
+        document.querySelectorAll("audio").forEach(audio => audio.pause());
+        if (AppState.currentChatId && AppState.isAnyChatGenerating(AppState.currentChatId)) await API.stopGeneration();
         if (this.isStreaming || this.isStarting) return;
         if (!navigator.mediaDevices?.getUserMedia) {
             alert('Tarayıcınız mikrofon erişimini desteklemiyor veya izin verilmedi.');

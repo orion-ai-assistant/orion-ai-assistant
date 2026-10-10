@@ -62,6 +62,7 @@ class JobInput(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
+    origin_session_id: str | None = Field(default=None, min_length=1, max_length=120)
     tool_selection: ToolSelection | None = None
     user_id: str = Field(min_length=1, max_length=120)
     chat_id: str | None = Field(default=None, max_length=120)

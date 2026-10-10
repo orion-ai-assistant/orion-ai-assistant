@@ -320,7 +320,7 @@ def _append_processing_state(history: list[dict], state: dict[str, str]) -> None
 
 
 
-async def get_chat_history(redis: Redis, user_id: str, chat_id: str) -> list[dict]:
+async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_audio: bool = True) -> list[dict]:
     """Return the full message history for a chat.
 
     Strategy:
@@ -339,7 +339,31 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str) -> list[dic
     if state and state.get("status") in {"queued", "processing"}:
         _append_processing_state(history, state)
 
+    if not include_audio:
+        from urllib.parse import quote
+        from orion.kernel.audio_metadata import metadata
+        history = [
+            {**msg, 'audio': metadata(msg['audio'],
+                f"/api/v1/chats/{quote(chat_id, safe='')}/turns/{quote(msg['turn_id'], safe='')}/audio")}
+            if msg.get('turn_id') and isinstance(msg.get('audio'), dict) and msg['audio'].get('audio') else msg
+            for msg in history
+        ]
     return history
+
+
+async def get_turn_audio(redis: Redis, user_id: str, chat_id: str, turn_id: str) -> dict:
+    # Ownership is checked before reading any recording, including DB fallback.
+    history = await get_chat_history(redis, user_id, chat_id)
+    def find(messages):
+        return next((msg['audio'] for msg in messages
+                     if msg.get('turn_id') == turn_id and msg.get('role') == 'assistant'
+                     and isinstance(msg.get('audio'), dict) and msg['audio'].get('audio')), None)
+    audio = find(history)
+    if audio is None:
+        audio = find(await get_chat_history_db(chat_id))
+    if audio is None:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return audio
 
 
 async def _load_history_with_hydration(

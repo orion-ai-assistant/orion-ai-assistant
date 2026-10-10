@@ -5,6 +5,7 @@ const path = require('node:path');
 const context = vm.createContext({ performance, console, window: {},
     setTimeout: () => 1, clearTimeout() {},
     OrionI18n: {t: key => key}, HubPicker: {apiPath: path => path}, document: {
+    querySelectorAll: () => [],
     getElementById: () => ({ disabled: false, innerHTML: '', setAttribute() {} })
 }});
 for (const file of ['config.js', 'api.js', 'sse.js']) {

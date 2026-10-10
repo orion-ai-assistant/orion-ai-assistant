@@ -3636,3 +3636,24 @@ details[open] > .think-summary::before {
 
 .router-hub-heading {flex:1;min-width:0}
 .router-hub-heading .router-hint {margin:4px 0 0;font-size:12px}
+
+.pcm-player { display:flex; align-items:center; gap:12px; padding:8px 12px; max-width:420px; background:var(--bg-secondary, #202a30); border-radius:24px; }
+.pcm-player button { border:0; background:transparent; color:inherit; cursor:pointer; font-size:16px; min-width:28px; }
+.pcm-player input { flex:1; min-width:40px; accent-color:#10b981; cursor:pointer; }
+.pcm-time { font-size:12px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+
+.pcm-player button:last-child { color:var(--danger, #f87171); }
+
+.message-meta .message-copy {
+    display:inline-flex; align-items:center; justify-content:center;
+    width:22px; height:22px; padding:4px; border-radius:50%;
+    color:rgba(255,255,255,.35); line-height:1; flex-shrink:0;
+    transition:background-color .12s ease;
+}
+.message-meta .message-copy svg { display:block; }
+.message-meta .message-copy:hover { background:rgba(148,163,184,.18); }
+.message-meta .message-copy:active { background:rgba(148,163,184,.28); }
+.app-toast.copy-toast {
+    inset:auto auto 24px 50%; translate:-50% 0;
+    background:#323232; color:#f1f5f9; border:0;
+}

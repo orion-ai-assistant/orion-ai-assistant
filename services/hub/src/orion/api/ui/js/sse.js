@@ -54,6 +54,7 @@ const SSE = {
     },
 
     connect() {
+        window.PcmSpeech?.stop();
         AppState.sseShouldReconnect = true;
         AppState.sseConnected = false;
         UI.setConnectionStatus(false, "connecting");
@@ -104,6 +105,7 @@ const SSE = {
         };
 
         AppState.eventSource.onerror = (error) => {
+            window.PcmSpeech?.stop();
             if (!AppState.sseShouldReconnect) return;
             AppState.sseConnected = false;
             UI.setConnectionStatus(false, "reconnecting");
@@ -139,6 +141,7 @@ const SSE = {
     },
 
     disconnect() {
+        window.PcmSpeech?.stop();
         for (const watch of this.statusWatches.values()) clearTimeout(watch.timer);
         this.statusWatches.clear();
         AppState.sseShouldReconnect = false;
@@ -161,7 +164,12 @@ const SSE = {
     processEvent(data) {
         const chatId = data.chat_id;
         const turnId = AppState.getEventTurnId(data);
-        console.log("Gelen olay:", data);
+        const live = window.PcmSpeech?.stream;
+        if (live && live.chat === chatId && (
+            (["accepted", "user_message"].includes(data.type) && live.id !== turnId)
+            || data.type === "error" || ["stopped", "failed"].includes(data.data?.status)
+        )) window.PcmSpeech.stop();
+        if (!["audio_chunk", "audio"].includes(data.type)) console.log("Gelen olay:", data);
 
         if (AppState.pendingNewChatRequest && chatId) {
             // The first server event already proves that the new chat was
@@ -215,7 +223,7 @@ const SSE = {
 
         if (
             chatId
-            && ["thinking", "token", "snapshot", "audio", "text_done", "tool_call", "tool_result"].includes(data.type)
+            && ["thinking", "token", "snapshot", "audio", "audio_start", "audio_chunk", "audio_done", "text_done", "tool_call", "tool_result"].includes(data.type)
             && !AppState.isStreamingTurn(chatId, turnId)
         ) {
             return;
@@ -247,9 +255,12 @@ const SSE = {
             UI.showTextMetrics(chatId, data.data);
             return;
         }
+        if (data.type === 'audio_start') { window.PcmSpeech?.start(data); return; }
+        if (data.type === 'audio_chunk') { window.PcmSpeech?.chunk(data); return; }
+        if (data.type === 'audio_done') { window.PcmSpeech?.end(data); return; }
         if (data.type === 'audio') {
             const timing = AppState.getGenerationMetrics(chatId);
-            UI.appendAudio(chatId, { ...data.data, arrival_ms: data.data.arrival_ms ?? timing?.total_ms }, chatId === AppState.currentChatId);
+            UI.appendAudio(chatId, { ...data.data, arrival_ms: data.data.arrival_ms ?? timing?.total_ms }, chatId === AppState.currentChatId && Boolean(data.data.origin_session_id) && data.data.origin_session_id === window.PcmSpeech?.sessionId && !data.data.streamed);
             return;
         }
         if (chatId && chatId !== AppState.currentChatId) {
@@ -282,7 +293,6 @@ const SSE = {
             }
         }
         else if (data.type === "user_message") {
-            AppState.retryPrompts.set(chatId, data.data.text);
             // A new turn must never reuse a leftover live bot element from a
             // stopped generation.
             const activeState = UI._chatDivs[chatId];
@@ -321,8 +331,6 @@ const SSE = {
             
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
-                UI.offerRetry(chatId, UI._chatDivs[chatId]?.botDiv,
-                    data.data.retry_text ?? AppState.retryPrompts.get(chatId));
             }
             UI.finishGeneration(chatId, true, data.data);
             AppState.clearGenerationMetrics(chatId);

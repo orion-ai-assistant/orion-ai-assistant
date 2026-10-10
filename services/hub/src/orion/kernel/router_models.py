@@ -126,7 +126,7 @@ async def get_router_catalog(force_refresh: bool = False, include_voices: bool =
     local_voices = _catalog_sections.get('local-tts-info', {}).get('voices', [])
     if local_voices:
         voices['local'] = local_voices
-    _catalog_cache = {'models': model_catalog['models'], 'voices': voices, 'unavailable': unavailable}
+    _catalog_cache = {'models': model_catalog['models'], 'voices': voices, 'model_voice_groups': _catalog_sections.get('voices', {}).get('model_voice_groups', {}), 'unavailable': unavailable}
     _catalog_cached_at = time.monotonic()
     return _catalog_cache
 
@@ -153,13 +153,15 @@ async def get_account_catalog(user_id, include_voices=True):
               for m in model_data['models']]
     models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat')}
                   for g in groups['groups'])
-    voices, unavailable = {}, []
+    voices, groups_by_provider, unavailable = {}, {}, []
     if include_voices:
         try:
-            voices = (await fetch('voices'))['voices']
+            voice_catalog = await fetch('voices')
+            voices = voice_catalog['voices']
+            groups_by_provider = voice_catalog.get('model_voice_groups', {})
         except RuntimeError:
             unavailable.append('voices')
-    return {'models': models, 'voices': voices, 'unavailable': unavailable}
+    return {'models': models, 'voices': voices, 'model_voice_groups': groups_by_provider, 'unavailable': unavailable}
 async def validate_model_updates(updates: dict[str, str]) -> None:
     """Validate model settings when they change, outside the message hot path."""
     model_capabilities = {

@@ -92,6 +92,8 @@ class JobContext:
         sample_rate: int | None = None,
         text: str | None = None,
         arrival_ms: int | None = None,
+        streamed: bool = False,
+        status: str = "completed",
     ) -> dict[str, Any]:
         event = StreamEvent.audio(
             self.chat_id,
@@ -103,12 +105,28 @@ class JobContext:
         )
         if arrival_ms is not None:
             event.data['arrival_ms'] = arrival_ms
+        event.data['origin_session_id'] = self.request.origin_session_id if self.request else None
+        event.data['streamed'] = streamed
+        event.data['stream_id'] = self.turn_id
+        event.data['status'] = status
+        from orion.kernel.audio_metadata import duration_ms
+        duration = duration_ms(event.data)
+        if duration is not None:
+            event.data['duration_ms'] = duration
         await self._publish(event)
         return event.data
 
     async def emit_done(self, status: str, metrics: dict[str, Any] | None = None) -> None:
         event = StreamEvent.done(self.chat_id, status, metrics=metrics, turn_id=self.turn_id)
         await self._publish(event)
+
+    async def emit_audio_stream(self, event_type: str, data: dict[str, Any]) -> None:
+        await self._publish(StreamEvent(
+            type=event_type, chat_id=self.chat_id, turn_id=self.turn_id,
+            generation_id=self.turn_id,
+            data={**data, "stream_id": self.turn_id,
+                  "origin_session_id": self.request.origin_session_id},
+        ))
 
     async def emit_text_done(self, metrics: dict[str, Any]) -> None:
         await self._publish(StreamEvent(

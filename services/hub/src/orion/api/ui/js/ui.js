@@ -47,14 +47,13 @@ const UI = {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'message-copy';
-        button.textContent = '⧉';
+        button.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><rect x="4.5" y="4.5" width="6" height="6"/><path d="M8.5 4.5V1.5H1.5V8.5H4.5"/></svg>';
         button.title = OrionI18n.t('copyMessage');
         button.setAttribute('aria-label', OrionI18n.t('copyMessage'));
         button.onclick = async () => {
             try {
                 await navigator.clipboard.writeText(readText());
-                button.textContent = '✓';
-                setTimeout(() => { button.textContent = '⧉'; }, 1500);
+                this.showToast(OrionI18n.t('messageCopied'), 'copy');
             } catch (_) { button.title = 'Kopyalanamadı. Metni seçerek kopyalayabilirsin.'; }
         };
         let meta = div.querySelector('.message-meta');
@@ -365,11 +364,16 @@ const UI = {
         const state = this._getOrCreateChatState(chatId);
         const botDiv = targetDiv || state.botDiv;
         if (!botDiv) return;
+        if (window.PcmSpeech?.recording) {
+            window.PcmSpeech.recording(chatId, audioData, autoPlay && chatId === AppState.currentChatId, botDiv);
+            return;
+        }
         // Tekrar aynı mesaja ikinci oynatıcı eklenmesini önle
         if (botDiv.querySelector('.audio-player-container')) return;
         const audioContainer = document.createElement('div');
         audioContainer.className = 'audio-player-container';
         const audioElement = document.createElement('audio');
+        audioElement.addEventListener('play', () => window.PcmSpeech?.stop());
         audioElement.controls = true;
         audioElement.autoplay = autoPlay && chatId === AppState.currentChatId;
         audioElement.setAttribute('aria-label', OrionI18n.t('playVoiceResponse'));
@@ -413,20 +417,6 @@ const UI = {
             previous.replaceWith(meta);
         }
         else botDiv.appendChild(meta);
-    },
-    offerRetry(chatId, div, text) {
-        if (!div || !text || div.querySelector('.message-retry')) return;
-        const button = document.createElement('button');
-        button.className = 'message-retry';
-        button.textContent = 'Mesajı yeniden hazırla';
-        button.title = 'Göndermeden önce önceki araç sonucunu kontrol edin. Ekleri gerekiyorsa yeniden ekleyin.';
-        button.onclick = () => {
-            if (chatId !== AppState.currentChatId) return;
-            this.messageInput.value = text;
-            this.messageInput.focus();
-            this.resizeMessageInput();
-        };
-        div.appendChild(button);
     },
     finishGeneration(chatId, hasTokens = true, metrics = null) {
         if (!chatId) return;
@@ -553,7 +543,7 @@ const UI = {
         this.messageInput.value = '';
         this.resizeMessageInput();
     },
-    showToast(message = OrionI18n.t('saved')) {
+    showToast(message = OrionI18n.t('saved'), kind = '') {
         if (!this._toast) {
             this._toast = document.createElement('div');
             this._toast.className = 'app-toast';
@@ -563,6 +553,7 @@ const UI = {
             document.body.appendChild(this._toast);
         }
         const toast = this._toast;
+        toast.className = kind === 'copy' ? 'app-toast copy-toast' : 'app-toast';
         clearTimeout(this._toastTimer);
         if (toast.hidePopover) toast.hidePopover();
         toast.textContent = message;
@@ -997,7 +988,7 @@ const UI = {
             if (button && !silent) button.title = result.error;
             return;
         }
-        this.routerCatalog = {...result, voices: this.routerCatalog?.voices || result.voices};
+        this.routerCatalog = {...result, voices: this.routerCatalog?.voices || result.voices, model_voice_groups: this.routerCatalog?.model_voice_groups || result.model_voice_groups};
         for (const key of ['router_model_group', 'chat_title_model', 'tts_model', 'stt_model']) {
             const select = document.getElementById(`setting-input-${key}`);
             if (!select) continue;
@@ -1037,6 +1028,7 @@ const UI = {
             API.getVoiceCatalog().then(catalog => {
                 if (!catalog.error && this.routerCatalog) {
                     this.routerCatalog.voices = catalog.voices;
+                    this.routerCatalog.model_voice_groups = catalog.model_voice_groups;
                     this.routerCatalog.unavailable = catalog.unavailable;
                     this.loadVoiceChoices(false);
                 }
@@ -1053,12 +1045,21 @@ const UI = {
         
         if (!select || !this.routerCatalog || !model) return;
         const provider = this.routerCatalog.models?.find(item => item.name === model)?.provider;
-        const voices = this.routerCatalog.voices?.[provider] || [];
+        const groups = this.routerCatalog.model_voice_groups?.[provider] || [];
+        const name = model.toLowerCase();
+        const group = groups.find(g => (g.models || []).some(m => m.toLowerCase() === name))
+            || groups.find(g => (g.match_patterns || []).some(p => p !== 'default' && name.includes(p.toLowerCase())))
+            || groups.find(g => (g.match_patterns || []).includes('default'));
+        const voices = group?.voices || this.routerCatalog.voices?.[provider] || [];
         const unavailable = this.routerCatalog.unavailable || [];
         const inaccessible = unavailable.includes('voices') || (provider === 'local' && unavailable.includes('local-tts-info'));
         let targetVoice = this.getRememberedVoice(model);
         select.replaceChildren(new Option(OrionI18n.t('defaultVoice'), ''));
         for (const voice of voices) select.add(new Option(voice, voice));
+        if (targetVoice && voices.length && !inaccessible && !voices.some(v => v.toLowerCase() === targetVoice.toLowerCase())) {
+            targetVoice = '';
+            userInitiated = true;
+        }
         if (targetVoice) {
             const matched = voices.find(v => v.toLowerCase() === targetVoice.toLowerCase());
             if (matched) {
@@ -1094,6 +1095,8 @@ const UI = {
         }
     },
     clearChatArea() {
+        window.PcmSpeech?.stop();
+        window.PcmSpeech?.recordings?.clear();
         this.chatArea.innerHTML = '';
     },
     renderChatList(chats, currentChatId) {

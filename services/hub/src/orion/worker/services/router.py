@@ -432,13 +432,13 @@ def _tts_urls(path: str = "/v1/audio/speech") -> list[str]:
     return urls
 
 
-async def generate_tts(
+async def _tts_request(
     text: str,
     settings: RuntimeSettings,
     voice: str | None = None,
     response_format: str = "wav",
-) -> tuple[bytes, str, int | None]:
-    """TTS üretimi için seçilen sağlayıcıya (öncelikle Orion Router) istek atar ve (audio_bytes, format, sample_rate) döner."""
+):
+    """Prepare the shared authenticated Router request for both TTS transports."""
     session = await get_session()
 
     raw_model = (getattr(settings, "tts_model", "") or "").strip()
@@ -497,6 +497,16 @@ async def generate_tts(
 
     router_urls = [f"{_base_url(base)}/v1/audio/speech" for base in get_router_base_urls()]
 
+    return session, headers, payload, timeout, router_urls, provider
+
+
+async def generate_tts(
+    text: str, settings: RuntimeSettings, voice: str | None = None,
+    response_format: str = "wav",
+) -> tuple[bytes, str, int | None]:
+    session, headers, payload, timeout, router_urls, provider = await _tts_request(
+        text, settings, voice, response_format,
+    )
     # 1. Router Call
     router_err = None
     for url in router_urls:
@@ -540,3 +550,66 @@ async def generate_tts(
     raise RuntimeError("TTS servisine ulaşılamadı.")
 
 
+
+
+class TtsStreamError(RuntimeError):
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+async def stream_tts(
+    text: str, settings: RuntimeSettings, voice: str | None = None,
+) -> AsyncIterator[tuple[bytes, dict[str, Any]]]:
+    """Stream verified PCM; preserve compressed/container responses for file playback.
+
+    A transport failure may retry only before any bytes have been delivered.
+    Closing this generator closes the HTTP response, including on cancellation.
+    """
+    session, headers, payload, timeout, urls, _ = await _tts_request(text, settings, voice, "pcm")
+    payload["stream"] = True
+    timeout = ClientTimeout(total=None, connect=1.0, sock_read=float(settings.tts_timeout_seconds))
+    started = False
+    last_error = None
+    for url in urls:
+        try:
+            async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
+                if response.status != 200:
+                    raw = await response.text()
+                    try:
+                        body = json.loads(raw)
+                        detail = body.get("detail") or body.get("error", {}).get("message") or raw
+                    except (ValueError, AttributeError):
+                        detail = raw
+                    raise TtsStreamError(f"Router TTS ({response.status}): {detail}", response.status)
+                mime = response.headers.get("Content-Type", "").split(";", 1)[0].lower().strip()
+                if mime == "audio/pcm":
+                    try:
+                        rate = int(response.headers["X-Audio-Sample-Rate"])
+                        channels = int(response.headers["X-Audio-Channels"])
+                        bits = int(response.headers["X-Audio-Bits-Per-Sample"])
+                    except (KeyError, ValueError) as exc:
+                        raise TtsStreamError("PCM format headers missing or invalid") from exc
+                    if (rate, channels, bits) != (24000, 1, 16):
+                        raise TtsStreamError("Unsupported PCM format")
+                    info = {"format": "pcm", "sample_rate": rate, "channels": channels,
+                            "bits_per_sample": bits, "encoding": "pcm_s16le"}
+                else:
+                    fmt = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/mpeg": "mp3",
+                           "audio/mp3": "mp3", "audio/ogg": "ogg", "audio/aac": "aac",
+                           "audio/flac": "flac"}.get(mime)
+                    if not fmt:
+                        raise TtsStreamError(f"Unsupported audio content type: {mime}")
+                    info = {"format": fmt}
+                async for chunk in response.content.iter_chunked(4096):
+                    if chunk:
+                        started = True
+                        yield chunk, info
+                if not started:
+                    raise TtsStreamError("TTS returned no audio")
+                return
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            if started:
+                raise
+            last_error = exc
+    raise TtsStreamError("TTS service unavailable") from last_error

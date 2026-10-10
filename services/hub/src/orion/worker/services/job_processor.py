@@ -17,7 +17,8 @@ from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
 from orion.worker.services.chat_titles import generate_chat_title
 from orion.worker.services.attachments import user_content
-from orion.worker.services.router import llama_stream_chat_typed, generate_tts
+from orion.worker.services.router import llama_stream_chat_typed
+from orion.worker.services.tts_stream import relay_tts
 from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import model_history
 from orion.worker.services.tool_display import DisplayTimeline
@@ -617,26 +618,12 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             "Worker %s generating TTS for chat %s (%d chars)",
                             consumer_name, context.chat_id, len(tts_text),
                         )
-                        audio_bytes, audio_fmt, sample_rate = await generate_tts(
-                            text=tts_text,
-                            settings=settings,
-                            voice=context.voice,
-                        )
                         requested_at = datetime.fromisoformat(context.record.created_at)
                         if requested_at.tzinfo is None:
                             requested_at = requested_at.replace(tzinfo=timezone.utc)
-                        audio_arrival_ms = max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
-                        audio_entry = await context.emit_audio(
-                            audio_data=audio_bytes,
-                            format=audio_fmt,
-                            sample_rate=sample_rate,
-                            text=tts_text,
-                            arrival_ms=audio_arrival_ms,
-                        )
-                        logging.info(
-                            "Worker %s successfully emitted audio for chat %s (%d bytes)",
-                            consumer_name, context.chat_id, len(audio_bytes),
-                        )
+                        def arrival_ms():
+                            return max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
+                        audio_entry = await relay_tts(context, settings, tts_text, _check_stop, arrival_ms)
                 except Exception as tts_err:
                     # Keep synthesis failures out of the assistant response.
                     logging.warning(
@@ -647,7 +634,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         await context._publish(StreamEvent(
                             type="warning", chat_id=context.chat_id,
                             turn_id=context.turn_id, generation_id=context.turn_id,
-                            data={"code": "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz."},
+                            data={"code": "tts_quota_exhausted" if getattr(tts_err, "status", None) == 429 else "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz."},
                         ))
                     except Exception:
                         logging.warning("Could not publish TTS warning for chat %s", context.chat_id)

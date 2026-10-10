@@ -136,6 +136,8 @@ const API = {
             return;
         }
 
+        window.PcmSpeech?.stop();
+        window.PcmSpeech?.unlock();
         this.sendInFlight = true;
 
         AppState.pendingNewChatRequest = true;
@@ -156,6 +158,7 @@ const API = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    origin_session_id: window.PcmSpeech?.sessionId,
                     user_id: AppConfig.getUserId(),
                     chat_id: chatId,
                     ...(!chatId && window.ToolsUI?.draftPayload() ? {tool_selection: window.ToolsUI.draftPayload()} : {}),
@@ -196,7 +199,6 @@ const API = {
                         AppState.currentChatId = data.chat_id;
                     }
                     AppState.bindOptimisticUserMessage(data.chat_id);
-                    AppState.retryPrompts.set(data.chat_id, text);
                     const turnId = data.turn_id || data.generation_id || null;
                     if (!adoptedFromSse) {
                         AppState.startGenerating(data.chat_id, turnId);
@@ -244,11 +246,14 @@ const API = {
     },
 
     async stopGeneration() {
+        window.PcmSpeech?.stop();
+        document.querySelectorAll("audio").forEach(audio => audio.pause());
         if (!AppState.currentChatId || !AppState.isAnyChatGenerating(AppState.currentChatId)) return;
 
         const targetChatId = AppState.currentChatId;
         const activeTurn = AppState.getActiveTurn(targetChatId);
         const targetTurnId = activeTurn?.turnId || null;
+        if (targetTurnId) window.PcmSpeech?.blocked?.add(targetTurnId);
 
         // Keep accepting this turn until the worker sends its terminal event.
         if (!AppState.beginStopping(targetChatId, targetTurnId)) return;

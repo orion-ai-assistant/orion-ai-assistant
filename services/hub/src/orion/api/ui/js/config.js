@@ -11,7 +11,6 @@ const AppState = {
     currentChatId: null,
     chatSelectionVersion: 0,
     activeTurns: new Map(),
-    retryPrompts: new Map(),
     eventSource: null,
     sseConnected: false,
     sseShouldReconnect: false,
@@ -28,6 +27,7 @@ const AppState = {
         return this.isAnyChatGenerating(this.currentChatId);
     },
     selectChat(chatId) {
+        window.PcmSpeech?.stop();
         this.chatSelectionVersion += 1;
         this.currentChatId = chatId;
         this.pendingNewChatRequest = false;

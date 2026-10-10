@@ -7,6 +7,7 @@ const context = vm.createContext({ performance, console, window: {},
     setTimeout: () => 1, clearTimeout() {},
     OrionI18n: {t: key => key}, HubPicker: {apiPath: path => path},
     localStorage: {getItem: () => null}, document: {
+    querySelectorAll: () => [],
     getElementById: () => button,
 }});
 for (const file of ['config.js', 'ui.js', 'api.js', 'sse.js']) {

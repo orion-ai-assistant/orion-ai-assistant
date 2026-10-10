@@ -49,7 +49,7 @@ class Session:
         data = {
             'models': {'models': [{'name': 'gemini', 'provider': 'google', 'capability': 'chat'}]},
             'model-groups': {'groups': []},
-            'voices': {'voices': {'google': ['cloud-voice']}},
+            'voices': {'voices': {'google': ['cloud-voice']}, 'model_voice_groups': {'google': [{'models': ['tts-classic'], 'voices': ['cloud-voice']}]}},
             'local-tts-info': {'voices': self.voices},
         }
         return Response(data[name], self.local_delay if name == 'local-tts-info' else 0,
@@ -90,6 +90,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         result = await asyncio.wait_for(self.fetch(session), 1)
         self.assertEqual(result['models'][0]['name'], 'gemini')
         self.assertEqual(result['voices']['google'], ['cloud-voice'])
+        self.assertEqual(result['model_voice_groups']['google'][0]['models'], ['tts-classic'])
         self.assertIn('local-tts-info', result['unavailable'])
         self.assertEqual(session.calls.count('local-tts-info'), 1)
 

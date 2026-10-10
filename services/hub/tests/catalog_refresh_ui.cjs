@@ -5,7 +5,7 @@ const path = require('node:path');
 const button = { disabled: false, title: 'Model ve ses listesini yenile' };
 let resolveCatalog;
 const selects = {};
-const context = vm.createContext({ window: {}, Option: function(text, value) { this.text = text; this.value = value; },
+const context = vm.createContext({ window: {}, OrionI18n: {t: key => ({updating: 'Güncelleniyor…', refreshTitle: 'Model ve ses listesini yenile'})[key] || key}, Option: function(text, value) { this.text = text; this.value = value; },
     API: { getChatModels: () => new Promise(resolve => { resolveCatalog = resolve; }) },
     document: {
         activeElement: null,

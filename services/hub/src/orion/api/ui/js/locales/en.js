@@ -1,6 +1,7 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.en = {
     copyMessage: 'Copy message',
+    messageCopied: 'Message copied to clipboard.',
     languageName: 'English',
     language: 'Language', settings: 'Settings', chat: 'Chat', jobStatus: 'Job status',
     newChat: 'New chat', chats: 'CHATS', userSettings: 'User settings',
@@ -88,5 +89,6 @@ window.orionUiLocales.en = {
     clearApiKey: 'Remove', toggleApiKeyVisibility: 'Toggle key visibility',
     placeholderTtsVoice: 'Voice name…', placeholderTtsModel: 'Model name…',
     placeholderThinkingLevel: 'Thinking level…', placeholderRouterModelGroup: 'Model group…',
-    interfaceLanguage: 'Interface Language', interfaceLanguageHint: 'Select the application language.'
+    interfaceLanguage: 'Interface Language', interfaceLanguageHint: 'Select the application language.',
+    liveSpeech: 'Speech is playing'
 };

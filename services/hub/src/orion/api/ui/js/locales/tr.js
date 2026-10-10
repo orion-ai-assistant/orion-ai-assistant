@@ -1,6 +1,7 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.tr = {
     copyMessage: 'Mesajı kopyala',
+    messageCopied: 'Metin panoya kopyalandı.',
     languageName: 'Türkçe',
     language: 'Dil', settings: 'Ayarlar', chat: 'Sohbet', jobStatus: 'İş Durumu',
     newChat: 'Yeni Sohbet', chats: 'SOHBETLER', userSettings: 'Kullanıcı Ayarları',
@@ -88,5 +89,6 @@ window.orionUiLocales.tr = {
     clearApiKey: 'Kaldır', toggleApiKeyVisibility: 'Anahtarı göster/gizle',
     placeholderTtsVoice: 'Ses adı...', placeholderTtsModel: 'Model adı...',
     placeholderThinkingLevel: 'Düşünce seviyesi...', placeholderRouterModelGroup: 'Model grubu...',
+    liveSpeech: 'Ses oynatılıyor',
     interfaceLanguage: 'Arayüz Dili', interfaceLanguageHint: 'Uygulama dilini seçin.'
 };
