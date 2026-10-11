@@ -103,8 +103,8 @@ def local_owner_web_origin(scope, path):
 
 
 class AccessBoundary:
-    def __init__(self, app, public=False):
-        self.app, self.public = app, public
+    def __init__(self, app, public=False, local_entry=False):
+        self.app, self.public, self.local_entry = app, public, local_entry
 
     async def __call__(self, scope, receive, send):
         if scope['type'] not in {'http', 'websocket'}:
@@ -125,7 +125,23 @@ class AccessBoundary:
         user_api_on_private = not self.public and path.startswith('/api/v1/') and not management_api(path)
         # The public listener never exposes owner routes, even through loopback tunnels.
         browser_path = path == '/api/v1/browser' or path.startswith('/api/v1/browser/')
-        desktop_access = browser_path and is_desktop_peer(scope)
+        pc_audio_path = path == '/api/v1/pc-audio' or path.startswith('/api/v1/pc-audio/')
+        pc_audio_access = pc_audio_path and self.local_entry and local and is_desktop_peer(scope)
+        desktop_access = (browser_path and is_desktop_peer(scope)) or pc_audio_access
+        if pc_audio_access and headers.get(b'origin'):
+            # Flutter's loopback development port differs from the Hub port.
+            # Only local browser origins may call this authenticated PC feature.
+            try:
+                origin = urlsplit(headers[b'origin'].decode('latin1'))
+                origin.port
+                valid_origin = (origin.scheme in {'http', 'https'}
+                    and origin.hostname in {'localhost', '127.0.0.1', '::1'}
+                    and not origin.username and not origin.password
+                    and not origin.path and not origin.query and not origin.fragment)
+            except ValueError:
+                valid_origin = False
+            if not valid_origin:
+                return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
         denied = (user_api_on_private or (self.public and not public_path(path) and not desktop_access)
                   or (not self.public and path not in {'/health', '/ready'} and not local))
         # Administrator credentials must never turn a public chat request into global access.
@@ -146,7 +162,7 @@ class AccessBoundary:
                 port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
                 detail = f'Bu port yalnızca yönetim içindir. Hub bağlantısını genel kullanım portuna ({port}) değiştirin.'
             return await JSONResponse({'detail': detail}, status_code=403)(scope, receive, send)
-        if self.public and desktop_access:
+        if self.public and desktop_access and browser_path:
             from starlette.requests import Request
             request = Request(scope)
             origin = request.headers.get('origin')

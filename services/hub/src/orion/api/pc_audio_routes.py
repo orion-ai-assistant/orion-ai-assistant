@@ -9,7 +9,7 @@ from orion.api.pc_audio import lease
 router = APIRouter(prefix="/api/v1/pc-audio", tags=["pc-audio"])
 
 def supported(request):
-    return os.name == "nt" and is_desktop_peer(request.scope) and not request.app.state.public
+    return os.name == "nt" and is_desktop_peer(request.scope) and getattr(request.app.state, 'local_entry', False)
 
 def require_pc(request):
     if not supported(request):

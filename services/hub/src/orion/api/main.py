@@ -224,7 +224,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     if mobile:
         application.add_middleware(MobileBoundary)
     else:
-        application.add_middleware(AccessBoundary, public=public)
+        application.add_middleware(AccessBoundary, public=public, local_entry=local_entry)
         application.add_middleware(LegacyDeviceBoundary)
     from orion.api.https_boundary import RequireTLS, LocalTransportBoundary
     application.add_middleware(LocalTransportBoundary if local_http else RequireTLS)
