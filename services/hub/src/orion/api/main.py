@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from redis.asyncio import Redis
 
+from orion.api.pc_audio_routes import router as pc_audio_router
 from orion.api.routes import router
 from orion.api.auth_routes import router as auth_router
 from orion.api.google_ai_routes import router as google_ai_router
@@ -88,6 +89,8 @@ async def lifespan(app: FastAPI):
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog
+            from orion.api.pc_audio import lease
+            await lease.close()
 
 
 def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=False, local_http=False):
@@ -102,6 +105,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     configure_cors(application)
     application.include_router(auth_router, prefix='/api/v1')
     application.include_router(router)
+    application.include_router(pc_audio_router)
     from orion.api.router_providers import router as provider_router
     application.include_router(provider_router)
     from orion.api.mobile_security import mobile_router, pairing_router, owner_router as secure_owner_router, MobileBoundary, LegacyDeviceBoundary
