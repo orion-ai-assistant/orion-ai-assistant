@@ -101,6 +101,11 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
 
+    # Normalize before any job payload, UI echo or message history retains it.
+    if payload.input.attachments:
+        from orion.api.services.input_audio import normalize_input_audio
+        payload.input.attachments = [await normalize_input_audio(item) for item in payload.input.attachments]
+
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
     meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)

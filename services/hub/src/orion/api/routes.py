@@ -99,6 +99,19 @@ async def assistant_capabilities(current_user: str = Depends(get_current_user)):
     return {"speech_modes": ["whole", "adaptive"], "speech_protocol": 1}
 
 
+@router.post("/api/v1/audio/normalize")
+async def normalize_audio_endpoint(payload: dict, current_user: str = Depends(get_current_user)):
+    from orion.contracts.http import Attachment
+    from orion.api.services.input_audio import normalize_input_audio
+    try:
+        attachment = Attachment.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(422, "Geçersiz ses eki.") from exc
+    if attachment.isText or not attachment.mime_type.startswith("audio/"):
+        raise HTTPException(422, "Bir ses eki seç.")
+    return (await normalize_input_audio(attachment)).model_dump(exclude_none=True)
+
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "timestamp": utc_now()}
