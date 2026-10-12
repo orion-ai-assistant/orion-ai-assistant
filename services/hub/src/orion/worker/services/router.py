@@ -567,9 +567,9 @@ async def stream_tts(
     Closing this generator closes the HTTP response, including on cancellation.
     """
     session, headers, payload, timeout, urls, provider = await _tts_request(text, settings, voice, "pcm")
-    # Only Gemini exposes the verified PCM streaming contract. Other providers
-    # synthesize each existing sentence batch as a complete WAV instead.
-    payload["stream"] = provider == "gemini"
+    # Request streaming from every provider. The response media type decides
+    # whether to relay PCM immediately or collect a completed WAV batch.
+    payload["stream"] = True
     if provider != "gemini":
         payload["response_format"] = "wav"
     timeout = ClientTimeout(total=None, connect=1.0, sock_read=float(settings.tts_timeout_seconds))
@@ -589,12 +589,13 @@ async def stream_tts(
                 mime = response.headers.get("Content-Type", "").split(";", 1)[0].lower().strip()
                 if mime == "audio/pcm":
                     try:
-                        rate = int(response.headers["X-Audio-Sample-Rate"])
-                        channels = int(response.headers["X-Audio-Channels"])
-                        bits = int(response.headers["X-Audio-Bits-Per-Sample"])
+                        rate = int(response.headers.get("X-Audio-Sample-Rate") or response.headers["X-Sample-Rate"])
+                        local_pcm = provider == "local" and "X-Sample-Rate" in response.headers
+                        channels = int(response.headers.get("X-Audio-Channels", "1" if local_pcm else ""))
+                        bits = int(response.headers.get("X-Audio-Bits-Per-Sample", "16" if local_pcm else ""))
                     except (KeyError, ValueError) as exc:
                         raise TtsStreamError("PCM format headers missing or invalid") from exc
-                    if (rate, channels, bits) != (24000, 1, 16):
+                    if not 8000 <= rate <= 192000 or channels not in (1, 2) or bits != 16:
                         raise TtsStreamError("Unsupported PCM format")
                     info = {"format": "pcm", "sample_rate": rate, "channels": channels,
                             "bits_per_sample": bits, "encoding": "pcm_s16le"}
@@ -605,10 +606,21 @@ async def stream_tts(
                     if not fmt:
                         raise TtsStreamError(f"Unsupported audio content type: {mime}")
                     info = {"format": fmt}
+                from orion.worker.services.pcm_normalizer import PcmNormalizer
+                normalizer = PcmNormalizer(rate, channels) if mime == "audio/pcm" and (rate, channels) != (24000, 1) else None
+                if normalizer:
+                    info = {"format": "pcm", "sample_rate": 24000, "channels": 1,
+                            "bits_per_sample": 16, "encoding": "pcm_s16le"}
                 async for chunk in response.content.iter_chunked(4096):
                     if chunk:
                         started = True
-                        yield chunk, info
+                        audio = normalizer.feed(chunk) if normalizer else chunk
+                        if audio:
+                            yield audio, info
+                if normalizer:
+                    audio = normalizer.feed(b"", final=True)
+                    if audio:
+                        yield audio, info
                 if not started:
                     raise TtsStreamError("TTS returned no audio")
                 return

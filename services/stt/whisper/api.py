@@ -388,7 +388,7 @@ async def websocket_endpoint(
         while True:
             # Expecting binary audio data (PCM 16-bit 16kHz Mono)
             if smart_session:
-                remaining = 220 - (time.monotonic() - started_at)
+                remaining = 640 - (time.monotonic() - started_at)
                 if remaining <= 0:
                     raise ValueError("STT session lifetime limit reached")
                 message = await asyncio.wait_for(websocket.receive(), timeout=remaining)
@@ -398,6 +398,7 @@ async def websocket_endpoint(
                 break
             finishing = False
             gapping = False
+            segmenting = False
             finish_id = None
             data = message.get("bytes")
             if message.get("text"):
@@ -412,17 +413,21 @@ async def websocket_endpoint(
                         raise ValueError("STT session already started")
                     smart_session = True
                     session_id = control.get("id")
-                    await websocket.send_json({"type": "ready", "id": session_id, "silence_gap": 1})
+                    await websocket.send_json({"type": "ready", "id": session_id, "silence_gap": 1, "segment_end": 1})
                     continue
                 if control.get("type") == "gap":
                     samples = control.get("samples")
                     if (not smart_session or control.get("id") != session_id or
-                            type(samples) is not int or samples <= 0 or samples > RATE * 180):
+                            type(samples) is not int or samples <= 0 or samples > RATE * 600):
                         raise ValueError("Invalid STT silence gap")
                     timeline_samples += samples
-                    if timeline_samples > RATE * 182:
+                    if timeline_samples > RATE * 602:
                         raise ValueError("STT sample timeline limit reached")
                     gapping = True
+                elif control.get("type") == "segment_end":
+                    if not smart_session or control.get("id") != session_id:
+                        raise ValueError("Wrong STT segment")
+                    segmenting = True
                 elif control.get("type") == "finish":
                     if smart_session and control.get("id") != session_id:
                         raise ValueError("Wrong STT turn")
@@ -430,19 +435,20 @@ async def websocket_endpoint(
                     finish_id = control.get("id")
                 else:
                     continue
-            if not data and not finishing and not gapping:
+            if not data and not finishing and not gapping and not segmenting:
                 continue
             if finishing and len(accumulated_audio) == 0:
                 await websocket.send_json({"type": "finished", "id": finish_id})
                 continue
-            if gapping and len(accumulated_audio) == 0:
+            if (gapping or segmenting) and len(accumulated_audio) == 0:
+                context_text = ""
                 continue
             data = data or b""
             if len(data) % 2:
                 raise ValueError("Incomplete PCM sample")
             received_samples += len(data) // 2
             timeline_samples += len(data) // 2
-            if smart_session and (received_samples > RATE * 62 or timeline_samples > RATE * 182):
+            if smart_session and (received_samples > RATE * 602 or timeline_samples > RATE * 602):
                 raise ValueError("STT audio budget reached")
                 
             # Convert bytes to float32 numpy array [-1.0, 1.0]
@@ -478,20 +484,26 @@ async def websocket_endpoint(
             accumulated_audio = np.concatenate((accumulated_audio, chunk_data))
             audio_duration = len(accumulated_audio) / RATE
 
-            sentence_ended = finishing or gapping or (smart_session and audio_duration >= 30) or (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
+            # In configured sessions Silero owns the boundary. Never finalize
+            # a continuously spoken word just because 30 seconds elapsed.
+            sentence_ended = finishing or gapping or segmenting or (not smart_session and silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
             
             now = time.perf_counter()
             elapsed = now - last_transcribe_time
             dynamic_interval = max(MIN_TRANSCRIBE_INTERVAL, last_infer_duration * 1.5)
             
-            should_transcribe = finishing or gapping or (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
+            should_transcribe = finishing or gapping or segmenting or (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
             
             if not should_transcribe:
                 continue
                 
             last_transcribe_time = now
             active_beam_size = FINAL_BEAM_SIZE if sentence_ended else LIVE_BEAM_SIZE
-            if base_prompt and context_text:
+            if smart_session:
+                # Each Silero span is acoustically independent. Prior finals
+                # remain on the client; do not prime the next span with them.
+                current_prompt = base_prompt or None
+            elif base_prompt and context_text:
                 current_prompt = f"{base_prompt} {context_text[-200:]}"
             elif base_prompt:
                 current_prompt = base_prompt
@@ -580,7 +592,11 @@ async def websocket_endpoint(
                         "language": detected_lang
                     })
             
+            if sentence_ended and not text:
+                await websocket.send_json({"type": "final", "text": "", "language": detected_lang})
             if sentence_ended:
+                if smart_session:
+                    context_text = ""
                 accumulated_audio = np.array([], dtype=np.float32)
                 silence_duration = 0.0
                 last_transcribe_time = 0.0

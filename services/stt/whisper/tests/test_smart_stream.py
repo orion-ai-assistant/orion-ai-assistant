@@ -62,14 +62,14 @@ class SmartStreamTests(unittest.IsolatedAsyncioTestCase):
             control(type='finish', id=7),
         ])
         await handler(self.model())(socket, language='tr')
-        self.assertEqual(socket.events[0], {'type': 'ready', 'id': 7, 'silence_gap': 1})
+        self.assertEqual(socket.events[0], {'type': 'ready', 'id': 7, 'silence_gap': 1, 'segment_end': 1})
         self.assertEqual(socket.events[-1], {'type': 'finished', 'id': 7})
         self.assertTrue(any(e['type'] == 'final' for e in socket.events))
         self.assertTrue(all(length <= 32000 for length in self.audio_lengths))
 
     async def test_invalid_and_excessive_gaps_fail_explicitly(self):
         for gap in (control(type='gap', id=8, samples=10),
-                    control(type='gap', id=7, samples=16000 * 181),
+                    control(type='gap', id=7, samples=16000 * 601),
                     control(type='gap', id=7, samples=-1)):
             socket = Socket([control(type='configure', id=7, silence_gap=1), gap])
             await handler(self.model())(socket)
@@ -78,8 +78,8 @@ class SmartStreamTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_total_timeline_budget_cannot_be_extended_indefinitely(self):
         socket = Socket([control(type='configure', id=7, silence_gap=1),
-                         control(type='gap', id=7, samples=16000 * 100),
-                         control(type='gap', id=7, samples=16000 * 100)])
+                         control(type='gap', id=7, samples=16000 * 350),
+                         control(type='gap', id=7, samples=16000 * 350)])
         await handler(self.model())(socket)
         self.assertEqual(socket.events[-1]['type'], 'error')
 
@@ -87,3 +87,25 @@ class SmartStreamTests(unittest.IsolatedAsyncioTestCase):
         socket = Socket([control(type='finish', id=7)])
         await handler(self.model())(socket)
         self.assertEqual(socket.events, [{'type': 'finished', 'id': 7}])
+
+    async def test_silero_spans_are_independent_and_long_speech_is_not_forced_final(self):
+        prompts = []
+        audio_lengths = []
+        def transcribe(audio, **kwargs):
+            prompts.append(kwargs['initial_prompt'])
+            audio_lengths.append(len(audio))
+            return iter([SimpleNamespace(text='Ama...', no_speech_prob=.01)]), SimpleNamespace(language='tr')
+        model = SimpleNamespace(transcribe=transcribe)
+        audio = (np.sin(np.arange(16000 * 31) * .1) * 2000).astype(np.int16).tobytes()
+        socket = Socket([
+            control(type='configure', id=7, silence_gap=1),
+            {'type': 'websocket.receive', 'bytes': audio},
+            control(type='segment_end', id=7),
+            control(type='gap', id=7, samples=16000 * 10),
+            {'type': 'websocket.receive', 'bytes': audio[:32000]},
+            control(type='finish', id=7),
+        ])
+        await handler(model)(socket, language='tr', prompt='Temel istem')
+        self.assertEqual([e['type'] for e in socket.events], ['ready', 'live', 'final', 'live', 'final', 'finished'])
+        self.assertEqual(prompts, ['Temel istem'] * 4)
+        self.assertEqual(audio_lengths, [16000 * 31, 16000 * 31, 16000, 16000])

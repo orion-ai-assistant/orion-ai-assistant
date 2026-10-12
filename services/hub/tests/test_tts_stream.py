@@ -144,7 +144,7 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
                 await anext(stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15)))
         self.assertTrue(self.closed)
 
-    async def test_non_streaming_provider_requests_complete_wav_batches(self):
+    async def test_stream_request_accepts_complete_wav_fallback(self):
         for provider in ('local', 'openai'):
             request = list(await self.request(headers={'Content-Type': 'audio/wav'}, chunks=[b'wave']))
             request[-1] = provider
@@ -155,4 +155,36 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
                 result = [part async for part in stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15))]
             self.assertEqual(result, [(b'wave', {'format': 'wav'})])
             self.assertEqual(payloads[0]['response_format'], 'wav')
-            self.assertFalse(payloads[0]['stream'])
+            self.assertTrue(payloads[0]['stream'])
+
+    async def test_local_pcm_rate_header_streams_normalized_audio(self):
+        request = list(await self.request(headers={'Content-Type': 'audio/pcm', 'X-Sample-Rate': '16000'},
+                                          chunks=[b'\x20', b'\x00\x20\x00']))
+        request[-1] = 'local'
+        with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=tuple(request))):
+            parts = [part async for part in stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15))]
+        self.assertEqual(b''.join(data for data, _ in parts), b'\x20\x00' * 3)
+        self.assertTrue(all(info['sample_rate'] == 24000 for _, info in parts))
+
+
+class PcmNormalizerTests(unittest.TestCase):
+    def test_transport_chunk_boundaries_do_not_change_resampling(self):
+        from orion.worker.services.pcm_normalizer import PcmNormalizer
+        import struct
+        for rate in (16000, 22050, 44100, 48000):
+            for channels in (1, 2):
+                audio = struct.pack('<200h', *range(200))
+                whole = PcmNormalizer(rate, channels)
+                expected = whole.feed(audio) + whole.feed(b'', final=True)
+                split = PcmNormalizer(rate, channels)
+                actual = b''.join(split.feed(audio[i:i + 7]) for i in range(0, len(audio), 7))
+                actual += split.feed(b'', final=True)
+                self.assertEqual(actual, expected)
+                self.assertEqual(len(actual), (200 // channels) * 24000 // rate * 2)
+
+    def test_incomplete_frame_is_rejected(self):
+        from orion.worker.services.pcm_normalizer import PcmNormalizer
+        converter = PcmNormalizer(16000, 2)
+        converter.feed(b'\x01\x02')
+        with self.assertRaises(ValueError):
+            converter.feed(b'', final=True)
