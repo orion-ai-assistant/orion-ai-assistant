@@ -32,6 +32,7 @@ class JobInput(BaseModel):
     attachments: list[Attachment] | None = None
     images: list[str] | None = Field(default=None, description="List of base64 encoded images or image URLs")
     audio: bool | None = Field(default=None, description="Whether to generate audio/TTS for response")
+    speech_mode: Literal["whole", "adaptive"] = "whole"
     voice: str | None = Field(default=None, description="Voice ID or name for TTS")
     metadata: dict[str, Any] = Field(default_factory=dict)
 

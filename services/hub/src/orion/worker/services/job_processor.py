@@ -19,6 +19,7 @@ from orion.worker.services.chat_titles import generate_chat_title
 from orion.worker.services.attachments import user_content
 from orion.worker.services.router import llama_stream_chat_typed
 from orion.worker.services.tts_stream import relay_tts
+from orion.worker.services.adaptive_tts import AdaptiveTts
 from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import model_history
 from orion.worker.services.tool_display import DisplayTimeline
@@ -351,6 +352,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
         },
     )
 
+    adaptive_tts = None
     try:
         output_tokens: list[str] = []
         thinking_tokens: list[str] = []
@@ -395,8 +397,9 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             first_token_at: float | None = None
 
             next_renewal = 0.0
+            stop_check_lock = asyncio.Lock()
             try:
-                async def _check_stop() -> bool:
+                async def _check_stop_unlocked() -> bool:
                     nonlocal next_renewal
                     if time.monotonic() >= next_renewal:
                         active_key = _active_turn_key(context.chat_id)
@@ -415,6 +418,21 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         await should_stop(redis, context.turn_id)
                         or not await is_active_turn(redis, context.chat_id, context.turn_id)
                     )
+
+                async def _check_stop():
+                    # LLM and concurrent TTS must not WATCH/renew the same key simultaneously.
+                    async with stop_check_lock:
+                        return await _check_stop_unlocked()
+
+                def arrival_ms():
+                    requested_at = datetime.fromisoformat(context.record.created_at)
+                    if requested_at.tzinfo is None:
+                        requested_at = requested_at.replace(tzinfo=timezone.utc)
+                    return max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
+
+                if (getattr(context.request.input, "speech_mode", "whole") == "adaptive"
+                        and settings.tts_enabled and context.audio_requested):
+                    adaptive_tts = AdaptiveTts(context, settings, _check_stop, arrival_ms)
 
                 stream = conversation.stream(messages, settings, _check_stop, llama_stream_chat_typed)
                 token_count = 0
@@ -482,6 +500,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         content_token_count += 1
                         output_tokens.append(token)
                         await context.emit_token(token)
+                        if adaptive_tts:
+                            await adaptive_tts.feed(token)
                         # Log only first content token to avoid spam
                         if content_token_count == 1:
                             logging.info("Worker %s: first content token for chat %s", consumer_name, context.chat_id)
@@ -500,6 +520,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                             first_token_at = time.perf_counter()
                         output_tokens[:] = [token]
                         await context.emit_snapshot(token)
+                        if adaptive_tts:
+                            await adaptive_tts.feed(token, snapshot=True)
                         await hset_if_active(
                             redis,
                             context.chat_id,
@@ -610,7 +632,18 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             audio_entry = None
             is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
             should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
-            if should_tts and not stopped:
+            if adaptive_tts:
+                if stopped:
+                    await adaptive_tts.cancel()
+                else:
+                    audio_entry = await adaptive_tts.finish()
+                if adaptive_tts.error:
+                    await context._publish(StreamEvent(
+                        type="warning", chat_id=context.chat_id,
+                        turn_id=context.turn_id, generation_id=context.turn_id,
+                        data={"code": "tts_failed", "message": "Erken seslendirme tamamlanamadı. Yanıtı metin olarak okuyabilirsiniz."},
+                    ))
+            elif should_tts and not stopped:
                 try:
                     tts_text = _clean_text_for_tts(final_text)
                     if tts_text:
@@ -740,3 +773,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
         if finalized:
             await context.emit_error(str(exc))
         logging.exception("Worker %s failed chat %s", consumer_name, context.chat_id)
+
+    finally:
+        if adaptive_tts:
+            await adaptive_tts.cancel()

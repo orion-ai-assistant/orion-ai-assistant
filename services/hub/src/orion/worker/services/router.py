@@ -566,8 +566,12 @@ async def stream_tts(
     A transport failure may retry only before any bytes have been delivered.
     Closing this generator closes the HTTP response, including on cancellation.
     """
-    session, headers, payload, timeout, urls, _ = await _tts_request(text, settings, voice, "pcm")
-    payload["stream"] = True
+    session, headers, payload, timeout, urls, provider = await _tts_request(text, settings, voice, "pcm")
+    # Only Gemini exposes the verified PCM streaming contract. Other providers
+    # synthesize each existing sentence batch as a complete WAV instead.
+    payload["stream"] = provider == "gemini"
+    if provider != "gemini":
+        payload["response_format"] = "wav"
     timeout = ClientTimeout(total=None, connect=1.0, sock_read=float(settings.tts_timeout_seconds))
     started = False
     last_error = None

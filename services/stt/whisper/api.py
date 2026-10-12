@@ -377,15 +377,27 @@ async def websocket_endpoint(
     last_infer_duration = 0.0
     context_text = ""
     
+    smart_session = False
+    session_id = None
+    received_samples = 0
+    timeline_samples = 0
+    started_at = time.monotonic()
     base_prompt = prompt.strip() if (prompt and prompt.strip()) else ""
 
     try:
         while True:
             # Expecting binary audio data (PCM 16-bit 16kHz Mono)
-            message = await websocket.receive()
+            if smart_session:
+                remaining = 220 - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    raise ValueError("STT session lifetime limit reached")
+                message = await asyncio.wait_for(websocket.receive(), timeout=remaining)
+            else:
+                message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
             finishing = False
+            gapping = False
             finish_id = None
             data = message.get("bytes")
             if message.get("text"):
@@ -393,16 +405,45 @@ async def websocket_endpoint(
                     control = json.loads(message["text"])
                 except (ValueError, TypeError):
                     continue
-                if not isinstance(control, dict) or control.get("type") != "finish":
+                if not isinstance(control, dict):
                     continue
-                finishing = True
-                finish_id = control.get("id")
-            if not data and not finishing:
+                if control.get("type") == "configure" and control.get("silence_gap") == 1:
+                    if smart_session or received_samples:
+                        raise ValueError("STT session already started")
+                    smart_session = True
+                    session_id = control.get("id")
+                    await websocket.send_json({"type": "ready", "id": session_id, "silence_gap": 1})
+                    continue
+                if control.get("type") == "gap":
+                    samples = control.get("samples")
+                    if (not smart_session or control.get("id") != session_id or
+                            type(samples) is not int or samples <= 0 or samples > RATE * 180):
+                        raise ValueError("Invalid STT silence gap")
+                    timeline_samples += samples
+                    if timeline_samples > RATE * 182:
+                        raise ValueError("STT sample timeline limit reached")
+                    gapping = True
+                elif control.get("type") == "finish":
+                    if smart_session and control.get("id") != session_id:
+                        raise ValueError("Wrong STT turn")
+                    finishing = True
+                    finish_id = control.get("id")
+                else:
+                    continue
+            if not data and not finishing and not gapping:
                 continue
             if finishing and len(accumulated_audio) == 0:
                 await websocket.send_json({"type": "finished", "id": finish_id})
                 continue
+            if gapping and len(accumulated_audio) == 0:
+                continue
             data = data or b""
+            if len(data) % 2:
+                raise ValueError("Incomplete PCM sample")
+            received_samples += len(data) // 2
+            timeline_samples += len(data) // 2
+            if smart_session and (received_samples > RATE * 62 or timeline_samples > RATE * 182):
+                raise ValueError("STT audio budget reached")
                 
             # Convert bytes to float32 numpy array [-1.0, 1.0]
             # Assuming client sends int16 PCM
@@ -437,13 +478,13 @@ async def websocket_endpoint(
             accumulated_audio = np.concatenate((accumulated_audio, chunk_data))
             audio_duration = len(accumulated_audio) / RATE
 
-            sentence_ended = finishing or (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
+            sentence_ended = finishing or gapping or (smart_session and audio_duration >= 30) or (silence_duration >= SILENCE_DURATION_TO_END and audio_duration >= MIN_AUDIO_TO_PROCESS)
             
             now = time.perf_counter()
             elapsed = now - last_transcribe_time
             dynamic_interval = max(MIN_TRANSCRIBE_INTERVAL, last_infer_duration * 1.5)
             
-            should_transcribe = finishing or (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
+            should_transcribe = finishing or gapping or (audio_duration >= MIN_AUDIO_TO_PROCESS and (sentence_ended or elapsed >= dynamic_interval))
             
             if not should_transcribe:
                 continue
@@ -553,6 +594,7 @@ async def websocket_endpoint(
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         try:
+            await websocket.send_json({"type": "error", "message": str(e) or "STT session timed out"})
             await websocket.close()
         except:
             pass

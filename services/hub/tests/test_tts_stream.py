@@ -143,3 +143,16 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(TtsStreamError):
                 await anext(stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15)))
         self.assertTrue(self.closed)
+
+    async def test_non_streaming_provider_requests_complete_wav_batches(self):
+        for provider in ('local', 'openai'):
+            request = list(await self.request(headers={'Content-Type': 'audio/wav'}, chunks=[b'wave']))
+            request[-1] = provider
+            payloads = []
+            post = request[0].post
+            request[0].post = lambda *args, **kwargs: (payloads.append(dict(kwargs['json'])), post(*args, **kwargs))[1]
+            with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=tuple(request))):
+                result = [part async for part in stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15))]
+            self.assertEqual(result, [(b'wave', {'format': 'wav'})])
+            self.assertEqual(payloads[0]['response_format'], 'wav')
+            self.assertFalse(payloads[0]['stream'])
