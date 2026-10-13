@@ -25,6 +25,18 @@ from services.shared.environment import get_router_base_urls
 
 router = APIRouter()
 
+
+@router.get("/api/v1/audio/languages")
+async def stt_language_catalog(current_user: str = Depends(get_current_user)):
+    from orion.contracts.settings import STT_LANGUAGE_CATALOG
+    return {
+        "aliases": STT_LANGUAGE_CATALOG["aliases"],
+        "languages": {
+            code: {"name": entry["name"]}
+            for code, entry in STT_LANGUAGE_CATALOG["languages"].items()
+        },
+    }
+
 from orion.contracts.tools import ToolSelection, default_tool_selection
 from orion.api.services.tool_service import read_selection, save_selection
 from orion.api.services.job_service import ensure_chat_access

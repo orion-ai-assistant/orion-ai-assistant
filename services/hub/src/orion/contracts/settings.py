@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from orion.contracts.tools import ToolSelection, default_tool_selection
 
-_stt_catalog = json.loads((Path(__file__).resolve().parents[1] / "api/ui/js/stt_languages.json").read_text(encoding="utf-8"))
+STT_LANGUAGE_CATALOG = json.loads((Path(__file__).resolve().parents[1] / "api/ui/js/stt_languages.json").read_text(encoding="utf-8"))
 
 class SystemSettings(BaseModel):
     result_ttl_seconds: int = Field(default=86400, ge=1, le=2592000)
@@ -61,8 +61,8 @@ class AISettings(BaseModel):
         code = str(value).strip().lower().replace("_", "-").split("-")[0]
         if code in ("auto", "none"):
             return "auto"
-        code = _stt_catalog["aliases"].get(code, code)
-        if code not in _stt_catalog["languages"]:
+        code = STT_LANGUAGE_CATALOG["aliases"].get(code, code)
+        if code not in STT_LANGUAGE_CATALOG["languages"]:
             raise ValueError("Unsupported STT language")
         return code
 
