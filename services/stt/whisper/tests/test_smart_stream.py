@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 import asyncio
 import json
 import re
@@ -10,6 +11,12 @@ import numpy as np
 
 from fastapi import WebSocketDisconnect
 
+prompt_spec = importlib.util.spec_from_file_location(
+    "whisper_prompts", Path(__file__).resolve().parents[1] / "prompts.py"
+)
+prompts = importlib.util.module_from_spec(prompt_spec)
+prompt_spec.loader.exec_module(prompts)
+
 
 def handler(model):
     path = Path(__file__).resolve().parents[1] / 'api.py'
@@ -18,6 +25,7 @@ def handler(model):
     node.decorator_list = []
     node.args.args[0].annotation = None
     namespace = dict(asyncio=asyncio, json=json, re=re, time=time, np=np, model=model, RATE=16000,
+                     select_transcription_prompt=prompts.select_transcription_prompt,
                      WebSocketDisconnect=WebSocketDisconnect, logger=SimpleNamespace(info=lambda *a: None, error=lambda *a: None),
                      MIN_AUDIO_TO_PROCESS=.6, MIN_TRANSCRIBE_INTERVAL=.2, SILENCE_DURATION_TO_END=.4,
                      FINAL_BEAM_SIZE=4, LIVE_BEAM_SIZE=2, last_debug_audio=np.array([], dtype=np.float32))

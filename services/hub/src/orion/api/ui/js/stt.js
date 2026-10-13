@@ -18,7 +18,7 @@ const STT = {
     _listenerAttached: false,
     
     // Hub proxy WebSocket adresi
-    getRouterWsUrl(authToken, language = 'tr', model = 'local-stt') {
+    getRouterWsUrl(authToken, language = 'auto', model = 'local-stt') {
         const host = window.location.host;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const path = HubPicker.apiPath(`/api/v1/audio/transcriptions/stream?token=${encodeURIComponent(authToken)}&language=${encodeURIComponent(language)}&model=${encodeURIComponent(model)}&provider=local`);
@@ -122,7 +122,7 @@ const STT = {
             const authToken = Auth.getToken() || '';
             if (!authToken.trim()) throw new Error('Sesli yazma için Hub oturumuna tekrar giriş yapın.');
 
-            const ws = new WebSocket(this.getRouterWsUrl(authToken, 'tr', sttModel));
+            const ws = new WebSocket(this.getRouterWsUrl(authToken, 'auto', sttModel));
             this.ws = ws;
             let resolveReady, rejectReady;
             const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });

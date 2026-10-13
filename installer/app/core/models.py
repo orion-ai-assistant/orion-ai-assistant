@@ -1,10 +1,95 @@
 import os
+import hashlib
+import shutil
+import tempfile
 import urllib.request
+import zipfile
 
 from .. import config
 from . import i18n
 
 VALID_EXTENSIONS = (".gguf", ".safetensors", ".pth", ".bin")
+
+
+def _sha256_matches(path: str, expected: str | None) -> bool:
+    if not expected:
+        return True
+    with open(path, "rb") as stream:
+        checksum = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest() == expected.lower()
+
+
+def _download_zip_model(model_key: str, model_data: dict, target_dir: str) -> bool:
+    """Verify a model archive, stage its files, then install the complete package."""
+    names = model_data.get("files", [])
+    hashes = model_data.get("sha256", {})
+    archive_hash = model_data.get("archive_sha256")
+    if not archive_hash or not names or any(not hashes.get(name) for name in names):
+        raise ValueError("ZIP model requires archive and file SHA256 values")
+    if any(name in ("", ".", "..") or "/" in name or "\\" in name or ":" in name for name in names):
+        raise ValueError("Invalid ZIP model filename")
+    if all(os.path.isfile(os.path.join(target_dir, name)) and
+           _sha256_matches(os.path.join(target_dir, name), hashes[name]) for name in names):
+        print("[MODEL] Model dosyaları zaten mevcut ve doğrulandı.")
+        return True
+
+    def cancelled():
+        return config.SHOULD_EXIT or config.DOWNLOADING_MODELS.get(model_key, {}).get("cancel")
+
+    url = model_data["download_url"]
+    expected = _remote_size(url)
+    config.DOWNLOADING_MODELS[model_key]["total_mb"] = round(expected / 1024 ** 2, 2)
+    with tempfile.TemporaryDirectory(prefix=".model-extract-", dir=target_dir) as staging:
+        archive_path = os.path.join(staging, "model.zip.downloading")
+        request = urllib.request.Request(url, headers={"User-Agent": "Orion-Installer"})
+        downloaded = 0
+        with urllib.request.urlopen(request) as response, open(archive_path, "wb") as output:
+            while True:
+                if cancelled():
+                    return False
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                downloaded += len(chunk)
+                progress = f"ZIP (%{int(downloaded / expected * 100)})" if expected else "ZIP (İndiriliyor...)"
+                config.DOWNLOADING_MODELS[model_key]["progress"] = progress
+        if cancelled():
+            return False
+        if expected and downloaded != expected:
+            raise ValueError("ZIP boyutu uyuşmuyor")
+        config.DOWNLOADING_MODELS[model_key]["progress"] = "ZIP doğrulanıyor..."
+        if not _sha256_matches(archive_path, archive_hash):
+            raise ValueError("ZIP SHA256 doğrulaması başarısız")
+        config.DOWNLOADING_MODELS[model_key]["progress"] = "Model dosyaları açılıyor..."
+        with zipfile.ZipFile(archive_path) as archive:
+            members = archive.infolist()
+            if len(members) != len(names) or {member.filename for member in members} != set(names):
+                raise ValueError("ZIP içeriği model dosyalarıyla uyuşmuyor")
+            for member in members:
+                if cancelled():
+                    return False
+                if member.is_dir() or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError("ZIP içinde geçersiz dosya")
+                extracted = os.path.join(staging, member.filename)
+                with archive.open(member) as source, open(extracted, "wb") as output:
+                    while True:
+                        if cancelled():
+                            return False
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                if not _sha256_matches(extracted, hashes[member.filename]):
+                    raise ValueError(f"{member.filename}: SHA256 doğrulaması başarısız")
+        if cancelled():
+            return False
+        # No installed file changes until the entire archive has been verified.
+        for name in names:
+            os.replace(os.path.join(staging, name), os.path.join(target_dir, name))
+    return True
 
 # ---------------------------------------------------------------------------
 # Model check
@@ -172,6 +257,13 @@ def run_model_download(service_id: str, service_dir: str, model_data: dict):
         target_dir = os.path.join(service_dir, models_rel_path, model_data.get("folder", ""))
         os.makedirs(target_dir, exist_ok=True)
 
+        if model_data.get("archive_format") == "zip":
+            if _download_zip_model(model_key, model_data, target_dir):
+                print("[MODEL] ZIP modeli doğrulandı ve kuruldu.")
+            else:
+                print("[SYSTEM] Model indirme iptal edildi.")
+            return
+
         for f in os.listdir(target_dir):
             if f.endswith(".downloading"):
                 try: os.remove(os.path.join(target_dir, f))
@@ -195,7 +287,9 @@ def run_model_download(service_id: str, service_dir: str, model_data: dict):
             # Eğer dosya zaten tam olarak inmişse indirmiş gibi say ve atla
             if os.path.exists(dest):
                 actual = os.path.getsize(dest)
-                if expected > 0 and abs(actual - expected) < 1024:
+                if expected > 0 and abs(actual - expected) < 1024 and _sha256_matches(
+                    dest, model_data.get("sha256", {}).get(fname)
+                ):
                     print(f"[MODEL] {fname} zaten mevcut, atlanıyor.")
                     downloaded += actual
                     continue
@@ -224,6 +318,10 @@ def run_model_download(service_id: str, service_dir: str, model_data: dict):
             if expected > 0 and abs(actual - expected) > 1024:
                 if os.path.exists(tmp): os.remove(tmp)
                 raise ValueError(f"{fname}: boyut uyuşmazlığı (beklenen {expected}, alınan {actual})")
+
+            if not _sha256_matches(tmp, model_data.get("sha256", {}).get(fname)):
+                os.remove(tmp)
+                raise ValueError(f"{fname}: SHA256 doğrulaması başarısız")
 
             # Windows WinError 32 (dosya kilitli) için daha sabırlı finalize
             import time

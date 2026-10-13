@@ -170,6 +170,5 @@ window.orionLocales.tr = {
     param_whisper_compute_type: "Hesaplama Tipi (Compute)",
     param_opt_whisper_compute_type_int8_float16: "int8_float16 (GPU - Önerilen)",
     param_opt_whisper_compute_type_int8: "int8 (Hızlı / Düşük Bellek)",
-    param_opt_whisper_compute_type_float16: "float16 (GPU - Yüksek Kalite)",
-    param_opt_whisper_compute_type_float32: "float32 (Tam Hassasiyet)"
+    param_opt_whisper_compute_type_float16: "float16 (GPU - Yüksek Kalite)"
 };

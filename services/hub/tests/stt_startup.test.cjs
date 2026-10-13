@@ -53,7 +53,7 @@ function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000 } = 
     class WebSocket {
         static OPEN = 1;
         static CONNECTING = 0;
-        constructor() { this.readyState = 0; this.sent = []; sockets.push(this); }
+        constructor(url) { this.url = url; this.readyState = 0; this.sent = []; sockets.push(this); }
         send(buffer) { this.sent.push(new Int16Array(buffer)); }
         close() { this.readyState = 3; }
         open() { this.readyState = 1; this.onopen(); }
@@ -61,10 +61,11 @@ function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000 } = 
     const sandbox = {
         HubPicker: {apiPath: path => path},
         Auth: {getToken: () => 'token'},
+        AppState: {currentChatId: null},
         window: { AudioContext, AudioWorkletNode, location: { host: 'localhost:8909', protocol: 'http:' } },
         navigator: { mediaDevices: { getUserMedia(config) { micRequests++; constraints.push(config); return mic.promise; } } },
         API: { getSettings: () => settings.promise },
-        document: { getElementById: id => id === 'message-input' ? input : id === 'mic-btn' ? button : null },
+        document: { querySelectorAll: () => [], getElementById: id => id === 'message-input' ? input : id === 'mic-btn' ? button : null },
         localStorage: { getItem: () => 'token' },
         WebSocket, console: { log() {}, debug() {}, warn() {}, error() {} },
         alert: message => alerts.push(message),
@@ -98,6 +99,7 @@ test('Flutter order: settings, socket ready, then microphone; exact recorder con
     h.settings.resolve({});
     await tick();
     assert.equal(h.sockets.length, 1);
+    assert.equal(new URL(h.sockets[0].url).searchParams.get('language'), 'auto');
     assert.equal(h.micRequests, 0, 'do not record before socket readiness');
     h.sockets[0].open();
     await tick();

@@ -1,6 +1,7 @@
 import sounddevice as sd
 import numpy as np
-from faster_whisper import WhisperModel
+from model_loading import load_whisper_robust
+from prompts import select_transcription_prompt
 import time
 import sys
 import queue
@@ -24,13 +25,19 @@ from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 import os
 # Servis klasörü içindeki models yolunu otomatik bul
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOCAL_MODEL = os.path.join(CURRENT_DIR, "models", "whisper-small-finetuned-tr")
-MODEL_SIZE = LOCAL_MODEL if os.path.exists(LOCAL_MODEL) else r"C:\Whisper-Finetune-App\models\whisper-small-finetuned-ct2-chkpt-1200"
+from dotenv import load_dotenv
+load_dotenv(os.path.join(CURRENT_DIR, ".env"), override=True)
+model_folder = os.path.dirname(os.getenv("MODEL_FILE", "").strip())
+model_name = model_folder or os.getenv("WHISPER_MODEL", "whisper-small-finetuned-tr").strip()
+LOCAL_MODEL = os.path.join(CURRENT_DIR, "models", model_name)
+MODEL_SIZE = LOCAL_MODEL if os.path.isdir(LOCAL_MODEL) else model_name
 
 # Cihaz Seçimi: "cuda" (GPU) veya "cpu" (İşlemci)
-DEVICE = "cuda"  # CPU'da denemek için "cpu", GPU için "cuda" yapabilirsiniz
+DEVICE = os.getenv("WHISPER_DEVICE", os.getenv("DEVICE", "cuda")).lower()
+if os.getenv("ORION_HW_ID", "").lower() == "cpu":
+    DEVICE = "cpu"
 
-# CPU için en hızlı ve uyumlu mod "int8" veya "float32"'dir.
+# CPU için "int8" kullanılır.
 # GPU için "int8_float16" veya "float16"'dır.
 if DEVICE == "cpu":
     COMPUTE_TYPE = "int8"
@@ -39,6 +46,11 @@ if DEVICE == "cpu":
 else:
     COMPUTE_TYPE = "int8_float16"
     CPU_THREADS = 0
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", COMPUTE_TYPE).strip()
+if DEVICE == "cpu":
+    COMPUTE_TYPE = "int8"
+elif COMPUTE_TYPE not in ("int8_float16", "float16", "int8"):
+    COMPUTE_TYPE = "int8_float16"
 
 LIVE_BEAM_SIZE = 2
 FINAL_BEAM_SIZE = 4
@@ -103,14 +115,9 @@ def main():
         f"({DEVICE.upper()}, {COMPUTE_TYPE})..."
     )
 
-    model = WhisperModel(
-        MODEL_SIZE,
-        device=DEVICE,
-        compute_type=COMPUTE_TYPE,
-        cpu_threads=CPU_THREADS
-    )
+    model, active_device, active_compute = load_whisper_robust(MODEL_SIZE, DEVICE, COMPUTE_TYPE)
 
-    print("Model yüklendi!\n")
+    print(f"Model yüklendi: {active_device.upper()} ({active_compute})\n")
 
     print(
         "\n======================================================="
@@ -164,14 +171,9 @@ def main():
     # PROMPT
     # -----------------------------------------------------
 
-    # Whisper boşlukta bu kelimeleri uydurmasın diye base_prompt'u küçülttük
-    base_prompt = (
-        "Hmm... Naber? İyii, senden naberr?"
-        "İyi bende saol. GPU ayarlarını güncelledim! "
-        "Bir saat sonraya alarm kur."
-        "Ama... Spotify'dan blok 3 açar mısın? "
-    )
+    base_prompt = os.getenv("WHISPER_PROMPT", "").strip()
     context_text = ""
+    context_language = None
 
     try:
         with sd.InputStream(
@@ -358,15 +360,6 @@ def main():
                 # PROMPT
                 # =================================================
 
-                current_prompt = (
-                    base_prompt
-                    + " "
-                    + (
-                        context_text[-200:]
-                        if context_text
-                        else ""
-                    )
-                )
 
                 # =================================================
                 # SES VERİSİ
@@ -390,14 +383,19 @@ def main():
                 start_time = (
                     time.perf_counter()
                 )
+                active_language, current_prompt = select_transcription_prompt(
+                    model, audio_to_process, STREAM_LANGUAGE, base_prompt,
+                    context_text, context_language,
+                )
 
                 segments, info = model.transcribe(
 
                     audio_to_process,
+                    task="transcribe",
 
                     beam_size=active_beam_size,
 
-                    language=STREAM_LANGUAGE,
+                    language=active_language,
 
                     vad_filter=True,
 
@@ -515,6 +513,10 @@ def main():
                             wf.writeframes((np.clip(audio_to_process, -1.0, 1.0) * 32767).astype(np.int16).tobytes())
 
                         # Context'e ekle (Sadece son 500 karakteri tutarak belleği şişmesini önle)
+                        detected_language = active_language or getattr(info, "language", None)
+                        if context_language != detected_language:
+                            context_text = ""
+                        context_language = detected_language
                         context_text += (
                             " " + text
                         )

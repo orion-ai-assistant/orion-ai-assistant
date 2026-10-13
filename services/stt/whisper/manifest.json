@@ -11,10 +11,10 @@
       "type": "select",
       "label": "Compute Type",
       "default": "int8_float16",
-      "options": ["int8_float16", "int8", "float16", "float32"],
+      "options": ["int8_float16", "int8", "float16"],
       "hardware_options": {
-        "nvidia": ["int8_float16", "int8", "float16", "float32"],
-        "cpu": ["int8", "float32"]
+        "nvidia": ["int8_float16", "int8", "float16"],
+        "cpu": ["int8"]
       },
       "hardware_defaults": {
         "nvidia": "int8_float16",
@@ -25,31 +25,60 @@
   "models_path": "models/",
   "models_catalog": [
     {
-      "id": "whisper-small-finetuned-tr",
-      "name": "Whisper Small (Turkish Finetuned)",
-      "folder": "whisper-small-finetuned-tr",
-      "description": "Özel Türkçe sesli asistan veri seti ile ince ayar (fine-tune) yapılmış CTranslate2 modeli.",
-      "size_mb": 485,
+      "id": "whisper-large-v3-turbo-ct2",
+      "name": "Whisper Large-v3-Turbo (CTranslate2)",
+      "folder": "whisper-large-v3-turbo-ct2",
+      "description": "OpenAI Large-v3-Turbo modelinin CTranslate2 sürümü. Türkçe ve İngilizce dahil çok dilli deşifre için.",
+      "download_url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-large-v3-turbo-ct2.zip",
+      "archive_format": "zip",
+      "archive_sha256": "091af9c6f80f4cf6851ef8a46918e05040da0fb58c27c1269993508011b95d61",
+      "size_mb": 1547,
+      "sha256": {
+        "model.bin": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+        "config.json": "27ec8ecb8ba05f3ac81522a7a035bd5ab19a5b567640bf68ccec90ded4fc1726",
+        "preprocessor_config.json": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+        "tokenizer.json": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+        "vocabulary.json": "697ee5a65726e46b4d294d1a243d98e1878f5d81caba17891b1c5ebab7a912a9",
+        "LICENSE": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+        "provenance.json": "ba4b916f02ccce73a2aadf9137aceba5159629485631f97ec3165cc7ecdcc1fe"
+      },
       "files": [
         "model.bin",
         "config.json",
-        "vocabulary.json"
+        "preprocessor_config.json",
+        "tokenizer.json",
+        "vocabulary.json",
+        "LICENSE",
+        "provenance.json"
       ],
       "env": {
-        "WHISPER_MODEL": "whisper-small-finetuned-tr"
+        "WHISPER_MODEL": "whisper-large-v3-turbo-ct2"
       }
     },
     {
       "id": "whisper-small-official",
-      "name": "Whisper Small (Official Systran)",
+      "name": "Whisper Small (CTranslate2)",
       "folder": "whisper-small-official",
       "description": "Resmi OpenAI Whisper Small CTranslate2 modeli.",
-      "download_url": "https://huggingface.co/Systran/faster-whisper-small/resolve/main/",
-      "size_mb": 484,
+      "download_url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-small-ct2.zip",
+      "archive_format": "zip",
+      "archive_sha256": "f04c6dadeef3493e357b96a7b65a68a0b1cae7f30ea74d8f6cf2ba9814e1a374",
+      "size_mb": 464,
+      "sha256": {
+        "model.bin": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+        "config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+        "tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+        "vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+        "LICENSE": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+        "provenance.json": "676052c30d08e952b4b8e53d7dcb3f46a5ff2553a654e4d50e803d72892d5b3c"
+      },
       "files": [
         "model.bin",
         "config.json",
-        "vocabulary.json"
+        "tokenizer.json",
+        "vocabulary.txt",
+        "LICENSE",
+        "provenance.json"
       ],
       "env": {
         "WHISPER_MODEL": "whisper-small-official"

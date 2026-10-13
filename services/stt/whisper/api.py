@@ -12,7 +12,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, F
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from faster_whisper import WhisperModel
+from model_loading import load_whisper_robust
+from prompts import select_transcription_prompt
 import re
 
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +34,7 @@ except ImportError:
 
 # Determine device (CUDA if available or specified, fallback to CPU)
 hw_id = os.getenv("ORION_HW_ID", "").lower()
-env_device = os.getenv("DEVICE", "").lower()
+env_device = os.getenv("WHISPER_DEVICE", os.getenv("DEVICE", "")).lower()
 if hw_id == "cpu" or env_device == "cpu":
     DEVICE = "cpu"
 else:
@@ -41,10 +42,10 @@ else:
 
 compute_type_env = os.getenv("WHISPER_COMPUTE_TYPE", "").strip()
 if DEVICE == "cpu":
-    COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8", "float32"] else "int8"
+    COMPUTE_TYPE = "int8"
     CPU_THREADS = os.cpu_count() or 4
 else:
-    COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8_float16", "int8", "float16", "float32"] else "int8_float16"
+    COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8_float16", "int8", "float16"] else "int8_float16"
     CPU_THREADS = 0
 
 def resolve_model():
@@ -100,18 +101,14 @@ model = None
 
 @app.on_event("startup")
 async def startup_event():
-    global model
+    global model, DEVICE, COMPUTE_TYPE
     logger.info(f"Loading Whisper model: {MODEL_SIZE} on {DEVICE.upper()}...")
     try:
-        model = WhisperModel(
-            MODEL_SIZE,
-            device=DEVICE,
-            compute_type=COMPUTE_TYPE,
-            cpu_threads=CPU_THREADS
-        )
+        model, DEVICE, COMPUTE_TYPE = load_whisper_robust(MODEL_SIZE, DEVICE, COMPUTE_TYPE)
         logger.info("Whisper model loaded successfully.")
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {e}")
+        raise
 
 # =========================================================
 # UI & STATIC
@@ -152,12 +149,15 @@ async def create_transcription(
     try:
         # If language is None, empty, or 'auto', faster-whisper will automatically detect the language
         lang_param = None if (not language or language.strip().lower() in ("auto", "none")) else language.strip().lower()
-        initial_prompt = prompt.strip() if (prompt and prompt.strip()) else None
+        lang_param, initial_prompt = await asyncio.to_thread(
+            select_transcription_prompt, model, temp_path, lang_param, prompt
+        )
 
         # Transcribe directly from the saved temp file
         # faster-whisper uses ffmpeg internally to decode
         segments, info = model.transcribe(
             temp_path,
+            task="transcribe",
             beam_size=FINAL_BEAM_SIZE,
             language=lang_param,
             initial_prompt=initial_prompt,
@@ -376,6 +376,7 @@ async def websocket_endpoint(
     noise_ema = None
     last_infer_duration = 0.0
     context_text = ""
+    context_language = None
     
     smart_session = False
     session_id = None
@@ -499,18 +500,6 @@ async def websocket_endpoint(
                 
             last_transcribe_time = now
             active_beam_size = FINAL_BEAM_SIZE if sentence_ended else LIVE_BEAM_SIZE
-            if smart_session:
-                # Each Silero span is acoustically independent. Prior finals
-                # remain on the client; do not prime the next span with them.
-                current_prompt = base_prompt or None
-            elif base_prompt and context_text:
-                current_prompt = f"{base_prompt} {context_text[-200:]}"
-            elif base_prompt:
-                current_prompt = base_prompt
-            elif context_text:
-                current_prompt = context_text[-200:]
-            else:
-                current_prompt = None
             
             audio_to_process = accumulated_audio.copy()
             # Keep un-normalized copy for debug playback (sounds natural)
@@ -521,11 +510,16 @@ async def websocket_endpoint(
                 
             # Transcribe (streaming.py parametreleri ile birebir)
             start_infer_time = time.perf_counter()
+            active_language, current_prompt = await asyncio.to_thread(
+                select_transcription_prompt, model, audio_to_process, lang_param,
+                base_prompt, "" if smart_session else context_text, context_language,
+            )
             segments, info = await asyncio.to_thread(
                 model.transcribe,
                 audio_to_process,
+                task="transcribe",
                 beam_size=active_beam_size,
-                language=lang_param,
+                language=active_language,
                 vad_filter=True,
                 vad_parameters=dict(
                     min_silence_duration_ms=500,
@@ -580,6 +574,9 @@ async def websocket_endpoint(
                         "duration": last_infer_duration,
                         "language": detected_lang
                     })
+                    if context_language != detected_lang:
+                        context_text = ""
+                    context_language = detected_lang
                     context_text += " " + text
                     if len(context_text) > 500:
                         context_text = context_text[-500:]

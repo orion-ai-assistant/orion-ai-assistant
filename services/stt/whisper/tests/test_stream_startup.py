@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+import sys
 from unittest.mock import patch
 
 import numpy as np
@@ -12,7 +13,8 @@ spec = importlib.util.spec_from_file_location(
     "whisper_api_under_test", Path(__file__).resolve().parents[1] / "api.py"
 )
 api = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(api)
+with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1]), *sys.path]):
+    spec.loader.exec_module(api)
 
 
 class Socket:
@@ -23,11 +25,11 @@ class Socket:
     async def accept(self):
         pass
 
-    async def receive_bytes(self):
+    async def receive(self):
         try:
-            return next(self.chunks)
+            return {"type": "websocket.receive", "bytes": next(self.chunks)}
         except StopIteration:
-            raise WebSocketDisconnect()
+            return {"type": "websocket.disconnect"}
 
     async def send_json(self, event):
         self.events.append(event)
@@ -39,9 +41,14 @@ class Socket:
 class Model:
     def __init__(self):
         self.durations = []
+        self.options = []
+
+    def detect_language(self, **kwargs):
+        return "tr", 0.99, [("tr", 0.99)]
 
     def transcribe(self, audio, **kwargs):
         self.durations.append(len(audio) / api.RATE)
+        self.options.append(kwargs)
         # Recognizer succeeds; verify that the handler doesn't discard speech.
         segment = SimpleNamespace(text="Merhaba", no_speech_prob=0.01)
         return iter([segment]), SimpleNamespace(language="tr")
@@ -55,6 +62,17 @@ def speech(samples, seconds=1.0, amplitude=0.05):
 
 
 class StreamStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_stream_detects_language_and_selects_turkish_prompt(self):
+        socket = Socket(speech(1024))
+        model = Model()
+        with patch.object(api, "model", model):
+            await api.websocket_endpoint(socket)
+        self.assertTrue(model.options)
+        for options in model.options:
+            self.assertEqual(options["task"], "transcribe")
+            self.assertEqual(options["language"], "tr")
+            self.assertIn("Hmm... Naber? Şey, aslında şöyle desem...", options["initial_prompt"])
+
     async def run_stream(self, chunks):
         socket = Socket(chunks)
         model = Model()
@@ -74,7 +92,8 @@ class StreamStartupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_silence_does_not_publish_recognizer_hallucination(self):
         events, _ = await self.run_stream([bytes(1024 * 2)] * 20)
-        self.assertEqual(events, [])
+        # Empty final events acknowledge completed spans without publishing text.
+        self.assertTrue(all(event.get("text", "") == "" for event in events))
 
     async def test_speech_after_initial_silence_is_preserved(self):
         events, _ = await self.run_stream([bytes(1024 * 2)] * 3 + speech(1024))
