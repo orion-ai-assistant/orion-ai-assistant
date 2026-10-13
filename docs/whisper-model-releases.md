@@ -44,3 +44,20 @@ symlinks. Exclude `.locks`, `blobs`, and incomplete downloads. Preserve upstream
 attribution and licenses inside the ZIP. Update both archive and file hashes, and
 verify anonymous asset access before distribution. Use a new version when replacing
 model contents; adding another named model package can share the release.
+
+## Language settings and prompts
+
+The single language catalog lives at
+`services/hub/src/orion/api/ui/js/stt_languages.json`. It contains all 100
+Whisper language codes, display names, localized example prompts, and browser
+language aliases. Hub settings and the Whisper language endpoint use this catalog;
+the STT Docker services mount the same file read-only rather than duplicating it.
+
+`stt_language` is a user setting. An unset or seeded empty value lets the browser
+choose its primary language if supported, or automatic detection otherwise. A
+saved language overrides the browser; saved `auto` explicitly keeps audio-based
+detection. Choosing a language selects its prompt; automatic detection selects the
+prompt after detecting the audio language. Custom request prompts still take priority.
+
+Restart Hub/STT after updating the catalog and reload the browser to pick up the
+new choices. Prompt translations are editable examples, not fine-tuned weights.

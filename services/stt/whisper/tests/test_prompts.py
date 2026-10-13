@@ -51,8 +51,18 @@ class PromptTests(unittest.TestCase):
                          (None, "Custom terms"))
         model.detect_language.assert_not_called()
 
-    def test_other_languages_have_no_default_hint(self):
-        self.assertEqual(prompts.select_transcription_prompt(Mock(), None, "de"), ("de", None))
+    def test_all_whisper_languages_have_a_localized_hint(self):
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+        self.assertEqual(set(prompts.LANGUAGE_PROMPTS), set(_LANGUAGE_CODES))
+        self.assertEqual(len(prompts.LANGUAGE_PROMPTS), 100)
+        for language, hint in prompts.LANGUAGE_PROMPTS.items():
+            self.assertTrue(hint.strip())
+            self.assertIn("Spotify", hint)
+            self.assertEqual(prompts.select_transcription_prompt(Mock(), None, language), (language, hint))
+        self.assertEqual(len(set(prompts.LANGUAGE_PROMPTS.values())), 100)
+
+    def test_unknown_language_has_no_default_hint(self):
+        self.assertEqual(prompts.select_transcription_prompt(Mock(), None, "xx"), ("xx", None))
 
     def test_rest_file_is_decoded_for_language_detection(self):
         audio = np.ones(16000, dtype=np.float32)

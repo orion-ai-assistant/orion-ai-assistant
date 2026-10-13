@@ -37,6 +37,8 @@ window.orionUiLocales.tr = {
     setting_token_delay_ms: 'Demo akışı gecikmesi (ms)', setting_first_token_delay_ms: 'İlk parça gecikmesi (ms)',
     setting_ai_chat_titles_enabled: 'AI ile sohbet başlığı', setting_chat_title_model: 'Başlık modeli',
     setting_stt_enabled: 'Canlı sesli yazma', setting_stt_model: 'Sesli yazma modeli',
+    setting_stt_language: 'Sesli yazma dili', sttAutomaticLanguage: 'Otomatik algıla',
+    hint_stt_language: 'İlk seçim tarayıcı diline göre yapılır. Bir dil seçersen o dil kullanılır; Otomatik algıla sesi dinleyerek dili belirler.',
     setting_tts_model: 'Seslendirme modeli', setting_tts_voice: 'Ses',
     setting_max_tool_rounds: 'Araç çalıştırma tur limiti', setting_max_tool_calls: 'Maksimum araç çağrı sayısı',
     hint_temperature: '0–2 arasında değer (boşsa varsayılan).',

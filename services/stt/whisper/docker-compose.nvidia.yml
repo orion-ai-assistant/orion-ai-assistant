@@ -12,11 +12,13 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE}
       - WHISPER_DEVICE=cuda
+      - WHISPER_LANGUAGE_CONFIG=/config/stt_languages.json
       - PORT=${STT_CONTAINER_PORT}
       - UVICORN_PORT=${STT_CONTAINER_PORT}
       - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_IDS:-all}
     volumes:
       - .:/app
+      - ../../hub/src/orion/api/ui/js/stt_languages.json:/config/stt_languages.json:ro
       - ./models:/models
     working_dir: /app
     command: python api.py

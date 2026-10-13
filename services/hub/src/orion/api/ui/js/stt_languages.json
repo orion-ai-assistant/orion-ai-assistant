@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "aliases": {
+    "nb": "no",
+    "fil": "tl",
+    "jv": "jw",
+    "iw": "he"
+  },
+  "languages": {
+    "af": {
+      "name": "Afrikaans",
+      "prompt": "Hmm... Hoe gaan dit? Wel, eintlik, laat ek dit so sê... Kom ons skakel die rekenaar af, en dan... Maar... Kan jy musiek op Spotify speel? Ek wil iets sê..."
+    },
+    "am": {
+      "name": "Amharic",
+      "prompt": "እም... እንዴት ነህ? እሺ፣ በእውነቱ እንዲህ ብል... ኮምፒውተሩን እናጥፋ፣ ከዚያም... ግን... በSpotify ሙዚቃ ማጫወት ትችላለህ? አንድ ነገር ልናገር..."
+    },
+    "ar": {
+      "name": "Arabic",
+      "prompt": "همم... كيف حالك؟ حسنًا، في الحقيقة، دعني أقولها هكذا... لنطفئ الكمبيوتر، وبعد ذلك... لكن... هل يمكنك تشغيل الموسيقى على Spotify؟ أريد أن أقول شيئًا..."
+    },
+    "as": {
+      "name": "Assamese",
+      "prompt": "হুম... কেনে আছা? বাৰু, আচলতে, এনেদৰে কওঁ... কম্পিউটাৰটো বন্ধ কৰোঁ, তাৰ পিছত... কিন্তু... Spotify-ত সংগীত বজাব পাৰিবানে? এটা কথা ক'ব খোজোঁ..."
+    },
+    "az": {
+      "name": "Azerbaijani",
+      "prompt": "Hmm... Nə var, nə yox? Şey, əslində belə desəm... Kompüteri söndürək, sonra da... Amma... Spotify-da musiqi aça bilərsən? Bir şey deyəcəyəm..."
+    },
+    "ba": {
+      "name": "Bashkir",
+      "prompt": "Һм... Хәлдәр нисек? Ярай, ысынлап та, былай тиһәм... Компьютерҙы һүндерәйек, шунан... Ләкин... Spotifyҙа музыка ҡуя алаһыңмы? Бер нәмә әйтергә теләйем..."
+    },
+    "be": {
+      "name": "Belarusian",
+      "prompt": "Хм... Як справы? Ну, насамрэч, скажам так... Выключым камп'ютар, а потым... Але... Можаш уключыць музыку ў Spotify? Я хачу нешта сказаць..."
+    },
+    "bg": {
+      "name": "Bulgarian",
+      "prompt": "Хм... Как си? Ами, всъщност, да го кажа така... Да изключим компютъра, а после... Но... Можеш ли да пуснеш музика в Spotify? Искам да кажа нещо..."
+    },
+    "bn": {
+      "name": "Bengali",
+      "prompt": "হুম... কেমন আছ? আচ্ছা, আসলে, এভাবে বলি... কম্পিউটার বন্ধ করি, তারপর... কিন্তু... Spotify-তে গান চালাবে? একটা কথা বলতে চাই..."
+    },
+    "bo": {
+      "name": "Tibetan",
+      "prompt": "ཧམ་... བདེ་པོ་ཡིན་ནམ། ཨེ་ དོན་དངོས་སུ་འདི་ལྟར་བཤད་ན་... གློག་ཀླད་སྒོ་རྒྱག་དགོས། དེ་ནས་... འོན་ཀྱང་... Spotify ནང་རོལ་དབྱངས་གཏོང་རོགས་བྱེད་ཐུབ་བམ། ངས་སྐད་ཆ་ཞིག་བཤད་འདོད་..."
+    },
+    "br": {
+      "name": "Breton",
+      "prompt": "Hmm... Penaos emañ? Mat, e gwirionez, ma lavaran evel-se... Lazhomp an urzhiataer, ha goude... Met... Gallout a rez lakaat sonerezh war Spotify? C'hoant am eus da lavarout un dra..."
+    },
+    "bs": {
+      "name": "Bosnian",
+      "prompt": "Hmm... Kako si? Pa, zapravo, da kažem ovako... Isključimo računar, a onda... Ali... Možeš li pustiti muziku na Spotifyju? Želim nešto reći..."
+    },
+    "ca": {
+      "name": "Catalan",
+      "prompt": "Hmm... Com va? Bé, de fet, si ho dic així... Apaguem l'ordinador, i després... Però... Pots posar música a Spotify? Vull dir una cosa..."
+    },
+    "cs": {
+      "name": "Czech",
+      "prompt": "Hmm... Jak se máš? No, vlastně, řeknu to takhle... Vypněme počítač a potom... Ale... Můžeš pustit hudbu na Spotify? Chci něco říct..."
+    },
+    "cy": {
+      "name": "Welsh",
+      "prompt": "Hmm... Sut wyt ti? Wel, mewn gwirionedd, gad i mi ddweud hyn... Gad i ni ddiffodd y cyfrifiadur, ac wedyn... Ond... Alli di chwarae cerddoriaeth ar Spotify? Dw i eisiau dweud rhywbeth..."
+    },
+    "da": {
+      "name": "Danish",
+      "prompt": "Hmm... Hvordan går det? Tja, faktisk, lad mig sige det sådan... Lad os slukke computeren, og så... Men... Kan du spille musik på Spotify? Jeg vil sige noget..."
+    },
+    "de": {
+      "name": "German",
+      "prompt": "Hmm... Wie geht's? Also, eigentlich würde ich sagen... Schalten wir den Computer aus, und dann... Aber... Kannst du Musik auf Spotify abspielen? Ich möchte etwas sagen..."
+    },
+    "el": {
+      "name": "Greek",
+      "prompt": "Χμμ... Τι κάνεις; Λοιπόν, βασικά, ας το πω έτσι... Ας κλείσουμε τον υπολογιστή, και μετά... Αλλά... Μπορείς να βάλεις μουσική στο Spotify; Θέλω να πω κάτι..."
+    },
+    "en": {
+      "name": "English",
+      "prompt": "Hmm... What's up? Well, actually, let me put it this way... Let's shut down the computer, and then... But... Could you play some music on Spotify? Let me say something..."
+    },
+    "es": {
+      "name": "Spanish",
+      "prompt": "Hmm... ¿Qué tal? Bueno, en realidad, déjame decirlo así... Apaguemos el ordenador y luego... Pero... ¿Puedes poner música en Spotify? Quiero decir algo..."
+    },
+    "et": {
+      "name": "Estonian",
+      "prompt": "Hmm... Kuidas läheb? Noh, tegelikult, ütleme nii... Lülitame arvuti välja ja siis... Aga... Kas saaksid Spotify kaudu muusikat mängida? Tahan midagi öelda..."
+    },
+    "eu": {
+      "name": "Basque",
+      "prompt": "Hmm... Zer moduz? Beno, egia esan, honela esango nuke... Itzal dezagun ordenagailua, eta gero... Baina... Spotify-n musika jar dezakezu? Zerbait esan nahi dut..."
+    },
+    "fa": {
+      "name": "Persian",
+      "prompt": "همم... چه خبر؟ خب، در واقع، بگذار این‌طور بگویم... کامپیوتر را خاموش کنیم، بعد هم... ولی... می‌توانی در Spotify موسیقی پخش کنی؟ می‌خواهم چیزی بگویم..."
+    },
+    "fi": {
+      "name": "Finnish",
+      "prompt": "Hmm... Mitä kuuluu? No, oikeastaan, jos sanoisin näin... Sammutetaan tietokone, ja sitten... Mutta... Voisitko soittaa musiikkia Spotifyssa? Haluaisin sanoa jotain..."
+    },
+    "fo": {
+      "name": "Faroese",
+      "prompt": "Hmm... Hvussu gongur? Nú, í veruleikanum, um eg sigi tað soleiðis... Lat okkum sløkkja telduna, og so... Men... Kanst tú spæla tónleik á Spotify? Eg vil siga okkurt..."
+    },
+    "fr": {
+      "name": "French",
+      "prompt": "Hmm... Ça va ? Euh, en fait, disons plutôt... Éteignons l'ordinateur, puis... Mais... Tu peux mettre de la musique sur Spotify ? Je voudrais dire quelque chose..."
+    },
+    "gl": {
+      "name": "Galician",
+      "prompt": "Hmm... Que tal? Ben, en realidade, se o digo así... Apaguemos o ordenador, e despois... Pero... Podes poñer música en Spotify? Quero dicir algo..."
+    },
+    "gu": {
+      "name": "Gujarati",
+      "prompt": "હમ્મ... કેમ છો? સારું, ખરેખર, આમ કહું તો... કમ્પ્યુટર બંધ કરીએ, પછી... પણ... શું તમે Spotify પર સંગીત વગાડી શકો? મારે કંઈક કહેવું છે..."
+    },
+    "ha": {
+      "name": "Hausa",
+      "prompt": "Hmm... Yaya kake? To, a gaskiya, bari in faɗa haka... Mu kashe kwamfutar, sannan... Amma... Za ka iya kunna kiɗa a Spotify? Ina so in faɗi wani abu..."
+    },
+    "haw": {
+      "name": "Hawaiian",
+      "prompt": "Hmm... Pehea ʻoe? ʻAe, ʻoiaʻiʻo, e ʻōlelo au penei... E hoʻopau kākou i ke kamepiula, a laila... Akā... Hiki iā ʻoe ke hoʻokani mele ma Spotify? Makemake au e ʻōlelo i kekahi mea..."
+    },
+    "he": {
+      "name": "Hebrew",
+      "prompt": "הממ... מה נשמע? טוב, בעצם, בוא נגיד ככה... נכבה את המחשב, ואחר כך... אבל... אפשר להשמיע מוזיקה ב-Spotify? אני רוצה להגיד משהו..."
+    },
+    "hi": {
+      "name": "Hindi",
+      "prompt": "हम्म... क्या हाल है? अच्छा, असल में, ऐसे कहूँ तो... कंप्यूटर बंद कर दें, फिर... लेकिन... क्या तुम Spotify पर संगीत चला सकते हो? मुझे कुछ कहना है..."
+    },
+    "hr": {
+      "name": "Croatian",
+      "prompt": "Hmm... Kako si? Pa, zapravo, da kažem ovako... Isključimo računalo, a onda... Ali... Možeš li pustiti glazbu na Spotifyju? Želim nešto reći..."
+    },
+    "ht": {
+      "name": "Haitian Creole",
+      "prompt": "Hmm... Sak pase? Bon, an reyalite, kite m di sa konsa... Ann fèmen òdinatè a, epi... Men... Èske ou ka mete mizik sou Spotify? Mwen vle di yon bagay..."
+    },
+    "hu": {
+      "name": "Hungarian",
+      "prompt": "Hmm... Mi újság? Hát, igazából, mondjuk így... Kapcsoljuk ki a számítógépet, aztán... De... Tudnál zenét indítani a Spotifyon? Szeretnék mondani valamit..."
+    },
+    "hy": {
+      "name": "Armenian",
+      "prompt": "Հմմ... Ինչպե՞ս ես։ Դե, իրականում, այսպես ասեմ... Անջատենք համակարգիչը, հետո էլ... Բայց... Կարո՞ղ ես Spotify-ում երաժշտություն միացնել։ Մի բան եմ ուզում ասել..."
+    },
+    "id": {
+      "name": "Indonesian",
+      "prompt": "Hmm... Apa kabar? Jadi, sebenarnya, kalau begini... Mari matikan komputer, lalu... Tapi... Bisa putarkan musik di Spotify? Aku mau bilang sesuatu..."
+    },
+    "is": {
+      "name": "Icelandic",
+      "prompt": "Hmm... Hvað segirðu gott? Jæja, í rauninni, ef ég segi þetta svona... Slökkvum á tölvunni, og svo... En... Geturðu spilað tónlist á Spotify? Mig langar að segja eitthvað..."
+    },
+    "it": {
+      "name": "Italian",
+      "prompt": "Hmm... Come va? Beh, in realtà, diciamo così... Spegniamo il computer, e poi... Però... Puoi mettere della musica su Spotify? Vorrei dire una cosa..."
+    },
+    "ja": {
+      "name": "Japanese",
+      "prompt": "うーん…元気？えっと、実はこう言えばいいかな…パソコンをシャットダウンして、それから…でも…Spotifyで音楽を流してくれる？ちょっと言いたいことがあるんだけど…"
+    },
+    "jw": {
+      "name": "Javanese",
+      "prompt": "Hmm... Piye kabare? Ngene, sakjane, yen tak kandhakake... Ayo dipateni komputere, terus... Nanging... Bisa muter musik ing Spotify? Aku arep ngomong sithik..."
+    },
+    "ka": {
+      "name": "Georgian",
+      "prompt": "ჰმ... როგორ ხარ? ისე, სინამდვილეში, ასე რომ ვთქვა... კომპიუტერი გამოვრთოთ, მერე კი... მაგრამ... Spotify-ზე მუსიკას ჩართავ? რაღაც მინდა ვთქვა..."
+    },
+    "kk": {
+      "name": "Kazakh",
+      "prompt": "Хмм... Қалайсың? Ал, негізі, былай десем... Компьютерді өшірейік, содан кейін... Бірақ... Spotify-дан музыка қоса аласың ба? Бір нәрсе айтқым келеді..."
+    },
+    "km": {
+      "name": "Khmer",
+      "prompt": "ហ៊ឹម... សុខសប្បាយទេ? អឺ តាមពិត បើនិយាយបែបនេះ... បិទកុំព្យូទ័រ ហើយបន្ទាប់មក... ប៉ុន្តែ... អ្នកអាចចាក់តន្ត្រីនៅលើ Spotify បានទេ? ខ្ញុំចង់និយាយរឿងមួយ..."
+    },
+    "kn": {
+      "name": "Kannada",
+      "prompt": "ಹ್ಮ್... ಹೇಗಿದ್ದೀಯ? ಸರಿ, ನಿಜವಾಗಿ, ಹೀಗೆ ಹೇಳುವುದಾದರೆ... ಕಂಪ್ಯೂಟರ್ ಆಫ್ ಮಾಡೋಣ, ಆಮೇಲೆ... ಆದರೆ... Spotifyನಲ್ಲಿ ಸಂಗೀತ ಹಾಕಬಹುದಾ? ಒಂದು ವಿಷಯ ಹೇಳಬೇಕು..."
+    },
+    "ko": {
+      "name": "Korean",
+      "prompt": "음... 잘 지내? 그러니까, 사실 이렇게 말하면... 컴퓨터를 끄고, 그다음에... 그런데... Spotify에서 음악 좀 틀어 줄래? 할 말이 있어..."
+    },
+    "la": {
+      "name": "Latin",
+      "prompt": "Hmm... Quid agis? Bene, re vera, sic dicam... Computatrum exstinguamus, deinde... Sed... Potesne musicam in Spotify canere? Aliquid dicere volo..."
+    },
+    "lb": {
+      "name": "Luxembourgish",
+      "prompt": "Hmm... Wéi geet et? Ma, eigentlech, wann ech et esou soen... Loosse mer de Computer ausschalten, an dann... Mee... Kanns du Musek op Spotify spillen? Ech wëll eppes soen..."
+    },
+    "ln": {
+      "name": "Lingala",
+      "prompt": "Hmm... Sango nini? Malamu, na solo, nakoloba boye... Tokanga ordinatɛrɛ, mpe na nsima... Kasi... Okoki kobɛta miziki na Spotify? Nalingi koloba likambo moko..."
+    },
+    "lo": {
+      "name": "Lao",
+      "prompt": "ອືມ... ສະບາຍດີບໍ? ເອີ ຄວາມຈິງ ຖ້າເວົ້າແບບນີ້... ປິດຄອມພິວເຕີກັນ ແລ້ວ... ແຕ່... ເຈົ້າເປີດເພງໃນ Spotify ໄດ້ບໍ? ຂ້ອຍມີຫຍັງຈະເວົ້າ..."
+    },
+    "lt": {
+      "name": "Lithuanian",
+      "prompt": "Hmm... Kaip sekasi? Na, iš tikrųjų, pasakysiu taip... Išjunkime kompiuterį, o tada... Bet... Ar gali paleisti muziką per Spotify? Noriu kai ką pasakyti..."
+    },
+    "lv": {
+      "name": "Latvian",
+      "prompt": "Hmm... Kā iet? Nu, patiesībā, teikšu tā... Izslēgsim datoru, un pēc tam... Bet... Vai vari atskaņot mūziku Spotify? Gribu kaut ko pateikt..."
+    },
+    "mg": {
+      "name": "Malagasy",
+      "prompt": "Hmm... Manao ahoana? Eny, raha ny marina, izao no tiako holazaina... Andao hovonoina ny solosaina, dia... Fa... Afaka mandefa mozika amin'ny Spotify ve ianao? Misy zavatra tiako holazaina..."
+    },
+    "mi": {
+      "name": "Maori",
+      "prompt": "Hmm... Kei te pēhea koe? Ā, ko te tikanga, me pēnei taku kōrero... Me whakaweto te rorohiko, kātahi... Engari... Ka taea e koe te whakatangi waiata ki Spotify? He kōrero tāku..."
+    },
+    "mk": {
+      "name": "Macedonian",
+      "prompt": "Хм... Како си? Па, всушност, да кажам вака... Да го исклучиме компјутерот, а потоа... Но... Можеш ли да пуштиш музика на Spotify? Сакам нешто да кажам..."
+    },
+    "ml": {
+      "name": "Malayalam",
+      "prompt": "ഹ്മ്മ്... സുഖമാണോ? ശരി, സത്യത്തിൽ, ഇങ്ങനെ പറഞ്ഞാൽ... കമ്പ്യൂട്ടർ ഓഫ് ചെയ്യാം, പിന്നെ... പക്ഷേ... Spotify-യിൽ സംഗീതം വെക്കാമോ? ഒരു കാര്യം പറയാനുണ്ട്..."
+    },
+    "mn": {
+      "name": "Mongolian",
+      "prompt": "Хмм... Сонин сайхан юу байна? За, үнэндээ, ингэж хэлбэл... Компьютерээ унтраая, дараа нь... Гэхдээ... Spotify дээр хөгжим тоглуулж өгч болох уу? Нэг юм хэлмээр байна..."
+    },
+    "mr": {
+      "name": "Marathi",
+      "prompt": "हम्म... काय चाललंय? बरं, खरं तर, असं म्हणायचं झालं तर... संगणक बंद करूया, मग... पण... Spotify वर संगीत लावशील का? मला काहीतरी सांगायचंय..."
+    },
+    "ms": {
+      "name": "Malay",
+      "prompt": "Hmm... Apa khabar? Jadi, sebenarnya, kalau saya cakap begini... Mari matikan komputer, kemudian... Tapi... Boleh mainkan muzik di Spotify? Saya nak cakap sesuatu..."
+    },
+    "mt": {
+      "name": "Maltese",
+      "prompt": "Hmm... Kif int? Mela, fil-fatt, ħa ngħidha hekk... Ejjew nitfu l-kompjuter, u mbagħad... Imma... Tista' ddoqq il-mużika fuq Spotify? Irrid ngħid xi ħaġa..."
+    },
+    "my": {
+      "name": "Myanmar",
+      "prompt": "ဟမ်... နေကောင်းလား? အင်း၊ တကယ်တော့ ဒီလိုပြောရရင်... ကွန်ပျူတာကို ပိတ်ကြရအောင်၊ ပြီးတော့... ဒါပေမဲ့... Spotify မှာ သီချင်းဖွင့်ပေးနိုင်မလား? ပြောစရာတစ်ခုရှိတယ်..."
+    },
+    "ne": {
+      "name": "Nepali",
+      "prompt": "हम्म... के छ खबर? ल, वास्तवमा, यसरी भनौँ... कम्प्युटर बन्द गरौँ, त्यसपछि... तर... Spotify मा संगीत बजाइदिन सक्छौ? एउटा कुरा भन्नु छ..."
+    },
+    "nl": {
+      "name": "Dutch",
+      "prompt": "Hmm... Hoe gaat het? Nou, eigenlijk, laat ik het zo zeggen... Laten we de computer uitzetten, en dan... Maar... Kun je muziek op Spotify afspelen? Ik wil iets zeggen..."
+    },
+    "nn": {
+      "name": "Nynorsk",
+      "prompt": "Hmm... Korleis går det? Vel, eigentleg, lat meg seie det slik... Lat oss slå av datamaskina, og så... Men... Kan du spele musikk på Spotify? Eg vil seie noko..."
+    },
+    "no": {
+      "name": "Norwegian",
+      "prompt": "Hmm... Hvordan går det? Vel, egentlig, la meg si det slik... La oss slå av datamaskinen, og så... Men... Kan du spille musikk på Spotify? Jeg vil si noe..."
+    },
+    "oc": {
+      "name": "Occitan",
+      "prompt": "Hmm... Cossí vas? Bon, en realitat, se disi aquò aital... Atudem l'ordenador, e puèi... Mas... Pòdes metre de musica sus Spotify? Vòli dire quicòm..."
+    },
+    "pa": {
+      "name": "Punjabi",
+      "prompt": "ਹੰਮ... ਕੀ ਹਾਲ ਹੈ? ਚੰਗਾ, ਅਸਲ ਵਿੱਚ, ਇਸ ਤਰ੍ਹਾਂ ਕਹਾਂ ਤਾਂ... ਕੰਪਿਊਟਰ ਬੰਦ ਕਰੀਏ, ਫਿਰ... ਪਰ... ਕੀ ਤੂੰ Spotify ਤੇ ਸੰਗੀਤ ਚਲਾ ਸਕਦਾ ਹੈਂ? ਮੈਂ ਕੁਝ ਕਹਿਣਾ ਹੈ..."
+    },
+    "pl": {
+      "name": "Polish",
+      "prompt": "Hmm... Co słychać? No, właściwie, ujmijmy to tak... Wyłączmy komputer, a potem... Ale... Możesz włączyć muzykę na Spotify? Chcę coś powiedzieć..."
+    },
+    "ps": {
+      "name": "Pashto",
+      "prompt": "همم... څنګه یې؟ ښه، په حقیقت کې، که داسې ووایم... راځئ کمپیوټر بند کړو، بیا... خو... په Spotify کې موسیقي غږولی شې؟ زه یو څه ویل غواړم..."
+    },
+    "pt": {
+      "name": "Portuguese",
+      "prompt": "Hmm... Tudo bem? Bem, na verdade, vamos dizer assim... Vamos desligar o computador e depois... Mas... Você pode colocar música no Spotify? Quero dizer uma coisa..."
+    },
+    "ro": {
+      "name": "Romanian",
+      "prompt": "Hmm... Ce mai faci? Păi, de fapt, să spun așa... Să închidem calculatorul, iar apoi... Dar... Poți pune muzică pe Spotify? Vreau să spun ceva..."
+    },
+    "ru": {
+      "name": "Russian",
+      "prompt": "Хм... Как дела? Ну, вообще-то, скажем так... Давай выключим компьютер, а потом... Но... Можешь включить музыку в Spotify? Я хочу кое-что сказать..."
+    },
+    "sa": {
+      "name": "Sanskrit",
+      "prompt": "हम्म्... कथमसि? अस्तु, वस्तुतः, एवं वदामि... सङ्गणकं बन्दयामः, ततः... किन्तु... Spotify इत्यत्र सङ्गीतं वादयितुं शक्नोषि किम्? किञ्चित् वक्तुमिच्छामि..."
+    },
+    "sd": {
+      "name": "Sindhi",
+      "prompt": "همم... ڪيئن آهين؟ چڱو، اصل ۾، ائين چوان ته... ڪمپيوٽر بند ڪريون، پوءِ... پر... ڇا Spotify تي موسيقي هلائي سگهين ٿو؟ مون کي ڪجهه چوڻو آهي..."
+    },
+    "si": {
+      "name": "Sinhala",
+      "prompt": "හ්ම්... කොහොමද? හොඳයි, ඇත්තටම, මෙහෙම කිව්වොත්... පරිගණකය නිවා දමමු, ඊට පස්සේ... ඒත්... Spotify එකේ සංගීතය වාදනය කරන්න පුළුවන්ද? මට දෙයක් කියන්න තියෙනවා..."
+    },
+    "sk": {
+      "name": "Slovak",
+      "prompt": "Hmm... Ako sa máš? No, vlastne, poviem to takto... Vypnime počítač a potom... Ale... Môžeš pustiť hudbu na Spotify? Chcem niečo povedať..."
+    },
+    "sl": {
+      "name": "Slovenian",
+      "prompt": "Hmm... Kako si? No, pravzaprav, naj povem takole... Izklopimo računalnik, potem pa... Ampak... Lahko predvajaš glasbo na Spotifyju? Rad bi nekaj povedal..."
+    },
+    "sn": {
+      "name": "Shona",
+      "prompt": "Hmm... Makadii? Zvakanaka, chokwadi, regai ndizvitaure seizvi... Ngatidzimei kombiyuta, tobva... Asi... Unogona kuridza mimhanzi paSpotify here? Ndinoda kutaura chimwe chinhu..."
+    },
+    "so": {
+      "name": "Somali",
+      "prompt": "Hmm... Iska warran? Hagaag, dhab ahaantii, aan sidan u dhigo... Aan daminno kombiyuutarka, dabadeed... Laakiin... Ma ka ciyaari kartaa muusig Spotify? Wax baan rabaa inaan iraahdo..."
+    },
+    "sq": {
+      "name": "Albanian",
+      "prompt": "Hmm... Si je? Epo, në fakt, po ta them kështu... Ta fikim kompjuterin, pastaj... Por... A mund të lësh muzikë në Spotify? Dua të them diçka..."
+    },
+    "sr": {
+      "name": "Serbian",
+      "prompt": "Хм... Како си? Па, заправо, да кажем овако... Искључимо рачунар, а онда... Али... Можеш ли да пустиш музику на Spotify-у? Желим нешто да кажем..."
+    },
+    "su": {
+      "name": "Sundanese",
+      "prompt": "Hmm... Kumaha damang? Tah, sabenerna, upami nyarios kieu... Hayu urang pareuman komputer, teras... Tapi... Tiasa muterkeun musik dina Spotify? Abdi badé nyarios hiji hal..."
+    },
+    "sv": {
+      "name": "Swedish",
+      "prompt": "Hmm... Hur är läget? Tja, egentligen, om jag säger så här... Vi stänger av datorn, och sedan... Men... Kan du spela musik på Spotify? Jag vill säga en sak..."
+    },
+    "sw": {
+      "name": "Swahili",
+      "prompt": "Hmm... Habari? Naam, kwa kweli, niseme hivi... Tuzime kompyuta, halafu... Lakini... Unaweza kucheza muziki kwenye Spotify? Nataka kusema kitu..."
+    },
+    "ta": {
+      "name": "Tamil",
+      "prompt": "ஹ்ம்ம்... எப்படி இருக்கிறாய்? சரி, உண்மையில், இப்படிச் சொன்னால்... கணினியை அணைப்போம், பிறகு... ஆனால்... Spotify-ல் இசையைப் போட முடியுமா? ஒன்று சொல்ல வேண்டும்..."
+    },
+    "te": {
+      "name": "Telugu",
+      "prompt": "హ్మ్... ఎలా ఉన్నావు? సరే, నిజానికి, ఇలా చెబితే... కంప్యూటర్ ఆపేద్దాం, ఆ తర్వాత... కానీ... Spotifyలో సంగీతం పెట్టగలవా? ఒక విషయం చెప్పాలి..."
+    },
+    "tg": {
+      "name": "Tajik",
+      "prompt": "Ҳмм... Чӣ хабар? Хуб, дар асл, ҳамин тавр гӯям... Компютерро хомӯш кунем, баъд... Аммо... Метавонӣ дар Spotify мусиқӣ монӣ? Як чиз гуфтан мехоҳам..."
+    },
+    "th": {
+      "name": "Thai",
+      "prompt": "อืม... เป็นไงบ้าง? เอ่อ จริง ๆ แล้ว ถ้าพูดแบบนี้... ปิดคอมพิวเตอร์กัน แล้วก็... แต่... ช่วยเปิดเพลงใน Spotify ได้ไหม? ฉันมีอะไรจะพูด..."
+    },
+    "tk": {
+      "name": "Turkmen",
+      "prompt": "Hmm... Ýagdaýlaryň nähili? Hawa, aslynda, şeýle diýsem... Kompýuteri öçüreli, soň bolsa... Ýöne... Spotify-da aýdym goýup bilersiňmi? Bir zat aýtjak..."
+    },
+    "tl": {
+      "name": "Tagalog",
+      "prompt": "Hmm... Kumusta? Ano, sa totoo lang, ganito na lang... Patayin natin ang computer, tapos... Pero... Puwede ka bang magpatugtog sa Spotify? May sasabihin ako..."
+    },
+    "tr": {
+      "name": "Turkish",
+      "prompt": "Hmm... Naber? Şey, aslında şöyle desem... Bilgisayarı kapatalım, sonra da... Ama... Spotify'dan müzik açar mısın? Bir şey diyeceğim..."
+    },
+    "tt": {
+      "name": "Tatar",
+      "prompt": "Һм... Хәлләр ничек? Ярый, чынлыкта, болай әйтсәм... Компьютерны сүндерик, аннары... Ләкин... Spotifyда музыка кабыза аласыңмы? Бер нәрсә әйтәсем килә..."
+    },
+    "uk": {
+      "name": "Ukrainian",
+      "prompt": "Хм... Як справи? Ну, власне, скажімо так... Вимкнімо комп'ютер, а потім... Але... Можеш увімкнути музику в Spotify? Я хочу дещо сказати..."
+    },
+    "ur": {
+      "name": "Urdu",
+      "prompt": "ہمم... کیا حال ہے؟ اچھا، اصل میں، یوں کہوں تو... کمپیوٹر بند کر دیں، پھر... لیکن... کیا تم Spotify پر موسیقی چلا سکتے ہو؟ مجھے کچھ کہنا ہے..."
+    },
+    "uz": {
+      "name": "Uzbek",
+      "prompt": "Hmm... Qalaysan? Xo‘sh, aslida, shunday desam... Kompyuterni o‘chiraylik, keyin esa... Ammo... Spotify’da musiqa qo‘yib bera olasanmi? Bir narsa aytmoqchiman..."
+    },
+    "vi": {
+      "name": "Vietnamese",
+      "prompt": "Ừm... Dạo này thế nào? À, thật ra, nói thế này nhé... Tắt máy tính đi, rồi... Nhưng... Bạn có thể mở nhạc trên Spotify không? Tôi muốn nói một điều..."
+    },
+    "yi": {
+      "name": "Yiddish",
+      "prompt": "הממ... וואָס הערט זיך? נו, אין אמתן, לאָמיך אַזוי זאָגן... לאָמיר אויסלעשן דעם קאָמפּיוטער, און דערנאָך... אָבער... קענסטו שפּילן מוזיק אויף Spotify? איך וויל עפּעס זאָגן..."
+    },
+    "yo": {
+      "name": "Yoruba",
+      "prompt": "Hmm... Báwo ni? Ó dáa, ní tòótọ́, jẹ́ kí n sọ ó báyìí... Jẹ́ ká pa kọ̀ǹpútà náà, lẹ́yìn náà... Ṣùgbọ́n... Ṣé o lè tan orin lórí Spotify? Mo fẹ́ sọ ohun kan..."
+    },
+    "yue": {
+      "name": "Cantonese",
+      "prompt": "嗯……最近點呀？呢個，其實咁講啦……我哋熄咗部電腦，跟住……但係……你可唔可以喺 Spotify 播啲音樂？我有嘢想講……"
+    },
+    "zh": {
+      "name": "Chinese",
+      "prompt": "嗯……最近怎么样？这个，其实这么说吧……我们把电脑关掉，然后……不过……你能在 Spotify 上放点音乐吗？我想说件事……"
+    }
+  }
+}

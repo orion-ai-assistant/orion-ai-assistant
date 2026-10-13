@@ -16,6 +16,33 @@ const STT = {
     committedText: '',
     lastLiveText: '',
     _listenerAttached: false,
+    _languageCatalogPromise: null,
+
+    async loadLanguageCatalog() {
+        if (!this._languageCatalogPromise) {
+            this._languageCatalogPromise = fetch('/js/stt_languages.json').then(response => {
+                if (!response.ok) throw new Error('STT dil listesi yüklenemedi.');
+                return response.json();
+            }).catch(error => {
+                this._languageCatalogPromise = null;
+                throw error;
+            });
+        }
+        return this._languageCatalogPromise;
+    },
+
+    resolveLanguage(saved, catalog) {
+        const normalize = value => {
+            const code = String(value || '').trim().toLowerCase().replace(/_/g, '-').split('-')[0];
+            return catalog.aliases?.[code] || code;
+        };
+        if (saved != null && String(saved).trim()) {
+            const code = normalize(saved);
+            return catalog.languages[code] ? code : 'auto';
+        }
+        const code = normalize(navigator.language || navigator.languages?.[0]);
+        return catalog.languages[code] ? code : 'auto';
+    },
     
     // Hub proxy WebSocket adresi
     getRouterWsUrl(authToken, language = 'auto', model = 'local-stt') {
@@ -122,7 +149,10 @@ const STT = {
             const authToken = Auth.getToken() || '';
             if (!authToken.trim()) throw new Error('Sesli yazma için Hub oturumuna tekrar giriş yapın.');
 
-            const ws = new WebSocket(this.getRouterWsUrl(authToken, 'auto', sttModel));
+            const languageCatalog = await this.loadLanguageCatalog();
+            if (session !== this._session) return;
+            const language = this.resolveLanguage(settings.stt_language, languageCatalog);
+            const ws = new WebSocket(this.getRouterWsUrl(authToken, language, sttModel));
             this.ws = ws;
             let resolveReady, rejectReady;
             const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });

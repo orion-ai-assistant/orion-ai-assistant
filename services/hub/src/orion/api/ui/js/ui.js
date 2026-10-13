@@ -761,7 +761,7 @@ const UI = {
             window.RouterProviders?.mount();
             const oldTtsModel = document.getElementById('setting-input-tts_model')?.value;
             Object.keys(settings).forEach(key => {
-                if (key === 'tts_voice') return;
+                if (key === 'tts_voice' || key === 'stt_language') return;
                 const el = document.getElementById(`setting-input-${key}`);
                 if (el && document.activeElement !== el && !el.classList?.contains('dirty')) {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
@@ -793,6 +793,7 @@ const UI = {
                 voiceSelect.dataset.original = String(settings.tts_voice ?? '');
             }
             this.loadVoiceChoices(false);
+            this.loadSttLanguageChoices();
             return;
         }
         const categoryMeta = {
@@ -801,7 +802,7 @@ const UI = {
                 desc: OrionI18n.t('settingsChatHint')
             },
             [OrionI18n.t('settingsVoice')]: {
-                section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "stt_enabled", "stt_model"],
+                section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "stt_enabled", "stt_model", "stt_language"],
                 desc: OrionI18n.t('settingsVoiceHint')
             },
             [OrionI18n.t('settingsBehavior')]: {
@@ -856,7 +857,7 @@ const UI = {
                                 <option value="true" ${isChecked ? 'selected' : ''}>${OrionI18n.t('enabled')}</option>
                                 <option value="false" ${!isChecked ? 'selected' : ''}>${OrionI18n.t('disabled')}</option>
                             </select>`;
-                    } else if (['chat_title_model', 'router_model_group', 'tts_model', 'tts_voice', 'stt_model'].includes(key)) {
+                    } else if (['chat_title_model', 'router_model_group', 'tts_model', 'tts_voice', 'stt_model', 'stt_language'].includes(key)) {
                         inputHtml = `<select id="setting-input-${key}" data-original="${escapeSetting(val)}" onchange="UI.handleSettingChange('${key}')" class="setting-select"></select>`;
                     } else if (key === 'temperature' || key === 'thinking_level') {
                         inputHtml = `<input id="setting-input-${key}" type="${key === 'temperature' ? 'number' : 'text'}" ${key === 'temperature' ? 'min="0" max="2" step="0.1"' : ''} data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" placeholder="${OrionI18n.t('optional')}" oninput="UI.handleSettingChange('${key}')" class="setting-input">
@@ -975,6 +976,30 @@ const UI = {
         const uiLangEl = document.getElementById('ui-language');
         if (uiLangEl) uiLangEl.value = OrionI18n.language;
         window.RouterProviders?.mount();
+        this.loadSttLanguageChoices();
+    },
+    async loadSttLanguageChoices() {
+        const select = document.getElementById('setting-input-stt_language');
+        if (!select || !window.STT) return;
+        try {
+            const catalog = await window.STT.loadLanguageCatalog();
+            if (document.getElementById('setting-input-stt_language') !== select ||
+                select.classList.contains('dirty') || select.dataset.saving === 'true') return;
+            const value = window.STT.resolveLanguage(this.currentSettings?.stt_language, catalog);
+            const displayNames = typeof Intl.DisplayNames === 'function'
+                ? new Intl.DisplayNames([OrionI18n.language], {type: 'language'}) : null;
+            const choices = Object.entries(catalog.languages).map(([code, entry]) => {
+                let name = entry.name;
+                try { name = displayNames?.of(code) || name; } catch {}
+                return {code, name};
+            }).sort((a, b) => a.name.localeCompare(b.name, OrionI18n.language));
+            select.replaceChildren(new Option(OrionI18n.t('sttAutomaticLanguage'), 'auto'));
+            for (const choice of choices) select.add(new Option(`${choice.name} (${choice.code})`, choice.code));
+            select.value = value;
+            select.dataset.original = value;
+        } catch (error) {
+            console.warn('STT language choices:', error);
+        }
     },
     async loadModelChoices(settings, silent = false) {
         window.ToolsUI?.renderSettings();

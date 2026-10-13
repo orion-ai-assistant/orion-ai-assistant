@@ -22,11 +22,11 @@ for (const file of ['locales/en.js', 'locales/tr.js', 'i18n.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js', file), 'utf8'), context);
 }
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
-context.ui.renderSettings({router_model_group: 'test', chat_title_model: '', router_api_key: '', tts_model: 'tts', stt_model: 'stt', temperature: null, thinking_level: '', system_prompt: '<instructions>&test', token_delay_ms: 3000, tts_enabled: true});
+context.ui.renderSettings({router_model_group: 'test', chat_title_model: '', router_api_key: '', tts_model: 'tts', stt_model: 'stt', stt_language: null, temperature: null, thinking_level: '', system_prompt: '<instructions>&test', token_delay_ms: 3000, tts_enabled: true});
 const html = dashboard.innerHTML;
 const general = html.split('id="settings-panel-general"')[1].split('</section>')[0];
 const advanced = html.split('id="settings-panel-advanced"')[1].split('</section>')[0];
-for (const key of ['router_model_group', 'chat_title_model', 'router_api_key', 'tts_model', 'stt_model']) {
+for (const key of ['router_model_group', 'chat_title_model', 'router_api_key', 'tts_model', 'stt_model', 'stt_language']) {
     assert.ok(general.includes(`setting-input-${key}`), `${key} belongs to general settings`);
     assert.ok(!advanced.includes(`setting-input-${key}`));
 }

@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const script = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/stt.js'), 'utf8');
+const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/stt_languages.json'), 'utf8'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
     let resolve, reject;
@@ -12,7 +13,7 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
-function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000 } = {}) {
+function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000, browserLanguage } = {}) {
     const settings = deferred();
     const mic = deferred();
     const alerts = [];
@@ -63,7 +64,8 @@ function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000 } = 
         Auth: {getToken: () => 'token'},
         AppState: {currentChatId: null},
         window: { AudioContext, AudioWorkletNode, location: { host: 'localhost:8909', protocol: 'http:' } },
-        navigator: { mediaDevices: { getUserMedia(config) { micRequests++; constraints.push(config); return mic.promise; } } },
+        navigator: { language: browserLanguage, mediaDevices: { getUserMedia(config) { micRequests++; constraints.push(config); return mic.promise; } } },
+        fetch: async () => ({ok: true, json: async () => catalog}),
         API: { getSettings: () => settings.promise },
         document: { querySelectorAll: () => [], getElementById: id => id === 'message-input' ? input : id === 'mic-btn' ? button : null },
         localStorage: { getItem: () => 'token' },
@@ -90,6 +92,38 @@ async function connected(h) {
     await tick();
     return { start };
 }
+
+test('browser language initializes STT and explicit choices take priority', () => {
+    const h = setup({browserLanguage: 'tr-TR'});
+    assert.equal(h.stt.resolveLanguage(null, catalog), 'tr');
+    assert.equal(h.stt.resolveLanguage('', catalog), 'tr');
+    assert.equal(h.stt.resolveLanguage('en', catalog), 'en');
+    assert.equal(h.stt.resolveLanguage('auto', catalog), 'auto');
+    assert.equal(h.stt.resolveLanguage('none', catalog), 'auto');
+    assert.equal(setup({browserLanguage: 'xx-ZZ'}).stt.resolveLanguage(null, catalog), 'auto');
+    assert.equal(setup({browserLanguage: 'fil-PH'}).stt.resolveLanguage(null, catalog), 'tl');
+    assert.equal(setup({browserLanguage: 'nb-NO'}).stt.resolveLanguage(null, catalog), 'no');
+});
+
+test('saved STT language reaches the WebSocket URL instead of browser language', async () => {
+    const h = setup({browserLanguage: 'tr-TR'});
+    const start = h.stt.start();
+    h.settings.resolve({stt_model: 'local-stt', stt_language: 'de'});
+    await tick();
+    assert.equal(new URL(h.sockets[0].url).searchParams.get('language'), 'de');
+    h.stt.stop();
+    await start;
+});
+
+test('unset STT language sends the supported browser language', async () => {
+    const h = setup({browserLanguage: 'tr-TR'});
+    const start = h.stt.start();
+    h.settings.resolve({stt_model: 'local-stt', stt_language: null});
+    await tick();
+    assert.equal(new URL(h.sockets[0].url).searchParams.get('language'), 'tr');
+    h.stt.stop();
+    await start;
+});
 
 test('Flutter order: settings, socket ready, then microphone; exact recorder configuration', async () => {
     const h = setup({ trackSampleRate: 16000 });

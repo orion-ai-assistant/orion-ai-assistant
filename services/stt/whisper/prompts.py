@@ -1,21 +1,17 @@
 """Language-specific transcription hints shared by REST and live STT."""
+import json
+import os
+from pathlib import Path
 from faster_whisper.audio import decode_audio
 
 
-LANGUAGE_PROMPTS = {
-    "tr": (
-        "Hmm... Naber? Şey, aslında şöyle desem... "
-        "Bilgisayarı kapatalım, sonra da... "
-        "Ama... Spotify'dan müzik açar mısın? "
-        "Bir şey diyeceğim..."
-    ),
-    "en": (
-        "Hmm... What's up? Well, actually, let me put it this way... "
-        "Let's shut down the computer, and then... "
-        "But... Could you play some music on Spotify? "
-        "Let me say something..."
-    ),
-}
+CATALOG_PATH = Path(os.getenv(
+    "WHISPER_LANGUAGE_CONFIG",
+    str(Path(__file__).resolve().parents[2] / "hub/src/orion/api/ui/js/stt_languages.json"),
+))
+LANGUAGE_CATALOG = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+LANGUAGE_PROMPTS = {code: entry["prompt"] for code, entry in LANGUAGE_CATALOG["languages"].items()}
+WHISPER_LANGUAGES = {code: entry["name"] for code, entry in LANGUAGE_CATALOG["languages"].items()}
 
 
 def select_transcription_prompt(model, audio, language=None, prompt=None,

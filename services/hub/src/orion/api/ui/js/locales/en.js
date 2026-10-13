@@ -37,6 +37,8 @@ window.orionUiLocales.en = {
     setting_token_delay_ms: 'Demo stream delay (ms)', setting_first_token_delay_ms: 'First chunk delay (ms)',
     setting_ai_chat_titles_enabled: 'AI chat titles', setting_chat_title_model: 'Title model',
     setting_stt_enabled: 'Live speech transcription', setting_stt_model: 'Transcription model',
+    setting_stt_language: 'Transcription language', sttAutomaticLanguage: 'Detect automatically',
+    hint_stt_language: 'The initial choice follows your browser language. Select a language to use it, or detect the language from the audio automatically.',
     setting_tts_model: 'Speech model', setting_tts_voice: 'Voice',
     setting_max_tool_rounds: 'Tool rounds limit', setting_max_tool_calls: 'Maximum tool calls',
     hint_temperature: 'Value from 0 to 2 (default when empty).',
