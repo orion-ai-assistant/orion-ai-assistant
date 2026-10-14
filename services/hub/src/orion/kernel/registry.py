@@ -177,6 +177,29 @@ async def fetch_setting_overrides(user_id: str) -> dict[str, str]:
         await conn.close()
 
 
+async def initialize_stt_language_override(user_id: str, language: str) -> None:
+    """First successful initialization wins; never overwrite a saved preference."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Database unavailable; STT language was not initialized")
+    try:
+        await _ensure_tables(conn)
+        await conn.execute(
+            """
+            insert into orion_settings (user_id, key, value)
+            values ($1, 'stt_language', $2)
+            on conflict (user_id, key)
+            do update set value = excluded.value, updated_at = now()
+            where orion_settings.value is null or btrim(orion_settings.value) = ''
+            """,
+            user_id, language,
+        )
+    except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+        raise RuntimeError("STT language initialization could not be saved") from exc
+    finally:
+        await conn.close()
+
+
 async def upsert_setting_overrides(user_id: str, overrides: dict[str, str], require_db: bool = False) -> None:
     if not overrides:
         return

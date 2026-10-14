@@ -99,3 +99,18 @@ test('switching Hub reloads the language metadata', async () => {
     await sandbox.window.STT.loadLanguageCatalog();
     assert.equal(attempts, 2);
 });
+
+test('web settings request supplies device language for shared initialization', async () => {
+    const sandbox = {navigator: {language: 'tr-TR'}, console};
+    const source = fs.readFileSync(path.join(base, 'api.js'), 'utf8');
+    vm.runInNewContext(source + '\nthis.api = API;', sandbox);
+    let options;
+    sandbox.api._fetch = async (url, request) => {
+        assert.equal(url, '/api/v1/admin/settings');
+        options = request;
+        return {ok: true, status: 200, json: async () => ({stt_language: 'tr'})};
+    };
+    const result = await sandbox.api.getSettings();
+    assert.equal(options.headers['X-Orion-STT-Language'], 'tr-TR');
+    assert.equal(result.stt_language, 'tr');
+});

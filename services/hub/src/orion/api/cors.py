@@ -14,7 +14,7 @@ def configure_cors(app: FastAPI) -> None:
         allow_origins=origins,
         allow_origin_regex=r"https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?",
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Admin-Key"],
+        allow_headers=["Authorization", "Content-Type", "X-Admin-Key", "X-Orion-STT-Language"],
         allow_credentials=False,
         expose_headers=['Retry-After'],
     )

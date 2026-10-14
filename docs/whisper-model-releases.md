@@ -58,10 +58,14 @@ The existing STT `/v1/audio/languages` dashboard list remains compatible.
 Hub settings validate code syntax without importing an engine catalog. STT handles
 its supported codes and aliases. STT can run independently of Hub/Flutter.
 
-`stt_language` is a user setting. An unset or seeded empty value lets the browser
-choose its primary language if supported, or automatic detection otherwise. A
-saved language overrides the browser; saved `auto` explicitly keeps audio-based
-detection. Choosing a language selects its prompt; automatic detection selects the
+`stt_language` is a shared user setting. Web and Flutter send their device locale
+in `X-Orion-STT-Language` when loading settings. If the preference is unset, Hub
+uses STT metadata to select a supported language (or `auto`) and atomically saves
+it to the user's durable settings. The first successful initialization wins;
+other devices use that choice. Initialization never replaces a manual preference,
+including `auto`, and unavailable STT/database leaves it unset for a later retry.
+A saved language overrides each device's locale. Choosing a language selects its
+prompt; automatic detection selects the
 prompt after detecting the audio language. Custom request prompts still take priority.
 
 Restart STT after updating the catalog and reload the browser to pick up the

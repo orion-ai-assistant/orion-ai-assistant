@@ -173,6 +173,19 @@ async def refresh_runtime_settings(redis: Redis, user_id: str) -> RuntimeSetting
     return runtime_settings
 
 
+async def initialize_stt_language(redis: Redis, user_id: str, language: str) -> RuntimeSettings:
+    from orion.kernel.registry import initialize_stt_language_override
+    # Read durable settings instead of trusting a potentially stale device/cache.
+    current = build_runtime_settings(await _get_effective_overrides(user_id))
+    if current.stt_language is None:
+        language = RuntimeSettings(stt_language=language).stt_language
+        if language is None:
+            raise ValueError("Initial STT language is required")
+        await initialize_stt_language_override(user_id, language)
+    # Concurrent initializers and manual updates may have won; return the DB value.
+    return await refresh_runtime_settings(redis, user_id)
+
+
 async def update_runtime_settings(
     redis: Redis,
     updates: Mapping[str, str],

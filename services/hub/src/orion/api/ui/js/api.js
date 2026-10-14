@@ -364,7 +364,9 @@ const API = {
 
     async getSettings() {
         try {
-            const response = await this._fetch(`/api/v1/admin/settings`);
+            const response = await this._fetch(`/api/v1/admin/settings`, {
+                headers: {'X-Orion-STT-Language': navigator.language || navigator.languages?.[0] || ''}
+            });
             if (response.status === 401) return { error: "Oturum süresi doldu." };
             const data = await response.json();
             if (!response.ok) {

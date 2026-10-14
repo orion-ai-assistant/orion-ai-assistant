@@ -384,6 +384,18 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
             
     redis: Redis = request.app.state.redis
     settings = await get_runtime_settings(redis, current_user)
+    device_language = request.headers.get('X-Orion-STT-Language')
+    if settings.stt_language is None and device_language:
+        from orion.api.services.stt_catalog import fetch_stt_catalog, initial_stt_language
+        from orion.kernel.config import initialize_stt_language
+        try:
+            catalog = await fetch_stt_catalog(settings.router_api_key or "orion")
+            settings = await initialize_stt_language(
+                redis, current_user, initial_stt_language(device_language, catalog))
+        except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, KeyError, TypeError, AttributeError):
+            # Missing capabilities/storage must not persist a guessed default.
+            # Other settings remain available; initialization retries next request.
+            pass
     return _mask_settings_for_client(settings)
 
 def _check_admin_key(request: Request):

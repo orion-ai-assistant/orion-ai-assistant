@@ -17,3 +17,9 @@ async def fetch_stt_catalog(api_key):
         'languages': {code: {'name': entry['name']}
                       for code, entry in data['languages'].items()},
     }
+
+
+def initial_stt_language(device_language, catalog):
+    code = str(device_language or '').strip().lower().replace('_', '-').split('-')[0]
+    code = catalog.get('aliases', {}).get(code, code)
+    return code if code in catalog['languages'] else 'auto'
