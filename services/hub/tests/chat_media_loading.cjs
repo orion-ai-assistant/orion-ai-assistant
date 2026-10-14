@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; }
+    constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; this.style = {}; }
     appendChild(child) { this.children.push(child); return child; }
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
@@ -76,21 +76,14 @@ const media = {name: 'photo.png', mime_type: 'image/png', media_id: id, media_pa
     assert.equal(audio.paused, true);
     const text = Array.from({length: 10000}, (_, i) => `satır ${i}: uzun metin\n`).join('');
     const pre = new Element('pre');
-    const pages = ui.textPreview(text, pre);
-    const controls = pages.children[0];
-    const [previous, status, next] = controls.children;
-    const restored = [];
-    const count = 50;
-    for (let page = 0; page < count; page++) {
-        assert.ok(pre.textContent.length <= 12000, 'Large text must never enter DOM in one chunk');
-        restored.push(pre.textContent);
-        assert.equal(status.textContent, `Bölüm ${page + 1} / ${count}`);
-        if (page < count - 1) next.onclick();
-    }
-    assert.equal(restored.join(''), text, 'Pagination keeps all text');
-    assert.equal(next.disabled, true);
-    previous.onclick();
-    assert.equal(status.textContent, `Bölüm ${count - 1} / ${count}`);
+    ui.textPreview(text, pre);
+    const spacer = pre.children[0];
+    assert.equal(pre.className, 'attachment-virtual-text');
+    assert.ok(spacer.children.length < 50, 'Only visible text rows enter the DOM');
+    assert.equal(spacer.children[0].textContent, 'satır 0: uzun metin');
+    pre.scrollTop = 9995 * 22; pre.onscroll();
+    assert.ok(spacer.children.some(row => row.textContent === 'satır 9999: uzun metin'));
+    assert.ok(spacer.children.length < 50);
     const target = new Element('div');
     ui._getOrCreateChatState = () => ({botDiv: target});
     ui.appendAudio('chat', {media_path: media.media_path, format: 'ogg'}, false, target);

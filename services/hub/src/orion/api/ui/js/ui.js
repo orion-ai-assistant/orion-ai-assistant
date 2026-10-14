@@ -190,41 +190,44 @@ const UI = {
         return box;
     },
     textPreview(text, pre) {
-        const pageSize = 12000;
         text = String(text || '');
-        const offsets = [0];
-        while (offsets[offsets.length - 1] < text.length) {
-            const start = offsets[offsets.length - 1];
-            const limit = Math.min(start + pageSize, text.length);
-            const chunk = text.slice(start, limit);
-            let cursor = 0, end = limit;
-            for (let line = 0; line < 200; line++) {
-                const newline = chunk.indexOf('\n', cursor);
-                if (newline < 0) break;
-                cursor = newline + 1;
-                if (line === 199) end = start + cursor;
+        const rows = [];
+        let width = 0;
+        for (const line of text.split('\n')) {
+            if (!line.length) rows.push('');
+            for (let start = 0; start < line.length;) {
+                let end = Math.min(start + 2000, line.length);
+                if (end < line.length && line.charCodeAt(end - 1) >= 0xD800 && line.charCodeAt(end - 1) <= 0xDBFF) end++;
+                const row = line.slice(start, end); rows.push(row);
+                width = Math.max(width, row.length * 9 + 32); start = end;
             }
-            if (end < text.length && end > start && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) end++;
-            offsets.push(end);
         }
-        if (offsets.length <= 2) { pre.textContent = text; return pre; }
-        const box = document.createElement('div'); box.className = 'attachment-text-pages';
-        const controls = document.createElement('div'); controls.className = 'attachment-text-pagination';
-        const previous = document.createElement('button'); previous.type = 'button'; previous.textContent = '← Önceki';
-        const status = document.createElement('span'); status.setAttribute('aria-live', 'polite');
-        const next = document.createElement('button'); next.type = 'button'; next.textContent = 'Sonraki →';
-        let page = 0;
-        const count = offsets.length - 1;
+        if (rows.length <= 200 && text.length <= 12000) { pre.textContent = text; return pre; }
+        pre.className = 'attachment-virtual-text';
+        const spacer = document.createElement('div'); spacer.className = 'attachment-text-spacer';
+        spacer.style.height = `${rows.length * 22}px`; spacer.style.width = `${width}px`;
+        pre.appendChild(spacer);
+        let pending = false;
         const render = () => {
-            pre.textContent = text.slice(offsets[page], offsets[page + 1]);
-            pre.scrollTop = 0;
-            status.textContent = `Bölüm ${page + 1} / ${count}`;
-            previous.disabled = page === 0; next.disabled = page === count - 1;
+            pending = false;
+            const first = Math.max(0, Math.floor((pre.scrollTop || 0) / 22) - 5);
+            const last = Math.min(rows.length, first + Math.ceil((pre.clientHeight || 440) / 22) + 12);
+            const visible = [];
+            for (let index = first; index < last; index++) {
+                const row = document.createElement('div'); row.className = 'attachment-text-line';
+                row.style.top = `${index * 22}px`; row.textContent = rows[index]; visible.push(row);
+            }
+            spacer.replaceChildren(...visible);
         };
-        previous.onclick = () => { if (page > 0) { page--; render(); } };
-        next.onclick = () => { if (page < count - 1) { page++; render(); } };
-        controls.append(previous, status, next); box.append(controls, pre); render();
-        return box;
+        pre.onscroll = () => {
+            if (pending) return; pending = true;
+            if (typeof requestAnimationFrame === 'function') requestAnimationFrame(render); else render();
+        };
+        render();
+        if (typeof ResizeObserver === 'function') {
+            pre._textResize = new ResizeObserver(render); pre._textResize.observe(pre);
+        }
+        return pre;
     },
     openAttachment(file) {
         const modal = document.createElement('dialog');
@@ -251,9 +254,10 @@ const UI = {
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
         (this._attachmentDialogs ||= new Set()).add(modal);
-        modal.onclose = () => { request.abort(); if (content.pause) content.pause(); this._attachmentDialogs.delete(modal); modal.remove(); };
+        modal.onclose = () => { request.abort(); if (content.pause) content.pause(); content._textResize?.disconnect(); this._attachmentDialogs.delete(modal); modal.remove(); };
         document.body.appendChild(modal);
         modal.showModal();
+        if (file.isText) content.onscroll?.();
         if (file.media_path) {
             title.textContent += ' — Yükleniyor…';
             this.attachmentMedia(file).then(record => {

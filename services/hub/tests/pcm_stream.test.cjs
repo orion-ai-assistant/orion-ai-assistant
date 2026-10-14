@@ -3,11 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const {webcrypto} = require('node:crypto');
-function player() {
+function player({suspended = false} = {}) {
     const nodes = [], target = {children: [], appendChild(el) {this.children.push(el); el.parentElement = this;}, querySelector() {return this.children.find(el => el.className === 'audio-player-container');}};
     class AudioContext {
-        state = 'running'; currentTime = 0; destination = {};
-        resume() {return Promise.resolve();}
+        state = suspended ? 'suspended' : 'running'; currentTime = 0; destination = {};
+        resume() {return Promise.resolve().then(() => {this.state = 'running';});}
         createBuffer(_, count, rate) {return {duration: count / rate, getChannelData: () => new Float32Array(count)};}
         createBufferSource() {const node = {connect() {}, disconnect() {}, start(time) {this.time = time;}, stop() {this.stopped = true;}}; nodes.push(node); return node;}
     }
@@ -25,13 +25,13 @@ function player() {
     const end = (status, bytes, count = 1) => pcm.end({data: {stream_id: 'turn', status, total_bytes: bytes, chunk_count: count}});
     return {pcm, nodes, start, chunk, end, target};
 }
-test('another session gets the growing slider without autoplay', () => {
+test('visible chat streams autoplay across sessions', () => {
     const {pcm, nodes, start, chunk} = player(); start('another-session'); chunk(48000);
-    assert.equal(nodes.length, 0); const s = pcm.recordings.get('turn');
+    assert.equal(nodes.length, 1); const s = pcm.recordings.get('turn');
     assert.equal(s.controls.slider.max, '1'); assert.equal(s.controls.time.textContent, '0:00 / 0:01');
 });
-test('short utterance flushes on EOF and retains one player when WAV arrives', () => {
-    const {pcm, nodes, start, chunk, end, target} = player(); start(); chunk(4); assert.equal(nodes.length, 0);
+test('short utterance starts with the first samples and flushes on EOF and retains one player when WAV arrives', () => {
+    const {pcm, nodes, start, chunk, end, target} = player(); start(); chunk(4); assert.equal(nodes.length, 1);
     end('completed', 4); assert.equal(nodes.length, 1); assert.equal(nodes[0].buffer.duration, 2 / 24000);
     pcm.recording('chat', {stream_id: 'turn', audio: 'saved', format: 'wav'}, false, target);
     assert.equal(target.children.length, 1); pcm.stop(); assert.equal(nodes[0].stopped, true);
@@ -47,4 +47,18 @@ test('stop silences playback, retains arriving samples, and allows seek/replay',
 test('missing chunks silence the stream and repeated starts never restart it', () => {
     const {pcm, nodes, start, chunk} = player(); start(); chunk(8640); chunk(4, 2);
     assert.equal(nodes[0].stopped, true); start(); chunk(8640); assert.equal(nodes.length, 1);
+});
+
+test('suspended browser context resumes and plays chunks already received', async () => {
+    const {pcm, nodes, start, chunk} = player({suspended: true});
+    start(); chunk(48000); assert.equal(nodes.length, 0);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nodes.length, 1); assert.equal(pcm.stream.playing, true);
+    pcm.stop();
+});
+test('stop before browser resume prevents late autoplay', async () => {
+    const {pcm, nodes, start, chunk} = player({suspended: true});
+    start(); chunk(48000); pcm.stop();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(nodes.length, 0); assert.equal(pcm.stream, null);
 });

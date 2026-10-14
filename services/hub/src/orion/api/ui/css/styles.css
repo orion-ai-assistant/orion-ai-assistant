@@ -3679,11 +3679,9 @@ details[open] > .think-summary::before {
     width: 32px; height: 32px; font-size: 16px;
 }
 .attachment-audio-icon { position: absolute; top: 5px; right: 5px; margin: 0; font-size: 14px; color: var(--text-secondary); }
-.attachment-text-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px; }
-.attachment-text-pagination button {
-    border: 1px solid var(--border-medium); border-radius: 8px; padding: 6px 10px;
-    color: var(--text-primary); background: var(--bg-surface); cursor: pointer;
-}
-.attachment-text-pagination button:disabled { opacity: .4; cursor: default; }
-.attachment-text-pages pre { max-height: 60vh; }
+pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
+.attachment-text-spacer { position: relative; min-width: 100%; }
+.attachment-text-line { position: absolute; left: 12px; height: 22px; line-height: 22px; font: 13px/22px monospace; white-space: pre; }
+.attachment-play { font-size: 0 !important; }
+.attachment-play::after { content: ''; width: 10px; height: 12px; background: white; clip-path: polygon(0 0, 100% 50%, 0 100%); transform: translateX(1px); }
 .attachment-dialog > a { display: block; padding: 24px; color: var(--primary); }

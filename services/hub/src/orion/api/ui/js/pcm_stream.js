@@ -6,7 +6,7 @@ const PcmSpeech = window.PcmSpeech = {
         const Context = window.AudioContext || window.webkitAudioContext;
         if (!Context) return;
         this.context ??= new Context();
-        this.context.resume().catch(() => {});
+        return this.context.resume().catch(() => {});
     },
     position(s) {
         if (s.playing && this.context && s.timeline) {
@@ -94,17 +94,24 @@ const PcmSpeech = window.PcmSpeech = {
         const s = {id: d.stream_id, chat: event.chat_id, sequence: 0, bytes: 0, chunks: [], sent: 0, position: 0, ended: false, valid: true, playing: false};
         this.recordings.set(s.id, s);
         this.mount(s, UI._chatDivs[event.chat_id]?.botDiv, d.arrival_ms);
-        if (d.origin_session_id === this.sessionId && !this.blocked.has(s.id)
+        if (!this.blocked.has(s.id)
             && String(UI.currentSettings?.tts_enabled ?? localStorage.getItem('orion_tts_enabled')).toLowerCase() === 'true') this.play(s);
     },
     play(s) {
         if (!s.valid || (s.ended && s.bytes === 0)) return;
-        this.stop(); document.querySelectorAll('audio').forEach(a => a.pause()); this.unlock();
-        if (!this.context || this.context.state !== 'running') return;
-        if (s.ended && s.position >= s.bytes / 48000) s.position = 0;
-        this.stream = s; s.playing = true; s.sent = Math.floor(s.position * 48000) & ~1; s.nextTime = 0; s.timeline = [];
-        this.schedule(s.ended);
-        this.timer = setInterval(() => this.update(s), 50); this.update(s);
+        this.stop(); document.querySelectorAll('audio').forEach(a => a.pause());
+        const resumed = this.unlock();
+        if (!this.context) return;
+        this.stream = s; s.playing = true;
+        s.sent = Math.floor(s.position * 48000) & ~1; s.nextTime = 0; s.timeline = [];
+        const begin = () => {
+            if (this.stream !== s || !s.playing) return;
+            if (this.context.state !== 'running') { this.stop(false); return; }
+            if (s.ended && s.position >= s.bytes / 48000) { s.position = 0; s.sent = 0; }
+            this.schedule(s.ended);
+            this.timer = setInterval(() => this.update(s), 50); this.update(s);
+        };
+        if (this.context.state === 'running') begin(); else resumed?.then(begin);
     },
     chunk(event) {
         const d = event.data, s = this.recordings.get(d.stream_id);
@@ -120,7 +127,7 @@ const PcmSpeech = window.PcmSpeech = {
     },
     schedule(force = false) {
         const s = this.stream;
-        if (!s || s.sent >= s.bytes || (!force && s.sent === 0 && s.bytes < 8640)) return;
+        if (!s || this.context?.state !== 'running' || s.sent >= s.bytes) return;
         let cursor = 0;
         for (const bytes of s.chunks) {
             const offset = Math.max(0, s.sent - cursor); cursor += bytes.length;
