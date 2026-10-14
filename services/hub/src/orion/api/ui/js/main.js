@@ -537,9 +537,9 @@ document.addEventListener("DOMContentLoaded", async () => {
             const removeBtn = document.createElement('button');
             removeBtn.setAttribute('draggable', 'false');
             removeBtn.innerHTML = '&times;';
-            removeBtn.style = 'position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.7); border: 1px solid rgba(255,255,255,0.15); color: white; border-radius: 50%; width: 20px; height: 20px; cursor: pointer; font-size: 13px; line-height: 18px; text-align: center; padding: 0; display:flex; align-items:center; justify-content:center; transition: all 0.2s;';
-            removeBtn.onmouseover = () => { removeBtn.style.background = '#ef4444'; removeBtn.style.borderColor = '#ef4444'; };
-            removeBtn.onmouseout = () => { removeBtn.style.background = 'rgba(0,0,0,0.7)'; removeBtn.style.borderColor = 'rgba(255,255,255,0.15)'; };
+            removeBtn.type = 'button';
+            removeBtn.className = 'attachment-remove';
+            removeBtn.setAttribute('aria-label', 'Eki kaldır');
             removeBtn.onclick = () => {
                 UI.selectedImages.splice(index, 1);
                 renderImagePreviews();

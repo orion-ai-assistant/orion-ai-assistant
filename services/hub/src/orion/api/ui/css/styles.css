@@ -3659,7 +3659,7 @@ details[open] > .think-summary::before {
 }
 
 /* File audio shares the chat player's theme. */
-.media-audio-player { width: min(420px, 80vw); }
+.media-audio-player { width: min(520px, 80vw); }
 .media-audio-player audio { display: none; }
 .media-audio-player .pcm-player { color: var(--text-primary); background: var(--bg-surface); }
 .audio-load-button {
@@ -3700,3 +3700,19 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
 .attachment-dialog pre::-webkit-scrollbar-thumb { background: #42685f; border-radius: 8px; }
 .attachment-dialog pre::-webkit-scrollbar-corner { background: transparent; }
 .attachment-dialog pre::-webkit-scrollbar-button { display: none; }
+
+/* Reserve the overhanging close button's hit area inside the scroll viewport. */
+#image-preview-container { gap: 4px; }
+.image-preview-item { flex-basis: 92px; height: 92px; }
+.image-preview-item > .media-square-item { position: absolute; left: 2px; top: 10px; }
+.attachment-remove {
+    position: absolute; top: 0; right: 0; width: 20px; height: 20px;
+    display: grid; place-items: center; padding: 0;
+    background: #ff5252; border: 1px solid rgba(255,255,255,.24);
+    color: white; border-radius: 50%; cursor: pointer; font: 14px/1 sans-serif;
+}
+.attachment-remove:hover { background: #ef4444; }
+.attachment-remove:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }
+.attachment-dialog pre { height: 60vh; white-space: pre; overflow-wrap: normal; padding: 12px; }
+pre.attachment-virtual-text { padding: 12px; }
+.attachment-text-line { left: 0; }

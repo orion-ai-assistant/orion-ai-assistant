@@ -186,7 +186,7 @@ const UI = {
         });
         audio.addEventListener('error', () => { time.textContent = 'Ses yüklenemedi'; });
         audio.controls = false; audio.preload = 'metadata';
-        row.append(button, time, slider); box.append(row, audio); update();
+        row.append(button, slider, time); box.append(row, audio); update();
         return box;
     },
     textPreview(text, pre) {
@@ -245,7 +245,7 @@ const UI = {
             if (kind === 'a') { if (/^data:|^blob:/.test(file.data || '')) content.href = file.data; }
             else content.src = file.data;
         }
-        if (kind === 'video') { content.controls = true; content.autoplay = true; }
+        if (kind === 'video') { content.controls = true; content.autoplay = false; }
         if (kind === 'audio') content.autoplay = false;
         if (kind === 'img') content.alt = file.name || OrionI18n.t('image');
         if (file.isText) modal.className += ' attachment-text-dialog';
@@ -257,7 +257,7 @@ const UI = {
         close.onclick = () => modal.close();
         modal.appendChild(close);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
-        modal.onclick = e => { if (e.target === modal) modal.close(); };
+        modal.onclick = e => { if (e.target === modal && kind !== 'audio' && kind !== 'video') modal.close(); };
         const request = new AbortController();
         (this._attachmentDialogs ||= new Set()).add(modal);
         modal.onclose = () => { request.abort(); if (content.pause) content.pause(); content._textResize?.disconnect(); this._attachmentDialogs.delete(modal); modal.remove(); };
