@@ -16,11 +16,14 @@ for (const file of ['config.js', 'ui.js', 'api.js', 'sse.js']) {
 vm.runInContext('globalThis.test = { AppState, UI, API, SSE };', context);
 const { AppState: state, UI: ui, API: api, SSE: sse } = context.test;
 async function run() {
+    const cleanup = [];
+    api.discardFailedChat = async id => { cleanup.push(id); };
     state.startGenerating('a', 'turn-a');
     state.startGenerating('b', 'turn-b');
     state.selectChat('a');
     assert.equal(button.style.display, 'flex');
     state.selectChat(null);
+    assert.deepEqual(cleanup, ['a']);
     assert.equal(button.style.display, 'none');
     state.selectChat('idle');
     assert.equal(button.style.display, 'none');

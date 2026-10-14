@@ -530,6 +530,29 @@ async def delete_chat_db(chat_id: str) -> None:
         await conn.close()
 
 
+async def prune_failed_chat_db(chat_id: str) -> bool:
+    """Remove failed message groups and delete the chat only if it is empty."""
+    from orion.kernel.chat_history import successful_history
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError('Postgres is unavailable')
+    try:
+        await _ensure_tables(conn)
+        async with conn.transaction():
+            rows = await conn.fetch(
+                'select id, content_json from orion_chat_messages where chat_id=$1 order by id', chat_id)
+            messages = [json.loads(row['content_json']) for row in rows]
+            keep = {id(message) for message in successful_history(messages)}
+            removed = [row['id'] for row, message in zip(rows, messages) if id(message) not in keep]
+            if removed:
+                await conn.execute('delete from orion_chat_messages where chat_id=$1 and id=any($2::bigint[])', chat_id, removed)
+            result = await conn.execute('''delete from orion_chats where id=$1
+                and not exists(select 1 from orion_chat_messages where chat_id=$1)''', chat_id)
+            return result == 'DELETE 1'
+    finally:
+        await conn.close()
+
+
 async def replace_initial_chat_title(chat_id: str, expected: str, title: str) -> bool:
     """Do not overwrite a title the user renamed while generation was running."""
     conn = await _connect()

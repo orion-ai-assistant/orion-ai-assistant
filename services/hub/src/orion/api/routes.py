@@ -148,6 +148,9 @@ async def ready(request: Request) -> dict[str, Any]:
 async def create_chat_message_endpoint(payload: JobCreateRequest, request: Request, current_user: str = Depends(get_current_user)) -> JobCreateResponse:
     if payload.user_id != current_user:
         payload.user_id = current_user
+    if payload.chat_id:
+        async with request.app.state.redis.lock(f'chat:lifecycle:{payload.chat_id}', timeout=120, blocking_timeout=10):
+            return await create_job(request.app.state.redis, payload)
     return await create_job(request.app.state.redis, payload)
 
 @router.post("/api/v1/chats/{chat_id}/stop", response_model=JobStopResponse)
@@ -231,6 +234,13 @@ async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
 
 class ChatRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+
+
+@router.post('/api/v1/chats/{chat_id}/discard-failed')
+async def discard_failed_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.api.services.job_service import discard_failed_chat
+    async with request.app.state.redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
+        return await discard_failed_chat(request.app.state.redis, current_user, chat_id)
 
 @router.patch("/api/v1/chats/{chat_id}/rename")
 async def rename_chat_endpoint(chat_id: str, payload: ChatRenameRequest, request: Request, current_user: str = Depends(get_current_user)):

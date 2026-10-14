@@ -28,8 +28,10 @@ const AppState = {
     },
     selectChat(chatId) {
         window.PcmSpeech?.stop();
+        const previous = this.currentChatId;
         this.chatSelectionVersion += 1;
         this.currentChatId = chatId;
+        if (previous && previous !== chatId) API.discardFailedChat?.(previous);
         this.pendingNewChatRequest = false;
         this._loadingHistory = false;
         const buffered = [...(this._sseBuffer || []), ...this.pendingChatEvents];

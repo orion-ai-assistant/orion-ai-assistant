@@ -121,25 +121,8 @@ def _history_key(chat_id: str) -> str:
 
 
 def _remove_failed_turns(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Exclude persisted router fallback turns from the next model request."""
-    fallback_prefixes = (
-        "⚠️ **Yönlendirici (Router) veya AI Modeline Bağlanılamadı",
-        "⚠️ **Model Yanıt Zaman Aşımı**",
-        "⚠️ **Yönlendirici (Router) Hatası:**",
-    )
-    filtered: list[dict[str, Any]] = []
-    for message in history:
-        is_failed_assistant = (
-            message.get("role") == "assistant"
-            and isinstance(message.get("content"), str)
-            and message["content"].startswith(fallback_prefixes)
-        )
-        if is_failed_assistant:
-            if filtered and filtered[-1].get("role") == "user":
-                filtered.pop()
-            continue
-        filtered.append(message)
-    return filtered
+    from orion.kernel.chat_history import successful_history
+    return successful_history(history)
 
 
 async def load_history(
@@ -575,11 +558,6 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
 
             except Exception as e:
                 logging.exception("LLM stream failed for chat %s; sending error to user", context.chat_id)
-                if conversation.activity and await is_active_turn(redis, context.chat_id, context.turn_id):
-                    await append_history(redis, context.chat_id,
-                        [{**user_message, "failed_turn": True}, *conversation.transcript,
-                         {"role": "assistant", "content": "".join(output_tokens), "tool_activity": conversation.activity}],
-                        settings.chat_history_max_messages, settings)
                 fallback_text = _format_router_fallback_message(e, settings)
                 failure_total_ms = max(1, round((time.perf_counter() - generation_started_at) * 1000))
                 failure_metrics = {

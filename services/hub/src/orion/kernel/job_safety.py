@@ -160,10 +160,6 @@ if status == 'completed' or status == 'stopped' or status == 'failed' then
 end
 redis.call('HSET', KEYS[2], 'status', 'failed', 'error', ARGV[2], 'result_json', '{}', 'updated_at', ARGV[3])
 redis.call('EXPIRE', KEYS[2], ARGV[6])
-local user = redis.call('HGET', KEYS[2], 'current_user_message')
-if user and redis.call('HGET', KEYS[1], 'history_saved') ~= '1' then redis.call('RPUSH', KEYS[5], user) end
-redis.call('RPUSH', KEYS[5], ARGV[7])
-redis.call('EXPIRE', KEYS[5], ARGV[6])
 if redis.call('GET', KEYS[3]) == ARGV[1] then redis.call('DEL', KEYS[3]) end
 return 2
 """

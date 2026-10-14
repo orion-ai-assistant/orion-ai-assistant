@@ -14,7 +14,7 @@ class Element {
 }
 const chatArea = new Element('div');
 const body = new Element('body');
-const ctx = vm.createContext({ console, performance, window: {}, alert: msg => { throw Error(msg); }, document: {
+const ctx = vm.createContext({ console, performance, localStorage: {getItem: () => null}, AbortController, requestAnimationFrame: callback => callback(), OrionI18n: {t: key => key}, window: {}, alert: msg => { throw Error(msg); }, document: {
     body, getElementById: id => id === 'chat-area' ? chatArea : new Element('div'),
     createElement: tag => new Element(tag),
 }});
@@ -30,20 +30,25 @@ ui.appendUserMessage('selam', files);
 const group = chatArea.children[0];
 assert.equal(group.children[0].children.length, 17);
 assert.equal(group.children[1].textContent, 'selam');
+ui.appendUserMessage('', [files[0]]);
+assert.equal(chatArea.children[1].children[1].className, 'message user');
+assert.equal(chatArea.children[1].children[1].textContent, '');
+chatArea.children.pop();
 const textCard = group.children[0].children[0];
 textCard.onclick();
 assert.equal(body.children[0].children[0].textContent, files[0].data);
 assert.equal(body.children[0].open, true);
-assert.equal(body.children[0].children.length, 2);
+assert.equal(body.children[0].children.length, 3);
 assert.equal(body.children[0].children[1].textContent, 'test.txt');
-body.children[0].close();
+assert.equal(body.children[0].children[2].className, 'attachment-close');
+body.children[0].children[2].onclick();
 assert.equal(body.children[0].removed, true);
 const video = group.children[0].children[16];
 assert.equal(video.children[0].tagName, 'video');
 assert.equal(video.children[1].textContent, '▶');
-assert.equal(video.children.length, 2);
+assert.equal(video.children.length, 3);
 assert.equal(video.title, 'clip.mp4');
-assert.equal(group.children[0].children[1].children.length, 1);
+assert.equal(group.children[0].children[1].children.length, 2);
 video.onclick();
 assert.equal(body.children[1].children[0].controls, true);
 ui.appendUserMessage('selam\n\n[Ek Dosya: test.txt]\n```\nbenim adım kürşat\n```');
@@ -63,10 +68,11 @@ assert.equal(chatArea.children[1].children[0].children[0].title, 'test.txt');
     };
     await api.sendMessage('selam');
     assert.equal(request.input.metadata.display_text, 'selam');
-    assert.equal(request.input.metadata.attachments.length, 17);
-    assert.equal(request.input.metadata.attachments[1].name, 'photo-0.jpg');
-    assert.equal(request.input.images.length, 16);
-    assert.ok(request.input.text.includes(files[0].data));
+    assert.equal(request.input.attachments.length, 17);
+    assert.equal(request.input.attachments[1].name, 'photo-0.jpg');
+    assert.equal(request.input.attachments.filter(file => !file.isText).length, 16);
+    assert.equal(request.input.text, 'selam');
+    assert.equal(request.input.attachments[0].data, files[0].data);
     assert.equal(chatArea.children[2].children[1].textContent, 'selam');
     assert.equal(chatArea.children[2].children[0].children.length, 17);
     console.log('Attachment cards, text/video previews, legacy history and send metadata passed');

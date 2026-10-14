@@ -175,7 +175,7 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.redis.xpending(STREAM_NAME, CONSUMER_GROUP))['pending'], 0)
                 if stage != 'after_started':
                     self.assertEqual(await self.redis.get('external:' + stage), '1')
-                self.assertTrue(await self.redis.lrange('chat:history:chat', 0, -1))
+                self.assertFalse(await self.redis.lrange('chat:history:chat', 0, -1))
                 if stage != 'tool':
                     await self.redis.aclose()
 

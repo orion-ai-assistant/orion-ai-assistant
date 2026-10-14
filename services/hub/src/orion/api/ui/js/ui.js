@@ -250,6 +250,12 @@ const UI = {
         if (kind === 'img') content.alt = file.name || OrionI18n.t('image');
         if (file.isText) modal.className += ' attachment-text-dialog';
         modal.append(file.isText ? this.textPreview(file.data, content) : kind === 'audio' ? this.audioControls(content) : content, title);
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'attachment-close';
+        close.textContent = OrionI18n.t('close');
+        close.onclick = () => modal.close();
+        modal.appendChild(close);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
@@ -291,7 +297,7 @@ const UI = {
             files.forEach(file => row.appendChild(this.createAttachmentCard(file)));
             group.appendChild(row);
         }
-        if (text) {
+        {
             const div = document.createElement('div');
             div.className = 'message user';
             div.style.marginBottom = '0';

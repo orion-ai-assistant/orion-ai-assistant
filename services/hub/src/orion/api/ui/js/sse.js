@@ -280,6 +280,7 @@ const SSE = {
                 AppState.stopGenerating(chatId, turnId);
                 UI.finishGeneration(chatId, true, data.data);
                 AppState.clearGenerationMetrics(chatId);
+                if (data.type === 'error') API.discardFailedChat?.(chatId);
             }
             return;
         }

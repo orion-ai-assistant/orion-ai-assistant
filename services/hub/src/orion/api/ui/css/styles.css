@@ -3675,7 +3675,7 @@ details[open] > .think-summary::before {
 /* The full card is clickable; native video surfaces never take thumbnail clicks. */
 .media-square-item > * { pointer-events: none; }
 .attachment-play, .attachment-video .attachment-play {
-    left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%);
+    left: 50%; top: calc(50% - 10px); bottom: auto; transform: translate(-50%, -50%);
     width: 32px; height: 32px; font-size: 16px;
 }
 .attachment-audio-icon { position: absolute; top: 5px; right: 5px; margin: 0; font-size: 14px; color: var(--text-secondary); }
@@ -3685,3 +3685,18 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
 .attachment-play { font-size: 0 !important; }
 .attachment-play::after { content: ''; width: 10px; height: 12px; background: white; clip-path: polygon(0 0, 100% 50%, 0 100%); transform: translateX(1px); }
 .attachment-dialog > a { display: block; padding: 24px; color: var(--primary); }
+.attachment-close {
+    display: block; margin: 4px auto 0; padding: 8px 16px;
+    border: 0; background: transparent; color: #10b981;
+    font: inherit; font-size: 14px; cursor: pointer;
+}
+.attachment-close:focus-visible { outline: 2px solid #10b981; border-radius: 6px; }
+.attachment-dialog pre {
+    box-sizing: border-box; scrollbar-gutter: stable;
+    scrollbar-width: thin; scrollbar-color: #42685f transparent;
+    text-align: left; resize: none;
+}
+.attachment-dialog pre::-webkit-scrollbar { width: 8px; height: 8px; }
+.attachment-dialog pre::-webkit-scrollbar-thumb { background: #42685f; border-radius: 8px; }
+.attachment-dialog pre::-webkit-scrollbar-corner { background: transparent; }
+.attachment-dialog pre::-webkit-scrollbar-button { display: none; }

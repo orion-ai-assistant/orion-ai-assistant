@@ -318,6 +318,13 @@ const API = {
         }
     },
 
+    async discardFailedChat(chatId) {
+        if (!chatId) return;
+        try {
+            const response = await this._fetch(`/api/v1/chats/${encodeURIComponent(chatId)}/discard-failed`, {method: 'POST'});
+            if (response.ok && (await response.json()).status === 'deleted') window.loadChats?.();
+        } catch (error) { console.warn('Başarısız sohbet temizlenemedi:', error); }
+    },
     async getChatHistory(chatId) {
         if (!chatId) return;
         try {
