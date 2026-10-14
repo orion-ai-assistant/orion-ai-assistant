@@ -1,5 +1,6 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.en = {
+    modelContextExcluded: 'Excluded from model history',
     copyMessage: 'Copy message',
     messageCopied: 'Message copied to clipboard.',
     languageName: 'English',

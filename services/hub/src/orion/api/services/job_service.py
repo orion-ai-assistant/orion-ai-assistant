@@ -363,8 +363,8 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
     settings = await get_runtime_settings(redis, user_id)
     history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
 
-    from orion.kernel.chat_history import successful_history
-    history = successful_history(history)
+    from orion.kernel.chat_history import visible_history
+    history = visible_history(history)
 
     # Append in-progress tokens for the currently streaming message (if any)
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
@@ -544,32 +544,13 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
 
 
 async def discard_failed_chat(redis: Redis, user_id: str, chat_id: str) -> dict:
-    """Called when leaving the live view. Successful or running chats survive."""
-    from orion.kernel.registry import prune_failed_chat_db
+    """Compatibility for older clients: failed conversations now remain visible."""
     access = await check_chat_access(redis, user_id, chat_id)
     if access.state == 'not_found':
         return {'status': 'deleted', 'chat_id': chat_id}
     if not access.allowed:
         raise HTTPException(403, 'Access denied')
-    state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
-    if state.get('status') != 'failed':
-        return {'status': 'kept', 'chat_id': chat_id}
-    # Check the hot history too: a successful DB write may have failed earlier.
-    from orion.kernel.chat_history import successful_history
-    cached = [json.loads(item) for item in await redis.lrange(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id), 0, -1)]
-    if successful_history(cached):
-        return {'status': 'kept', 'chat_id': chat_id}
-    deleted = await prune_failed_chat_db(chat_id)
-    await redis.delete(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id))
-    if not deleted:
-        return {'status': 'kept', 'chat_id': chat_id}
-    pipe = redis.pipeline()
-    for prefix in (CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX, CHAT_STOP_KEY_PREFIX):
-        pipe.delete(get_key(prefix, chat_id))
-    pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, user_id), chat_id)
-    await pipe.execute()
-    await redis.publish(get_key(ROOM_USER_PREFIX, user_id), StreamEvent.chat_delete(chat_id=chat_id).model_dump_json())
-    return {'status': 'deleted', 'chat_id': chat_id}
+    return {'status': 'kept', 'chat_id': chat_id}
 
 
 async def get_all_chats_admin(redis: Redis) -> list[dict]:

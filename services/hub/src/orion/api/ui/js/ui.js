@@ -274,7 +274,20 @@ const UI = {
             }).catch(error => { if (!request.signal.aborted) title.textContent = error.message; });
         }
     },
-    appendUserMessage(text, images = []) {
+    addExcludedLabel(element) {
+        if (!element || element.querySelector('.model-context-excluded')) return;
+        const label = document.createElement('div');
+        label.className = 'model-context-excluded';
+        label.textContent = OrionI18n.t('modelContextExcluded');
+        element.appendChild(label);
+    },
+    markFailedTurn(chatId, turnId = null) {
+        const state = this._chatDivs[chatId];
+        if (!state) return;
+        if (!turnId || state.userTurnId === turnId) this.addExcludedLabel(state.userDiv);
+        this.addExcludedLabel(state.botDiv);
+    },
+    appendUserMessage(text, images = [], excluded = false, turnId = null) {
         // Restore attachments from messages saved by the old client.
         const files = [...images];
         text = (text || '').replace(/\n*\[Ek Dosya: ([^\n]+)\]\r?\n```\r?\n([\s\S]*?)\r?\n```/g, (_, name, data) => {
@@ -305,9 +318,15 @@ const UI = {
             group.appendChild(div);
         }
         this.chatArea.appendChild(group);
+        if (chatId) {
+            const state = this._getOrCreateChatState(chatId);
+            state.userDiv = group;
+            state.userTurnId = turnId;
+        }
+        if (excluded) this.addExcludedLabel(group);
         this.scrollToBottom();
     },
-    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null, toolActivity = [], displayParts = null) {
+    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null, toolActivity = [], displayParts = null, excluded = false) {
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
         const div = document.createElement('div');
@@ -352,6 +371,7 @@ const UI = {
         this.addMessageCopy(div, () => content || '');
         if (audio?.audio || audio?.media_path || audio?.audio_path) this.appendAudio(AppState.currentChatId, audio, false, div);
         this.chatArea.appendChild(div);
+        if (excluded) this.addExcludedLabel(div);
         this.scrollToBottom();
         return div;
     },
@@ -637,6 +657,7 @@ const UI = {
             const rawText = (state.contentNodes || []).map(node => node.markdownSource || '').join('\n');
             this.addMessageCopy(botDivRef, () => rawText);
         }
+        if (metrics.failed_turn) this.markFailedTurn(chatId, metrics.turn_id);
         state.botDiv = null;
         // Update stop button if this is the active chat
         if (chatId === AppState.currentChatId) {

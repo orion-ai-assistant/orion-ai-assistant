@@ -567,6 +567,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     ) if first_token_at is not None else None,
                     "total_ms": failure_total_ms,
                 }
+                failed_state = await redis.hgetall(state_key)
                 finalized = await finalize_state_if_active(
                     redis,
                     context.chat_id,
@@ -581,6 +582,9 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     ttl_seconds=settings.result_ttl_seconds,
                 )
                 if finalized:
+                    from orion.kernel.chat_history import persist_failed_turn
+                    await persist_failed_turn(redis, context.chat_id, context.turn_id,
+                                              user_message, fallback_text, failed_state, failure_metrics)
                     await context.emit_error(fallback_text, metrics=failure_metrics)
                 logging.info("Worker %s failed chat %s with terminal error event", consumer_name, context.chat_id)
                 return
@@ -752,6 +756,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
         await redis.delete(stop_key)
 
     except Exception as exc:
+        failed_state = await redis.hgetall(state_key)
         finalized = await finalize_state_if_active(
             redis,
             context.chat_id,
@@ -765,6 +770,14 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             ttl_seconds=settings.result_ttl_seconds,
         )
         if finalized:
+            from orion.kernel.chat_history import persist_failed_turn
+            user_message = {
+                'role': 'user', 'content': context.prompt,
+                'display_text': context.request.input.metadata.get('display_text', context.prompt),
+                'attachments': context.request.input.display_attachments(),
+            }
+            await persist_failed_turn(redis, context.chat_id, context.turn_id,
+                                      user_message, str(exc), failed_state)
             await context.emit_error(str(exc))
         logging.exception("Worker %s failed chat %s", consumer_name, context.chat_id)
 

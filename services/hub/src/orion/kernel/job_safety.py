@@ -167,12 +167,17 @@ return 2
 
 async def fail_job(redis, fields, message=INTERRUPTED, expected_phase=''):
     turn, chat = fields['turn_id'], fields['chat_id']
+    state = await redis.hgetall(CHAT_STATE_KEY_PREFIX + chat)
     changed = await redis.eval(FAIL, 5, job_key(turn), CHAT_STATE_KEY_PREFIX + chat,
                                ACTIVE_TURN_KEY_PREFIX + chat, WAITING_KEY, 'chat:history:' + chat,
                                turn, message, utc_now(), chat, expected_phase, TERMINAL_TTL,
                                json.dumps({'role': 'assistant', 'content': message, 'turn_id': turn,
                                            'failed_turn': True}))
     if changed == 2:
+        from orion.kernel.chat_history import persist_failed_turn
+        user_message = json.loads(state['current_user_message']) if state.get('current_user_message') else {
+            'role': 'user', 'content': state.get('current_prompt', '')}
+        await persist_failed_turn(redis, chat, turn, user_message, message, state)
         # The durable status is authoritative even when publication fails.
         try:
             await redis.publish(fields['channel'], StreamEvent.error(chat, message, turn_id=turn).model_dump_json())

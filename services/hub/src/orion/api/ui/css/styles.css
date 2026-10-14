@@ -3683,7 +3683,7 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
 .attachment-text-spacer { position: relative; min-width: 100%; }
 .attachment-text-line { position: absolute; left: 12px; height: 22px; line-height: 22px; font: 13px/22px monospace; white-space: pre; }
 .attachment-play { font-size: 0 !important; }
-.attachment-play::after { content: ''; width: 10px; height: 12px; background: white; clip-path: polygon(0 0, 100% 50%, 0 100%); transform: translateX(1px); }
+.attachment-play::after { content: ''; width: 10px; height: 12px; background: white; clip-path: polygon(0 0, 100% 50%, 0 100%); }
 .attachment-dialog > a { display: block; padding: 24px; color: var(--primary); }
 .attachment-close {
     display: block; margin: 4px auto 0; padding: 8px 16px;
@@ -3692,6 +3692,7 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
 }
 .attachment-close:focus-visible { outline: 2px solid #10b981; border-radius: 6px; }
 .attachment-dialog pre {
+    outline: none; border: 0; box-shadow: none;
     box-sizing: border-box; scrollbar-gutter: stable;
     scrollbar-width: thin; scrollbar-color: #42685f transparent;
     text-align: left; resize: none;
@@ -3711,8 +3712,14 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
     background: #ff5252; border: 1px solid rgba(255,255,255,.24);
     color: white; border-radius: 50%; cursor: pointer; font: 14px/1 sans-serif;
 }
-.attachment-remove:hover { background: #ef4444; }
+.attachment-remove:hover { background: #b91c1c; border-color: white; box-shadow: 0 0 0 2px rgba(255,82,82,.35); }
 .attachment-remove:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }
 .attachment-dialog pre { height: 60vh; white-space: pre; overflow-wrap: normal; padding: 12px; }
 pre.attachment-virtual-text { padding: 12px; }
 .attachment-text-line { left: 0; }
+.model-context-excluded {
+    width: fit-content; margin-top: 8px; padding: 3px 8px;
+    border: 1px solid rgba(245,158,11,.3); border-radius: 6px;
+    color: #d4a65a; background: rgba(245,158,11,.06); font-size: 11px;
+}
+.user-message-group > .model-context-excluded { margin-left: auto; }

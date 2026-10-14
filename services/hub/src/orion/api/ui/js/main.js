@@ -43,12 +43,12 @@ document.addEventListener("DOMContentLoaded", async () => {
             history.forEach((msg, idx) => {
                 if (msg.role === 'user') {
                     if (msg.attachments) {
-                        UI.appendUserMessage(msg.display_text ?? '', msg.attachments);
+                        UI.appendUserMessage(msg.display_text ?? '', msg.attachments, msg.failed_turn, msg.turn_id);
                     } else if (Array.isArray(msg.content)) {
                         const text = msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
                         const images = msg.content.filter(c => c.type === 'image_url').map(c => c.image_url.url);
-                        UI.appendUserMessage(text, images);
-                    } else UI.appendUserMessage(msg.content, []);
+                        UI.appendUserMessage(text, images, msg.failed_turn, msg.turn_id);
+                    } else UI.appendUserMessage(msg.content, [], msg.failed_turn, msg.turn_id);
                 } else if (msg.role === 'assistant') {
                     if (msg.tool_calls) return;
                     if (msg.partial) {
@@ -85,7 +85,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         }
                     } else {
                         UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio,
-                            msg.tool_activity || [], msg.display_parts);
+                            msg.tool_activity || [], msg.display_parts, msg.failed_turn || Boolean(msg.generation_error));
                     }
                 }
             });
@@ -547,9 +547,6 @@ document.addEventListener("DOMContentLoaded", async () => {
 
             wrapper.appendChild(previewEl);
             wrapper.appendChild(removeBtn);
-
-            // Name tooltip
-            wrapper.title = fileObj.name;
 
             imagePreviewContainer.appendChild(wrapper);
         });

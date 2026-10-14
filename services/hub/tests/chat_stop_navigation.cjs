@@ -23,7 +23,7 @@ async function run() {
     state.selectChat('a');
     assert.equal(button.style.display, 'flex');
     state.selectChat(null);
-    assert.deepEqual(cleanup, ['a']);
+    assert.deepEqual(cleanup, []);
     assert.equal(button.style.display, 'none');
     state.selectChat('idle');
     assert.equal(button.style.display, 'none');

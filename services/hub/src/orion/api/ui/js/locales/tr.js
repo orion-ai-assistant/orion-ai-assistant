@@ -1,5 +1,6 @@
 window.orionUiLocales = window.orionUiLocales || {};
 window.orionUiLocales.tr = {
+    modelContextExcluded: 'Model geçmişine dahil edilmedi',
     copyMessage: 'Mesajı kopyala',
     messageCopied: 'Metin panoya kopyalandı.',
     languageName: 'Türkçe',

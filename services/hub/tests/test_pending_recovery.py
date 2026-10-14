@@ -98,6 +98,11 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         cls.directory.cleanup()
 
     async def asyncSetUp(self):
+        # Failure recovery now persists UI history; keep this integration suite
+        # isolated from the configured PostgreSQL database too.
+        persistence = patch('orion.kernel.registry.insert_messages', AsyncMock())
+        persistence.start()
+        self.addCleanup(persistence.stop)
         self.redis = Redis.from_url(self.url, decode_responses=True, protocol=2, socket_timeout=2)
         await self.redis.flushdb()
         await worker.ensure_consumer_group(self.redis)
@@ -175,7 +180,11 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.redis.xpending(STREAM_NAME, CONSUMER_GROUP))['pending'], 0)
                 if stage != 'after_started':
                     self.assertEqual(await self.redis.get('external:' + stage), '1')
-                self.assertFalse(await self.redis.lrange('chat:history:chat', 0, -1))
+                failed_history = [json.loads(item) for item in await self.redis.lrange('chat:history:chat', 0, -1)]
+                self.assertEqual(len(failed_history), 2)
+                self.assertTrue(all(item['failed_turn'] for item in failed_history))
+                from orion.kernel.chat_history import successful_history
+                self.assertEqual(successful_history(failed_history), [])
                 if stage != 'tool':
                     await self.redis.aclose()
 

@@ -4,10 +4,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from orion.api.services import job_service
 from orion.contracts.access import ChatAccessResult
-from orion.kernel.chat_history import successful_history
+from orion.kernel.chat_history import successful_history, visible_history, persist_failed_turn
 
 
 class HistoryTests(unittest.TestCase):
+    def test_visible_failed_question_and_error_do_not_enter_model_history(self):
+        raw = [{'role': 'user', 'content': 'bad'},
+               {'role': 'assistant', 'content': 'error', 'generation_error': 'offline'},
+               {'role': 'user', 'content': 'next'}, {'role': 'assistant', 'content': 'ok'}]
+        visible = visible_history(raw)
+        self.assertEqual(len(visible), 4)
+        self.assertTrue(all(m['failed_turn'] for m in visible[:2]))
+        self.assertEqual(successful_history(visible), raw[2:])
     def test_failed_user_tools_and_assistant_are_removed_together(self):
         good = [{'role': 'user', 'content': 'ok'}, {'role': 'assistant', 'content': 'answer'}]
         failed = [{'role': 'user', 'content': 'bad', 'failed_turn': True},
@@ -34,12 +42,29 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.access.start()
         self.addCleanup(self.access.stop)
 
-    async def test_empty_failed_chat_is_removed_and_broadcast(self):
+    async def test_empty_failed_chat_is_kept_without_mutation_or_broadcast(self):
         with patch('orion.kernel.registry.prune_failed_chat_db', AsyncMock(return_value=True)) as prune:
             result = await job_service.discard_failed_chat(self.redis, 'alice', 'chat')
-        self.assertEqual(result['status'], 'deleted')
-        prune.assert_awaited_once_with('chat')
-        self.redis.publish.assert_awaited_once()
+        self.assertEqual(result['status'], 'kept')
+        prune.assert_not_awaited()
+        self.redis.delete.assert_not_awaited()
+        self.redis.publish.assert_not_awaited()
+
+    async def test_failure_is_saved_to_cache_and_db_with_attachments_and_exclusion(self):
+        question = {'role': 'user', 'content': 'prompt', 'display_text': 'visible',
+                    'attachments': [{'name': 'test.txt', 'data': 'hello', 'isText': True}]}
+        with patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
+            await persist_failed_turn(self.redis, 'chat', 'turn', question, 'offline',
+                                      {'partial_text': 'partial'}, {'total_ms': 100})
+        messages = insert.call_args.kwargs['messages']
+        self.assertEqual(messages[0]['attachments'], question['attachments'])
+        self.assertEqual(messages[0]['display_text'], 'visible')
+        self.assertTrue(all(m['failed_turn'] for m in messages))
+        self.assertIn('offline', messages[1]['content'])
+        self.assertIn('partial', messages[1]['content'])
+        self.assertEqual(messages[1]['metrics'], {'total_ms': 100})
+        self.assertEqual(successful_history(messages), [])
+        self.assertEqual(self.redis.pipeline.return_value.rpush.call_count, 2)
 
     async def test_running_and_completed_chats_are_kept(self):
         for status in ('queued', 'processing', 'completed', 'stopped'):

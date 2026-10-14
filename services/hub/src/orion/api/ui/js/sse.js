@@ -278,9 +278,8 @@ const SSE = {
                 UI.appendThinkingToken(chatId, data.data.token);
             } else if (data.type === "done" || data.type === "error") {
                 AppState.stopGenerating(chatId, turnId);
-                UI.finishGeneration(chatId, true, data.data);
+                UI.finishGeneration(chatId, true, {...data.data, failed_turn: data.type === 'error', turn_id: turnId});
                 AppState.clearGenerationMetrics(chatId);
-                if (data.type === 'error') API.discardFailedChat?.(chatId);
             }
             return;
         }
@@ -304,6 +303,8 @@ const SSE = {
             if (!alreadyRendered) {
                 UI.appendUserMessage(data.data.display_text ?? data.data.text, data.data.attachments || []);
             }
+            UI._getOrCreateChatState(chatId).userDiv = UI.chatArea.querySelector('.user-message-group:last-of-type');
+            UI._getOrCreateChatState(chatId).userTurnId = turnId;
             // CRITICAL FIX: Don't create duplicate placeholder if already generating
             const currentState = UI._chatDivs[chatId];
             if (!currentState || !currentState.botDiv) {
@@ -332,6 +333,7 @@ const SSE = {
             
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
+                UI.markFailedTurn(chatId, turnId);
             }
             UI.finishGeneration(chatId, true, data.data);
             AppState.clearGenerationMetrics(chatId);
