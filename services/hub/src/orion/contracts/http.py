@@ -8,13 +8,25 @@ class Attachment(BaseModel):
     id: str | None = None
     name: str = "Dosya"
     mime_type: str
-    data: str
+    data: str | None = None
+    media_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    media_path: str | None = None
     size: int | None = Field(default=None, ge=0)
     isText: bool = False
 
     @model_validator(mode="after")
     def validate_media(self):
+        if self.media_id:
+            if self.isText or self.data is not None:
+                raise ValueError('Media references cannot contain inline data or text')
+            if not self.mime_type.startswith(('image/', 'audio/', 'video/')):
+                raise ValueError('Unsupported media reference MIME type')
+            return self
+        if self.data is None:
+            raise ValueError('Attachment data or media_id is required')
         if not self.isText:
+            if self.data.startswith(('http://', 'https://')) and self.mime_type.startswith('image/'):
+                return self
             header, separator, _ = self.data.partition(",")
             if not separator or not header.startswith("data:") or not header.endswith(";base64"):
                 raise ValueError("Media attachments must contain a base64 data URL")
@@ -77,6 +89,7 @@ class JobCreateResponse(BaseModel):
     created_at: str
     turn_id: str | None = None
     generation_id: str | None = None
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class JobStatusResponse(BaseModel):

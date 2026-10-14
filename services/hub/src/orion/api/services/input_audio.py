@@ -25,7 +25,7 @@ def _canonical(raw):
 
 
 def _convert(item):
-    if item.isText or not item.mime_type.startswith("audio/"):
+    if item.media_id or item.isText or not item.mime_type.startswith("audio/"):
         return item
     encoded = item.data.partition(",")[2]
     if len(encoded) > (MAX_BYTES + 2) // 3 * 4:
@@ -73,7 +73,7 @@ def _convert(item):
 
 
 async def normalize_input_audio(item: Attachment) -> Attachment:
-    if item.isText or not item.mime_type.startswith("audio/"):
+    if item.media_id or item.isText or not item.mime_type.startswith("audio/"):
         return item
     async with _slots:
         try:

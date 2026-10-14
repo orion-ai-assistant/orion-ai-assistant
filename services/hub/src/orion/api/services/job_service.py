@@ -20,7 +20,7 @@ from orion.kernel.config import get_runtime_settings
 from orion.kernel.job_safety import job_key, WAITING_KEY, QUEUE_TIMEOUT_SECONDS, INIT_JOURNAL
 from orion.kernel.registry import (
     upsert_chat, rename_chat_db, touch_chat_db, get_user_chats_db, get_chat_db,
-    get_chat_history_db, delete_chat_db
+    get_chat_history_db, delete_chat_db, get_turn_audio_db
 )
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,29 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         from orion.api.services.input_audio import normalize_input_audio
         payload.input.attachments = [await normalize_input_audio(item) for item in payload.input.attachments]
 
+    # The durable Hub owns media. Admission cannot enqueue a dangling reference.
+    from orion.contracts.http import Attachment
+    from orion.kernel.media_store import store_attachments
+    if payload.input.attachments is None and payload.input.images:
+        payload.input.attachments = [Attachment(
+            name='Dosya', mime_type=image.split(';', 1)[0][5:] if image.startswith('data:') else 'image/jpeg',
+            data=image if image.startswith(('data:', 'http://', 'https://')) else f'data:image/jpeg;base64,{image}',
+        ) for image in payload.input.images]
+        payload.input.images = None
+    if any(not item.isText and (item.media_id or (item.data or '').startswith('data:'))
+           for item in payload.input.attachments or []):
+        try:
+            await upsert_chat(chat_id=chat_id, user_id=payload.user_id, title=title)
+            stored = await store_attachments(chat_id, payload.user_id, payload.input.display_attachments())
+            payload.input.attachments = [Attachment.model_validate(item) for item in stored]
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            logger.exception('Media persistence failed before job admission')
+            raise HTTPException(503, 'Medya kaydedilemedi. Ekleri koruyup tekrar göndermeyi deneyin.') from exc
+    # Legacy metadata can contain a second copy of every attachment.
+    payload.input.metadata.pop('attachments', None)
+
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
     meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
@@ -127,7 +150,7 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     queue_record = JobQueueRecord(
         enabled_tools=json.dumps(enabled_tools),
         user_id=payload.user_id, chat_id=chat_id, turn_id=turn_id, channel=channel,
-        created_at=now, stream_mode=payload.stream_mode, payload=payload.model_dump_json()
+        created_at=now, stream_mode=payload.stream_mode, payload=payload.model_dump_json(exclude_none=True)
     )
 
     # 3. Atomic Execution (Pipeline)
@@ -179,7 +202,8 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
         # Redis already accepted the job, so a temporary DB outage is non-fatal.
         logger.exception("Write-Through upsert_chat failed for chat %s — continuing", chat_id)
 
-    return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id, generation_id=turn_id)
+    return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id,
+                             generation_id=turn_id, attachments=payload.input.display_attachments())
 
 
 async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None = None) -> JobStopResponse:
@@ -358,6 +382,14 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
 
 async def get_turn_audio(redis: Redis, user_id: str, chat_id: str, turn_id: str) -> dict:
     # Ownership is checked before reading any recording, including DB fallback.
+    await ensure_chat_access(redis, user_id, chat_id)
+    try:
+        audio = await get_turn_audio_db(chat_id, turn_id)
+    except Exception:
+        logger.exception('Direct audio lookup failed; trying cached history')
+        audio = None
+    if audio is not None:
+        return await _audio_payload(chat_id, audio)
     history = await get_chat_history(redis, user_id, chat_id)
     def find(messages):
         return next((msg['audio'] for msg in messages
@@ -368,6 +400,15 @@ async def get_turn_audio(redis: Redis, user_id: str, chat_id: str, turn_id: str)
         audio = find(await get_chat_history_db(chat_id))
     if audio is None:
         raise HTTPException(status_code=404, detail="Audio not found")
+    return await _audio_payload(chat_id, audio)
+
+
+async def _audio_payload(chat_id, audio):
+    if audio.get('media_id'):
+        from orion.kernel.media_store import read_media
+        import base64
+        _, raw = await read_media(chat_id, audio['media_id'])
+        return {**audio, 'audio': base64.b64encode(raw).decode('ascii')}
     return audio
 
 

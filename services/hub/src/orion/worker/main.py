@@ -41,7 +41,9 @@ async def ensure_consumer_group(redis: Redis) -> None:
 ACK_TERMINAL = """
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return redis.error_reply('Worker ownership lost') end
 if redis.call('HGET', KEYS[2], 'phase') ~= 'terminal' then return 0 end
-return redis.call('XACK', KEYS[3], ARGV[2], ARGV[3])
+local acknowledged = redis.call('XACK', KEYS[3], ARGV[2], ARGV[3])
+redis.call('XDEL', KEYS[3], ARGV[3])
+return acknowledged
 """
 
 

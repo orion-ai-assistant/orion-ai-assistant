@@ -436,6 +436,24 @@ async def get_chat_history_db(chat_id: str) -> list[dict]:
         await conn.close()
 
 
+async def get_turn_audio_db(chat_id: str, turn_id: str):
+    conn = await _connect()
+    if conn is None:
+        return None
+    try:
+        await _ensure_tables(conn)
+        value = await conn.fetchval("""
+            select content_json from orion_chat_messages
+            where chat_id=$1 and role='assistant'
+              and content_json::jsonb->>'turn_id'=$2
+              and content_json::jsonb ? 'audio'
+            order by id desc limit 1
+        """, chat_id, turn_id)
+        return json.loads(value).get('audio') if value else None
+    finally:
+        await conn.close()
+
+
 async def get_chat_db(chat_id: str) -> dict | None:
     """Return persistent metadata for one chat, if it exists."""
     conn = await _connect()

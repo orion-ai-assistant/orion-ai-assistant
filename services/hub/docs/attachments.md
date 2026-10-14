@@ -1,5 +1,11 @@
 # Ordered attachments
 
+New persisted binary media and user-message echoes contain `media_id`,
+`media_path`, MIME and size instead of inline `data`. Clients still submit inline
+attachments; references can also be reused within their owning chat. Workers
+resolve references before calling Router, preserving the content contract below.
+See [chat media storage](chat-media-storage.md) for authorization and lifecycle.
+
 `input.attachments` is the ordered Hub attachment contract. Each item contains
 `name`, `mime_type`, `data`, `isText`, and optional `id` and `size`. Media `data`
 is a base64 data URL; text attachment `data` is the decoded text. The array order

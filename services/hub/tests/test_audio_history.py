@@ -6,11 +6,19 @@ from unittest.mock import AsyncMock, Mock, patch
 from orion.api.services import job_service
 from orion.contracts.settings import RuntimeSettings
 from orion.kernel import registry
+from orion.kernel import media_store
 from orion.worker.infra.context import JobContext
 from orion.worker.services import job_processor
 
 
 class AudioHistoryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # This legacy-history test exercises the inline failure fallback and must
+        # never connect to a developer's PostgreSQL instance.
+        self.persistence = patch.object(media_store, 'store_audio', AsyncMock(side_effect=RuntimeError('offline')))
+        self.persistence.start()
+        self.addCleanup(self.persistence.stop)
+
     async def test_audio_is_stored_in_database_and_restored_after_cache_loss(self):
         redis = Mock()
         redis.publish = AsyncMock()

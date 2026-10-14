@@ -35,8 +35,11 @@ def attachment_parts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 f"<file_content>\n{item['data']}\n</file_content>"
             )})
         else:
-            media = media_part(item["data"])
-            label = {"image_url": "Görsel", "input_audio": "Ses", "input_video": "Video"}[media["type"]]
+            media = ({'type': 'hub_media', 'attachment': item} if item.get('media_id') and not item.get('data')
+                     else media_part(item['data']))
+            label = ('Ses' if item.get('mime_type', '').startswith('audio/') else
+                     'Video' if item.get('mime_type', '').startswith('video/') else 'Görsel') if media['type'] == 'hub_media' else {
+                         'image_url': 'Görsel', 'input_audio': 'Ses', 'input_video': 'Video'}[media['type']]
             parts.append({"type": "text", "text": f"Ek {index} — {label}: {name}"})
             parts.append(media)
     return parts
@@ -62,8 +65,8 @@ def history_content(message: dict[str, Any]) -> Any:
     attachments = message.get("attachments")
     display_text = message.get("display_text")
     if attachments and isinstance(display_text, str) and all(
-        isinstance(item, dict) and isinstance(item.get("data"), str)
-        and (item.get("isText") or item["data"].startswith("data:"))
+        isinstance(item, dict) and (item.get('media_id') or (isinstance(item.get("data"), str)
+        and (item.get("isText") or item["data"].startswith(("data:", "http://", "https://")))))
         for item in attachments
     ):
         # Old UI metadata still has the cross-media order even though its content

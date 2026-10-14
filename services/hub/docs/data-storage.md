@@ -2,6 +2,11 @@
 
 This document describes the responsibilities and schemas of the data storage layers used by the Orion Hub service. Orion Hub utilizes both **PostgreSQL** (for persistent relational data) and **Redis** (for fast, transient in-memory operations and task queuing).
 
+Chat messages are persisted in `orion_chat_messages`. New binary image, audio and
+video data lives in `orion_chat_media`; message JSON and Redis carry chat-scoped
+references. See [chat media storage](chat-media-storage.md) for lifecycle, API,
+client caches and backward compatibility.
+
 ---
 
 ## 1. PostgreSQL (Persistent Relational Storage)

@@ -88,6 +88,16 @@ const Auth = {
 const API = {
     sendInFlight: false,
 
+    async mediaBlob(path, signal) {
+        if (!/^\/api\/v1\/chats\/[^/]+\/media\/[a-f0-9]{64}$/.test(path)) throw new Error('Geçersiz medya adresi.');
+        const namespace = Auth.tokenKey, token = Auth.getToken();
+        const response = await this._fetch(path, {signal});
+        if (!response.ok) throw new Error('Medya yüklenemedi. Tekrar deneyin.');
+        const blob = await response.blob();
+        if (namespace !== Auth.tokenKey || token !== Auth.getToken()) throw new Error('Hub oturumu değişti.');
+        return blob;
+    },
+
     async _fetch(url, options = {}) {
         const namespace = Auth.tokenKey;
         if (!url.startsWith("/api/v1/auth") && !AppState.sseConnected) {
@@ -311,7 +321,7 @@ const API = {
     async getChatHistory(chatId) {
         if (!chatId) return;
         try {
-            const response = await this._fetch(`/api/v1/chats/${chatId}/history`, {signal: AbortSignal.timeout(10000)});
+            const response = await this._fetch(`/api/v1/chats/${chatId}/history?include_audio=false`, {signal: AbortSignal.timeout(10000)});
             if (response.status === 401) return { error: "Oturum süresi doldu." };
             const data = await response.json();
             if (!response.ok) return { error: data.detail || data.error || "Sohbet geçmişi alınamadı." };

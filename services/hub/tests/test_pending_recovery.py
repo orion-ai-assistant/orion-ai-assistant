@@ -188,6 +188,7 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.redis.hget('chat:state:chat', 'status'), 'completed')
         self.assertEqual(await self.redis.get('external:after_result'), '1')
         self.assertEqual((await self.redis.xpending(STREAM_NAME, CONSUMER_GROUP))['pending'], 0)
+        self.assertEqual(await self.redis.xlen(STREAM_NAME), 0, 'Terminal ACK must also remove the queued payload')
 
     async def test_second_worker_cannot_claim_active_work(self):
         owner = await self.owner()

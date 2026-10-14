@@ -23,6 +23,7 @@ from orion.worker.services.adaptive_tts import AdaptiveTts
 from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import model_history
 from orion.worker.services.tool_display import DisplayTimeline
+from orion.kernel.media_store import hydrate_model_media
 from orion.contracts.events import StreamEvent
 from orion.kernel.job_safety import job_key, WAITING_KEY, TERMINAL_TTL
 
@@ -171,7 +172,7 @@ async def load_history(
             content = data.get("content")
             if role:
                 history.append(data)
-        return model_history(_remove_failed_turns(history), max_messages)
+        return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages))
 
     # Cache Miss — hydrate from PostgreSQL
     logging.info("Worker cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
@@ -193,7 +194,7 @@ async def load_history(
         )
 
     # Return only the last max_messages entries
-    return model_history(_remove_failed_turns(db_history), max_messages)
+    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(db_history), max_messages))
 
 
 async def append_history(
@@ -211,6 +212,17 @@ async def append_history(
     """
     if not messages or max_messages <= 0:
         return
+
+    # The live relay (including audio_done) has already completed. Compress only
+    # the history copy here, so encoding cannot delay the PCM stream boundary.
+    from orion.kernel.media_store import store_audio
+    messages = [dict(message) for message in messages]
+    for message in messages:
+        if isinstance(message.get('audio'), dict) and message['audio'].get('audio'):
+            try:
+                message['audio'] = await store_audio(chat_id, message['audio'])
+            except Exception:
+                logging.exception('TTS media persistence failed; retaining inline history fallback')
 
     # 1. Write to Redis (hot cache)
     key = _history_key(chat_id)
@@ -375,13 +387,17 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 messages.append({"role": "system", "content": settings.system_prompt})
             messages.extend(history)
 
-            messages.append({"role": "user", "content": user_content(context.request.input)})
+            current = {'role': 'user', 'content': user_content(context.request.input)}
+            messages.extend(await hydrate_model_media(context.chat_id, [current]))
 
             user_message = {**messages[-1], "turn_id": context.turn_id}
             attachments = context.request.input.display_attachments()
             if attachments:
                 user_message["attachments"] = attachments
                 user_message["display_text"] = context.request.input.metadata.get("display_text", context.prompt)
+                # Rebuild model parts from references on the next turn, not from a
+                # second persisted copy of the media in content.
+                user_message['content'] = context.prompt
             conversation = ToolConversation(context, json.loads(context.record.enabled_tools))
 
             # Stream tokens from LLM.

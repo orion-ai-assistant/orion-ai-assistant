@@ -10,6 +10,13 @@ from orion.api.services import job_service
 from orion.kernel.audio_metadata import duration_ms
 
 class MetadataTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        for name, mock in [('get_turn_audio_db', AsyncMock(return_value=None)),
+                           ('ensure_chat_access', AsyncMock())]:
+            guard = patch.object(job_service, name, mock)
+            guard.start()
+            self.addCleanup(guard.stop)
+
     def audio(self):
         output = io.BytesIO()
         with wave.open(output, 'wb') as wav:

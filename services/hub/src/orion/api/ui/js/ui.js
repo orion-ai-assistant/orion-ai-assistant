@@ -74,9 +74,9 @@ const UI = {
             card.disabled = true;
             return card;
         }
-        const video = !file.isText && file.data.startsWith('data:video/');
-        const audio = !file.isText && file.data.startsWith('data:audio/');
-        if (!file.isText && !audio) {
+        const video = !file.isText && ((file.mime_type || '').startsWith('video/') || (file.data || '').startsWith('data:video/'));
+        const audio = !file.isText && ((file.mime_type || '').startsWith('audio/') || (file.data || '').startsWith('data:audio/'));
+        if (!file.isText && !audio && !file.media_path) {
             const preview = document.createElement(video ? 'video' : 'img');
             preview.src = file.data;
             preview.setAttribute('draggable', 'false');
@@ -91,7 +91,7 @@ const UI = {
         } else {
             const icon = document.createElement('span');
             icon.className = 'attachment-icon';
-            icon.textContent = audio ? '♫' : '📄';
+            icon.textContent = audio ? '♫' : video ? '▶' : file.media_path ? '▧' : '📄';
             card.appendChild(icon);
         }
         if (video || audio) {
@@ -100,7 +100,7 @@ const UI = {
             play.textContent = '▶';
             card.appendChild(play);
         }
-        if (file.isText || audio) {
+        if (file.isText || audio || file.media_path) {
             const label = document.createElement('span');
             label.className = 'attachment-name';
             label.textContent = file.name || OrionI18n.t('file');
@@ -116,21 +116,33 @@ const UI = {
         const title = document.createElement('div');
         title.className = 'attachment-title';
         title.textContent = file.name || OrionI18n.t('file');
-        const kind = file.isText ? 'pre' : file.data.startsWith('data:video/') ? 'video' : file.data.startsWith('data:audio/') ? 'audio' : 'img';
+        const mime = file.mime_type || (file.data || '').split(';')[0].slice(5);
+        const kind = file.isText ? 'pre' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'img';
         const content = document.createElement(kind);
         content.setAttribute('draggable', 'false');
         content.ondragstart = (e) => e.preventDefault();
         if (file.isText) content.textContent = file.data;
-        else content.src = file.data;
+        else if (!file.media_path) content.src = file.data;
         if (kind === 'video' || kind === 'audio') { content.controls = true; content.autoplay = true; }
         if (kind === 'img') content.alt = file.name || OrionI18n.t('image');
         if (file.isText) modal.className += ' attachment-text-dialog';
         modal.append(content, title);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
-        modal.onclose = () => { if (content.pause) content.pause(); modal.remove(); };
+        const request = new AbortController();
+        let objectUrl;
+        modal.onclose = () => { request.abort(); if (content.pause) content.pause(); if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
         document.body.appendChild(modal);
         modal.showModal();
+        if (file.media_path) {
+            title.textContent += ' — Yükleniyor…';
+            API.mediaBlob(file.media_path, request.signal).then(blob => {
+                if (request.signal.aborted) return;
+                objectUrl = URL.createObjectURL(blob);
+                content.src = objectUrl;
+                title.textContent = file.name || OrionI18n.t('file');
+            }).catch(error => { if (!request.signal.aborted) title.textContent = error.message; });
+        }
     },
     appendUserMessage(text, images = []) {
         // Restore attachments from messages saved by the old client.
@@ -208,7 +220,7 @@ const UI = {
             if (meta) div.appendChild(meta);
         }
         this.addMessageCopy(div, () => content || '');
-        if (audio?.audio) this.appendAudio(AppState.currentChatId, audio, false, div);
+        if (audio?.audio || audio?.media_path || audio?.audio_path) this.appendAudio(AppState.currentChatId, audio, false, div);
         this.chatArea.appendChild(div);
         this.scrollToBottom();
         return div;
@@ -359,11 +371,43 @@ const UI = {
         }
     },
     appendAudio(chatId, audioData, autoPlay = true, targetDiv = null) {
-        if (!chatId || !audioData || !audioData.audio) return;
+        if (!chatId || !audioData || !(audioData.audio || audioData.media_path || audioData.audio_path)) return;
         const audioStarted = performance.now();
         const state = this._getOrCreateChatState(chatId);
         const botDiv = targetDiv || state.botDiv;
         if (!botDiv) return;
+        if (!audioData.audio) {
+            if (botDiv.querySelector('.audio-player-container')) return;
+            const box = document.createElement('div'); box.className = 'audio-player-container';
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = '▶ Ses';
+            const request = new AbortController();
+            const record = {request, url: null, box};
+            (this._mediaPlayers ||= new Set()).add(record);
+            button.onclick = async () => {
+                button.disabled = true; button.textContent = 'Yükleniyor…';
+                try {
+                    let blob;
+                    if (audioData.media_path) blob = await API.mediaBlob(audioData.media_path, request.signal);
+                    else {
+                        const response = await API._fetch(audioData.audio_path, {signal: request.signal});
+                        if (!response.ok) throw new Error('Ses yüklenemedi.');
+                        const data = await response.json();
+                        const bytes = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0));
+                        blob = new Blob([bytes], {type: data.format === 'mp3' ? 'audio/mpeg' : 'audio/' + data.format});
+                    }
+                    if (request.signal.aborted) return;
+                    record.url = URL.createObjectURL(blob);
+                    const player = document.createElement('audio'); player.controls = true; player.src = record.url;
+                    player.addEventListener('play', () => window.PcmSpeech?.stop());
+                    box.replaceChildren(player);
+                    player.play().catch(() => {});
+                } catch (error) {
+                    if (!request.signal.aborted) { button.disabled = false; button.textContent = 'Ses yüklenemedi · Tekrar dene'; }
+                }
+            };
+            box.appendChild(button); botDiv.appendChild(box);
+            return;
+        }
         if (window.PcmSpeech?.recording) {
             window.PcmSpeech.recording(chatId, audioData, autoPlay && chatId === AppState.currentChatId, botDiv);
             return;
@@ -1123,6 +1167,12 @@ const UI = {
         }
     },
     clearChatArea() {
+        for (const record of this._mediaPlayers || []) {
+            record.request.abort();
+            record.box.querySelector('audio')?.pause();
+            if (record.url) URL.revokeObjectURL(record.url);
+        }
+        this._mediaPlayers?.clear();
         window.PcmSpeech?.stop();
         window.PcmSpeech?.recordings?.clear();
         this.chatArea.innerHTML = '';
