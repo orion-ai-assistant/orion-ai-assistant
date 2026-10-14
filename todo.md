@@ -1,2 +1,3 @@
 - bütün diller için doğru jsonları eklicez ama bunu sonra yapıcaz.
+- [ ] [iPhone TTS geçmişi: Ogg/Opus oynatma testi ve gerekirse uyumluluk düzeltmesi](services/hub/docs/chat-media-storage.md#todo-iphone-tts-geçmişi-uyumluluğu). Gerçek iPhone olmadığı için ertelendi; iOS uyumluluk kodu eklenmedi. Cihazı olan biri geçmiş sesini ve sarma davranışını test etmeli; gerekirse Hub'dan WAV sunma ve Flutter iOS'ta geçici dosyadan oynatma yolu uygulanmalı.
 - [ ] [Flutter davet bağlantısı: uygulamada aç, yoksa web'e geç](files/flutter-davet-yonlendirme.md). Hub QR/davet API'si hazır; Flutter bağlantı entegrasyonu ve alan adı ilişkisi henüz yapılmadı. Ayrı sonraki iş; Tur 1 tamamlanma koşulu değil.

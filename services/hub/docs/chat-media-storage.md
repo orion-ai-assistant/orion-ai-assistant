@@ -144,3 +144,23 @@ flutter build web --no-pub --no-wasm-dry-run
 Bu otomatik kontroller gerçek telefon hoparlöründeki kaliteyi veya her tarayıcının
 Opus oynatmasını doğrulamaz. Android/iOS ve hedef tarayıcılarda 4–5. adımların
 uygulanması gerekir. Testler/değişiklikler canlı servisleri otomatik yeniden başlatmaz.
+
+## TODO: iPhone TTS geçmişi uyumluluğu
+
+Durum: Gerçek iPhone bulunmadığından iOS'ta Ogg/Opus geçmiş sesi oynatması
+doğrulanmadı. Kullanıcının kararıyla iOS'a özel uyumluluk değişikliği ertelendi;
+mevcut Opus saklama ve Flutter oynatma kodu bu notla değiştirilmedi.
+
+- [ ] iPhone üzerinde yeni TTS geçmiş kaydının oynatılması, duraklatılması,
+  ileri/geri sarılması ve uygulama yeniden açıldıktan sonra tekrar oynatılması
+  kontrol edilmeli. Canlı PCM oynatması ile geçmiş Ogg/Opus oynatması ayrı testlerdir.
+- [ ] Ogg/Opus yerel oynatıcıda desteklenmiyorsa uyumluluk yolu uygulanmalı.
+  Öneri: Hub'daki tek Opus kaydını koruyup iOS isteğinde WAV'a çözülmüş binary
+  sunmak ve Flutter iOS'ta geçici `.wav` dosyasından oynatmak. Bu yol henüz yoktur;
+  ikinci kalıcı ses kopyası veya ikinci kayıplı kodlama gerektirmez, fakat indirme
+  boyutu büyür. AAC/M4A alternatifi seçilirse dönüşüm ve saklama politikası ayrıca
+  kararlaştırılmalı; yalnızca dosya uzantısını değiştirmek çözüm değildir.
+- [ ] Düzeltme yapılırsa kullanıcı/sohbet yetkisi, önbellek kapsamı ve geçici dosya
+  temizliği korunmalı; gerçek cihaz sonucu iOS sürümü ve oynatıcı sürümüyle yazılmalı.
+
+Bu kontroller tamamlanmadan iOS TTS geçmişi desteği doğrulanmış sayılmamalı.
