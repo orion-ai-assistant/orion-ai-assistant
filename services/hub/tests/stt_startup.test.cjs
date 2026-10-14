@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const script = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/stt.js'), 'utf8');
-const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/stt_languages.json'), 'utf8'));
+const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../../stt/whisper/stt_languages.json'), 'utf8'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
     let resolve, reject;
@@ -66,7 +66,7 @@ function setup({ modulePromise = Promise.resolve(), trackSampleRate = 48000, bro
         window: { AudioContext, AudioWorkletNode, location: { host: 'localhost:8909', protocol: 'http:' } },
         navigator: { language: browserLanguage, mediaDevices: { getUserMedia(config) { micRequests++; constraints.push(config); return mic.promise; } } },
         fetch: async () => ({ok: true, json: async () => catalog}),
-        API: { getSettings: () => settings.promise },
+        API: { _fetch: async () => ({ok: true, json: async () => catalog}), getSettings: () => settings.promise },
         document: { querySelectorAll: () => [], getElementById: id => id === 'message-input' ? input : id === 'mic-btn' ? button : null },
         localStorage: { getItem: () => 'token' },
         WebSocket, console: { log() {}, debug() {}, warn() {}, error() {} },

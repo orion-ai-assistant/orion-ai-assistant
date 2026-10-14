@@ -19,15 +19,17 @@ class SttLanguageSettingsTests(unittest.TestCase):
             self.assertEqual(RuntimeSettings(stt_language=value).stt_language, "auto")
 
     def test_language_codes_and_browser_aliases_are_normalized(self):
-        for value, expected in (("tr-TR", "tr"), ("EN_us", "en"), ("fil-PH", "tl"), ("nb", "no")):
+        for value, expected in (("tr-TR", "tr"), ("EN_us", "en"), ("fil-PH", "fil"), ("nb", "nb")):
             self.assertEqual(RuntimeSettings(stt_language=value).stt_language, expected)
 
-    def test_unknown_language_is_rejected(self):
-        with self.assertRaises(ValidationError):
-            RuntimeSettings(stt_language="xx")
+    def test_syntactic_validation_does_not_require_stt_catalog(self):
+        self.assertEqual(RuntimeSettings(stt_language="xx").stt_language, "xx")
+        for value in ("x", "toolong", "123", "tr!", "../en"):
+            with self.assertRaises(ValidationError):
+                RuntimeSettings(stt_language=value)
 
     def test_settings_accept_every_language_in_the_single_json(self):
-        path = Path(__file__).resolve().parents[1] / "src/orion/api/ui/js/stt_languages.json"
+        path = Path(__file__).resolve().parents[2] / "stt/whisper/stt_languages.json"
         catalog = json.loads(path.read_text(encoding="utf-8"))
         for code in catalog["languages"]:
             self.assertEqual(RuntimeSettings(stt_language=code).stt_language, code)

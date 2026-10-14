@@ -12,12 +12,10 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_DEVICE=cpu
-      - WHISPER_LANGUAGE_CONFIG=/config/stt_languages.json
       - PORT=${STT_CONTAINER_PORT}
       - UVICORN_PORT=${STT_CONTAINER_PORT}
     volumes:
       - .:/app
-      - ../../hub/src/orion/api/ui/js/stt_languages.json:/config/stt_languages.json:ro
       - ./models:/models
     working_dir: /app
     command: python api.py

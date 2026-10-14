@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from model_loading import load_whisper_robust
-from prompts import select_transcription_prompt, WHISPER_LANGUAGES
+from prompts import select_transcription_prompt, WHISPER_LANGUAGES, LANGUAGE_CATALOG
 import re
 
 logging.basicConfig(level=logging.INFO)
@@ -194,6 +194,16 @@ async def create_transcription(
 # =========================================================
 # WHISPER SUPPORTED LANGUAGES
 # =========================================================
+
+@app.get("/v1/audio/language-catalog")
+async def get_audio_language_catalog():
+    """Public language metadata; transcription hints stay inside STT."""
+    return {
+        "aliases": LANGUAGE_CATALOG["aliases"],
+        "languages": {code: {"name": entry["name"]}
+                      for code, entry in LANGUAGE_CATALOG["languages"].items()},
+    }
+
 
 @app.get("/v1/audio/languages")
 async def get_audio_languages():

@@ -13,6 +13,13 @@ spec.loader.exec_module(prompts)
 
 
 class PromptTests(unittest.TestCase):
+    def test_aliases_and_region_codes_are_owned_by_stt(self):
+        model = Mock()
+        for language, code in (("nb-NO", "no"), ("fil-PH", "tl"), ("TR_tr", "tr")):
+            self.assertEqual(prompts.select_transcription_prompt(model, None, language),
+                             (code, prompts.LANGUAGE_PROMPTS[code]))
+        model.detect_language.assert_not_called()
+
     def test_requested_language_selects_hint_without_detection(self):
         model = Mock()
         for language in ("tr", "en"):

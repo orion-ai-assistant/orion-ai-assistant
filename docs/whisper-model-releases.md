@@ -48,10 +48,15 @@ model contents; adding another named model package can share the release.
 ## Language settings and prompts
 
 The single language catalog lives at
-`services/hub/src/orion/api/ui/js/stt_languages.json`. It contains all 100
+`services/stt/whisper/stt_languages.json`. It contains all 100
 Whisper language codes, display names, localized example prompts, and browser
-language aliases. Hub settings and the Whisper language endpoint use this catalog;
-the STT Docker services mount the same file read-only rather than duplicating it.
+language aliases. Only STT reads this file and selects transcription prompts. Its public
+`/v1/audio/language-catalog` endpoint exposes names and aliases without prompts.
+Router forwards that metadata at `/v1/audio/languages`; Hub exposes it to web and
+Flutter at `/api/v1/audio/languages` over its authenticated, pinned Router connection.
+The existing STT `/v1/audio/languages` dashboard list remains compatible.
+Hub settings validate code syntax without importing an engine catalog. STT handles
+its supported codes and aliases. STT can run independently of Hub/Flutter.
 
 `stt_language` is a user setting. An unset or seeded empty value lets the browser
 choose its primary language if supported, or automatic detection otherwise. A
@@ -59,5 +64,5 @@ saved language overrides the browser; saved `auto` explicitly keeps audio-based
 detection. Choosing a language selects its prompt; automatic detection selects the
 prompt after detecting the audio language. Custom request prompts still take priority.
 
-Restart Hub/STT after updating the catalog and reload the browser to pick up the
+Restart STT after updating the catalog and reload the browser to pick up the
 new choices. Prompt translations are editable examples, not fine-tuned weights.

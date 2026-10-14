@@ -27,15 +27,13 @@ router = APIRouter()
 
 
 @router.get("/api/v1/audio/languages")
-async def stt_language_catalog(current_user: str = Depends(get_current_user)):
-    from orion.contracts.settings import STT_LANGUAGE_CATALOG
-    return {
-        "aliases": STT_LANGUAGE_CATALOG["aliases"],
-        "languages": {
-            code: {"name": entry["name"]}
-            for code, entry in STT_LANGUAGE_CATALOG["languages"].items()
-        },
-    }
+async def stt_language_catalog(request: Request, current_user: str = Depends(get_current_user)):
+    from orion.api.services.stt_catalog import fetch_stt_catalog
+    settings = await get_runtime_settings(request.app.state.redis, current_user)
+    try:
+        return await fetch_stt_catalog(settings.router_api_key or "orion")
+    except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
+        raise HTTPException(503, "STT dil listesine şu anda ulaşılamıyor.") from exc
 
 from orion.contracts.tools import ToolSelection, default_tool_selection
 from orion.api.services.tool_service import read_selection, save_selection

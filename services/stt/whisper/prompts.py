@@ -7,7 +7,7 @@ from faster_whisper.audio import decode_audio
 
 CATALOG_PATH = Path(os.getenv(
     "WHISPER_LANGUAGE_CONFIG",
-    str(Path(__file__).resolve().parents[2] / "hub/src/orion/api/ui/js/stt_languages.json"),
+    str(Path(__file__).with_name("stt_languages.json")),
 ))
 LANGUAGE_CATALOG = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
 LANGUAGE_PROMPTS = {code: entry["prompt"] for code, entry in LANGUAGE_CATALOG["languages"].items()}
@@ -25,6 +25,9 @@ def select_transcription_prompt(model, audio, language=None, prompt=None,
     language = (language or "").strip().lower()
     if language in ("", "auto", "none"):
         language = None
+    elif language:
+        language = language.replace("_", "-").split("-")[0]
+        language = LANGUAGE_CATALOG["aliases"].get(language, language)
     custom_prompt = (prompt or "").strip()
     if language is None and not custom_prompt:
         if isinstance(audio, str):

@@ -17,15 +17,22 @@ const STT = {
     lastLiveText: '',
     _listenerAttached: false,
     _languageCatalogPromise: null,
+    _languageCatalogKey: null,
 
     async loadLanguageCatalog() {
+        const key = Auth.tokenKey;
+        if (this._languageCatalogKey !== key) {
+            this._languageCatalogKey = key;
+            this._languageCatalogPromise = null;
+        }
         if (!this._languageCatalogPromise) {
-            this._languageCatalogPromise = fetch('/js/stt_languages.json').then(response => {
+            this._languageCatalogPromise = API._fetch('/api/v1/audio/languages').then(response => {
                 if (!response.ok) throw new Error('STT dil listesi yüklenemedi.');
                 return response.json();
             }).catch(error => {
-                this._languageCatalogPromise = null;
-                throw error;
+                if (this._languageCatalogKey === key) this._languageCatalogPromise = null;
+                console.warn('STT language catalog:', error);
+                return {languages: {}, aliases: {}};
             });
         }
         return this._languageCatalogPromise;
@@ -38,7 +45,7 @@ const STT = {
         };
         if (saved != null && String(saved).trim()) {
             const code = normalize(saved);
-            return catalog.languages[code] ? code : 'auto';
+            return code === 'none' ? 'auto' : code;
         }
         const code = normalize(navigator.language || navigator.languages?.[0]);
         return catalog.languages[code] ? code : 'auto';

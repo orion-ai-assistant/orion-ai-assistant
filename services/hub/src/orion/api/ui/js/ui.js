@@ -993,6 +993,9 @@ const UI = {
                 try { name = displayNames?.of(code) || name; } catch {}
                 return {code, name};
             }).sort((a, b) => a.name.localeCompare(b.name, OrionI18n.language));
+              if (value !== 'auto' && !choices.some(choice => choice.code === value)) {
+                  choices.push({code: value, name: value});
+              }
             select.replaceChildren(new Option(OrionI18n.t('sttAutomaticLanguage'), 'auto'));
             for (const choice of choices) select.add(new Option(`${choice.name} (${choice.code})`, choice.code));
             select.value = value;

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const base = path.join(__dirname, '../src/orion/api/ui/js');
-const catalog = JSON.parse(fs.readFileSync(path.join(base, 'stt_languages.json'), 'utf8'));
+const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../../stt/whisper/stt_languages.json'), 'utf8'));
 
 function setup(browserLanguage, saved = null) {
     const classes = new Set();
@@ -22,8 +22,8 @@ function setup(browserLanguage, saved = null) {
         document: {getElementById: id => elements[id] || null},
         Option: function(label, value) {this.text = label; this.value = value;},
         OrionI18n: {language: 'tr', t: key => key}, console, clearTimeout,
-        fetch: async url => {fetches++; assert.equal(url, '/js/stt_languages.json'); return {ok: true, json: async () => catalog};},
-        API: {saveSettings: async (key, value) => {requests.push({key, value}); return {[key]: value};}},
+        Auth: {tokenKey: 'test'},
+        API: {_fetch: async url => {fetches++; assert.equal(url, '/api/v1/audio/languages'); return {ok: true, json: async () => catalog};}, saveSettings: async (key, value) => {requests.push({key, value}); return {[key]: value};}},
     };
     vm.runInNewContext(fs.readFileSync(path.join(base, 'stt.js'), 'utf8'), sandbox);
     vm.runInNewContext(fs.readFileSync(path.join(base, 'ui.js'), 'utf8') + '\nwindow.UI = UI;', sandbox);
@@ -67,4 +67,35 @@ test('polling preserves unsaved language edits and explicit auto is saved', asyn
     assert.equal(h.ui.currentSettings.stt_language, 'auto');
     await h.ui.loadSttLanguageChoices();
     assert.equal(h.select.value, 'auto');
+});
+
+
+test('offline STT preserves a saved language and retries the catalog', async () => {
+    const h = setup('tr-TR', 'en');
+    h.ui.currentSettings.stt_language = 'en';
+    // A saved preference must remain usable even when capabilities are unavailable.
+    const script = fs.readFileSync(path.join(base, 'stt.js'), 'utf8');
+    let attempts = 0;
+    const sandbox = {window: {}, navigator: {language: 'tr-TR'}, Auth: {tokenKey: 'hub-a'},
+        API: {_fetch: async () => {attempts++; throw new Error('offline');}},
+        console: {warn() {}}};
+    vm.runInNewContext(script, sandbox);
+    const stt = sandbox.window.STT;
+    const empty = await stt.loadLanguageCatalog();
+    assert.equal(stt.resolveLanguage('en', empty), 'en');
+    assert.equal(stt.resolveLanguage('auto', empty), 'auto');
+    assert.equal(stt.resolveLanguage(null, empty), 'auto');
+    await stt.loadLanguageCatalog();
+    assert.equal(attempts, 2);
+});
+
+test('switching Hub reloads the language metadata', async () => {
+    let attempts = 0;
+    const sandbox = {window: {}, navigator: {language: 'tr-TR'}, Auth: {tokenKey: 'hub-a'},
+        API: {_fetch: async () => {attempts++; return {ok: true, json: async () => catalog};}}, console};
+    vm.runInNewContext(fs.readFileSync(path.join(base, 'stt.js'), 'utf8'), sandbox);
+    await sandbox.window.STT.loadLanguageCatalog();
+    sandbox.Auth.tokenKey = 'hub-b';
+    await sandbox.window.STT.loadLanguageCatalog();
+    assert.equal(attempts, 2);
 });

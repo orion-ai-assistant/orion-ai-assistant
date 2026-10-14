@@ -1,9 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
-import json
-from pathlib import Path
+import re
 from orion.contracts.tools import ToolSelection, default_tool_selection
-
-STT_LANGUAGE_CATALOG = json.loads((Path(__file__).resolve().parents[1] / "api/ui/js/stt_languages.json").read_text(encoding="utf-8"))
 
 class SystemSettings(BaseModel):
     result_ttl_seconds: int = Field(default=86400, ge=1, le=2592000)
@@ -61,9 +58,10 @@ class AISettings(BaseModel):
         code = str(value).strip().lower().replace("_", "-").split("-")[0]
         if code in ("auto", "none"):
             return "auto"
-        code = STT_LANGUAGE_CATALOG["aliases"].get(code, code)
-        if code not in STT_LANGUAGE_CATALOG["languages"]:
-            raise ValueError("Unsupported STT language")
+        # Hub stores a preference without requiring a particular STT engine.
+        # Supported languages and aliases belong to that engine's catalog.
+        if not re.fullmatch(r"[a-z]{2,3}", code):
+            raise ValueError("Invalid STT language code")
         return code
 
     # TTS Configuration
