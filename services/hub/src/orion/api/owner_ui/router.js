@@ -7,10 +7,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const access = document.getElementById('router-access');
     const password = document.getElementById('router-password');
     let currentRouterId;
+    let discoveredRouters = null;
     async function loadStatus() {
         const data = await request('');
         show(data.selected);
         currentRouterId = data.selected?.id;
+        if (discoveredRouters !== null) renderRouters();
         document.getElementById('router-access-status').textContent = data.message;
         access.hidden = !data.selected || data.access_ready;
     }
@@ -44,10 +46,10 @@ document.addEventListener('DOMContentLoaded', () => {
         show((await request('', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({...selection, ...(fp ? {fp} : {})})})).selected);
         await loadStatus();
     }
-    refresh.onclick = () => operation(async () => {
-        const data = await request('/discover');
+    function renderRouters() {
         list.replaceChildren();
-        for (const router of data.routers) {
+        const available = discoveredRouters.filter(router => router.id !== currentRouterId);
+        for (const router of available) {
             const card = document.createElement('article'); card.className = 'router-card';
             const details = document.createElement('div'); details.className = 'router-details';
             const title = document.createElement('h3'); title.textContent = router.name;
@@ -59,7 +61,15 @@ document.addEventListener('DOMContentLoaded', () => {
             button.onclick = () => operation(async () => { button.disabled = true; button.textContent = 'Bağlanıyor…'; try { await save({id: router.id}); button.textContent = 'Bağlandı'; } finally { button.disabled = false; if (button.textContent !== 'Bağlandı') button.textContent = 'Bağlan'; } });
             card.append(details, button); list.append(card);
         }
-        if (!data.routers.length) list.textContent = 'Router bulunamadı. Aynı ağda açık olduğundan emin ol veya elle adres yaz.';
+        if (!available.length) list.textContent = currentRouterId
+            ? 'Bağlı Router dışında başka Router bulunamadı.'
+            : 'Router bulunamadı. Aynı ağda açık olduğundan emin ol veya elle adres yaz.';
+    }
+    refresh.onclick = () => operation(async () => {
+        await loadStatus();
+        const data = await request('/discover');
+        discoveredRouters = data.routers;
+        renderRouters();
     });
     manual.onsubmit = event => {
         event.preventDefault();

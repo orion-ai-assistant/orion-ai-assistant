@@ -62,7 +62,57 @@ class RouterBootstrapTests(unittest.IsolatedAsyncioTestCase):
             result = await select(Selection(id=self.tls['id']), None)
         self.assertTrue(result['identity_verified'])
         self.assertEqual(read_connection()['fp'], self.tls['fp'])
-        self.assertEqual(self.requests, 1)
+        self.assertEqual(self.requests, 2)
+
+    async def discover(self, records):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from orion.api.router_connection import discover
+        manager = SimpleNamespace(directory=SimpleNamespace(list=AsyncMock(return_value=records)))
+        with patch('orion.api.router_connection.association', return_value=manager):
+            return (await discover(None))['routers']
+
+    async def test_live_local_and_lan_addresses_produce_one_named_router(self):
+        remote = {'id': self.tls['id'], 'name': 'LAN hint', 'url': 'https://192.168.1.20:9443/'}
+        records = await self.discover([remote])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['id'], self.tls['id'])
+        self.assertEqual(records[0]['name'], self.identity['name'])
+        self.assertEqual(records[0]['url'], f'https://127.0.0.1:{self.port}')
+        self.assertTrue(records[0]['same_pc'])
+        self.assertNotIn('fp', records[0])
+        self.assertEqual(self.store.routers(), [])
+        from services.shared.router_connection import read_connection
+        self.assertIsNone(read_connection())
+        # Cached discovery records must not be modified by the merge.
+        self.assertEqual(remote['name'], 'LAN hint')
+
+    async def test_stale_installation_key_does_not_create_a_second_card(self):
+        replacement = tls_identity(self.root / 'replacement')
+        shutil.copyfile(replacement['cert'], self.public_cert)
+        remote = {'id': self.tls['id'], 'name': 'Live Router', 'url': 'https://192.168.1.20:9443/'}
+        self.assertEqual(await self.discover([remote]), [remote])
+        self.assertEqual(self.requests, 0)
+        self.assertEqual(self.store.routers(), [])
+
+    async def test_wrong_live_uuid_does_not_merge_or_advertise_stale_local_record(self):
+        self.identity = {**self.identity, 'id': '11111111-1111-4111-8111-111111111111'}
+        remote = {'id': self.identity['id'], 'name': 'Live Router', 'url': 'https://192.168.1.20:9443/'}
+        self.assertEqual(await self.discover([remote]), [remote])
+        self.assertEqual(self.store.routers(), [])
+
+    async def test_separate_installations_with_same_name_remain_separate(self):
+        remote = {'id': '11111111-1111-4111-8111-111111111111',
+                  'name': self.identity['name'], 'url': 'https://192.168.1.20:9443/'}
+        records = await self.discover([remote])
+        self.assertEqual(len(records), 2)
+        self.assertTrue(records[0]['same_pc'])
+        self.assertEqual(records[1], remote)
+
+    async def test_unavailable_local_listener_leaves_lan_discovery_usable(self):
+        await self.site.stop()
+        remote = {'id': self.tls['id'], 'name': 'Live Router', 'url': 'https://192.168.1.20:9443/'}
+        self.assertEqual(await self.discover([remote]), [remote])
 
     async def test_fresh_install_trusts_only_verified_filesystem_identity(self):
         self.assertEqual(self.store.routers(), [])

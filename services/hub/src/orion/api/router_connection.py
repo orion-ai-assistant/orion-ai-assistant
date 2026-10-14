@@ -122,6 +122,13 @@ async def discover(request: Request):
     records = await manager.directory.list()
     try:
         local = await local_router_identity()
+        if local:
+            # Installer files can outlive the process using this port. Only show
+            # automatic local verification after checking the live UUID and pin.
+            # This probe never enrolls trust or changes the selected Router.
+            identity = await asyncio.wait_for(
+                verify_router(local['url'], local['id'], local['fp']), timeout=2)
+            local = {**local, 'name': identity.get('name') or local['name']}
     except Exception:
         local = None
     if local:
