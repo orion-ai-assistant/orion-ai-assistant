@@ -155,6 +155,38 @@ const UI = {
         if (file.media_path) this.observeAttachment(card, load);
         return card;
     },
+    audioControls(audio) {
+        const box = document.createElement('div'); box.className = 'media-audio-player';
+        const row = document.createElement('div'); row.className = 'pcm-player';
+        const button = document.createElement('button'); button.type = 'button';
+        const slider = document.createElement('input'); slider.type = 'range';
+        slider.min = '0'; slider.step = '0.01'; slider.setAttribute('aria-label', 'Ses konumu');
+        const time = document.createElement('span'); time.className = 'pcm-time';
+        const format = n => `${Math.floor(n / 60)}:${String(Math.floor(n % 60)).padStart(2, '0')}`;
+        const update = () => {
+            const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+            const position = audio.currentTime || 0;
+            button.textContent = audio.paused === false ? '❚❚' : '▶';
+            button.setAttribute('aria-label', audio.paused === false ? 'Duraklat' : 'Oynat');
+            slider.max = String(duration || 1); slider.value = String(Math.min(position, duration));
+            slider.disabled = duration <= 0;
+            time.textContent = `${format(position)} / ${format(duration)}`;
+        };
+        button.onclick = () => {
+            if (audio.paused !== false) audio.play().catch(() => { time.textContent = 'Oynatılamadı · Tekrar dene'; });
+            else audio.pause();
+        };
+        slider.oninput = () => { audio.currentTime = Number(slider.value); update(); };
+        for (const event of ['loadedmetadata', 'durationchange', 'timeupdate', 'play', 'pause', 'ended']) audio.addEventListener(event, update);
+        audio.addEventListener('play', () => {
+            window.PcmSpeech?.stop();
+            document.querySelectorAll?.('audio').forEach(other => { if (other !== audio) other.pause(); });
+        });
+        audio.addEventListener('error', () => { time.textContent = 'Ses yüklenemedi'; });
+        audio.controls = false; audio.preload = 'metadata';
+        row.append(button, time, slider); box.append(row, audio); update();
+        return box;
+    },
     openAttachment(file) {
         const modal = document.createElement('dialog');
         modal.className = 'attachment-dialog';
@@ -168,10 +200,11 @@ const UI = {
         content.ondragstart = (e) => e.preventDefault();
         if (file.isText) content.textContent = file.data;
         else if (!file.media_path) content.src = file.data;
-        if (kind === 'video' || kind === 'audio') { content.controls = true; content.autoplay = true; }
+        if (kind === 'video') { content.controls = true; content.autoplay = true; }
+        if (kind === 'audio') content.autoplay = false;
         if (kind === 'img') content.alt = file.name || OrionI18n.t('image');
         if (file.isText) modal.className += ' attachment-text-dialog';
-        modal.append(content, title);
+        modal.append(kind === 'audio' ? this.audioControls(content) : content, title);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
@@ -423,7 +456,7 @@ const UI = {
         if (!audioData.audio) {
             if (botDiv.querySelector('.audio-player-container')) return;
             const box = document.createElement('div'); box.className = 'audio-player-container';
-            const button = document.createElement('button'); button.type = 'button'; button.textContent = '▶ Ses';
+            const button = document.createElement('button'); button.type = 'button'; button.className = 'audio-load-button'; button.textContent = '▶ Ses';
             const request = new AbortController();
             const record = {request, url: null, box};
             (this._mediaPlayers ||= new Set()).add(record);
@@ -443,7 +476,7 @@ const UI = {
                     record.url = URL.createObjectURL(blob);
                     const player = document.createElement('audio'); player.controls = true; player.src = record.url;
                     player.addEventListener('play', () => window.PcmSpeech?.stop());
-                    box.replaceChildren(player);
+                    box.replaceChildren(this.audioControls(player));
                     player.play().catch(() => {});
                 } catch (error) {
                     if (!request.signal.aborted) { button.disabled = false; button.textContent = 'Ses yüklenemedi · Tekrar dene'; }

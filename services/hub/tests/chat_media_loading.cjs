@@ -8,11 +8,11 @@ class Element {
     append(...children) { this.children.push(...children); }
     replaceChildren(...children) { this.children = children; }
     setAttribute() {}
-    addEventListener() {}
+    addEventListener(name, callback) { (this.listeners ||= {})[name] = callback; }
     showModal() {}
     close() { this.onclose?.(); }
     remove() { this.removed = true; }
-    play() { return Promise.resolve(); }
+    play() { this.plays = (this.plays || 0) + 1; this.paused = false; this.listeners?.play?.(); return Promise.resolve(); }
     pause() { this.paused = true; }
     querySelector(selector) {
         for (const child of this.children) {
@@ -61,11 +61,25 @@ const media = {name: 'photo.png', mime_type: 'image/png', media_id: id, media_pa
     dialog.close();
     assert.equal(calls, 1, 'Opening the preview reuses the downloaded thumbnail bytes');
     assert.equal(revoked, 0, 'The shared URL stays alive for its thumbnail until history is cleared');
+    ui.openAttachment({...media, name: 'voice.wav', mime_type: 'audio/wav'});
+    await new Promise(resolve => setImmediate(resolve));
+    const audioDialog = body.children[1];
+    const audio = audioDialog.querySelector('audio');
+    assert.equal(audio.autoplay, false);
+    assert.equal(audio.plays || 0, 0, 'Opening an audio attachment must stay paused');
+    assert.equal(audio.controls, false, 'Use themed controls');
+    audio.duration = 9; audio.currentTime = 0; audio.listeners.loadedmetadata();
+    assert.equal(audioDialog.querySelector('span').textContent, '0:00 / 0:09');
+    audioDialog.querySelector('button').onclick();
+    assert.equal(audio.plays, 1);
+    audioDialog.close();
+    assert.equal(audio.paused, true);
     const target = new Element('div');
     ui._getOrCreateChatState = () => ({botDiv: target});
     ui.appendAudio('chat', {media_path: media.media_path, format: 'ogg'}, false, target);
     assert.equal(calls, 1, 'History audio loads only when played');
     const button = target.querySelector('button');
+    assert.equal(button.className, "audio-load-button");
     await button.onclick();
     assert.equal(target.querySelector('audio').src, 'blob:2');
     ui.clearChatArea();

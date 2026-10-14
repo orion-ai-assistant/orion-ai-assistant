@@ -3657,3 +3657,17 @@ details[open] > .think-summary::before {
     inset:auto auto 24px 50%; translate:-50% 0;
     background:#323232; color:#f1f5f9; border:0;
 }
+
+/* File audio shares the chat player's theme. */
+.media-audio-player { width: min(420px, 80vw); }
+.media-audio-player audio { display: none; }
+.media-audio-player .pcm-player { color: var(--text-primary); background: var(--bg-surface); }
+.audio-load-button {
+    display: inline-flex; align-items: center; padding: 8px 14px;
+    border: 1px solid var(--border-subtle); border-radius: 20px;
+    background: var(--bg-surface); color: var(--text-secondary); cursor: pointer;
+    font: inherit; font-size: 13px;
+}
+.audio-load-button:hover { color: var(--text-primary); }
+.audio-load-button:disabled { opacity: .65; cursor: wait; }
+.audio-load-button:focus-visible { outline: 2px solid #10b981; outline-offset: 3px; }
