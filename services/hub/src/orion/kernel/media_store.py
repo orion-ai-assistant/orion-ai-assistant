@@ -10,6 +10,8 @@ from orion.kernel import registry
 
 MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _encoders = asyncio.Semaphore(2)
+_schema_lock = asyncio.Lock()
+_schema_ready = False
 
 
 async def ensure_table(conn):
@@ -20,9 +22,12 @@ async def ensure_table(conn):
             mime_type text not null,
             data bytea not null,
             created_at timestamptz not null default now(),
+            last_used_at timestamptz not null default now(),
             primary key(chat_id, id)
         )
     """)
+    await conn.execute('alter table orion_chat_media add column if not exists last_used_at timestamptz not null default now()')
+    await conn.execute('create index if not exists idx_orion_chat_media_last_used on orion_chat_media(last_used_at)')
 
 
 def media_path(chat_id, media_id):
@@ -42,12 +47,19 @@ def decode_data_url(value):
 
 
 async def _connection():
+    global _schema_ready
     conn = await registry._connect()
     if conn is None:
         raise RuntimeError('Media database unavailable')
     try:
-        await registry._ensure_tables(conn)
-        await ensure_table(conn)
+        # Run DDL once per process. Repeating ALTER TABLE on each read would
+        # wait on chat row locks before the cleaner could use SKIP LOCKED.
+        if not _schema_ready:
+            async with _schema_lock:
+                if not _schema_ready:
+                    await registry._ensure_tables(conn)
+                    await ensure_table(conn)
+                    _schema_ready = True
         return conn
     except BaseException:
         await conn.close()
@@ -58,7 +70,7 @@ async def _put(conn, chat_id, mime, raw):
     media_id = hashlib.sha256(raw).hexdigest()
     await conn.execute("""
         insert into orion_chat_media(chat_id,id,mime_type,data) values($1,$2,$3,$4)
-        on conflict(chat_id,id) do nothing
+        on conflict(chat_id,id) do update set last_used_at=now()
     """, chat_id, media_id, mime, raw)
     stored = await conn.fetchrow('select mime_type, octet_length(data) as size from orion_chat_media where chat_id=$1 and id=$2',
                                  chat_id, media_id)
@@ -84,6 +96,8 @@ async def store_attachments(chat_id, user_id, items):
                         chat_id, item['media_id'])
                     if row is None:
                         raise ValueError('Media reference does not belong to this chat')
+                    await conn.execute('update orion_chat_media set last_used_at=now() where chat_id=$1 and id=$2',
+                                       chat_id, item['media_id'])
                     item.update(mime_type=row['mime_type'], size=row['size'],
                                 media_path=media_path(chat_id, item['media_id']))
                     item.pop('data', None)
@@ -97,16 +111,101 @@ async def store_attachments(chat_id, user_id, items):
         await conn.close()
 
 
-async def read_media(chat_id, media_id):
+async def read_media_metadata(chat_id, media_id):
+    """Read size and MIME without transferring the bytea payload to the Hub."""
     conn = await _connection()
     try:
         row = await conn.fetchrow(
-            'select mime_type,data from orion_chat_media where chat_id=$1 and id=$2', chat_id, media_id)
+            'select mime_type, octet_length(data) as size from orion_chat_media where chat_id=$1 and id=$2',
+            chat_id, media_id)
+        if row is None:
+            raise LookupError('Media not found')
+        return row['mime_type'], row['size']
+    finally:
+        await conn.close()
+
+
+async def read_media(chat_id, media_id, *, offset=0, length=None):
+    conn = await _connection()
+    try:
+        if length is None:
+            row = await conn.fetchrow(
+                'select mime_type,data from orion_chat_media where chat_id=$1 and id=$2', chat_id, media_id)
+        else:
+            if offset < 0 or length < 0:
+                raise ValueError('Invalid media slice')
+            row = await conn.fetchrow('''
+                select mime_type, substring(data from $3::int for $4::int) as data
+                from orion_chat_media where chat_id=$1 and id=$2
+            ''', chat_id, media_id, offset + 1, length)
         if row is None:
             raise LookupError('Media not found')
         return row['mime_type'], bytes(row['data'])
     finally:
         await conn.close()
+
+
+async def cleanup_orphan_media(redis, *, limit=100):
+    """Remove old unreferenced media, retaining cached and in-flight chat data."""
+    from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX
+    if not 1 <= limit <= 100:
+        raise ValueError('Cleanup batch must be between 1 and 100')
+    conn = await _connection()
+    try:
+        async with conn.transaction():
+            candidates = await conn.fetch('''
+                select m.chat_id,m.id from orion_chat_media m
+                where m.last_used_at < now() - interval '48 hours'
+                  and not exists (select 1 from orion_chat_messages msg
+                      where msg.chat_id=m.chat_id and strpos(msg.content_json,m.id)>0)
+                order by m.last_used_at,m.chat_id,m.id limit $1
+            ''', limit)
+            removed = 0
+            allowed = {}
+            for candidate in candidates:
+                chat_id = candidate['chat_id']
+                if chat_id not in allowed:
+                    # Admission and TTS persistence take this same chat lock.
+                    # Skip busy chats rather than blocking a send or deletion.
+                    locked = await conn.fetchval('select id from orion_chats where id=$1 for update skip locked', chat_id)
+                    allowed[chat_id] = (bool(locked), bool(locked) and not await redis.exists(
+                        CHAT_HISTORY_KEY_PREFIX + chat_id, CHAT_STATE_KEY_PREFIX + chat_id,
+                        ACTIVE_TURN_KEY_PREFIX + chat_id))
+                locked, can_delete = allowed[chat_id]
+                if not can_delete:
+                    if locked:
+                        # Cached/in-flight data counts as recent use. Defer it
+                        # so hot chats cannot monopolize the oldest-first batch.
+                        await conn.execute('update orion_chat_media set last_used_at=now() where chat_id=$1 and id=$2',
+                                           chat_id, candidate['id'])
+                    continue
+                deleted = await conn.fetchval('''
+                    delete from orion_chat_media m where m.chat_id=$1 and m.id=$2
+                      and m.last_used_at < now() - interval '48 hours'
+                      and not exists (select 1 from orion_chat_messages msg
+                          where msg.chat_id=m.chat_id and strpos(msg.content_json,m.id)>0)
+                    returning m.id
+                ''', chat_id, candidate['id'])
+                removed += deleted is not None
+            return removed
+    finally:
+        await conn.close()
+
+
+async def media_cleanup_loop(redis, owner):
+    import logging
+    from orion.kernel.job_safety import OWNER_KEY
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            if await redis.get(OWNER_KEY) != owner:
+                return
+            removed = await cleanup_orphan_media(redis)
+            if removed:
+                logging.info('Removed %d orphan chat media records', removed)
+        except Exception:
+            # A Redis/DB failure must roll back deletion and never stop inference.
+            logging.exception('Orphan media cleanup skipped after a storage/cache error')
 
 
 async def hydrate_attachments(chat_id, items):

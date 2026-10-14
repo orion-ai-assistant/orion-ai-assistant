@@ -184,37 +184,49 @@ async def get_turn_audio_endpoint(chat_id: str, turn_id: str, request: Request, 
 async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
                               current_user: str = Depends(get_current_user)):
     import re
-    from orion.kernel.media_store import read_media
+    from orion.kernel.media_store import read_media, read_media_metadata
     await ensure_chat_access(request.app.state.redis, current_user, chat_id)
     if not re.fullmatch(r'[0-9a-f]{64}', media_id):
         raise HTTPException(404, 'Media not found')
     try:
-        mime, raw = await read_media(chat_id, media_id)
+        mime, total = await read_media_metadata(chat_id, media_id)
     except LookupError as exc:
         raise HTTPException(404, 'Media not found') from exc
     except RuntimeError as exc:
         raise HTTPException(503, 'Media unavailable') from exc
-    total = len(raw)
     headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
                'Content-Security-Policy': "sandbox; default-src 'none'", 'Accept-Ranges': 'bytes',
                'Content-Length': str(total)}
     status_code = 200
+    start, length = 0, None
     if request.method == 'GET':
         match = re.fullmatch(r'bytes=(\d*)-(\d*)', request.headers.get('range', ''))
         if match and any(match.groups()):
-            start, end = match.groups()
-            if start:
-                start = int(start)
-                end = min(int(end), total - 1) if end else total - 1
+            first, last = match.groups()
+            # Saturate huge numbers before int conversion or DB integer binding.
+            def bounded(value):
+                value = value.lstrip('0') or '0'
+                return total if len(value) > len(str(total)) else min(int(value), total)
+            if first:
+                start = bounded(first)
+                end = min(bounded(last), total - 1) if last else total - 1
             else:
-                length = int(end)
-                start, end = max(0, total - length), total - 1
+                suffix = bounded(last)
+                start, end = max(0, total - suffix), total - 1
             if start > end or start >= total:
                 return Response(status_code=416, headers={**headers, 'Content-Range': f'bytes */{total}', 'Content-Length': '0'})
-            raw = raw[start:end + 1]
-            headers.update({'Content-Range': f'bytes {start}-{end}/{total}', 'Content-Length': str(len(raw))})
+            length = end - start + 1
+            headers.update({'Content-Range': f'bytes {start}-{end}/{total}', 'Content-Length': str(length)})
             status_code = 206
-    return Response(content=raw if request.method != 'HEAD' else b'', media_type=mime,
+    raw = b''
+    if request.method != 'HEAD':
+        try:
+            _, raw = await read_media(chat_id, media_id, offset=start, length=length)
+        except LookupError as exc:
+            raise HTTPException(404, 'Media not found') from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, 'Media unavailable') from exc
+    return Response(content=raw, media_type=mime,
                     headers=headers, status_code=status_code)
 
 class ChatRenameRequest(BaseModel):

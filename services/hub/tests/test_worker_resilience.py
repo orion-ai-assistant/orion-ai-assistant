@@ -14,6 +14,9 @@ from orion.worker import main as worker
 
 class WorkerResilienceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        cleanup = patch('orion.kernel.media_store.media_cleanup_loop', AsyncMock())
+        cleanup.start()
+        self.addCleanup(cleanup.stop)
         # These tests isolate the read/backoff loop; journal/recovery and locks
         # have separate real-Redis integration tests.
         for name, replacement in [

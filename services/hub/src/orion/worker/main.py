@@ -2,6 +2,7 @@ import asyncio
 import logging
 import json
 import socket
+from contextlib import suppress
 
 from redis.asyncio import Redis
 from redis.exceptions import (
@@ -117,6 +118,7 @@ async def run_owned() -> None:
     in_flight: set[asyncio.Task] = set()
     active_turns = {}
     owner = None
+    media_cleanup = None
 
     async def run_with_limit(stream_id: str, fields: dict[str, str]) -> None:
         async with semaphore:
@@ -138,6 +140,8 @@ async def run_owned() -> None:
         semaphore = asyncio.Semaphore(settings.worker_max_concurrency)
         await ensure_consumer_group(redis)
         await recover_pending(redis, consumer_name, owner)
+        from orion.kernel.media_store import media_cleanup_loop
+        media_cleanup = asyncio.create_task(media_cleanup_loop(redis, owner))
         retry_delay = READ_RETRY_INITIAL
         while True:
             if task_failed.is_set():
@@ -177,6 +181,10 @@ async def run_owned() -> None:
                     if exception := finished.exception():
                         raise exception
     finally:
+        if media_cleanup is not None:
+            media_cleanup.cancel()
+            with suppress(asyncio.CancelledError):
+                await media_cleanup
         if in_flight:
             await asyncio.gather(*in_flight, return_exceptions=True)
         await close_session()

@@ -23,7 +23,7 @@ kullanır. Router'ın admin log arşivi bu akışa dahil değildir.
 Eklerin tamamı transaction ile kaydedilmeden iş Redis'e kabul edilmez. DB hatasında
 503 döner; istemci taslağı/eklerini koruyup tekrar gönderebilir. Birden fazla ekten
 biri bozuksa yeni binary INSERT'leri geri alınır. Başarılı medya yazımından sonra
-Redis kabulü başarısız olursa kayıtsız medya sohbet silinene kadar kalabilir.
+Redis kabulü başarısız olursa kayıtsız medya güvenli yetim temizliğine bırakılır.
 
 TTS Opus kodlaması başarısızsa orijinal ses binary saklanır. TTS'nin DB yazımı
 başarısızsa geçmiş için eski inline Base64 fallback korunur ve hata loglanır.
@@ -36,6 +36,14 @@ write-through davranışı DB hata durumunda Redis'e yazılan mesajlarla devam e
 ve sohbet sahipliği kontrolünden sonra binary döner. Başka sohbetin hash'i erişim
 vermez. Tek byte Range, 206/416, `nosniff`, sandbox CSP ve `private, no-store`
 başlıkları vardır. Admin Router anahtarı kullanılmaz.
+
+HEAD yalnızca MIME ve bayt boyutunu sorgular; payload Hub'a aktarılmaz. Range
+GET, SQL `substring(bytea)` ile yalnızca istenen aralığı Hub'a getirir. Tam GET
+mevcut boyut sınırı içinde tüm dosyayı getirir. Geçersiz/çoklu Range tam GET'e
+döner; karşılanamayan tek aralık 416 döner. PostgreSQL'in kendi sıkıştırması
+korunur: sıkıştırılmış TOAST değerlerinde DB içeride daha fazla veri çözebilir;
+bu değişiklik Hub RAM'i ve DB–Hub veri aktarımını azaltır, her durumda fiziksel
+diskte yalnızca o aralığın okunacağını garanti etmez. `STORAGE EXTERNAL` eklenmedi.
 
 Eski `/turns/{turn_id}/audio` JSON endpoint'i korunur. Yeni TTS referansları da
 bu endpoint'ten gerekirse Base64 okunabilir; güncel geçmiş arayüzleri binary yolu
@@ -57,6 +65,19 @@ uygulama kapanışından sonra taslak kurtarma bu değişikliğin kapsamı deği
 Sohbet silindiğinde FK `ON DELETE CASCADE` o sohbetin tüm binary medyasını siler.
 Medyanın ayrıca süresiz tutulması veya Router arşivinde olduğu gibi bağımsız
 saklanması amaçlanmaz. Flutter önbelleği kendi kapasite/yaş politikasıyla temizlenir.
+
+Worker çalışırken yetim medya kontrolü saatte bir (ilk kontrol açılıştan bir saat
+sonra), en fazla 100 adayla yapılır. Son kullanımından 48 saat geçmiş, o sohbetin
+hiçbir kalıcı mesajında hash'i bulunmayan medya adaydır. Mesaj JSON'undaki hash
+kontrolü konservatiftir: metinde hash'in geçmesi bile silmeyi engeller. Redis'te
+sohbet geçmişi, sohbet durumu veya aktif tur anahtarı varsa medya korunup bekleme
+süresi yenilenir. Mevcut referansın yeni gönderimde kullanılması da süreyi yeniler.
+Sohbet satırı kilidi kabul/saklama ile temizliği sıralar; başka işlemde kilitli
+sohbet atlanır. Redis güvenlik kontrolü başarısız olursa transaction geri alınır;
+DB/Redis hatası model üretimini durdurmaz. Bu işlem yaşlı ama kullanılan medyayı
+silmez ve medya toplamına bir kota uygulamaz. Kesintisiz aktif sohbetlerde
+yetimler daha uzun kalabilir. Worker kapalıyken otomatik temizlik çalışmaz.
+
 Tam PostgreSQL yedeği tabloyu içerir; seçici yedekte `orion_chat_media` eklenmelidir.
 
 Hub ve iki arayüz birlikte güncellenmelidir: eski ek arayüzleri yeni referansları
@@ -77,6 +98,9 @@ referans sahipliği, model payload'ı, Opus süresi, canlı WAV korunması ve GE
 kontrol edilir. `tests/chat_media_loading.cjs` Hub web'in ihtiyaç anında yüklemesini
 ve blob temizliğini kontrol eder. Flutter'da `test/chat_media_storage_test.dart`
 SQLite referansları, binary yükleme/önbellek ve indirilmeyen kartları doğrular.
+Medya testleri HEAD'de payload okunmamasını, Range'de sınırlı SQL okumasını,
+aralık uç durumlarını, yetim temizliği bekleme süresini, kullanılan/kilitli/Redis'te
+korunan kayıtları ve Redis hatasında silmelerin geri alınmasını da doğrular.
 
 ## Elle kontrol
 

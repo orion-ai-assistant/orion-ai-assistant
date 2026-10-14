@@ -72,7 +72,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         async def connection(*args, **kwargs):
-            return await asyncpg.connect(self.url)
+            return await asyncpg.connect(self.url, command_timeout=5)
         guard = patch.object(registry, '_connect', connection)
         guard.start()
         self.addCleanup(guard.stop)
@@ -203,15 +203,30 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
             app = SimpleNamespace(state=SimpleNamespace(redis=Mock()))
             return Request(dict(type='http', method=method, headers=headers, app=app))
         with patch.object(routes, 'ensure_chat_access', AsyncMock(side_effect=HTTPException(403))), \
-             patch.object(media_store, 'read_media', AsyncMock()) as read:
+             patch.object(media_store, 'read_media', AsyncMock()) as read, \
+             patch.object(media_store, 'read_media_metadata', AsyncMock()) as metadata:
             with self.assertRaises(HTTPException):
                 await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'bob')
             read.assert_not_called()
+            metadata.assert_not_called()
         with patch.object(routes, 'ensure_chat_access', AsyncMock()):
             full = await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'alice')
-            part = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=2-5')]), 'alice')
-            head = await routes.chat_media_endpoint('chat', ref['media_id'], request('HEAD'), 'alice')
-            invalid = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=10-')]), 'alice')
+            with patch.object(media_store, 'read_media', AsyncMock(wraps=media_store.read_media)) as read:
+                part = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=2-5')]), 'alice')
+                read.assert_awaited_once_with('chat', ref['media_id'], offset=2, length=4)
+            with patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('Payload must not be read'))) as read:
+                head = await routes.chat_media_endpoint('chat', ref['media_id'], request('HEAD', [(b'range', b'bytes=2-5')]), 'alice')
+                invalid = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=10-')]), 'alice')
+                read.assert_not_called()
+            for value, expected_status, expected_body in [
+                (b'bytes=-3', 206, b'789'), (b'bytes=7-', 206, b'789'),
+                (b'bytes=8-99999999999999999999999999999', 206, b'89'),
+                (b'bytes=99999999999999999999999-', 416, b''),
+                (b'bytes=-0', 416, b''), (b'bytes=5-2', 416, b''),
+                (b'bytes=0-1,4-5', 200, b'0123456789'), (b'invalid', 200, b'0123456789'),
+            ]:
+                response = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', value)]), 'alice')
+                self.assertEqual((response.status_code, response.body), (expected_status, expected_body))
         self.assertEqual(full.body, b'0123456789')
         self.assertEqual(part.body, b'2345')
         self.assertEqual(part.status_code, 206)
@@ -219,6 +234,76 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(head.headers['content-length'], '10')
         self.assertEqual(invalid.status_code, 416)
         self.assertEqual(full.headers['cache-control'], 'private, no-store')
+
+    async def age_media(self, *, hours=72):
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_chat_media set last_used_at=now()-$1::int * interval '1 hour'", hours)
+        finally:
+            await conn.close()
+
+    async def test_orphan_cleanup_retains_messages_and_recent_media(self):
+        refs = await media_store.store_attachments('chat', 'alice', [self.attachment(b'orphan'), self.attachment(b'attachment'),
+                                                                  self.attachment(b'tts'), self.attachment(b'tool')])
+        await registry.insert_messages('chat', [dict(role='user', content='hello', attachments=[refs[1]]),
+            dict(role='assistant', content='reply', audio=refs[2]),
+            dict(role='tool', content=json.dumps({'media_id': refs[3]['media_id']}))])
+        await self.age_media()
+        recent = (await media_store.store_attachments('chat', 'alice', [self.attachment(b'recent')]))[0]
+        redis = Mock(exists=AsyncMock(return_value=0))
+        self.assertEqual(await media_store.cleanup_orphan_media(redis), 1)
+        with self.assertRaises(LookupError):
+            await media_store.read_media('chat', refs[0]['media_id'])
+        for ref in [*refs[1:], recent]:
+            await media_store.read_media('chat', ref['media_id'])
+        self.assertEqual(await self.count(), 4)
+
+    async def test_orphan_cleanup_protects_redis_history_jobs_and_reused_references(self):
+        ref = (await media_store.store_attachments('chat', 'alice', [self.attachment()]))[0]
+        redis = Mock(exists=AsyncMock(return_value=1))
+        for key in ['chat:history:chat', 'chat:state:chat', 'active_turn:chat']:
+            await self.age_media()
+            async def exists(*keys):
+                return int(key in keys)
+            redis.exists = AsyncMock(side_effect=exists)
+            self.assertEqual(await media_store.cleanup_orphan_media(redis), 0)
+        await self.age_media()
+        await media_store.store_attachments('chat', 'alice', [ref])
+        redis.exists = AsyncMock(return_value=0)
+        self.assertEqual(await media_store.cleanup_orphan_media(redis), 0)
+        self.assertEqual(await self.count(), 1)
+
+    async def test_orphan_cleanup_is_bounded_skips_busy_chat_and_rolls_back_on_redis_error(self):
+        refs = await media_store.store_attachments('chat', 'alice', [self.attachment(b'one'), self.attachment(b'two')])
+        await media_store.store_attachments('other', 'bob', [self.attachment(b'three')])
+        await self.age_media()
+        lock = await registry._connect()
+        transaction = lock.transaction()
+        await transaction.start()
+        try:
+            await lock.fetchval("select id from orion_chats where id='chat' for update")
+            self.assertEqual(await media_store.cleanup_orphan_media(Mock(exists=AsyncMock(return_value=0))), 1)
+            self.assertEqual(await self.count(), 2)
+        finally:
+            await transaction.rollback()
+            await lock.close()
+        await media_store.store_attachments('other', 'bob', [self.attachment(b'four')])
+        await self.age_media()
+        with self.assertRaises(RuntimeError):
+            await media_store.cleanup_orphan_media(Mock(exists=AsyncMock(side_effect=[0, RuntimeError('Redis offline')])))
+        self.assertEqual(await self.count(), 3, 'Earlier deletes must roll back if cache safety checks fail')
+        self.assertEqual(await media_store.cleanup_orphan_media(Mock(exists=AsyncMock(return_value=0)), limit=1), 1)
+        self.assertEqual(await self.count(), 2)
+        with self.assertRaises(ValueError):
+            await media_store.cleanup_orphan_media(Mock(), limit=101)
+
+    async def test_cleanup_loop_is_hourly_and_stops_when_worker_owner_changes(self):
+        redis = Mock(get=AsyncMock(side_effect=['owner', 'replacement']))
+        with patch.object(media_store.asyncio, 'sleep', AsyncMock()) as sleep, \
+             patch.object(media_store, 'cleanup_orphan_media', AsyncMock(return_value=1)) as cleanup:
+            await media_store.media_cleanup_loop(redis, 'owner')
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [3600, 3600])
+        cleanup.assert_awaited_once_with(redis)
 
 
 if __name__ == '__main__':
