@@ -48,8 +48,12 @@ diskte yalnızca o aralığın okunacağını garanti etmez. `STORAGE EXTERNAL` 
 Eski `/turns/{turn_id}/audio` JSON endpoint'i korunur. Yeni TTS referansları da
 bu endpoint'ten gerekirse Base64 okunabilir; güncel geçmiş arayüzleri binary yolu
 kullanır. Hub web `include_audio=false` ister, eski sesleri de oynatınca yükler.
-Önizleme kapandığında blob URL iptal edilir; sohbet değişince ses istekleri ve
-blob oynatıcıları temizlenir.
+Sohbet geçmişinden gelen ek kartları görünür alana yaklaştığında yetkili binary
+indirmesi başlar; görsel/video küçük önizlemeleri mevcut kare kartlarda gösterilir.
+Kart ve açılan önizleme aynı blob URL'yi paylaşır; sohbet değişince istekler,
+blob URL'ler ve oynatıcılar temizlenir. TTS geçmiş sesi yine oynatınca yüklenir.
+Geçmişin gelecekte sayfalanması için yükleme yalnızca dönen mesaj/ek kartlarından
+tetiklenir; ayrı bir tüm-sohbet medya taraması yapılmaz.
 
 Flutter SQLite'ta yeni ekler referans olarak `metadata_json` içinde kalır.
 Telefon/masaüstü indirilen binary medyayı kullanıcı+Hub kapsamında hashlenmiş
@@ -59,6 +63,13 @@ tutulur. Web yalnızca bu sınırlı bellek önbelleğini kullanır. Bu önbelle
 arşiv değildir; işletim sistemi silebilir. Çevrimdışı yalnızca daha önce önbelleğe
 alınmış medya açılabilir. Gönderilmemiş ekler mevcut taslak davranışıyla korunur;
 uygulama kapanışından sonra taslak kurtarma bu değişikliğin kapsamı değildir.
+
+Flutter'da ekleri bulunan mesaj kartları oluşturulurken ek verisi yüklenir ve
+yerel dosyalarda kullanılan aynı kare görsel/video/ses önizleme bileşenlerine
+verilir. Mesaj metadata'sına binary veya Base64 geri yazılmaz. Kısa sohbetler
+üstten başlar; boş alan altta kalır. Uzun sohbet açıldığında son mesaja gidilir;
+akan cevaplar kullanıcı zaten alttaysa takip edilir, eski mesajları okuyan
+kullanıcı aşağı çekilmez.
 
 ## Silme, yedek ve dağıtım
 
@@ -115,9 +126,11 @@ korunan kayıtları ve Redis hatasında silmelerin geri alınmasını da doğrul
 5. TTS açıkken yeni yanıt üretin. Canlı sesi dinleyin; sohbetten çıkıp geri dönün
    ve geçmiş sesini tekrar oynatıp ileri/geri sarın. Başarılı WAV dönüşümünde kayıt
    `audio/ogg`, geçmiş metadata'sı `format=ogg` olmalı. Durdurulan yanıtı da kontrol edin.
-6. Tarayıcı Network panelinde sohbet açılırken `/media/` indirmesi yapılmadığını,
-   ek açma/oynatma sırasında yetkili binary GET geldiğini kontrol edin. Eski Base64
-   eklerde dosya zaten geçmiş JSON'unda bulunabilir; bu kontrol yeni kayıtlar içindir.
+6. Tarayıcı Network panelinde sohbet açılırken görünür ek kartlarının `/media/`
+   üzerinden yüklenip küçük önizleme gösterdiğini kontrol edin. Hub web'de ekran
+   dışındaki kartlar görünür alana yaklaşınca yüklenir. Kartı açarken aynı dosya
+   tekrar indirilmemeli. TTS geçmiş sesi oynatınca yüklenmeli. Eski Base64 eklerde
+   dosya zaten geçmiş JSON'unda bulunabilir; bu kontrol yeni kayıtlar içindir.
 7. Telefonda bir medyayı açın, sohbetten çıkıp dönerek tekrar açın. Dosya önbelleği
    oluşmuşsa ikinci açılış indirme gerektirmemeli. Bağlantı kesildiğinde daha önce
    önbelleğe alınmış medya açılabilir; hiç indirilmemiş medya yükleme hatası göstermeli.

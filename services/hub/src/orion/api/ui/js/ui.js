@@ -60,6 +60,35 @@ const UI = {
         if (!meta) { meta = document.createElement('div'); meta.className = 'message-meta'; div.appendChild(meta); }
         meta.appendChild(button);
     },
+    attachmentMedia(file) {
+        const cache = this._attachmentMedia ||= new Map();
+        let record = cache.get(file.media_path);
+        if (!record) {
+            record = {request: new AbortController(), url: null, previews: []};
+            cache.set(file.media_path, record);
+            record.promise = API.mediaBlob(file.media_path, record.request.signal).then(blob => {
+                if (record.request.signal.aborted) throw new Error('Medya yüklemesi iptal edildi.');
+                record.url = URL.createObjectURL(blob);
+                return record;
+            }).catch(error => {
+                if (cache.get(file.media_path) === record) cache.delete(file.media_path);
+                throw error;
+            });
+        }
+        return record.promise;
+    },
+    observeAttachment(card, load) {
+        card._loadAttachmentPreview = load;
+        if (typeof IntersectionObserver === 'undefined') { load(); return; }
+        this._attachmentObserver ||= new IntersectionObserver(entries => {
+            for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                this._attachmentObserver?.unobserve(entry.target);
+                entry.target._loadAttachmentPreview();
+            }
+        }, {root: this.chatArea, rootMargin: '200px'});
+        this._attachmentObserver.observe(card);
+    },
     createAttachmentCard(item) {
         const file = typeof item === 'string' ? { data: item, name: OrionI18n.t('file') } : item;
         const card = document.createElement('button');
@@ -76,9 +105,10 @@ const UI = {
         }
         const video = !file.isText && ((file.mime_type || '').startsWith('video/') || (file.data || '').startsWith('data:video/'));
         const audio = !file.isText && ((file.mime_type || '').startsWith('audio/') || (file.data || '').startsWith('data:audio/'));
-        if (!file.isText && !audio && !file.media_path) {
-            const preview = document.createElement(video ? 'video' : 'img');
-            preview.src = file.data;
+        let preview;
+        if (!file.isText && !audio) {
+            preview = document.createElement(video ? 'video' : 'img');
+            if (!file.media_path) preview.src = file.data;
             preview.setAttribute('draggable', 'false');
             preview.ondragstart = (e) => e.preventDefault();
             if (video) {
@@ -91,7 +121,7 @@ const UI = {
         } else {
             const icon = document.createElement('span');
             icon.className = 'attachment-icon';
-            icon.textContent = audio ? '♫' : video ? '▶' : file.media_path ? '▧' : '📄';
+            icon.textContent = audio ? '♫' : '📄';
             card.appendChild(icon);
         }
         if (video || audio) {
@@ -107,7 +137,22 @@ const UI = {
             card.appendChild(label);
         }
         if (video) card.className += ' attachment-video';
-        card.onclick = () => this.openAttachment(file);
+        let failed = false;
+        const load = () => {
+            failed = false;
+            card.title = file.name || OrionI18n.t('file');
+            this.attachmentMedia(file).then(record => {
+                if (record.request.signal.aborted) return;
+                if (preview) { preview.src = record.url; record.previews.push(preview); }
+            }).catch(error => {
+                if (this._attachmentMedia?.has(file.media_path)) return;
+                failed = true; card.title = `${file.name} — Yüklenemedi, tekrar dene`;
+            });
+        };
+        card.onclick = () => { if (failed) load(); this.openAttachment(file); };
+        // Only supplied history cards can request media. Visibility keeps this
+        // compatible with a future paginated history endpoint.
+        if (file.media_path) this.observeAttachment(card, load);
         return card;
     },
     openAttachment(file) {
@@ -130,16 +175,15 @@ const UI = {
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
-        let objectUrl;
-        modal.onclose = () => { request.abort(); if (content.pause) content.pause(); if (objectUrl) URL.revokeObjectURL(objectUrl); modal.remove(); };
+        (this._attachmentDialogs ||= new Set()).add(modal);
+        modal.onclose = () => { request.abort(); if (content.pause) content.pause(); this._attachmentDialogs.delete(modal); modal.remove(); };
         document.body.appendChild(modal);
         modal.showModal();
         if (file.media_path) {
             title.textContent += ' — Yükleniyor…';
-            API.mediaBlob(file.media_path, request.signal).then(blob => {
+            this.attachmentMedia(file).then(record => {
                 if (request.signal.aborted) return;
-                objectUrl = URL.createObjectURL(blob);
-                content.src = objectUrl;
+                content.src = record.url;
                 title.textContent = file.name || OrionI18n.t('file');
             }).catch(error => { if (!request.signal.aborted) title.textContent = error.message; });
         }
@@ -1167,6 +1211,18 @@ const UI = {
         }
     },
     clearChatArea() {
+        this._attachmentObserver?.disconnect();
+        this._attachmentObserver = null;
+        for (const modal of this._attachmentDialogs || []) modal.close();
+        this._attachmentDialogs?.clear();
+        for (const record of this._attachmentMedia?.values() || []) {
+            record.request.abort();
+            for (const preview of record.previews) {
+                preview.pause?.(); preview.removeAttribute?.('src'); preview.load?.();
+            }
+            if (record.url) URL.revokeObjectURL(record.url);
+        }
+        this._attachmentMedia?.clear();
         for (const record of this._mediaPlayers || []) {
             record.request.abort();
             record.box.querySelector('audio')?.pause();
