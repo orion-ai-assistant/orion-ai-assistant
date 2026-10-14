@@ -74,6 +74,23 @@ const media = {name: 'photo.png', mime_type: 'image/png', media_id: id, media_pa
     assert.equal(audio.plays, 1);
     audioDialog.close();
     assert.equal(audio.paused, true);
+    const text = Array.from({length: 10000}, (_, i) => `satır ${i}: uzun metin\n`).join('');
+    const pre = new Element('pre');
+    const pages = ui.textPreview(text, pre);
+    const controls = pages.children[0];
+    const [previous, status, next] = controls.children;
+    const restored = [];
+    const count = 50;
+    for (let page = 0; page < count; page++) {
+        assert.ok(pre.textContent.length <= 12000, 'Large text must never enter DOM in one chunk');
+        restored.push(pre.textContent);
+        assert.equal(status.textContent, `Bölüm ${page + 1} / ${count}`);
+        if (page < count - 1) next.onclick();
+    }
+    assert.equal(restored.join(''), text, 'Pagination keeps all text');
+    assert.equal(next.disabled, true);
+    previous.onclick();
+    assert.equal(status.textContent, `Bölüm ${count - 1} / ${count}`);
     const target = new Element('div');
     ui._getOrCreateChatState = () => ({botDiv: target});
     ui.appendAudio('chat', {media_path: media.media_path, format: 'ogg'}, false, target);

@@ -3671,3 +3671,19 @@ details[open] > .think-summary::before {
 .audio-load-button:hover { color: var(--text-primary); }
 .audio-load-button:disabled { opacity: .65; cursor: wait; }
 .audio-load-button:focus-visible { outline: 2px solid #10b981; outline-offset: 3px; }
+
+/* The full card is clickable; native video surfaces never take thumbnail clicks. */
+.media-square-item > * { pointer-events: none; }
+.attachment-play, .attachment-video .attachment-play {
+    left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%);
+    width: 32px; height: 32px; font-size: 16px;
+}
+.attachment-audio-icon { position: absolute; top: 5px; right: 5px; margin: 0; font-size: 14px; color: var(--text-secondary); }
+.attachment-text-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px; }
+.attachment-text-pagination button {
+    border: 1px solid var(--border-medium); border-radius: 8px; padding: 6px 10px;
+    color: var(--text-primary); background: var(--bg-surface); cursor: pointer;
+}
+.attachment-text-pagination button:disabled { opacity: .4; cursor: default; }
+.attachment-text-pages pre { max-height: 60vh; }
+.attachment-dialog > a { display: block; padding: 24px; color: var(--primary); }

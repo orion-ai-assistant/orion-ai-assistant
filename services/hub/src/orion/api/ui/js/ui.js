@@ -105,8 +105,9 @@ const UI = {
         }
         const video = !file.isText && ((file.mime_type || '').startsWith('video/') || (file.data || '').startsWith('data:video/'));
         const audio = !file.isText && ((file.mime_type || '').startsWith('audio/') || (file.data || '').startsWith('data:audio/'));
+        const image = (file.mime_type || '').startsWith('image/') || (file.data || '').startsWith('data:image/');
         let preview;
-        if (!file.isText && !audio) {
+        if (!file.isText && (image || video)) {
             preview = document.createElement(video ? 'video' : 'img');
             if (!file.media_path) preview.src = file.data;
             preview.setAttribute('draggable', 'false');
@@ -121,7 +122,8 @@ const UI = {
         } else {
             const icon = document.createElement('span');
             icon.className = 'attachment-icon';
-            icon.textContent = audio ? '♫' : '📄';
+            icon.textContent = audio ? '♫' : '▤';
+            if (audio) icon.className += ' attachment-audio-icon';
             card.appendChild(icon);
         }
         if (video || audio) {
@@ -130,7 +132,7 @@ const UI = {
             play.textContent = '▶';
             card.appendChild(play);
         }
-        if (file.isText || audio || file.media_path) {
+        if (file.name) {
             const label = document.createElement('span');
             label.className = 'attachment-name';
             label.textContent = file.name || OrionI18n.t('file');
@@ -187,6 +189,43 @@ const UI = {
         row.append(button, time, slider); box.append(row, audio); update();
         return box;
     },
+    textPreview(text, pre) {
+        const pageSize = 12000;
+        text = String(text || '');
+        const offsets = [0];
+        while (offsets[offsets.length - 1] < text.length) {
+            const start = offsets[offsets.length - 1];
+            const limit = Math.min(start + pageSize, text.length);
+            const chunk = text.slice(start, limit);
+            let cursor = 0, end = limit;
+            for (let line = 0; line < 200; line++) {
+                const newline = chunk.indexOf('\n', cursor);
+                if (newline < 0) break;
+                cursor = newline + 1;
+                if (line === 199) end = start + cursor;
+            }
+            if (end < text.length && end > start && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) end++;
+            offsets.push(end);
+        }
+        if (offsets.length <= 2) { pre.textContent = text; return pre; }
+        const box = document.createElement('div'); box.className = 'attachment-text-pages';
+        const controls = document.createElement('div'); controls.className = 'attachment-text-pagination';
+        const previous = document.createElement('button'); previous.type = 'button'; previous.textContent = '← Önceki';
+        const status = document.createElement('span'); status.setAttribute('aria-live', 'polite');
+        const next = document.createElement('button'); next.type = 'button'; next.textContent = 'Sonraki →';
+        let page = 0;
+        const count = offsets.length - 1;
+        const render = () => {
+            pre.textContent = text.slice(offsets[page], offsets[page + 1]);
+            pre.scrollTop = 0;
+            status.textContent = `Bölüm ${page + 1} / ${count}`;
+            previous.disabled = page === 0; next.disabled = page === count - 1;
+        };
+        previous.onclick = () => { if (page > 0) { page--; render(); } };
+        next.onclick = () => { if (page < count - 1) { page++; render(); } };
+        controls.append(previous, status, next); box.append(controls, pre); render();
+        return box;
+    },
     openAttachment(file) {
         const modal = document.createElement('dialog');
         modal.className = 'attachment-dialog';
@@ -194,17 +233,20 @@ const UI = {
         title.className = 'attachment-title';
         title.textContent = file.name || OrionI18n.t('file');
         const mime = file.mime_type || (file.data || '').split(';')[0].slice(5);
-        const kind = file.isText ? 'pre' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'img';
+        const kind = file.isText ? 'pre' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : mime.startsWith('image/') ? 'img' : 'a';
         const content = document.createElement(kind);
         content.setAttribute('draggable', 'false');
         content.ondragstart = (e) => e.preventDefault();
-        if (file.isText) content.textContent = file.data;
-        else if (!file.media_path) content.src = file.data;
+        if (kind === 'a') { content.textContent = 'Dosyayı indir'; content.download = file.name || 'dosya'; }
+        if (!file.isText && !file.media_path) {
+            if (kind === 'a') { if (/^data:|^blob:/.test(file.data || '')) content.href = file.data; }
+            else content.src = file.data;
+        }
         if (kind === 'video') { content.controls = true; content.autoplay = true; }
         if (kind === 'audio') content.autoplay = false;
         if (kind === 'img') content.alt = file.name || OrionI18n.t('image');
         if (file.isText) modal.className += ' attachment-text-dialog';
-        modal.append(kind === 'audio' ? this.audioControls(content) : content, title);
+        modal.append(file.isText ? this.textPreview(file.data, content) : kind === 'audio' ? this.audioControls(content) : content, title);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
@@ -216,7 +258,8 @@ const UI = {
             title.textContent += ' — Yükleniyor…';
             this.attachmentMedia(file).then(record => {
                 if (request.signal.aborted) return;
-                content.src = record.url;
+                if (kind === 'a') content.href = record.url;
+                else content.src = record.url;
                 title.textContent = file.name || OrionI18n.t('file');
             }).catch(error => { if (!request.signal.aborted) title.textContent = error.message; });
         }
