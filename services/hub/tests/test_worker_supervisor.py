@@ -127,7 +127,7 @@ class WorkerSupervisorTests(unittest.TestCase):
             now[0] = waits[0] - 1
             return False
 
-        settings = {'HUB_PORT': '8900', 'ORION_PUBLIC_PORT': '8911',
+        settings = {'ORION_FLUTTER_AUTOSTART': '0', 'HUB_PORT': '8900', 'ORION_PUBLIC_PORT': '8911',
                     'ORION_LOCAL_PORT': '8910', 'ORION_MOBILE_PORT': '8443',
                     'ORION_LOCAL_SHORTCUTS': '0', 'REDIS_PORT': '6379',
                     'POSTGRES_PORT': '5432'}

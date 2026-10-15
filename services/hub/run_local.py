@@ -261,6 +261,22 @@ def main():
         print(f"[WORKER] {message}")
 
     supervisor = WorkerSupervisor(worker_proc, start_worker, replace_worker, stopping, report_worker)
+
+    # Installer's Hub button and manager.py both use this entry point.
+    try:
+        from services.shared.flutter_launcher import start_flutter
+        flutter_proc = start_flutter(repo_root, py_bin, get_env,
+            {int(hub_port), int(public_port), int(mobile_port), local_port,
+             shortcuts_port, int(redis_port), int(pg_port),
+             int(get_env('ORION_ROUTER_TLS_PORT', default='9443', required=False)),
+             int(get_env('ORION_ROUTER_LOCAL_PORT', default='20128', required=False)),
+             int(get_env('INSTALLER_PORT', default='7171', required=False))},
+            log_file, stopping)
+        if flutter_proc is not None:
+            processes.append(flutter_proc)
+            all_pids.append(flutter_proc.pid)
+    except (OSError, ValueError) as error:
+        print(f'[!] Flutter UI could not start: {error}', flush=True)
     
     # Write ALL PIDs to hub.pid so manager.py stop can cleanly kill them all
     write_pids(pid_path, all_pids)
