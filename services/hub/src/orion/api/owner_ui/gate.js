@@ -4,9 +4,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const gate = document.createElement('section');
     gate.className = 'gate';
     gate.hidden = true;
-    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. Bu sekmedeki yönetim oturumu 15 dakika geçerlidir.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">Yönetimi aç</button></form><p class="notice" role="alert" hidden></p><p><a href="${OwnerAPI.base === '/panel' ? '/' : OwnerAPI.url('/')}">← Başlangıca dön</a></p>`;
+    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. Bu sekmedeki yönetim oturumu 15 dakika geçerlidir.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">Yönetimi aç</button></form><p class="hint" data-default-password hidden></p><p class="notice" role="alert" hidden></p>`;
     document.body.appendChild(gate);
     const input = gate.querySelector('input'), button = gate.querySelector('button'), error = gate.querySelector('[role="alert"]');
+    async function showDefaultPassword() {
+        try {
+            const response = await OwnerAPI.fetch('/api/v1/owner/secure/password-info', {cache: 'no-store'});
+            if (!response.ok || OwnerGate.unlocked) return;
+            const info = await response.json();
+            if (info.default_password === 'orion' && !OwnerGate.unlocked) {
+                const hint = gate.querySelector('[data-default-password]');
+                hint.textContent = 'Varsayılan yönetici şifresi: orion';
+                hint.hidden = false;
+            }
+        } catch (_) { /* A failed check must never claim the default is active. */ }
+    }
     function unlock() {
         gate.remove();
         document.body.classList.remove('owner-locked');
@@ -41,6 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!OwnerGate.unlocked) {
             gate.hidden = false;
             input.focus();
+            void showDefaultPassword();
         }
     });
     document.addEventListener('visibilitychange', () => {
