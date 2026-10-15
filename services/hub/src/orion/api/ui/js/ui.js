@@ -268,16 +268,22 @@ const UI = {
             for (const [delta, label, symbol] of [[-1, 'Önceki ek', '‹'], [1, 'Sonraki ek', '›']]) {
                 const button = document.createElement('button');
                 button.type = 'button'; button.className = `attachment-nav attachment-nav-${delta < 0 ? 'previous' : 'next'}`;
-                button.textContent = symbol; button.setAttribute('aria-label', label);
+                button.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${delta < 0 ? 'M15 6l-6 6 6 6' : 'M9 6l6 6-6 6'}"/></svg>`;
+                button.setAttribute('aria-label', label);
                 button.disabled = index + delta < 0 || index + delta >= siblings.length;
                 button.onclick = () => move(delta); modal.appendChild(button);
             }
-            modal.onkeydown = event => {
-                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-                    event.preventDefault(); move(event.key === 'ArrowLeft' ? -1 : 1);
-                }
-            };
         }
+        modal.onkeydown = event => {
+            if (event.key === ' ' && (kind === 'audio' || kind === 'video')) {
+                event.preventDefault();
+                if (event.repeat) return;
+                if (content.paused) content.play().catch(error => { title.textContent = error.message; });
+                else content.pause();
+            } else if (siblings.length > 1 && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+                event.preventDefault(); move(event.key === 'ArrowLeft' ? -1 : 1);
+            }
+        };
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();

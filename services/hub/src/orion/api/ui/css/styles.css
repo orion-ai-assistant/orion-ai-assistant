@@ -3695,7 +3695,13 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
     font: inherit; font-size: 14px; cursor: pointer;
 }
 .attachment-close:focus-visible { outline: 2px solid #10b981; border-radius: 6px; }
-.attachment-nav { position: fixed; top: 50%; transform: translateY(-50%); border: 1px solid #ffffff30; border-radius: 50%; width: 44px; height: 44px; background: #20262dcc; color: white; font-size: 32px; cursor: pointer; }
+.attachment-nav { position: fixed; top: 50%; transform: translateY(-50%); display: grid; place-items: center; padding: 0; line-height: 1; border: 1px solid #ffffff30; border-radius: 50%; width: 44px; height: 44px; background: #20262dcc; color: white; font-size: 32px; cursor: pointer; transition: background .12s, border-color .12s, box-shadow .12s; }
+.attachment-nav:hover:not(:disabled) { background: #42685f; border-color: #79bdaa; }
+.attachment-nav:active:not(:disabled) { background: #10b981; border-color: #a7f3d0; box-shadow: 0 0 0 3px #10b98144; }
+.attachment-nav:focus-visible { outline: 2px solid #79bdaa; outline-offset: 3px; }
+.attachment-nav svg { display: block; pointer-events: none; }
+#image-preview-container::-webkit-scrollbar-thumb:hover, .user-media-container::-webkit-scrollbar-thumb:hover { background: #79bdaa; }
+#image-preview-container::-webkit-scrollbar-thumb:active, .user-media-container::-webkit-scrollbar-thumb:active { background: #10b981; }
 .attachment-nav-previous { left: 12px; }
 .attachment-nav-next { right: 12px; }
 .attachment-nav:disabled { opacity: .3; cursor: default; }
