@@ -28,6 +28,14 @@ class OwnerShortcut:
             return await JSONResponse({'detail': 'Yerel giriş için localhost kullanın.'},
                                       status_code=404 if removed else 403)(scope, receive, send)
         path = scope['path']
+        if scope['type'] == 'http' and scope['method'] in {'GET', 'HEAD'} and path in {'/hub', '/hub/'}:
+            from services.shared.environment import get_env
+            from services.shared.flutter_launcher import flutter_url
+            target = flutter_url(get_env) + '/'
+            query = scope.get('query_string', b'').decode('latin1')
+            if query:
+                target += '?' + query
+            return await RedirectResponse(target, status_code=307, headers={'Cache-Control': 'no-store'})(scope, receive, send)
         if scope['type'] == 'http' and scope['method'] in {'GET', 'HEAD'} and path in {'/manage.', '/manage./'}:
             return await RedirectResponse('/manage', status_code=307)(scope, receive, send)
         if scope['type'] == 'http' and path.rstrip('/') == '/orionrouter' and scope['method'] in {'GET', 'HEAD'}:

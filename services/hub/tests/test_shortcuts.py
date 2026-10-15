@@ -109,10 +109,9 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('auth-modal', home.text)
             for path in ['/hub', '/hub/']:
                 page = await client.get(path)
-                self.assertEqual(page.status_code, 200)
-                self.assertIn('auth-modal show', page.text)
-                self.assertRegex(page.text, r'src="/js/hub_picker\.js\?v=\d+"')
-                self.assertIn('href="/css/styles.css', page.text)
+                self.assertEqual(page.status_code, 307)
+                self.assertEqual(page.headers['location'], 'http://localhost:8090/')
+                self.assertNotIn('auth-modal', page.text)
             for path in ['/panel', '/panel/', '/panel/manage/', '/panel/admin/']:
                 page = await client.get(path)
                 self.assertEqual(page.status_code, 200, path)
@@ -146,7 +145,7 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bookmark_redirect_keeps_query_on_local_chat(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost', follow_redirects=True) as client:
-            self.assertEqual(str((await client.get('/dashboard/?hub=old')).url), 'http://localhost/hub?hub=old')
+            self.assertEqual(str((await client.get('/dashboard/?hub=old')).url), 'http://localhost:8090/?hub=old')
             self.assertEqual(str((await client.get('/dashboard/js/main.js?v=1')).url), 'http://localhost/js/main.js?v=1')
 
     async def test_lan_ip_dashboard_remains_available_but_not_owner_panel(self):
@@ -155,6 +154,18 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
             for path in ['/panel', '/manage/', '/admin/', '/api/v1/owner/people', '/api/v1/peers/test/auth/login']:
                 self.assertEqual((await client.get(path)).status_code, 403, path)
             self.assertEqual((await client.get('/api/v1/discovery/connection')).status_code, 403)
+
+    async def test_flutter_shortcut_respects_port_and_leaves_fragment_to_browser(self):
+        with patch.dict('os.environ', {'ORION_FLUTTER_PORT': '8123'}):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
+                for method in ['GET', 'HEAD']:
+                    response = await client.request(method, '/hub?hub=selected#invite=fixture')
+                    self.assertEqual(response.status_code, 307)
+                    self.assertEqual(response.headers['location'], 'http://localhost:8123/?hub=selected')
+                    self.assertEqual(response.headers['cache-control'], 'no-store')
+                    # Fragments never reach HTTP. RFC 9110 section 10.2.2
+                    # requires browsers to inherit them when Location has none.
+                    self.assertNotIn('#', response.headers['location'])
 
     async def test_connection_shows_current_lan_urls_only(self):
         with patch('orion.api.hub_directory.lan_addresses', return_value=['192.168.1.107']), \

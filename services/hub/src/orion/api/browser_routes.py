@@ -1,6 +1,7 @@
 """Authenticated local desktop browser controls. No cookies cross HTTP."""
 
 from typing import Literal, Optional
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -11,6 +12,8 @@ import sys
 from pathlib import Path
 from orion.api.access_boundary import is_desktop_peer
 from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable
+from services.shared.flutter_launcher import open_window
+from services.shared.environment import get_env
 
 router = APIRouter(prefix='/api/v1/browser')
 
@@ -23,6 +26,20 @@ def require_local(request):
 
 class OpenBrowser(BaseModel):
     browser: Optional[Literal['chrome', 'edge', 'brave']] = None
+
+
+@router.post('/panel/open')
+async def open_panel(request: Request, user: str = Depends(get_current_user)):
+    """Open a fixed local panel; this grants no owner session or API authority."""
+    require_local(request)
+    port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
+    try:
+        opened = await asyncio.to_thread(open_window, f'http://localhost:{port}/panel', allow_tab_fallback=False)
+    except OSError as error:
+        raise HTTPException(503, 'Hub panelinin uygulama penceresi açılamadı. Yeniden deneyin.') from error
+    if not opened:
+        raise HTTPException(503, 'Uygulama penceresi için bu bilgisayarda Chrome, Edge veya Brave kurulu olmalı.')
+    return {'message': 'Hub yönetim paneli ayrı Orion penceresinde açıldı.'}
 
 
 @router.get('')

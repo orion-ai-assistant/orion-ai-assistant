@@ -5,10 +5,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from services.shared.flutter_launcher import start_flutter
+from services.shared.flutter_launcher import start_flutter, open_window
 
 
 class FlutterLauncherTests(unittest.TestCase):
+    def test_strict_app_window_never_falls_back_to_normal_browser_tab(self):
+        with patch('services.shared.flutter_launcher.shutil.which', return_value=None), patch('services.shared.flutter_launcher.Path.is_file', return_value=False), patch('services.shared.flutter_launcher.webbrowser.open') as tab:
+            self.assertFalse(open_window('http://localhost:8910/panel', allow_tab_fallback=False))
+            tab.assert_not_called()
+
     def env(self, values):
         return lambda key, default=None, required=False: values.get(key, default)
 

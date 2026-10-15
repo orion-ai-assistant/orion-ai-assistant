@@ -18,7 +18,7 @@ def app_directory(repo_root, get_env):
     return Path(get_env('ORION_FLUTTER_APP_DIR', default=str(default), required=False)).resolve()
 
 
-def open_window(url):
+def open_window(url, *, allow_tab_fallback=True):
     """A dedicated UI profile must never become Orion's automation profile."""
     profile = Path(os.getenv('LOCALAPPDATA') or Path.home() / '.local' / 'share') / 'Orion' / 'flutter-ui-profile'
     candidates = [shutil.which(name) for name in ('msedge', 'google-chrome', 'chromium', 'brave-browser')]
@@ -32,8 +32,15 @@ def open_window(url):
             subprocess.Popen([candidate, f'--app={url}', f'--user-data-dir={profile}',
                               '--no-first-run', '--no-default-browser-check'],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-    webbrowser.open(url)
+            return True
+    return webbrowser.open(url) if allow_tab_fallback else False
+
+
+def flutter_url(get_env):
+    port = int(get_env('ORION_FLUTTER_PORT', default='8090', required=False))
+    if not 1 <= port <= 65535:
+        raise ValueError('ORION_FLUTTER_PORT must be a valid port')
+    return f'http://localhost:{port}'
 
 
 def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping):
@@ -56,7 +63,7 @@ def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping
     proc = subprocess.Popen([python, str(script), '--host', '127.0.0.1', '--port', str(port)], env=env,
                             cwd=str(directory), stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
                             creationflags=0x08000000 if os.name == 'nt' else 0)
-    url = f'http://localhost:{port}'
+    url = flutter_url(get_env)
 
     def ready():
         for _ in range(120):

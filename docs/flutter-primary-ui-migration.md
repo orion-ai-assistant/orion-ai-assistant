@@ -1,6 +1,6 @@
 # Flutter ana arayüz geçişi — 15 Ekim 2026
 
-Hub sunucusu, API, worker ve Router korunur. `/hub` karşılaştırma ve geri dönüş için açık kalır.
+Hub sunucusu, API, worker ve Router korunur. Eski HTML kaynakları referans olarak saklanır. Kullanıcının sonraki kararıyla yerel `/hub` ve `/hub/` artık Flutter'a yönlenir.
 
 | Akış / ayar | Eski Hub | Flutter | Bu geçiş |
 | --- | --- | --- | --- |
@@ -43,3 +43,11 @@ Hub sunucusu, API, worker ve Router korunur. `/hub` karşılaştırma ve geri d�
 - `flutter build web --no-pub --pwa-strategy=none` başarılı. Python başlatıcısı gerçek alt süreçle geçici portta denendi; sağlık işareti, özel Hub portu, HTML/JS/WASM MIME türleri doğrulandı. Test süreçleri kapatıldı.
 - `hub_connection_test.dart` grubundaki 5 hata API dosyasının önceki HEAD sürümüyle de aynı şekilde yeniden üretildi: iki testte taklit edilmemiş HTTP, üç testte eski ekran metni beklentileri. Bu grup geçiş kabulünden önce ayrıca güncellenmeli.
 - Gerçek Chrome/Edge/Brave izin penceresi, fiziksel telefon, mikrofon ve kamera kabulü henüz yapılmadı. İngilizce yerelleştirme ve eski durum ekranı eşdeğerliği tamamlanmadı. Bu nedenle `/hub` kapatılmadı; uzak web/QR bağlantıları eski girişleri kullanmayı sürdürür.
+
+## Yerel girişin Flutter'a yönlendirilmesi
+
+Kullanıcı kararıyla yerel `http://localhost/hub` ve yerel Hub portundaki `/hub/`, `ORION_FLUTTER_PORT` adresine 307 yönlendirmesi yapar. Query korunur; Location fragment içermez, böylece tarayıcı özgün davet fragmentini devralır. Eski HTML dosyaları silinmez. Uzak girişler localhost'a yönlendirilmez.
+
+Flutter'daki üst Hub paneli düğmesi `/api/v1/browser/panel/open` ile yalnızca yerel, oturum açmış kullanıcı için sabit yerel paneli uygulama penceresinde açar. API hedef URL, komut veya yönetici anahtarı kabul etmez; panelin kendi sahip girişi korunur. Chrome/Edge/Brave bulunamazsa normal sekmeye düşmek yerine açıklayıcı hata döner. Tarayıcı kartındaki yinelenen panel düğmesi kaldırılmıştır.
+
+Router adres seçimi ve Router uygulama penceresi bu değişikliğin dışındadır; kullanıcı bu aşamada yalnızca değerlendirme istedi.
