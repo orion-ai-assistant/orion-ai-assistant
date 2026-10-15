@@ -35,3 +35,11 @@ Hub sunucusu, API, worker ve Router korunur. `/hub` karşılaştırma ve geri d�
 - Flutter web bilgisayarda normal sekme veya uygulama penceresi olabilir. Yerel tarayıcı yönetimi için sunucu gerçek socket peer denetimi yapar.
 - Native masaüstü yalnızca bağlandığı Hub bu bilgisayardaysa tarayıcı yönetebilir. Telefon/uzak web aynı hesabı kullansa da bu yetkiyi kazanmaz. Mobil cihaz eşleştirmesi korunur.
 - Yönetim paneli ayrı yerel yetki/giriş gerektirir. Flutter kullanıcı oturumu yöneticiye yükseltilmez.
+
+## Doğrulama sonucu
+
+- Hub: başlatma/port, tarayıcı API, CORS, native cihaz sınırı, worker ve PC ses erişimi gruplarında 29 test geçti.
+- Flutter: tarayıcı kartı ve ayar gruplarında 18; giriş/kayıt, eşleştirme, ekler, ses/video ve web asistan gruplarında 18 test geçti. Değişen Dart dosyalarının analizinde sorun yok.
+- `flutter build web --no-pub --pwa-strategy=none` başarılı. Python başlatıcısı gerçek alt süreçle geçici portta denendi; sağlık işareti, özel Hub portu, HTML/JS/WASM MIME türleri doğrulandı. Test süreçleri kapatıldı.
+- `hub_connection_test.dart` grubundaki 5 hata API dosyasının önceki HEAD sürümüyle de aynı şekilde yeniden üretildi: iki testte taklit edilmemiş HTTP, üç testte eski ekran metni beklentileri. Bu grup geçiş kabulünden önce ayrıca güncellenmeli.
+- Gerçek Chrome/Edge/Brave izin penceresi, fiziksel telefon, mikrofon ve kamera kabulü henüz yapılmadı. İngilizce yerelleştirme ve eski durum ekranı eşdeğerliği tamamlanmadı. Bu nedenle `/hub` kapatılmadı; uzak web/QR bağlantıları eski girişleri kullanmayı sürdürür.
