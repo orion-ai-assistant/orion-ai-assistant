@@ -110,6 +110,13 @@ const UI = {
         let preview;
         if (!file.isText && (image || video)) {
             preview = document.createElement(video ? 'video' : 'img');
+            preview.className = 'attachment-thumbnail';
+            const reveal = () => {
+                if (preview.className.includes('is-ready')) return;
+                preview.className = 'attachment-thumbnail is-ready';
+            };
+            if (video) preview.onloadeddata = reveal;
+            else preview.onload = reveal;
             if (!file.media_path) preview.src = file.data;
             preview.setAttribute('draggable', 'false');
             preview.ondragstart = (e) => e.preventDefault();
@@ -146,7 +153,7 @@ const UI = {
             card.title = file.name || OrionI18n.t('file');
             this.attachmentMedia(file).then(record => {
                 if (record.request.signal.aborted) return;
-                if (preview) { preview.src = record.url; record.previews.push(preview); }
+                if (preview && preview.src !== record.url) { preview.src = record.url; record.previews.push(preview); }
             }).catch(error => {
                 if (this._attachmentMedia?.has(file.media_path)) return;
                 failed = true; card.title = `${file.name} — Yüklenemedi, tekrar dene`;
@@ -1450,7 +1457,7 @@ const UI = {
             // Click body → load chat
             item.addEventListener('click', (event) => {
                 if (event.target.closest('.chat-item-actions')) return;
-                if (window.loadChat) window.loadChat(chat.chat_id);
+                if (chat.chat_id !== AppState.currentChatId && window.loadChat) window.loadChat(chat.chat_id);
             });
             // Rename button
             item.querySelector('.rename-btn').addEventListener('click', async (e) => {

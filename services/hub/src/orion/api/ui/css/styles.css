@@ -3746,3 +3746,10 @@ pre.attachment-virtual-text { padding: 12px; }
 }
 .delete-failed-turn:hover { color: var(--text-primary); }
 .delete-failed-turn:disabled { opacity: .5; cursor: wait; }
+
+/* Decode into the existing card, then reveal once without flashing its shell. */
+.media-square-item .attachment-thumbnail { opacity: 0; transition: opacity .18s ease-out; }
+.media-square-item .attachment-thumbnail.is-ready { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+    .media-square-item .attachment-thumbnail { transition: none; }
+}
