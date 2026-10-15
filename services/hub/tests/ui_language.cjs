@@ -16,8 +16,10 @@ for (const file of ['locales/en.js', 'locales/tr.js', 'i18n.js']) {
 vm.runInContext('globalThis.i18n = OrionI18n;', context);
 assert.equal(context.i18n.language, 'tr');
 assert.equal(context.i18n.t('tools'), 'Fonksiyonlar');
+assert.equal(context.i18n.t('modelContextExcluded'), 'Model geçmişine dahil edilmedi');
 context.i18n.setLanguage('en-US');
 assert.equal(context.i18n.language, 'en');
+assert.equal(context.i18n.t('modelContextExcluded'), 'Excluded from model history');
 // Live update without page reload
 assert.equal(context.reloaded, undefined);
 assert.equal(context.i18n.t('saveFailed', 'offline'), 'Could not save: offline');

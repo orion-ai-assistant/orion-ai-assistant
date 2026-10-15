@@ -530,6 +530,43 @@ async def delete_chat_db(chat_id: str) -> None:
         await conn.close()
 
 
+async def delete_failed_turn_db(chat_id: str, key: str, *, delete_empty: bool,
+                                removed_media=(), retained_media=()) -> bool:
+    """Delete one failed exchange atomically; preserve all other messages."""
+    from orion.kernel.chat_history import remove_failed_turn, referenced_media_ids
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError('Postgres is unavailable')
+    try:
+        await _ensure_tables(conn)
+        async with conn.transaction():
+            await conn.fetchval('select id from orion_chats where id=$1 for update', chat_id)
+            rows = await conn.fetch(
+                'select id, content_json from orion_chat_messages where chat_id=$1 order by id', chat_id)
+            messages = [json.loads(row['content_json']) for row in rows]
+            _, removed = remove_failed_turn(messages, key)
+            removed_ids = {id(message) for message in removed}
+            ids = [row['id'] for row, message in zip(rows, messages) if id(message) in removed_ids]
+            if ids:
+                await conn.execute('delete from orion_chat_messages where chat_id=$1 and id=any($2::bigint[])', chat_id, ids)
+            media_ids = (set(removed_media) | referenced_media_ids(removed)) - set(retained_media)
+            if media_ids:
+                from orion.kernel.media_store import ensure_table
+                await ensure_table(conn)
+                await conn.execute('''delete from orion_chat_media m where m.chat_id=$1
+                    and m.id=any($2::text[]) and not exists (
+                        select 1 from orion_chat_messages msg
+                        where msg.chat_id=m.chat_id and strpos(msg.content_json,m.id)>0)''',
+                    chat_id, list(media_ids))
+            if delete_empty:
+                result = await conn.execute('''delete from orion_chats where id=$1
+                    and not exists(select 1 from orion_chat_messages where chat_id=$1)''', chat_id)
+                return result == 'DELETE 1'
+            return False
+    finally:
+        await conn.close()
+
+
 async def prune_failed_chat_db(chat_id: str) -> bool:
     """Remove failed message groups and delete the chat only if it is empty."""
     from orion.kernel.chat_history import successful_history

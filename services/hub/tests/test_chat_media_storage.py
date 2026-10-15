@@ -306,5 +306,40 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         cleanup.assert_awaited_once_with(redis)
 
 
+    async def test_delete_failed_exchange_preserves_success_and_shared_media(self):
+        from orion.kernel.chat_history import failed_turn_key
+        shared, unique = (await media_store.store_attachments('chat', 'alice', [
+            self.attachment(b'shared'), self.attachment(b'unique')]))
+        good = [{'role': 'user', 'content': 'keep', 'attachments': [shared]},
+                {'role': 'assistant', 'content': 'answer'}]
+        failed = [{'role': 'user', 'content': 'bad', 'turn_id': 'failed', 'attachments': [shared, unique]},
+                  {'role': 'assistant', 'tool_calls': [{}]}, {'role': 'tool', 'content': 'result'},
+                  {'role': 'assistant', 'content': 'error', 'generation_error': 'offline'}]
+        other = [{'role': 'user', 'content': 'another failure'},
+                 {'role': 'assistant', 'content': 'error', 'failed_turn': True}]
+        await registry.insert_messages('chat', good + failed + other)
+        self.assertFalse(await registry.delete_failed_turn_db('chat', 'failed', delete_empty=False))
+        self.assertEqual(await registry.get_chat_history_db('chat'), good + other)
+        self.assertEqual(await self.count(), 1)
+        self.assertEqual((await media_store.read_media('chat', shared['media_id']))[1], b'shared')
+        with self.assertRaises(LookupError):
+            await media_store.read_media('chat', unique['media_id'])
+        with self.assertRaises(ValueError):
+            await registry.delete_failed_turn_db('chat', failed_turn_key(good), delete_empty=True)
+        self.assertIsNotNone(await registry.get_chat_db('chat'))
+
+    async def test_delete_last_legacy_failure_cascades_chat_and_media(self):
+        from orion.kernel.chat_history import visible_history
+        attachment = (await media_store.store_attachments('chat', 'alice', [self.attachment()]))[0]
+        failed = [{'role': 'user', 'content': 'bad', 'attachments': [attachment]},
+                  {'role': 'assistant', 'content': 'error', 'generation_error': 'offline'}]
+        await registry.insert_messages('chat', failed)
+        key = visible_history(failed)[-1]['failed_turn_key']
+        self.assertTrue(await registry.delete_failed_turn_db('chat', key, delete_empty=True))
+        self.assertIsNone(await registry.get_chat_db('chat'))
+        self.assertEqual(await registry.get_chat_history_db('chat'), [])
+        self.assertEqual(await self.count(), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -72,8 +72,30 @@ const media = {name: 'photo.png', mime_type: 'image/png', media_id: id, media_pa
     assert.equal(audioDialog.querySelector('span').textContent, '0:00 / 0:09');
     audioDialog.querySelector('button').onclick();
     assert.equal(audio.plays, 1);
-    audioDialog.close();
+    audioDialog.onclick({target: audioDialog.querySelector('button')});
+    assert.notEqual(audioDialog.removed, true, 'Clicking audio controls keeps the preview open');
+    audioDialog.onclick({target: audioDialog});
+    assert.equal(audioDialog.removed, true, 'The backdrop closes audio previews');
     assert.equal(audio.paused, true);
+    for (const file of [
+        {name: 'video.mp4', mime_type: 'video/mp4', data: 'data:video/mp4;base64,AA=='},
+        {name: 'image.png', mime_type: 'image/png', data: 'data:image/png;base64,AA=='},
+        {name: 'text.txt', isText: true, data: 'preview'},
+        {name: 'document.pdf', mime_type: 'application/pdf', data: 'data:application/pdf;base64,AA=='},
+    ]) {
+        ui.openAttachment(file);
+        const preview = body.children.at(-1);
+        preview.onclick({target: preview.children[0]});
+        assert.notEqual(preview.removed, true, `${file.name}: content clicks keep the preview open`);
+        preview.onclick({target: preview});
+        assert.equal(preview.removed, true, `${file.name}: backdrop closes the preview`);
+    }
+    for (const mime_type of ['audio/wav', 'video/mp4']) {
+        const mediaCard = ui.createAttachmentCard({mime_type, name: 'media'});
+        const play = mediaCard.querySelector('.attachment-play');
+        assert.ok(play);
+        assert.equal(play.textContent, undefined, 'The play triangle uses one CSS shape, without a text grid item');
+    }
     const text = Array.from({length: 10000}, (_, i) => `satır ${i}: uzun metin\n`).join('');
     const pre = new Element('pre');
     ui.textPreview(text, pre);

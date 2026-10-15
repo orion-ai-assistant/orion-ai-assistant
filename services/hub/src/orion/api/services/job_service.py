@@ -553,6 +553,43 @@ async def discard_failed_chat(redis: Redis, user_id: str, chat_id: str) -> dict:
     return {'status': 'kept', 'chat_id': chat_id}
 
 
+async def delete_failed_turn(redis: Redis, user_id: str, chat_id: str, key: str) -> dict:
+    from orion.kernel.chat_history import remove_failed_turn, referenced_media_ids
+    from orion.kernel.registry import delete_failed_turn_db
+    await ensure_chat_access(redis, user_id, chat_id)
+    state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
+    if state.get('status') in {'queued', 'processing'}:
+        raise HTTPException(409, 'Yanıt tamamlandıktan sonra silmeyi tekrar deneyin.')
+    settings = await get_runtime_settings(redis, user_id)
+    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
+    try:
+        remaining, removed = remove_failed_turn(history, key)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not removed:
+        raise HTTPException(409, 'Mesaj değişmiş veya silinmiş. Sohbeti yenileyin.')
+    try:
+        deleted = await delete_failed_turn_db(chat_id, key, delete_empty=not remaining,
+            removed_media=referenced_media_ids(removed), retained_media=referenced_media_ids(remaining))
+    except Exception as exc:
+        logger.exception('Could not delete failed turn for %s', chat_id)
+        raise HTTPException(503, 'Mesaj veritabanından silinemedi.') from exc
+    pipe = redis.pipeline()
+    pipe.delete(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id))
+    if deleted:
+        for prefix in (CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX):
+            pipe.delete(get_key(prefix, chat_id))
+        pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, user_id), chat_id)
+    elif remaining:
+        pipe.rpush(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id), *[json.dumps(m) for m in remaining])
+        pipe.expire(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id), settings.redis_cache_ttl_seconds)
+    await pipe.execute()
+    event = (StreamEvent.chat_delete(chat_id) if deleted else
+             StreamEvent(type='chat_history_changed', chat_id=chat_id))
+    await redis.publish(get_key(ROOM_USER_PREFIX, user_id), event.model_dump_json())
+    return {'status': 'deleted' if deleted else 'updated', 'chat_id': chat_id}
+
+
 async def get_all_chats_admin(redis: Redis) -> list[dict]:
     """Scan all chat meta keys for admin panel."""
     pattern = f"{CHAT_META_KEY_PREFIX}*"

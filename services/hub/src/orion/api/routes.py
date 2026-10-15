@@ -236,6 +236,14 @@ class ChatRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+@router.delete('/api/v1/chats/{chat_id}/failed-turns/{key}')
+async def delete_failed_turn_endpoint(chat_id: str, key: str, request: Request,
+                                      current_user: str = Depends(get_current_user)):
+    from orion.api.services.job_service import delete_failed_turn
+    async with request.app.state.redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
+        return await delete_failed_turn(request.app.state.redis, current_user, chat_id, key)
+
+
 @router.post('/api/v1/chats/{chat_id}/discard-failed')
 async def discard_failed_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
     from orion.api.services.job_service import discard_failed_chat

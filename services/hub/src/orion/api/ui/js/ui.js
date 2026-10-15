@@ -129,7 +129,7 @@ const UI = {
         if (video || audio) {
             const play = document.createElement('span');
             play.className = 'attachment-play';
-            play.textContent = '▶';
+            play.setAttribute('aria-hidden', 'true');
             card.appendChild(play);
         }
         if (file.name) {
@@ -257,7 +257,7 @@ const UI = {
         close.onclick = () => modal.close();
         modal.appendChild(close);
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
-        modal.onclick = e => { if (e.target === modal && kind !== 'audio' && kind !== 'video') modal.close(); };
+        modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
         (this._attachmentDialogs ||= new Set()).add(modal);
         modal.onclose = () => { request.abort(); if (content.pause) content.pause(); content._textResize?.disconnect(); this._attachmentDialogs.delete(modal); modal.remove(); };
@@ -274,18 +274,53 @@ const UI = {
             }).catch(error => { if (!request.signal.aborted) title.textContent = error.message; });
         }
     },
-    addExcludedLabel(element) {
+    addExcludedLabel(element, chatId = AppState.currentChatId, key = null) {
         if (!element || element.querySelector('.model-context-excluded')) return;
         const label = document.createElement('div');
         label.className = 'model-context-excluded';
-        label.textContent = OrionI18n.t('modelContextExcluded');
+        const text = document.createElement('span');
+        text.textContent = OrionI18n.t('modelContextExcluded');
+        label.appendChild(text);
+        if (chatId && key) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'delete-failed-turn';
+            button.textContent = OrionI18n.t('delete');
+            button.onclick = async () => {
+                button.disabled = true;
+                const result = await API.deleteFailedTurn(chatId, key);
+                if (result.error) {
+                    this.showToast(result.error);
+                    button.disabled = false;
+                    return;
+                }
+                this.applyHistoryDeletion(chatId, result.status === 'deleted');
+            };
+            label.appendChild(button);
+        }
         element.appendChild(label);
+    },
+    applyHistoryDeletion(chatId, deleted = false) {
+        if (deleted) {
+            delete this._chatDivs[chatId];
+            AppState.activeTurns.delete(chatId);
+            if (chatId === AppState.currentChatId) {
+                AppState._loadingHistory = false;
+                AppState._sseBuffer = [];
+                this.setStopButtonVisible(false);
+                document.getElementById('new-chat-btn').click();
+            }
+        } else if (chatId === AppState.currentChatId) {
+            window.loadChat?.(chatId);
+        } else {
+            delete this._chatDivs[chatId];
+        }
+        window.loadChats?.();
     },
     markFailedTurn(chatId, turnId = null) {
         const state = this._chatDivs[chatId];
         if (!state) return;
-        if (!turnId || state.userTurnId === turnId) this.addExcludedLabel(state.userDiv);
-        this.addExcludedLabel(state.botDiv);
+        this.addExcludedLabel(state.botDiv, chatId, turnId || state.userTurnId);
     },
     appendUserMessage(text, images = [], excluded = false, turnId = null) {
         // Restore attachments from messages saved by the old client.
@@ -323,10 +358,9 @@ const UI = {
             state.userDiv = group;
             state.userTurnId = turnId;
         }
-        if (excluded) this.addExcludedLabel(group);
         this.scrollToBottom();
     },
-    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null, toolActivity = [], displayParts = null, excluded = false) {
+    appendStaticBotMessage(content, thinking = null, metrics = null, audio = null, toolActivity = [], displayParts = null, excluded = false, failedTurnKey = null) {
         const hero = this.chatArea.querySelector('.welcome-hero');
         if (hero) hero.remove();
         const div = document.createElement('div');
@@ -371,7 +405,7 @@ const UI = {
         this.addMessageCopy(div, () => content || '');
         if (audio?.audio || audio?.media_path || audio?.audio_path) this.appendAudio(AppState.currentChatId, audio, false, div);
         this.chatArea.appendChild(div);
-        if (excluded) this.addExcludedLabel(div);
+        if (excluded) this.addExcludedLabel(div, AppState.currentChatId, failedTurnKey);
         this.scrollToBottom();
         return div;
     },

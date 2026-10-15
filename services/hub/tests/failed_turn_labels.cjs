@@ -5,6 +5,7 @@ const vm = require('node:vm');
 class Element {
     constructor(tag) { this.tagName = tag; this.children = []; this.style = {}; }
     appendChild(child) { this.children.push(child); return child; }
+    setAttribute() {}
     querySelector(selector) {
         return this.children.find(child => `.${child.className}` === selector) || null;
     }
@@ -19,7 +20,7 @@ ui.scrollToBottom = ui.addMessageCopy = () => {};
 ui.appendUserMessage('failed question', [], true, 'failed');
 const question = chatArea.children[0];
 assert.equal(question.children[0].textContent, 'failed question');
-assert.equal(question.children[1].className, 'model-context-excluded');
+assert.equal(question.children.length, 1, 'User messages do not repeat the exclusion label');
 ui.appendStaticBotMessage('offline', null, null, null, [], null, true);
 assert.equal(chatArea.children[1].children.at(-1).className, 'model-context-excluded');
 ui.appendUserMessage('next question', [], false, 'next');
@@ -31,6 +32,6 @@ ui.markFailedTurn('chat', 'older');
 assert.equal(next.children.length, 1);
 ui.markFailedTurn('chat', 'next');
 ui.markFailedTurn('chat', 'next');
-assert.equal(next.children.length, 2);
+assert.equal(next.children.length, 1);
 assert.equal(state.botDiv.children.length, 1);
-console.log('Failed-turn labels survive history rendering and identify the matching question only');
+console.log('Failed-turn exclusion appears only below the assistant response');

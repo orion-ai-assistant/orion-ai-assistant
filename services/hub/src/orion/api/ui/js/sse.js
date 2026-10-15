@@ -198,13 +198,11 @@ const SSE = {
             return;
         }
         if (data.type === "chat_delete") {
-            if (window.loadChats) window.loadChats();
-            if (chatId === AppState.currentChatId) {
-                AppState.selectChat(null);
-                UI.clearChatArea();
-                UI.chatArea.innerHTML = '<div class="message bot">Bu sohbet başka bir cihazdan veya yöneticiden silindi.</div>';
-                UI.setStopButtonVisible(false);
-            }
+            UI.applyHistoryDeletion(chatId, true);
+            return;
+        }
+        if (data.type === 'chat_history_changed') {
+            UI.applyHistoryDeletion(chatId);
             return;
         }
 
@@ -332,7 +330,7 @@ const SSE = {
             AppState.stopGenerating(chatId, turnId);
             
             if (data.type === "error") {
-                UI.appendToken(chatId, `\n[Hata: ${data.data.message}]`);
+                UI.appendToken(chatId, `\n\nHata: ${data.data.message}\n`);
                 UI.markFailedTurn(chatId, turnId);
             }
             UI.finishGeneration(chatId, true, data.data);

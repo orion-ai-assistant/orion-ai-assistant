@@ -29,6 +29,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // If another loadChat was called while we were fetching, discard this one
         if (currentSeq !== loadChatSeq || selectionVersion !== AppState.chatSelectionVersion) return;
+        if (history?.status === 404) {
+            UI.applyHistoryDeletion(chatId, true);
+            return;
+        }
 
         const cachedLiveState = !forceSnapshot && AppState.getActiveTurn(chatId) ? UI._chatDivs[chatId] : null;
         const hasCachedLiveMessage = Boolean(cachedLiveState?.botDiv);
@@ -85,7 +89,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                         }
                     } else {
                         UI.appendStaticBotMessage(msg.content, msg.thinking, msg.metrics, msg.audio,
-                            msg.tool_activity || [], msg.display_parts, msg.failed_turn || Boolean(msg.generation_error));
+                            msg.tool_activity || [], msg.display_parts, msg.failed_turn || Boolean(msg.generation_error),
+                            msg.failed_turn_key || msg.turn_id);
                     }
                 }
             });

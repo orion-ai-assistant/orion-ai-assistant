@@ -4,10 +4,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from orion.api.services import job_service
 from orion.contracts.access import ChatAccessResult
-from orion.kernel.chat_history import successful_history, visible_history, persist_failed_turn
+from orion.kernel.chat_history import successful_history, visible_history, persist_failed_turn, failed_content
 
 
 class HistoryTests(unittest.TestCase):
+    def test_error_fences_close_cleanly_for_new_and_saved_failures(self):
+        error = "⚠️ **Yönlendirici (Router) Hatası:**\n\n```text\nOpenRouter model 'gpt-oss-120b' does not support audio, image, video input. Supported input modalities: ['text'].\n```"
+        formatted = failed_content(error, 'partial answer')
+        self.assertEqual(formatted, 'partial answer\n\nHata: ' + error + '\n')
+        old = [{'role': 'user', 'content': 'question'},
+               {'role': 'assistant', 'content': f'partial answer\n\n[Hata: {error}]', 'generation_error': error}]
+        visible = visible_history(old)
+        self.assertEqual(visible[-1]['content'], formatted)
+        self.assertTrue(old[-1]['content'].endswith('```]'), 'Stored history is not mutated on read')
+        self.assertEqual(successful_history(visible), [])
+
     def test_visible_failed_question_and_error_do_not_enter_model_history(self):
         raw = [{'role': 'user', 'content': 'bad'},
                {'role': 'assistant', 'content': 'error', 'generation_error': 'offline'},

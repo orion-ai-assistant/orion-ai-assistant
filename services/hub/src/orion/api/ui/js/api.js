@@ -318,6 +318,15 @@ const API = {
         }
     },
 
+    async deleteFailedTurn(chatId, key) {
+        try {
+            const response = await this._fetch(`/api/v1/chats/${encodeURIComponent(chatId)}/failed-turns/${encodeURIComponent(key)}`, {method: 'DELETE'});
+            const data = await response.json();
+            return response.ok ? data : {error: data.detail || OrionI18n.t('unknownError')};
+        } catch (error) {
+            return {error: error.message};
+        }
+    },
     async discardFailedChat(chatId) {
         if (!chatId) return;
         try {
@@ -331,7 +340,7 @@ const API = {
             const response = await this._fetch(`/api/v1/chats/${chatId}/history?include_audio=false`, {signal: AbortSignal.timeout(10000)});
             if (response.status === 401) return { error: "Oturum süresi doldu." };
             const data = await response.json();
-            if (!response.ok) return { error: data.detail || data.error || "Sohbet geçmişi alınamadı." };
+            if (!response.ok) return { error: data.detail || data.error || "Sohbet geçmişi alınamadı.", status: response.status };
             return data;
         } catch (error) {
             console.error("Chat geçmişi getirme hatası:", error);
