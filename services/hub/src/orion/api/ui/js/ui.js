@@ -21,9 +21,10 @@ const UI = {
         return this._chatDivs[chatId];
     },
     scrollToBottom() {
+        if (this._scrollPointerDown) return;
         this.chatArea.scrollTop = this.chatArea.scrollHeight;
         requestAnimationFrame(() => {
-            if (this.chatArea) this.chatArea.scrollTop = this.chatArea.scrollHeight;
+            if (this.chatArea && !this._scrollPointerDown) this.chatArea.scrollTop = this.chatArea.scrollHeight;
         });
     },
     createMetricsElement(firstTokenMs, totalMs) {
@@ -89,7 +90,7 @@ const UI = {
         }, {root: this.chatArea, rootMargin: '200px'});
         this._attachmentObserver.observe(card);
     },
-    createAttachmentCard(item) {
+    createAttachmentCard(item, siblings = [item]) {
         const file = typeof item === 'string' ? { data: item, name: OrionI18n.t('file') } : item;
         const card = document.createElement('button');
         card.type = 'button';
@@ -117,7 +118,7 @@ const UI = {
                 preview.playsInline = true;
                 preview.preload = 'metadata';
                 preview.onloadedmetadata = () => { preview.currentTime = Math.min(0.01, preview.duration || 0); };
-            } else preview.alt = file.name || OrionI18n.t('image');
+            } else { preview.alt = file.name || OrionI18n.t('image'); preview.decoding = 'async'; }
             card.appendChild(preview);
         } else {
             const icon = document.createElement('span');
@@ -151,7 +152,7 @@ const UI = {
                 failed = true; card.title = `${file.name} — Yüklenemedi, tekrar dene`;
             });
         };
-        card.onclick = () => { if (failed) load(); this.openAttachment(file); };
+        card.onclick = () => { if (failed) load(); this.openAttachment(file, typeof siblings === 'function' ? siblings() : siblings); };
         // Only supplied history cards can request media. Visibility keeps this
         // compatible with a future paginated history endpoint.
         if (file.media_path) this.observeAttachment(card, load);
@@ -229,7 +230,7 @@ const UI = {
         }
         return pre;
     },
-    openAttachment(file) {
+    openAttachment(file, siblings = [file]) {
         const modal = document.createElement('dialog');
         modal.className = 'attachment-dialog';
         const title = document.createElement('div');
@@ -256,6 +257,27 @@ const UI = {
         close.textContent = OrionI18n.t('close');
         close.onclick = () => modal.close();
         modal.appendChild(close);
+        const index = siblings.indexOf(file);
+        const move = delta => {
+            const next = index + delta;
+            if (next < 0 || next >= siblings.length) return;
+            modal.close();
+            this.openAttachment(siblings[next], siblings);
+        };
+        if (siblings.length > 1) {
+            for (const [delta, label, symbol] of [[-1, 'Önceki ek', '‹'], [1, 'Sonraki ek', '›']]) {
+                const button = document.createElement('button');
+                button.type = 'button'; button.className = `attachment-nav attachment-nav-${delta < 0 ? 'previous' : 'next'}`;
+                button.textContent = symbol; button.setAttribute('aria-label', label);
+                button.disabled = index + delta < 0 || index + delta >= siblings.length;
+                button.onclick = () => move(delta); modal.appendChild(button);
+            }
+            modal.onkeydown = event => {
+                if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault(); move(event.key === 'ArrowLeft' ? -1 : 1);
+                }
+            };
+        }
         modal.setAttribute('aria-label', file.name || OrionI18n.t('file'));
         modal.onclick = e => { if (e.target === modal) modal.close(); };
         const request = new AbortController();
@@ -342,7 +364,7 @@ const UI = {
         if (files.length) {
             const row = document.createElement('div');
             row.className = 'user-media-container';
-            files.forEach(file => row.appendChild(this.createAttachmentCard(file)));
+            files.forEach(file => row.appendChild(this.createAttachmentCard(file, files)));
             group.appendChild(row);
         }
         {

@@ -525,7 +525,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const renderImagePreviews = () => {
         if (!imagePreviewContainer) return;
-        imagePreviewContainer.innerHTML = '';
+        for (const wrapper of [...imagePreviewContainer.children]) {
+            if (!UI.selectedImages.includes(wrapper._file)) wrapper.remove();
+        }
         if (UI.selectedImages.length === 0) {
             imagePreviewContainer.style.display = 'none';
             return;
@@ -533,11 +535,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         imagePreviewContainer.style.display = 'flex';
 
         UI.selectedImages.forEach((fileObj, index) => {
+            const existing = [...imagePreviewContainer.children].find(el => el._file === fileObj);
+            if (existing && existing._loading === fileObj.loading) return;
             const wrapper = document.createElement('div');
+            wrapper._file = fileObj;
+            wrapper._loading = fileObj.loading;
             wrapper.className = 'image-preview-item';
             wrapper.setAttribute('draggable', 'false');
             wrapper.ondragstart = (e) => e.preventDefault();
-            const previewEl = UI.createAttachmentCard(fileObj);
+            const previewEl = UI.createAttachmentCard(fileObj, () => UI.selectedImages.filter(file => !file.loading));
 
             const removeBtn = document.createElement('button');
             removeBtn.setAttribute('draggable', 'false');
@@ -546,20 +552,26 @@ document.addEventListener("DOMContentLoaded", async () => {
             removeBtn.className = 'attachment-remove';
             removeBtn.setAttribute('aria-label', 'Eki kaldır');
             removeBtn.onclick = () => {
-                UI.selectedImages.splice(index, 1);
+                const current = UI.selectedImages.indexOf(fileObj);
+                if (current >= 0) UI.selectedImages.splice(current, 1);
                 renderImagePreviews();
             };
 
             wrapper.appendChild(previewEl);
             wrapper.appendChild(removeBtn);
 
-            imagePreviewContainer.appendChild(wrapper);
+            if (existing) existing.replaceWith(wrapper);
+            else imagePreviewContainer.appendChild(wrapper);
         });
     };
 
     let attachmentSequence = 0;
     const processFiles = (files) => {
         for (const file of files) {
+            if (file.size > 20 * 1024 * 1024) {
+                UI.showToast?.(file.name + ': en fazla 20 MB eklenebilir.');
+                continue;
+            }
             if (UI.selectedImages.some(item => item.name === file.name && item.size === file.size)) {
                 UI.showToast?.('Bu dosya (' + file.name + ') zaten eklendi.');
                 continue;
@@ -714,8 +726,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 let activeMessage = null;
 const messageSelector = '.message.bot, .message.user';
 document.addEventListener('pointerdown', event => {
+    UI._scrollPointerDown = !!event.target.closest('.chat-area, #image-preview-container');
     activeMessage = event.target.closest(messageSelector);
 });
+document.addEventListener('pointerup', () => { UI._scrollPointerDown = false; });
+document.addEventListener('pointercancel', () => { UI._scrollPointerDown = false; });
+window.addEventListener('blur', () => { UI._scrollPointerDown = false; });
 document.addEventListener('keydown', event => {
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'a') return;
     if (event.target.closest('input, textarea, [contenteditable="true"]')) return;

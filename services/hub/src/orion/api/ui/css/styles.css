@@ -1142,11 +1142,11 @@ body {
 
     width: 100%;
 
-    max-width: 928px;
+    max-width: none;
 
     margin: 0 auto;
 
-    padding: 48px 24px 110px;
+    padding: 48px max(24px, calc((100% - 880px) / 2)) 110px;
 
     display: flex;
 
@@ -1897,6 +1897,10 @@ details[open] > .think-summary::before {
     overflow-x: auto;
 
     overflow-y: hidden;
+
+    scroll-behavior: auto;
+    overflow-anchor: none;
+    contain: layout;
 
     padding: 4px 2px 10px;
 
@@ -3691,6 +3695,10 @@ pre.attachment-virtual-text { height: 60vh; padding: 0; white-space: pre; }
     font: inherit; font-size: 14px; cursor: pointer;
 }
 .attachment-close:focus-visible { outline: 2px solid #10b981; border-radius: 6px; }
+.attachment-nav { position: fixed; top: 50%; transform: translateY(-50%); border: 1px solid #ffffff30; border-radius: 50%; width: 44px; height: 44px; background: #20262dcc; color: white; font-size: 32px; cursor: pointer; }
+.attachment-nav-previous { left: 12px; }
+.attachment-nav-next { right: 12px; }
+.attachment-nav:disabled { opacity: .3; cursor: default; }
 .attachment-dialog pre {
     outline: none; border: 0; box-shadow: none;
     box-sizing: border-box; scrollbar-gutter: stable;
