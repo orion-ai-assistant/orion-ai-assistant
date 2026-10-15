@@ -3677,7 +3677,10 @@ details[open] > .think-summary::before {
 .audio-load-button:focus-visible { outline: 2px solid #10b981; outline-offset: 3px; }
 
 /* The full card is clickable; native video surfaces never take thumbnail clicks. */
+.media-square-item { user-select: none; -webkit-user-select: none; }
 .media-square-item > * { pointer-events: none; }
+.media-square-item .attachment-name { user-select: text; -webkit-user-select: text; }
+.media-square-item img::selection, .media-square-item video::selection { background: transparent; }
 .attachment-play, .attachment-video .attachment-play {
     left: 50%; top: 50%; bottom: auto; transform: translate(-50%, -50%);
     width: 32px; height: 32px; font-size: 16px;
