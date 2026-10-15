@@ -113,6 +113,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
         application.include_router(pairing_router)
     if mobile:
         application.include_router(mobile_router)
+        application.include_router(browser_router)
     ui_dir = os.path.join(os.path.dirname(__file__), 'ui')
 
     @application.get('/favicon.ico', include_in_schema=False)

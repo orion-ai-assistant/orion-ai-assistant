@@ -16,6 +16,19 @@ USER_SETTINGS = {'/api/v1/admin/settings', '/api/v1/admin/settings/schema'}
 DESKTOP_MANAGEMENT = ('/api/v1/browser', '/api/v1/google-ai/session')
 
 
+def local_flutter_origin(origin):
+    """Only the configured loopback Flutter UI may control a desktop browser."""
+    from services.shared.environment import get_env
+    try:
+        parsed = urlsplit(origin)
+        port = int(get_env('ORION_FLUTTER_PORT', default='8090', required=False))
+        return (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1', '::1'}
+                and parsed.port == port and not parsed.username and not parsed.password
+                and not parsed.path and not parsed.query and not parsed.fragment)
+    except (ValueError, TypeError):
+        return False
+
+
 def management_api(path: str) -> bool:
     return (path.startswith(('/api/v1/owner/', '/api/v1/admin/'))
             or any(path == prefix or path.startswith(prefix + '/') for prefix in DESKTOP_MANAGEMENT)
@@ -167,7 +180,8 @@ class AccessBoundary:
             request = Request(scope)
             origin = request.headers.get('origin')
             expected = f'{request.url.scheme}://{request.url.netloc}'
-            if (origin and origin != expected) or request.headers.get('sec-fetch-site') == 'cross-site':
+            flutter = bool(origin and local_flutter_origin(origin))
+            if (origin and origin != expected and not flutter) or (request.headers.get('sec-fetch-site') == 'cross-site' and not flutter):
                 return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
         scope.setdefault('state', {})['local_owner_access'] = local and not self.public
         if local and not self.public and scope['type'] == 'http':

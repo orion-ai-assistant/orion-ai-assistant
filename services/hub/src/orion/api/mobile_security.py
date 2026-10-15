@@ -458,8 +458,9 @@ class MobileBoundary:
             host = '[' + host + ']' if ':' in host else host
             url = escape(f'https://{host}:{int(os.getenv("ORION_WEB_PORT", "8911"))}/', quote=True)
             return await HTMLResponse('<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orion Hub</title><body><h1>Orion Hub</h1><p>Bu adres telefon uygulamasının güvenli bağlantısı içindir. Orion uygulamasında PC ekranındaki QR kodunu okut veya bağlantı linkini aç. Sonraki açılışlarda Hub hatırlanır.</p><p>Tarayıcıdan kullanmak için <a href="'+url+'">Hub giriş ekranını aç</a>.</p></body></html>', headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})(scope, receive, send)
-        from orion.api.access_boundary import public_path
-        if path not in {'/api/v1/pair/claim', '/api/v1/pair/local', '/api/v1/tls/identity', '/api/v1/devices/self'} and not public_path(path):
+        from orion.api.access_boundary import public_path, is_desktop_peer
+        desktop_browser = (path == '/api/v1/browser' or path.startswith('/api/v1/browser/')) and is_desktop_peer(scope)
+        if path not in {'/api/v1/pair/claim', '/api/v1/pair/local', '/api/v1/tls/identity', '/api/v1/devices/self'} and not public_path(path) and not desktop_browser:
             return await deny(403, 'Endpoint not available on mobile listener')
         if path in {'/api/v1/pair/claim', '/api/v1/pair/local', '/api/v1/pair/request', '/api/v1/tls/identity', '/health'}:
             return await self.app(scope, receive, send)
