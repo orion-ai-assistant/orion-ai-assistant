@@ -608,14 +608,9 @@ document.addEventListener("DOMContentLoaded", async () => {
                     const img = new Image();
                     img.onerror = fail;
                     img.onload = () => {
-                        try {
-                            const canvas = document.createElement('canvas');
-                            canvas.width = img.width;
-                            canvas.height = img.height;
-                            const ctx = canvas.getContext('2d');
-                            ctx.drawImage(img, 0, 0);
-                            finish(canvas.toDataURL('image/jpeg', 0.9), 'image/jpeg');
-                        } catch { fail(); }
+                        // Keep the original encoding: JPEG conversion flattens
+                        // transparent PNG/WebP pixels onto a black background.
+                        finish(reader.result, item.mime_type);
                     };
                     img.src = reader.result;
                 } else finish(reader.result, item.mime_type);
