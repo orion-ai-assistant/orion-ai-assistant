@@ -41,7 +41,13 @@ api._fetch = async url => {requests.push(url); return {ok: true, json: async () 
     state.startGenerating('error-chat', 'bad-turn');
     let errorMarkdown = '';
     ui.appendToken = (_, text) => {errorMarkdown += text;};
-    ui.finishGeneration = () => {};
+    ui._chatDivs['error-chat'] = {botDiv: node(), userTurnId: 'bad-turn'};
+    ui.finishGeneration = (id, hasTokens, metrics) => {
+        assert.equal(ui._chatDivs[id].botDiv.querySelector('.model-context-excluded'), undefined,
+            'The exclusion label must wait until metrics are rendered');
+        assert.equal(metrics.failed_turn, true);
+        assert.equal(metrics.turn_id, 'bad-turn');
+    };
     const message = "⚠️ **Yönlendirici (Router) Hatası:**\n\n```text\nOpenRouter model 'gpt-oss-120b' does not support audio, image, video input. Supported input modalities: ['text'].\n```";
     sse.processEvent({type: 'error', chat_id: 'error-chat', turn_id: 'bad-turn', data: {message}});
     const marked = require('../src/orion/api/ui/js/vendor/marked.js');

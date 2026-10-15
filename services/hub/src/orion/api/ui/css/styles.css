@@ -1142,17 +1142,17 @@ body {
 
     width: 100%;
 
-    max-width: 920px;
+    max-width: 928px;
 
     margin: 0 auto;
 
-    padding: 30px 24px 110px;
+    padding: 48px 24px 110px;
 
     display: flex;
 
     flex-direction: column;
 
-    gap: 22px;
+    gap: 16px;
 
     align-items: stretch;
 
@@ -1318,7 +1318,7 @@ body {
 
     word-wrap: break-word;
 
-    font-size: 1rem;
+    font-size: 15px;
 
     font-weight: 500;
 
@@ -1370,11 +1370,11 @@ body {
 
     background: transparent;
 
-    padding: 6px 2px;
+    padding: 6px 0;
 
     width: 100%;
 
-    max-width: 840px;
+    max-width: 880px;
 
     align-self: center;
 
@@ -1872,7 +1872,7 @@ details[open] > .think-summary::before {
 
     max-width: 82%;
 
-    margin: 0 0 16px auto;
+    margin: 0 0 0 auto;
 
     animation: messageIn 0.25s ease-out;
 

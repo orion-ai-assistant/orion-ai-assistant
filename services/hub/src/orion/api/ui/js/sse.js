@@ -331,9 +331,8 @@ const SSE = {
             
             if (data.type === "error") {
                 UI.appendToken(chatId, `\n\nHata: ${data.data.message}\n`);
-                UI.markFailedTurn(chatId, turnId);
             }
-            UI.finishGeneration(chatId, true, data.data);
+            UI.finishGeneration(chatId, true, {...data.data, failed_turn: data.type === 'error', turn_id: turnId});
             AppState.clearGenerationMetrics(chatId);
             console.log(`Chat ${chatId} ready for next message`);
             
