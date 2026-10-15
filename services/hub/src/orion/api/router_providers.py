@@ -12,6 +12,8 @@ from orion.kernel.router_accounts import (RouterAccountError, selected_router, e
                                           request_router)
 from orion.kernel.local_security import SecurityStore
 from orion.kernel.router_accounts import _state
+from orion.kernel.router_panel import navigation
+from orion.api.access_boundary import is_desktop_peer
 
 class CredentialRoute(APIRoute):
     def get_route_handler(self):
@@ -42,12 +44,14 @@ async def account(user_id, router_id=None):
 
 
 @router.get('/providers')
-async def status(user_id: str = Depends(get_current_user)):
+async def status(request: Request, user_id: str = Depends(get_current_user)):
     record = None
     try:
         record, key = await account(user_id)
         result = await request_router(record, 'GET', '/api/v1/hubs/providers', account_key=key)
-        current = {**result, 'connected': True, 'router_name': record['name'], 'router_id': record['id']}
+        links = await navigation(record, result, desktop=is_desktop_peer(request.scope))
+        result = {k: v for k, v in result.items() if k != 'local_dashboard_url'}
+        current = {**result, **links, 'connected': True, 'router_name': record['name'], 'router_id': record['id']}
     except RouterAccountError as error:
         message = str(error)
         if 'şifre' in message or 'Orion Panel' in message:
@@ -63,7 +67,9 @@ async def status(user_id: str = Depends(get_current_user)):
         try:
             other_key = await ensure_account(user_id, other)
             data = await request_router(other, 'GET', '/api/v1/hubs/providers', account_key=other_key)
-            routers.append({**data, 'connected': True, 'router_id': other['id'], 'router_name': other['name']})
+            links = await navigation(other, data, desktop=is_desktop_peer(request.scope))
+            data = {k: v for k, v in data.items() if k != 'local_dashboard_url'}
+            routers.append({**data, **links, 'connected': True, 'router_id': other['id'], 'router_name': other['name']})
         except RouterAccountError as error:
             routers.append({'connected': False, 'router_id': other['id'], 'router_name': other['name'], 'message': str(error)})
     primary = next((r for r in routers if r['connected']), current)

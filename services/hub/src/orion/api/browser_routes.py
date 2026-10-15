@@ -2,6 +2,7 @@
 
 from typing import Literal, Optional
 import asyncio
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -26,6 +27,30 @@ def require_local(request):
 
 class OpenBrowser(BaseModel):
     browser: Optional[Literal['chrome', 'edge', 'brave']] = None
+
+
+class OpenRouterPanel(BaseModel):
+    router_id: UUID
+
+
+@router.post('/router/open')
+async def open_router_panel(payload: OpenRouterPanel, request: Request, user: str = Depends(get_current_user)):
+    require_local(request)
+    from orion.api.router_providers import account
+    from orion.kernel.router_accounts import request_router, RouterAccountError
+    from orion.kernel.router_panel import navigation
+    try:
+        record, key = await account(user, payload.router_id)
+        data = await request_router(record, 'GET', '/api/v1/hubs/providers', account_key=key)
+        links = await navigation(record, data, desktop=True)
+        if not links['dashboard_url']:
+            raise HTTPException(503, 'Router panelinin güvenli adresi bulunamadı.')
+        opened = await asyncio.to_thread(open_window, links['dashboard_url'], allow_tab_fallback=False)
+    except (RouterAccountError, OSError) as error:
+        raise HTTPException(503, 'Router panelinin uygulama penceresi açılamadı. Bağlantıyı kontrol edin.') from error
+    if not opened:
+        raise HTTPException(503, 'Uygulama penceresi için Chrome, Edge veya Brave kurulu olmalı.')
+    return {'message': 'Router paneli ayrı uygulama penceresinde açıldı.'}
 
 
 @router.post('/panel/open')

@@ -51,3 +51,11 @@ Kullanıcı kararıyla yerel `http://localhost/hub` ve yerel Hub portundaki `/hu
 Flutter'daki üst Hub paneli düğmesi `/api/v1/browser/panel/open` ile yalnızca yerel, oturum açmış kullanıcı için sabit yerel paneli uygulama penceresinde açar. API hedef URL, komut veya yönetici anahtarı kabul etmez; panelin kendi sahip girişi korunur. Chrome/Edge/Brave bulunamazsa normal sekmeye düşmek yerine açıklayıcı hata döner. Tarayıcı kartındaki yinelenen panel düğmesi kaldırılmıştır.
 
 Router adres seçimi ve Router uygulama penceresi bu değişikliğin dışındadır; kullanıcı bu aşamada yalnızca değerlendirme istedi.
+
+## Router panel adresi seçimi
+
+Sonraki kullanıcı onayıyla Router panel seçimi uygulandı. Hub, istemcinin gerçekten aynı bilgisayarda olduğunu socket peer ile denetler. Yerel kurulum dosyalarındaki Router UUID/SPKI, güvenilen Router kaydı ve canlı yerel TLS kimliğiyle eşleşirse Router'ın bildirdiği gerçek yerel HTTP panel portu kullanılır. Eksik/eski/eşleşmeyen kurulum kaydında HTTPS'e dönülür; güven kaydı ve pin değiştirilmez.
+
+Diğer cihazlara loopback adresleri verilmez. Doğrulanmış güncel HTTPS bağlantı adresi (VPN/DNS dahil), yoksa Router'ın bildirdiği HTTPS LAN panel adresi kullanılır. Aynı bilgisayardaki Flutter paneli uygulama penceresinde açar; yalnızca Router UUID'sini gönderir ve sunucu adres seçimini tekrar doğrular. Telefon/uzak istemci HTTPS bağlantısını kendi tarayıcısında açar. Hub–Router API, model ve dosya trafiğinin tamamı mevcut pinned TLS politikasını kullanır.
+
+Flutter web `build/web` çıktısından sunulur; Python sunucu kendiliğinden yeniden derlemez. `8090` yalnızca loopback'e bağlıdır; telefondaki tarayıcıdan bu Flutter yayınına IP yazarak erişim henüz açılmamıştır.
