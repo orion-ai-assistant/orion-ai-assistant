@@ -5,10 +5,13 @@ headers/body, including a WebSocket upgrade, are written to that connection.
 """
 import asyncio
 import hmac
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 import aiohttp
 from orion.kernel.local_security import SecurityStore, spki_fingerprint
+
+_request_target = ContextVar('orion_tls_router_target', default=None)
 
 
 class SPKIPin(aiohttp.Fingerprint):
@@ -90,7 +93,10 @@ class RouterConnector(aiohttp.TCPConnector):
     def _router_for(self, request):
         # Select the current owner-approved pin on every connection; never TOFU.
         origin = f'https://{request.url.host}:{request.url.port}'
+        expected = _request_target.get()
         for router in SecurityStore().routers():
+            if expected and (router['id'] != expected['id'] or router['fp'] != expected['fp']):
+                continue
             parsed = urlsplit(router['url'])
             if parsed.hostname == request.url.host and (parsed.port or 443) == request.url.port:
                 return router
@@ -114,9 +120,76 @@ class RouterConnector(aiohttp.TCPConnector):
 
 
 class RouterSession(aiohttp.ClientSession):
+    def __init__(self, *args, account_route=None, expected_router=None, **kwargs):
+        self._account_route = account_route
+        self._expected_router = expected_router
+        super().__init__(*args, **kwargs)
+
     async def _request(self, method, url, **kwargs):
+        from .router_access import current_route
+        route = self._account_route if self._account_route is not None else current_route.get()
+        expected = route.record if route else self._expected_router
+        if expected is None:
+            from services.shared.router_connection import read_connection
+            selected = read_connection()
+            if selected and selected.get('id'):
+                expected = next((r for r in SecurityStore().routers() if r['id'] == selected['id']), selected)
+        token = _request_target.set(expected)
+        try:
+            return await self._account_request(method, url, route, kwargs)
+        finally:
+            _request_target.reset(token)
+
+    async def _account_request(self, method, url, route, kwargs):
         kwargs['allow_redirects'] = False
-        return await super()._request(method, url, **kwargs)
+        from .router_access import validate_target
+        if not route:
+            return await super()._request(method, url, **kwargs)
+        validate_target(route, url)
+        async def send(key, target=url, options=None):
+            # A concurrent Router switch cannot redirect an old account credential.
+            validate_target(route, target)
+            options = kwargs if options is None else options
+            headers = dict(options.get('headers') or {})
+            for name in list(headers):
+                if name.lower() in {'authorization', 'x-orion-api-key'}:
+                    del headers[name]
+            headers.update(Authorization='Bearer ' + key, **{'x-orion-api-key': key})
+            return await super(RouterSession, self)._request(
+                method if options is kwargs else 'GET', target, **{**options, 'headers': headers})
+        # Authenticate before the actual operation. A model provider's own 401
+        # must not be mistaken for an invalid Router key and billed twice.
+        target = route.record['url'].rstrip('/') + '/api/v1/hubs/account-status'
+        options = {'allow_redirects': False}
+        key = route.manual_key or route.managed_key
+        try:
+            response = await send(key, target, options)
+        except (aiohttp.ClientConnectionError, TimeoutError) as error:
+            if not route.manual_key or isinstance(error, (aiohttp.ServerFingerprintMismatch, aiohttp.ClientSSLError)):
+                raise
+            # Only the read-only auth probe may be retried after transport loss.
+            key = route.managed_key
+            response = await send(key, target, options)
+        # Authentication is rejected before model work; never replay timeouts,
+        # 5xx, budgets (402) or administrator revocation (403).
+        if response.status == 401 and key != route.managed_key:
+            response.release()
+            key = route.managed_key
+            response = await send(key, target, options)
+        if response.status == 401:
+            response.release()
+            from .router_accounts import request_router, ensure_account
+            # Only an active Hub delegation may restore a deleted account key.
+            # An inactive/revoked account row remains in Router and stays denied.
+            await request_router(route.record, 'GET', '/api/v1/hubs/status')
+            await ensure_account(route.user, route.record, force=True)
+            key = route.managed_key
+            response = await send(key, target, options)
+        if response.status == 200:
+            response.release()
+            # Model work and multipart/audio bodies are consumed exactly once.
+            return await send(key)
+        return response
 
 
 def router_session(**kwargs):

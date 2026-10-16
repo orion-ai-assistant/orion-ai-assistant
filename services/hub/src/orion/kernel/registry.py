@@ -329,6 +329,17 @@ async def create_user(username: str, password_hash: str) -> bool:
         await conn.close()
 
 
+async def list_active_users() -> list[dict]:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError('User database unavailable')
+    try:
+        await _ensure_tables(conn)
+        return [dict(row) for row in await conn.fetch('SELECT id, created_at FROM orion_users WHERE is_active=true')]
+    finally:
+        await conn.close()
+
+
 async def set_user_approval(username: str, approved: bool) -> bool:
     return await set_user_active(username, approved)
 

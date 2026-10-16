@@ -2,6 +2,8 @@
 
 **Güncel kullanıcı kararı:** Computer Use kullanılmayacak; manuel pencere ve gerçek oturum kabulü Aşama 05 sonrasındaki kullanıcı denemesine ertelendi. Kod/izole entegrasyon testleri yapılıp sonuçlar commit'lendikten sonra yeni oturumda yalnız 05'e geçilecek. [Hazır Aşama 05 promptu](05-session-prompt.md). Aşağıdaki önceki "ayrı talimat gerekir" ifadesi bu son kullanıcı talimatıyla karşılandı; 05 bu oturumda uygulanmadı.
 
+17 Ekim ek kullanıcı işi: Router çevrimdışı hesap tamamlama, Router'a bağlı manuel sanal anahtar önceliği ve hedef/pin ayrımı uygulandı. [Güncel hesap erişimi sonuç ve arayüz kaydı](../router-account-access-followup.md). 05 yeni Hub/Router endpoint bağımlılığını ve kullanıcı seed/şifreli manuel key dosyalarını korumalıdır; bu iş 05'i başlatmadı.
+
 [Ana rehber](../orion-installation-lifecycle-implementation-plan.md) · [04 kapsam/sonuç](04-launcher-and-autostart.md) · [Önceki Unicode devri](03-unicode-postgres-followup.md)
 
 Kullanıcı yalnız 04'ü uygulama, testleri agent'ın sırayla çalıştırması, sonuçları MD'ye kaydetme, görev commit'i oluşturma ve durma talimatı verdi. Push yok. Gerçek hesabın Windows başlangıcını etkinleştirme yetkisi yok; izole Startup fixture testi yetkilidir. D'deki üç development deposu ve ilgisiz kullanıcı diff'leri korunur. Orion AppData kurulum/test alanları gerektiğinde yeniden oluşturulabilir; başka uygulamalara dokunulmaz.

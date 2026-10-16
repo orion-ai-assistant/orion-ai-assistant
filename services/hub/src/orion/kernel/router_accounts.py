@@ -81,7 +81,7 @@ async def request_router(record, method, path, *, body=None, admin_password=None
     if account_key:
         headers['Authorization'] = 'Bearer ' + account_key
     try:
-        async with router_session(timeout=aiohttp.ClientTimeout(total=8)) as session:
+        async with router_session(expected_router=record, account_route=getattr(account_key, 'route', False), timeout=aiohttp.ClientTimeout(total=8)) as session:
             async with session.request(method, record['url'].rstrip('/') + path,
                                        headers=headers, json=body, allow_redirects=False) as response:
                 if response.status == 401 and admin_password is not None:
@@ -124,17 +124,18 @@ async def account_identity(user_id):
     return subject, user['id']
 
 
-async def ensure_account(user_id, record=None):
+async def ensure_account(user_id, record=None, *, force=False):
     record = record or await selected_router()
     subject, name = await account_identity(user_id)
     key = await asyncio.to_thread(_credential, record['id'], 'account', subject)
     state = await asyncio.to_thread(_state, record['id'], subject)
-    if not state:
+    if force or not state:
         await ensure_connection(record)
         state = await request_router(record, 'POST', '/api/v1/hubs/accounts',
                                      body={'subject_id': subject, 'name': name, 'key': key})
         await asyncio.to_thread(atomic_write, _state_path(record['id'], subject), json.dumps(state).encode())
-    return key
+    from .router_access import account_key
+    return await account_key(user_id, record, subject, key)
 
 
 async def provision_if_available(user_id, record=None):
@@ -160,6 +161,8 @@ async def catalog_credentials(admin_key):
 
 
 async def account_settings(settings, user_id):
+    from .router_access import current_route, account_key
+    current_route.set(None)
     if user_id == 'global':
         return settings
     try:
@@ -167,10 +170,36 @@ async def account_settings(settings, user_id):
     except RouterAccountError:
         record = await asyncio.to_thread(read_connection)
         if not record or not record.get('id'):
-            # No selected Router: preserve the prior setup until Panel configures it.
-            return settings
+            # No selected Router is not permission to inherit shared admin access.
+            return settings.model_copy(update={'router_api_key': 'sk-orion-unavailable'})
         # A missing/revoked selected Router must never restore shared admin access.
     subject, _ = await account_identity(user_id)
     key = await asyncio.to_thread(_credential, record['id'], 'account', subject)
     await provision_if_available(user_id, record)
-    return settings.model_copy(update={'router_api_key': key})
+    bound = await account_key(user_id, record, subject, key)
+    current_route.set(bound.route)
+    return settings.model_copy(update={'router_api_key': str(bound)})
+
+
+async def reconcile_accounts():
+    """The durable user DB minus Router receipts is the pending account queue."""
+    from .registry import list_active_users
+    record = await selected_router()
+    await ensure_connection(record)
+    remote = await request_router(record, 'GET', '/api/v1/hubs/accounts')
+    known = {row['subject_id'] for row in remote['accounts']}
+    for user in await list_active_users():
+        subject, _ = await account_identity(user['id'])
+        if subject not in known or not await asyncio.to_thread(_state, record['id'], subject):
+            await ensure_account(user['id'], record, force=True)
+
+
+async def provisioning_loop():
+    while True:
+        try:
+            await reconcile_accounts()
+        except Exception:
+            logger.info('Router account reconciliation pending')
+        if asyncio.current_task().cancelling():
+            raise asyncio.CancelledError
+        await asyncio.sleep(15)

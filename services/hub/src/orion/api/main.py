@@ -83,9 +83,17 @@ async def lifespan(app: FastAPI):
     from orion.kernel.job_safety import queue_watchdog
     async with service_lifespan(app):
         watchdog = asyncio.create_task(queue_watchdog(app.state.redis))
+        provisioner = None
+        if getattr(app.state, 'public', True) is False:
+            from orion.kernel.router_accounts import provisioning_loop
+            provisioner = asyncio.create_task(provisioning_loop(), name='router-account-provisioner')
         try:
             yield
         finally:
+            if provisioner:
+                provisioner.cancel()
+                with suppress(asyncio.CancelledError):
+                    await provisioner
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog
@@ -97,6 +105,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     application = FastAPI(title='Orion Hub', version='0.1.0', lifespan=lifespan,
                           docs_url=None if public else '/docs', redoc_url=None,
                           openapi_url=None if public else '/openapi.json')
+    from orion.api.router_access import router as access_router
+    application.include_router(access_router)
     application.state.public = public
     application.state.mobile = mobile
     application.state.discovery_enabled = discovery_enabled

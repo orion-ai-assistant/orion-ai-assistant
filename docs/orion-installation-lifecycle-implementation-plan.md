@@ -6,6 +6,8 @@ Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyala
 
 **Son takip kararı:** kullanıcı Computer Use'u durdurdu; pencere/gerçek logon manuel kabulünü Aşama 05 sonrasına erteledi. C AppData gerçek kaynak kurulum/izole Startup/Desktop çağrıları geçti ve test süreçleri kapatıldı. Bu oturum kod testi/sonuç commit'iyle biter; yeni oturumda yalnız 05'e geçiş yetkilidir. [Kopyalanabilir 05 promptu](orion-lifecycle-plan/05-session-prompt.md). 01/03/04 açık borçları görünür kalır; 05 geliştirmesini bu ertelenmiş manuel kontrollerle bloke etme.
 
+17 Ekim ek kullanıcı talebiyle Router çevrimdışı hesap hazırlama ve Router'a özel manuel sanal anahtar akışı uygulandı; [arayüz/sonuç kaydı](router-account-access-followup.md) yeni 05 oturumunda okunur. 05–08 henüz başlamadı; önceki açık kabul etiketleri değişmez.
+
 ## Şimdi nereden başlanacak?
 
 **Güncel 04 devri:** [04 oturum devrini](orion-lifecycle-plan/04-session-handoff.md) ve [04 sonuç kaydını](orion-lifecycle-plan/04-launcher-and-autostart.md) oku. Kaynak kurulum tek PowerShell girişi, Desktop/Startup linkleri, ayrı başlangıç/pencere tercihleri, yerel hata/log/onarma erişimi ve mevcut pencereye yönlendirme kodu var. Gerçek Unicode Hub/PG/Flutter sunucusu testi geçti. Temiz VM/logon, gerçek HWND/pencere kapanışı ve WinForms görsel kabulü açık; bu nedenle 04 tamamlandı sayılmaz. 01/03 borcu korunur. Yalnız 04 commit'inden sonra durulur; sonraki aşamaya geçilmez. Aşağıdaki 03 giriş paragrafı tarihsel devir bağlamıdır.

@@ -41,7 +41,7 @@ class Redis:
 
 class RouterConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        temp = TemporaryDirectory(dir=Path(__file__).parent)
+        temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.path = self.root / 'selection.json'
