@@ -83,7 +83,23 @@ def stop_hub(root):
 
 def router_root(script):
     from services.shared.router_installation import registered_router_root
-    return Path(registered_router_root() or Path(script).parent).resolve()
+    # An explicitly passed development entry point must never operate on the
+    # user's installed Router. Installer/manager discovery resolves the registry
+    # before calling this function.
+    if script:
+        root = Path(script).resolve().parent
+        import tomllib
+        try:
+            project = tomllib.loads((root / 'pyproject.toml').read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            raise LifecycleError('Router installation cannot be verified') from error
+        if project.get('project', {}).get('name') != 'orion-router':
+            raise LifecycleError('Selected path is not Orion Router')
+        return root
+    registered = registered_router_root()
+    if registered is None:
+        raise LifecycleError('No Router selected; select an existing installation first')
+    return Path(registered).resolve()
 
 
 def router_python(root):

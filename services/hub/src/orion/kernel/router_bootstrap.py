@@ -76,6 +76,33 @@ def register_local_router_installation(root):
 
 
 def read_local_router_candidate():
+    # A canonical inventory is authoritative, including an intentionally absent
+    # local Router. Never reconnect to stale legacy provenance behind its back.
+    from services.shared.installation_registry import Registry
+    inventory = Registry().read()
+    if inventory is not None:
+        local = [item for item in inventory['components']
+                 if item['kind'] == 'router' and item['distribution'] != 'development']
+        if not local:
+            return None
+        if len(local) != 1:
+            raise ValueError('Multiple registered Routers require explicit selection')
+        item = local[0]
+        if item['distribution'] in {'remote', 'docker'}:
+            return None
+        from services.shared.router_installation import inspect_router_folder
+        root = Path(item['code_path'])
+        candidate = inspect_router_folder(
+            root, distribution=item['distribution'], expected_identity=item.get('router_uuid'),
+            expected_spki=item.get('tls_spki_sha256'), identity_path=item.get('identity_path'),
+            certificate_path=item.get('certificate_path'))
+        if candidate.status not in {'ready', 'closed-unverified'}:
+            raise ValueError(f'Registered Router requires repair: {candidate.status}')
+        return validate_registration({
+            'v': 1, 'kind': 'orion-router-local-installation', 'root': str(root),
+            'certificate_path': item.get('certificate_path', str(root / 'persistent/tls/certificate.pem')),
+            'identity_path': item.get('identity_path', str(root / 'persistent/mdns-id')),
+            'tls_port': item.get('tls_port', 9443)})
     # Hub-installer registration and Router's own native-installer registration
     # are explicit filesystem provenance. Never consult PATH or mDNS here.
     for path in (security_dir() / 'local-router-installation.json', installer_manifest_path()):

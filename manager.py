@@ -317,27 +317,9 @@ def get_mode_from_args(args):
     return "docker"
 
 def find_orionrouter_script():
-    from services.shared.router_installation import registered_router_root
-    registered = registered_router_root()
-    if registered:
-        script = os.path.join(registered, 'orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
-        if os.path.isfile(script):
-            return 'win' if os.name == 'nt' else 'unix', script
-    if os.name == 'nt':
-        appdata = os.environ.get("LOCALAPPDATA", "")
-        if appdata:
-            ps1_path = os.path.join(appdata, "OrionRouter", "orionrouter.ps1")
-            if os.path.exists(ps1_path):
-                return "win", ps1_path
-    else:
-        sh_path = os.path.join(os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router')), 'orionrouter')
-        if os.path.exists(sh_path):
-            return "unix", sh_path
+    from services.shared.router_installation import find_router_script
+    return find_router_script()
 
-    cmd = shutil.which("orionrouter")
-    if cmd:
-        return "cmd", cmd
-    return None, None
 
 # --- POSTGRESQL YARDIMCILARI (stale PID / lock sorunu için) ---
 def get_pg_status(pg_ctl, pg_data):

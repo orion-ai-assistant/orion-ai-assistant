@@ -1068,30 +1068,8 @@ def run_installation(
         config.INSTALLING_SERVICES.discard(service_id)
 
 def find_orionrouter_script():
-    from services.shared.router_installation import registered_router_root
-    registered = registered_router_root()
-    if registered:
-        script = os.path.join(registered, 'orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
-        if os.path.isfile(script):
-            return 'win' if os.name == 'nt' else 'unix', script
-    if os.name == 'nt':
-        appdata = os.environ.get("LOCALAPPDATA", "")
-        if appdata:
-            ps1_path = os.path.join(appdata, "OrionRouter", "orionrouter.ps1")
-            if os.path.exists(ps1_path):
-                return "win", ps1_path
-    else:
-        sh_path = os.path.join(os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router')), 'orionrouter')
-        if os.path.exists(sh_path):
-            return "unix", sh_path
-            
-    import shutil
-    cmd = shutil.which("orionrouter")
-    if cmd:
-        return "cmd", cmd
-    return None, None
-
-
+    from services.shared.router_installation import find_router_script
+    return find_router_script()
 
 def start_active_services() -> dict:
     import subprocess

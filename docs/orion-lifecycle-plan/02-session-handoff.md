@@ -4,7 +4,7 @@
 
 ## Kullanıcının son kararı ve sıradaki iş
 
-Yalnız **Aşama 02** uygulanacak; sonuçlar kendi aşama dosyasına ve ana tabloya yazılıp durulacak. 03'e geçilmeyecek. Bu devir oturumunda yalnız belgeler güncellendi; 02 kodu, AppData kurulumu veya yeni ürün testi yapılmadı.
+**Güncel kullanıcı talimatı (16 Ekim 2026, bu oturum):** Aşama 02’den başlayarak bütün aşamalara sırayla devam et; her aşamayı test et, MD sonuçlarını güncelle ve ayrı commit at. Aşağıdaki eski yalnız 02’de dur sınırı bu talimatla kaldırıldı. Eksik testler tamamlanmış sayılmaz; veri/kimlik koruma ve ağır testleri sırayla çalıştırma kuralları sürer. Bu devir oturumunda yalnız belgeler güncellendi; 02 kodu, AppData kurulumu veya yeni ürün testi yapılmadı.
 
 01'in çekirdek süreç yönetimi uygulandı, son 40 yaşam döngüsü testi ve izole gerçek Hub/Router aç-kapat koşuları geçti. Durumu yine **DOĞRULAMA EKSİK**: bütün ürün/UI/OS kabulü tamamlanmadı. Kullanıcı 02'ye devam etmek istiyor ve kendi manuel kabulünü tek tuşla başlatma akışı hazır olduğunda yapacak. Bu kayıt, eski “01 tamamen bitmeden 02'ye geçme” talimatına yalnız 02 geliştirmesi için kullanıcı tarafından verilen istisnadır; eksik testleri geçmiş veya yayını onaylanmış göstermez. İlgili başlatıcı aşamasında manuel kabul borcunu yeniden görünür kıl.
 

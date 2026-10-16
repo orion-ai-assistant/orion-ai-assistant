@@ -273,6 +273,25 @@ def main():
         assert first['status'] == 'ready'
         assert db.ready()
         report['checks'].append('3 concurrent real starts, one ready supervisor, authenticated durable database')
+        if args.kind == 'router':
+            from services.shared.router_installation import inspect_router_folder
+            from services.shared.router_verification import verify_running_router
+            from dataclasses import asdict
+            candidate = inspect_router_folder(root)
+            assert candidate.status == 'closed-unverified', candidate
+            application_db = Postgres(db.ctl, db.data, db.port, db.user, 'orion_router', db.password)
+            def verify_selected(selected):
+                evidence = verify_running_router(
+                    selected, port=int(env['ORION_ROUTER_TLS_PORT']),
+                    certificate_path=root / 'persistent/tls/certificate.pem', database=application_db)
+                report['stage02_live_evidence'] = asdict(evidence) if evidence else None
+                return evidence
+            verified = inspect_router_folder(
+                root, expected_identity=candidate.identity, expected_spki=candidate.spki,
+                live_verifier=verify_selected)
+            assert verified.status == 'ready', verified
+            assert inspect_router_folder(root, expected_spki='0' * 64).status == 'identity-mismatch'
+            report['checks'].append('stage02 recognized folder remains unverified until owned process, pinned TLS/UUID, API and authenticated DB schema pass')
         call(start, 'repeat-start')
         assert Runtime(root, component).read()['run_id'] == first['run_id']
         report['checks'].append('repeat start retains supervisor identity')

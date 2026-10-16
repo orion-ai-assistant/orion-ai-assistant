@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 import fastapi
 import os
+from pydantic import BaseModel
 
 from . import config
 from .core import models
@@ -8,6 +9,41 @@ from .core import i18n
 from . import services
 
 router = APIRouter()
+
+
+class RouterFolderSelection(BaseModel):
+    root: str
+    distribution: str = 'legacy-source'
+
+
+@router.get('/api/installation')
+def installation_inventory():
+    from services.shared.installation_registry import Registry, RegistryError
+    try:
+        record = Registry().read()
+        return {'status': 'registered' if record is not None else 'unregistered', 'record': record}
+    except RegistryError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post('/api/installation/router/inspect')
+def inspect_router_selection(selection: RouterFolderSelection):
+    from dataclasses import asdict
+    from services.shared.router_installation import inspect_router_folder
+    try:
+        return asdict(inspect_router_folder(selection.root, distribution=selection.distribution))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.post('/api/installation/router/register')
+def register_router_selection(selection: RouterFolderSelection):
+    from services.shared.installation_registry import Registry
+    from services.shared.installation_control import register_router
+    try:
+        return register_router(Registry(), selection.root, distribution=selection.distribution)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 # ---------------------------------------------------------------------------
 # Hardware
@@ -142,7 +178,6 @@ def toggle_autostart(service_id: str):
 # ---------------------------------------------------------------------------
 # System Run
 # ---------------------------------------------------------------------------
-from pydantic import BaseModel
 class LangUpdate(BaseModel):
     lang: str
 
