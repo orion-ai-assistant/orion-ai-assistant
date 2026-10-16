@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT))
 from scripts.lifecycle.run_registry_acceptance import public_manifests
 from scripts.lifecycle.test_environment import snapshot
 from services.shared.bootstrap_registration import register_bootstrap
-from services.shared.content_migration import begin_content_migration, resume_content_migration, registry_revision
+from services.shared.content_migration import registry_revision
+from services.shared.migration_host import move_content, recover_content
 from services.shared.installation_registry import Registry
 from services.shared.installation_paths import validate_private_directory
 from services.shared.model_locations import models_directory
@@ -51,14 +52,13 @@ def main():
         if phase == 'verified':
             raise SimulatedCrash()
     try:
-        begin_content_migration(store, 'models', destination,
-                                expected_revision=registry_revision(record), quiescence_gate=lambda: True, fault=crash)
+        move_content(store, 'models', destination, expected_revision=registry_revision(record), fault=crash)
         raise AssertionError('Fault injection did not run')
     except SimulatedCrash:
         pass
     assert store.read() == record
     journal = next((store.path.parent / 'migrations').glob('*.json'))
-    recovered = resume_content_migration(store, journal, quiescence_gate=lambda: True)
+    recovered = recover_content(store, journal)
     assert recovered['phase'] == 'completed'
     assert snapshot(models) == source_hashes
     assert snapshot(code) == source_code
@@ -71,6 +71,7 @@ def main():
                   source_volume=models.anchor, destination_volume=destination.anchor,
                   source_and_config_hashes_preserved=True, component_ids_preserved=True,
                   real_public_manifests_preserved=True, verified_boundary_crash_recovered=True)
+    report['host_gate'] = 'real stopped-installation and native operation locks'
     (scratch / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'result': str(scratch / 'result.json'), **report}, ensure_ascii=False, indent=2))
 

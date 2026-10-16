@@ -1,5 +1,18 @@
 window.orionLocales = window.orionLocales || {};
 window.orionLocales.en = {
+    storage_title: "Model and download locations",
+    storage_note: "Close the registered services before moving content. The source copy is retained. Moving the database or application is not supported yet.",
+    storage_kind: "Content",
+    storage_models: "Models",
+    storage_downloads: "Downloads",
+    storage_destination: "Full destination folder path",
+    storage_move: "Move content",
+    storage_refresh: "Refresh",
+    storage_missing: "Folder unavailable",
+    storage_unregistered: "Register this installation first.",
+    storage_working: "Copying and verifying content…",
+    storage_done: "Location changed. The source copy was retained.",
+    storage_error: "Location could not be changed. Check the installation and migration record.",
     // App states
     status_uninstalled: "Not Installed",
     status_running: "Running",

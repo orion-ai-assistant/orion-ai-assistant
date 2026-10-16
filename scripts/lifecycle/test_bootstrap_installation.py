@@ -135,6 +135,15 @@ class BootstrapTests(unittest.TestCase):
         for name, source in generator.generated().items():
             self.assertEqual((ROOT / name).read_text(encoding='utf-8'), source, name)
 
+    @unittest.skipUnless(os.name == 'nt', 'Bundled Windows PostgreSQL limitation')
+    def test_native_unicode_code_root_is_rejected_before_clone(self):
+        with patch.object(bootstrap, 'run_command') as child:
+            result = bootstrap.main(['--mode', 'local', '--root', str(self.base / '\u00d6zel'),
+                                     '--registry-path', str(self.registry), '--non-interactive'], self.api)
+        self.assertEqual(result, 1)
+        child.assert_not_called()
+        self.assertFalse((self.base / '\u00d6zel').exists())
+
     def test_legacy_locator_blocks_duplicate_install_before_any_command(self):
         self.registry.parent.mkdir(parents=True)
         locator = self.registry.parent / 'router-installation.json'

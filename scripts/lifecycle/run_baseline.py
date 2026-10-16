@@ -31,6 +31,7 @@ EXTRA_SUITES = {
     'browser': ('browser_manager', 'browser_routes', 'browser_tools',
                 'browser_bridge', 'browser_cdp', 'browser_live'),
     'browser-live': ('browser_live',),
+    'storage-ui': ('installation_storage_ui',),
     'browser-bridge': ('browser_bridge',),
     'browser-api': ('browser_routes', 'browser_tools', 'browser_cdp'),
 }
@@ -85,7 +86,7 @@ def main():
                    ORION_MDNS_ID_FILE=str(Path(tmp) / 'mdns-id'), PYTHONDONTWRITEBYTECODE='1',
                    PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONUNBUFFERED='1',
                    PYTHONPATH=os.pathsep.join([str(ROOT / 'services/hub/src'), str(ROOT)]))
-        if args.suite in {'extended', 'browser', 'browser-live'}:
+        if args.suite in {'extended', 'browser', 'browser-live', 'storage-ui'}:
             env.update(ORION_BROWSER_TESTS='1', ORION_BROWSER_TEST_HEADLESS='1')
         if args.suite == 'fixtures':
             command = [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts/lifecycle', '-p', 'test_test_environment.py', '-v']

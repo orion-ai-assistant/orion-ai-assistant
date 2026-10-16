@@ -257,32 +257,40 @@ def begin_content_migration(registry, name, destination, *, expected_revision,
     if name not in KINDS:
         raise MigrationError('Only Models and Downloads migration is supported')
     with operation_lock(registry):
-        _idle(quiescence_gate)
-        _ensure_no_pending(registry)
-        record = registry.read()
-        if record is None or registry_revision(record) != expected_revision:
-            raise MigrationError('Installation registry changed; select the source again')
-        source = _canonical(resolve_location(record, name), must_exist=True)
-        if not source.is_dir():
-            raise MigrationError('Registered content source is missing')
-        for occupied in _occupied(record, name):
-            occupied = _canonical(occupied)
-            if source == occupied or source.is_relative_to(occupied) or occupied.is_relative_to(source):
-                raise MigrationError('Content source overlaps another component/location; source/runtime/DB moves are unsupported')
-        previous_marker = _previous_marker(registry, source, record, name)
-        inventory = _inventory(source, target=previous_marker is not None, operation_id=previous_marker)
-        size = sum(item['size'] for item in inventory['files'].values())
-        check = validate_destination(str(destination), source=source,
-                                     occupied_paths=_occupied(record, name), required_bytes=size)
-        target = _canonical(check.path)
-        operation_id = str(uuid4())
-        journal = dict(schema_version=1, operation_id=operation_id, installation_id=record['installation_id'],
-                       kind=name, source=str(source), destination=str(target), registry_path=str(registry.path.resolve()),
-                       expected_revision=expected_revision, phase='planned', inventory=inventory, copied_files=[])
-        journal['source_marker'] = previous_marker
-        path = _journal_path(registry, operation_id)
-        _boundary(path, journal, 'planned', fault)
-        return _resume_locked(registry, path, journal, quiescence_gate, fault)
+        return _begin_content_migration_locked(registry, name, destination, expected_revision=expected_revision,
+                                               quiescence_gate=quiescence_gate, fault=fault)
+
+
+def _begin_content_migration_locked(registry, name, destination, *, expected_revision, quiescence_gate, fault=None):
+    from services.shared.installation_paths import resolve_location, validate_destination
+    if name not in KINDS:
+        raise MigrationError('Only Models and Downloads migration is supported')
+    _idle(quiescence_gate)
+    _ensure_no_pending(registry)
+    record = registry.read()
+    if record is None or registry_revision(record) != expected_revision:
+        raise MigrationError('Installation registry changed; select the source again')
+    source = _canonical(resolve_location(record, name), must_exist=True)
+    if not source.is_dir():
+        raise MigrationError('Registered content source is missing')
+    for occupied in _occupied(record, name):
+        occupied = _canonical(occupied)
+        if source == occupied or source.is_relative_to(occupied) or occupied.is_relative_to(source):
+            raise MigrationError('Content source overlaps another component/location; source/runtime/DB moves are unsupported')
+    previous_marker = _previous_marker(registry, source, record, name)
+    inventory = _inventory(source, target=previous_marker is not None, operation_id=previous_marker)
+    size = sum(item['size'] for item in inventory['files'].values())
+    check = validate_destination(str(destination), source=source,
+                                 occupied_paths=_occupied(record, name), required_bytes=size)
+    target = _canonical(check.path)
+    operation_id = str(uuid4())
+    journal = dict(schema_version=1, operation_id=operation_id, installation_id=record['installation_id'],
+                   kind=name, source=str(source), destination=str(target), registry_path=str(registry.path.resolve()),
+                   expected_revision=expected_revision, phase='planned', inventory=inventory, copied_files=[])
+    journal['source_marker'] = previous_marker
+    path = _journal_path(registry, operation_id)
+    _boundary(path, journal, 'planned', fault)
+    return _resume_locked(registry, path, journal, quiescence_gate, fault)
 
 
 def _validate_journal(registry, path, journal):
@@ -371,12 +379,16 @@ def _resume_locked(registry, path, journal, gate, fault):
 def resume_content_migration(registry, journal_path, *, quiescence_gate, fault=None):
     """Recover an owned journal; never silently roll back a switched location."""
     with operation_lock(registry):
-        path = _canonical(journal_path, must_exist=True)
-        expected_directory = _canonical(registry.path.parent / 'migrations', must_exist=True)
-        if path.parent != expected_directory:
-            raise MigrationError('Migration journal must belong to this registry')
-        try:
-            journal = json.loads(path.read_text(encoding='utf-8'))
-            return _resume_locked(registry, path, journal, quiescence_gate, fault)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise MigrationError('Invalid migration journal; preserve it for repair') from exc
+        return _resume_content_migration_locked(registry, journal_path, quiescence_gate=quiescence_gate, fault=fault)
+
+
+def _resume_content_migration_locked(registry, journal_path, *, quiescence_gate, fault=None):
+    path = _canonical(journal_path, must_exist=True)
+    expected_directory = _canonical(registry.path.parent / 'migrations', must_exist=True)
+    if path.parent != expected_directory:
+        raise MigrationError('Migration journal must belong to this registry')
+    try:
+        journal = json.loads(path.read_text(encoding='utf-8'))
+        return _resume_locked(registry, path, journal, quiescence_gate, fault)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise MigrationError('Invalid migration journal; preserve it for repair') from exc

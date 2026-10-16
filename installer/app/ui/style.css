@@ -21,6 +21,20 @@ html {
     display: none !important;
 }
 
+.storage-panel { padding: 1.25rem; margin-bottom: 1rem; }
+.storage-panel summary { cursor: pointer; font-weight: 600; }
+.storage-panel p { line-height: 1.5; color: var(--text-secondary); margin: .8rem 0; }
+.storage-panel pre { padding: .75rem; background: var(--bg-dark); border-radius: 8px; }
+.storage-form { display: grid; gap: .5rem; }
+.storage-form label { color: var(--text-secondary); font-size: .9rem; }
+.storage-form input, .storage-form select {
+    width: 100%; min-width: 0; box-sizing: border-box; padding: .7rem;
+    color: var(--text-primary); background: var(--bg-soft);
+    border: 1px solid var(--border-soft); border-radius: 8px; font: inherit;
+}
+.storage-form input:focus, .storage-form select:focus { outline: 2px solid var(--accent); }
+.storage-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .35rem; }
+
 * {
     margin: 0;
     padding: 0;

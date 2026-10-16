@@ -1,5 +1,18 @@
 window.orionLocales = window.orionLocales || {};
 window.orionLocales.tr = {
+    storage_title: "Model ve indirme konumları",
+    storage_note: "Taşımadan önce kayıtlı servisleri kapatın. Kaynak kopya korunur. DB ve uygulama taşıması henüz desteklenmiyor.",
+    storage_kind: "İçerik",
+    storage_models: "Modeller",
+    storage_downloads: "İndirmeler",
+    storage_destination: "Hedef klasörün tam yolu",
+    storage_move: "İçeriği taşı",
+    storage_refresh: "Yenile",
+    storage_missing: "Klasör kullanılamıyor",
+    storage_unregistered: "Önce bu kurulumu kaydedin.",
+    storage_working: "İçerik kopyalanıyor ve doğrulanıyor…",
+    storage_done: "Konum değiştirildi. Kaynak kopya korundu.",
+    storage_error: "Konum değiştirilemedi. Mevcut kurulum ve işlem kaydını kontrol edin.",
     // App states
     status_uninstalled: "Kurulmamış",
     status_running: "Çalışıyor",

@@ -16,11 +16,57 @@ class RouterFolderSelection(BaseModel):
     distribution: str = 'legacy-source'
 
 
+class ContentMove(BaseModel):
+    name: str
+    destination: str
+    expected_revision: str
+
+
+class ContentRecovery(BaseModel):
+    journal: str
+
+
+@router.get('/api/installation/locations')
+def installation_locations():
+    from services.shared.content_migration import registry_revision
+    from services.shared.installation_paths import resolve_location
+    try:
+        record = config.installation_registry().read()
+        if record is None:
+            return {'status': 'unregistered', 'revision': None, 'locations': {}}
+        locations = {}
+        for name in ('models', 'downloads'):
+            path = resolve_location(record, name)
+            locations[name] = {'path': str(path), 'available': path.is_dir()}
+        return {'status': 'registered', 'revision': registry_revision(record), 'locations': locations}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post('/api/installation/locations/move')
+def move_installation_content(request: ContentMove):
+    from services.shared.migration_host import move_content
+    try:
+        return move_content(config.installation_registry(), request.name, request.destination,
+                            expected_revision=request.expected_revision)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post('/api/installation/locations/recover')
+def recover_installation_content(request: ContentRecovery):
+    from services.shared.migration_host import recover_content
+    try:
+        return recover_content(config.installation_registry(), request.journal)
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @router.get('/api/installation')
 def installation_inventory():
     from services.shared.installation_registry import Registry, RegistryError
     try:
-        record = Registry().read()
+        record = config.installation_registry().read()
         return {'status': 'registered' if record is not None else 'unregistered', 'record': record}
     except RegistryError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
@@ -41,7 +87,7 @@ def register_router_selection(selection: RouterFolderSelection):
     from services.shared.installation_registry import Registry
     from services.shared.installation_control import register_router
     try:
-        return register_router(Registry(), selection.root, distribution=selection.distribution)
+        return register_router(config.installation_registry(), selection.root, distribution=selection.distribution)
     except (OSError, ValueError, RuntimeError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 

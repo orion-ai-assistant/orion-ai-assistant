@@ -86,6 +86,12 @@ def main(argv=None):
     select = commands.add_parser('register-router', help='Explicitly register an inspected source folder in place')
     select.add_argument('root', type=Path)
     select.add_argument('--distribution', choices=['legacy-source', 'development'], default='legacy-source')
+    move = commands.add_parser('move-content', help='Move registered Models/Downloads only when all local consumers are stopped')
+    move.add_argument('name', choices=['models', 'downloads'])
+    move.add_argument('destination', type=Path)
+    move.add_argument('--expected-revision', required=True)
+    recover = commands.add_parser('recover-content', help='Recover this installation\'s interrupted content move')
+    recover.add_argument('journal', type=Path)
     args = parser.parse_args(argv)
     registry = Registry(args.registry)
     try:
@@ -96,6 +102,12 @@ def main(argv=None):
             result = import_legacy(registry, hub_manifest=args.hub_manifest, router_manifest=args.router_manifest)
         elif args.command == 'register-router':
             result = register_router(registry, args.root, distribution=args.distribution)
+        elif args.command == 'move-content':
+            from .migration_host import move_content
+            result = move_content(registry, args.name, args.destination, expected_revision=args.expected_revision)
+        elif args.command == 'recover-content':
+            from .migration_host import recover_content
+            result = recover_content(registry, args.journal)
         else:
             from .router_installation import inspect_router_folder
             result = asdict(inspect_router_folder(args.root, distribution=args.distribution))

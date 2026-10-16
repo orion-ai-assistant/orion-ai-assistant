@@ -87,16 +87,17 @@ def runtime(source, destination):
 def binaries(source, target):
     # Independent directory entries, shared immutable binary contents. No data
     # directories are linked, and this runner never removes its scratch roots.
+    copy = os.link if source.anchor.lower() == target.anchor.lower() else shutil.copy2
     if (source / 'bin/pg_ctl.exe').is_file():
         for directory in ('bin', 'lib', 'share'):
-            shutil.copytree(source / directory, target / directory, copy_function=os.link)
+            shutil.copytree(source / directory, target / directory, copy_function=copy)
     elif (source / 'bin/ffmpeg.exe').is_file():
-        shutil.copytree(source / 'bin', target / 'bin', copy_function=os.link)
+        shutil.copytree(source / 'bin', target / 'bin', copy_function=copy)
     else:
         target.mkdir(parents=True)
         for original in source.iterdir():
             if original.suffix.lower() in {'.exe', '.dll'}:
-                os.link(original, target / original.name)
+                copy(original, target / original.name)
 
 
 def environment(scratch):
@@ -116,9 +117,9 @@ def environment(scratch):
     return env
 
 
-def setup(kind, scratch):
-    root = scratch / kind
-    root.mkdir()
+def setup(kind, scratch, source_root=None):
+    root = source_root or scratch / kind
+    root.mkdir(parents=True)
     env = environment(scratch)
     dbport = port()
     if kind == 'hub':
@@ -217,8 +218,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kind', choices=['hub', 'router', 'router-dev'])
     parser.add_argument('--reuse', type=Path, help='Reuse a stopped Router test scratch only')
+    parser.add_argument('--scratch-base', type=Path, help='Create a fresh test directory at an explicit location')
+    parser.add_argument('--registered-paths', action='store_true', help='Exercise registered custom Hub paths and content host')
+    parser.add_argument('--setup-offline', action='store_true', help='Also run real source installer setup using the existing dependency cache only')
     args = parser.parse_args()
-    base = ROOT / '.tmp/lifecycle'
+    if args.registered_paths and (args.kind != 'hub' or args.reuse):
+        parser.error('--registered-paths requires a new Hub fixture')
+    if args.setup_offline and not args.registered_paths:
+        parser.error('--setup-offline requires --registered-paths')
+    base = args.scratch_base.resolve() if args.scratch_base else ROOT / '.tmp/lifecycle'
     base.mkdir(parents=True, exist_ok=True)
     scratch = args.reuse.resolve() if args.reuse else Path(tempfile.mkdtemp(prefix='product-', dir=base))
     if args.reuse:
@@ -261,7 +269,36 @@ def main():
                 start = [str(py), '-m', 'core.lifecycle_cli', 'start']
             stop = [str(py), '-m', 'core.lifecycle_cli', 'stop']
         else:
-            root, env, db, start, stop, component = setup(args.kind, scratch)
+            custom = scratch / 'Custom Installation' / 'Hub' if args.registered_paths else None
+            root, env, db, start, stop, component = setup(args.kind, scratch, custom)
+        if args.registered_paths:
+            from services.shared.bootstrap_registration import register_bootstrap
+            from services.shared.installation_registry import Registry
+            from services.shared.content_migration import MigrationError, registry_revision
+            from services.shared.migration_host import move_content
+            shutil.copy2(ROOT / 'services/hub/pyproject.toml', root / 'services/hub/pyproject.toml')
+            store = Registry(scratch / 'LOCALAPPDATA/Orion/install.json')
+            model_root = root.parent / 'Models'
+            model_root.mkdir()
+            (model_root / 'synthetic.gguf').write_bytes(b'storage fixture, never loaded')
+            if args.setup_offline:
+                shutil.copy2(ROOT / 'manager.py', root / 'manager.py')
+                copy_source(ROOT / 'installer/app', root / 'installer/app')
+                shutil.copy2(ROOT / 'installer/pyproject.toml', root / 'installer/pyproject.toml')
+                cache = subprocess.check_output(['uv', 'cache', 'dir'], text=True).strip()
+                setup_env = dict(env, UV_OFFLINE='1', PIP_NO_INDEX='1', UV_PYTHON_DOWNLOADS='never', UV_CACHE_DIR=cache,
+                                 ORION_BOOTSTRAP_REGISTER='1', ORION_SKIP_GLOBAL_REGISTRATION='1',
+                                 ORION_INSTALL_ROOT=str(root.parent), ORION_MODELS_PATH=str(model_root),
+                                 ORION_INSTALLATION_REGISTRY=str(store.path))
+                for repeat in range(2):
+                    with (scratch / f'real-setup-{repeat}.log').open('wb') as log:
+                        subprocess.run([sys.executable, str(root / 'manager.py'), 'setup', 'local'], cwd=root,
+                                       env=setup_env, check=True, stdout=log, stderr=log, timeout=180)
+                report['checks'].append('real manager setup and reinstall completed offline in a new installer venv, no PATH/profile changes')
+            registered = register_bootstrap(root, root=root.parent, models_path=model_root, registry_path=store.path)
+            assert register_bootstrap(root, root=root.parent, models_path=model_root, registry_path=store.path) == registered
+            env['ORION_INSTALLATION_REGISTRY'] = str(store.path)
+            report['checks'].append('custom Hub root with spaces registered twice with unchanged component identity')
         def call(argv, label):
             with (scratch / (label + '.log')).open('wb') as log:
                 result = subprocess.run(argv, cwd=root, env=env, stdout=log, stderr=log, timeout=220)
@@ -273,6 +310,18 @@ def main():
         assert first['status'] == 'ready'
         assert db.ready()
         report['checks'].append('3 concurrent real starts, one ready supervisor, authenticated durable database')
+        if args.registered_paths:
+            db.sql('CREATE TABLE IF NOT EXISTS orion_lifecycle_acceptance (value text)')
+            db.sql("INSERT INTO orion_lifecycle_acceptance VALUES ('synthetic-preserved')")
+            identity_files = {path: hashlib.sha256(path.read_bytes()).hexdigest()
+                              for path in (root / 'files/security').glob('hub-*') if path.is_file()}
+            try:
+                move_content(store, 'models', root.parent / 'Moved Models',
+                             expected_revision=registry_revision(store.read()))
+            except (MigrationError, RuntimeError):
+                report['checks'].append('live actual Hub blocks content migration; no service was stopped')
+            else:
+                raise AssertionError('Migration admitted a live Hub')
         if args.kind == 'router':
             from services.shared.router_installation import inspect_router_folder
             from services.shared.router_verification import verify_running_router
@@ -301,10 +350,21 @@ def main():
         assert not any(child_tree_alive(c) for c in first['children'].values())
         assert db.owner() is None
         report['checks'].append('controlled full application shutdown before PostgreSQL, no living recorded child')
+        if args.registered_paths:
+            result = move_content(store, 'models', root.parent / 'Moved Models',
+                                  expected_revision=registry_revision(store.read()))
+            assert result['phase'] == 'completed'
+            assert (model_root / 'synthetic.gguf').read_bytes() == (root.parent / 'Moved Models/synthetic.gguf').read_bytes()
+            assert store.read()['components'] == registered['components']
+            report['checks'].append('stopped actual Hub admits owned content migration, source and component UUID preserved')
         identity = (root / '.orion-lifecycle' / component / 'identity.json').read_bytes()
         call(start, 'restart')
         assert identity == (root / '.orion-lifecycle' / component / 'identity.json').read_bytes()
         assert db.ready()
+        if args.registered_paths:
+            assert db.sql('SELECT value FROM orion_lifecycle_acceptance') == 'synthetic-preserved'
+            assert identity_files and all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in identity_files.items())
+            report['checks'].append('actual PostgreSQL sample row and Hub TLS/UUID bytes preserved through content move and restart')
         call(stop, 'final-stop')
         report['checks'].append('real restart and stop, persistent component identity unchanged')
         report['success'] = True

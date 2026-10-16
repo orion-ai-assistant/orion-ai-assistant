@@ -85,7 +85,7 @@ def verify_project(path):
         raise BootstrapError('Directory is not an Orion Hub source installation')
 
 
-def plan_installation(root=None, models_path=None, registry_path=None, registry_api=None):
+def plan_installation(root=None, models_path=None, registry_path=None, registry_api=None, *, native=False):
     if registry_api is None:
         # Used by local development; standalone wrappers inject the bundled API.
         import runpy
@@ -122,6 +122,8 @@ def plan_installation(root=None, models_path=None, registry_path=None, registry_
         code = checked_path(str(selected / 'Hub'))
         if code.exists() and any(code.iterdir()):
             raise BootstrapError('Unregistered Hub target is occupied; no files will be overwritten')
+    if native and os.name == 'nt' and not str(code).isascii():
+        raise BootstrapError('The bundled PostgreSQL 16.3 source runtime cannot initialize a non-ASCII Windows code path. Choose an ASCII installation root; models may use a separate Unicode path. No files were installed.')
     registered_models = (record or {}).get('locations', {}).get('models', str(selected / 'Models'))
     models = checked_path(models_path or registered_models)
     if record and models_path and os.path.normcase(str(models)) != os.path.normcase(registered_models):
@@ -149,7 +151,7 @@ def main(argv=None, registry_api=None):
     if not args.non_interactive and not args.plan_only and not args.root:
         args.root = input('Installation root (blank uses registered/default location): ').strip() or None
     try:
-        plan = plan_installation(args.root, args.models_path, args.registry_path, registry_api)
+        plan = plan_installation(args.root, args.models_path, args.registry_path, registry_api, native=args.mode == 'local')
         print(json.dumps(plan, ensure_ascii=True))
         if args.plan_only:
             return 0

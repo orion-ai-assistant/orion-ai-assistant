@@ -50,6 +50,11 @@ def installation_operation():
     return operation_lock(Registry(settings.get('ORION_INSTALLATION_REGISTRY')).path)
 
 
+def installation_registry():
+    from services.shared.installation_registry import Registry
+    return Registry(_load_global_env().get('ORION_INSTALLATION_REGISTRY'))
+
+
 def _load_global_env() -> dict[str, str]:
     """global.env dosyasını okur ve URL'leri HOST+PORT'tan otomatik türetir."""
     env = {}
