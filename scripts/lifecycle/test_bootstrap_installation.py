@@ -135,14 +135,28 @@ class BootstrapTests(unittest.TestCase):
         for name, source in generator.generated().items():
             self.assertEqual((ROOT / name).read_text(encoding='utf-8'), source, name)
 
-    @unittest.skipUnless(os.name == 'nt', 'Bundled Windows PostgreSQL limitation')
-    def test_native_unicode_code_root_is_rejected_before_clone(self):
+    @unittest.skipUnless(os.name == 'nt', 'Windows Unicode bootstrap')
+    def test_native_unicode_code_root_is_planned_without_clone(self):
         with patch.object(bootstrap, 'run_command') as child:
             result = bootstrap.main(['--mode', 'local', '--root', str(self.base / '\u00d6zel'),
-                                     '--registry-path', str(self.registry), '--non-interactive'], self.api)
-        self.assertEqual(result, 1)
+                                     '--registry-path', str(self.registry), '--non-interactive', '--plan-only'], self.api)
+        self.assertEqual(result, 0)
         child.assert_not_called()
         self.assertFalse((self.base / '\u00d6zel').exists())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Unicode legacy runtime')
+    def test_existing_unicode_legacy_runtime_is_preserved_and_rejected(self):
+        root = self.base / '\u00d6zel'
+        code = root / 'Hub'
+        self.project(code)
+        runtime = code / '.local_db/postgres'
+        runtime.mkdir(parents=True)
+        sentinel = runtime / 'existing-data'
+        sentinel.write_bytes(b'preserve')
+        self.record(root, code)
+        with self.assertRaisesRegex(ValueError, 'prepared PostgreSQL runtime'):
+            self.plan(root, native=True)
+        self.assertEqual(sentinel.read_bytes(), b'preserve')
 
     def test_legacy_locator_blocks_duplicate_install_before_any_command(self):
         self.registry.parent.mkdir(parents=True)

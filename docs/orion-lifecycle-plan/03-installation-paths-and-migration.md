@@ -1,6 +1,6 @@
 # Aşama 03 — Installer konum seçimi ve veri ayrımı
 
-Durum: DOĞRULAMA EKSİK (paket dönüşümü/Unicode PG ve tam uygulama taşıma kapsamı). Son takipte gerçek offline host gate’i, konum ekranı/API, özel kökte gerçek source setup/reinstall ve Hub/DB/TLS koruma testleri geçti. Tam DB/runtime taşıması 05/08 bağımlılığıyla kapalı; bu kullanıcıdan beklenen bir rutin test değildir.
+Durum: DOĞRULAMA EKSİK (paket dönüşümü ve tam uygulama taşıma kapsamı). Yeni Unicode native kurulum sorunu son takipte giderildi; aşağıdaki tarihsel PG16.3 kısıtı son bölümle güncellenmiştir. Son takipte gerçek offline host gate’i, konum ekranı/API, özel kökte gerçek source setup/reinstall ve Hub/DB/TLS koruma testleri geçti. Tam DB/runtime taşıması 05/08 bağımlılığıyla kapalı; bu kullanıcıdan beklenen bir rutin test değildir.
 
 [Ana plan](../orion-installation-lifecycle-implementation-plan.md) · [Ortak sözleşmeler](shared-contracts.md)
 
@@ -105,6 +105,11 @@ Bu runtime için native bootstrap, **indirme/clone öncesi non-ASCII Windows cod
 - Headless UI son kaynak: **1 passed**, 8.80 s, `results/baseline-anw2f1sm-storage-ui.{json,xml}`; DB/pool denemesi 0/0. UI screenshot `.tmp/browser-tests/tmp4k_b_n0q/storage-ui.png` görsel incelendi. İlk UI koşusunda sabit İngilizce beklentisi Türkçe tarayıcı dilinde başarısızdı (`baseline-g3k7hnzz`); çeviriye göre beklenti düzeltildi. CSS class değişikliğine bağlı ara test-seçici hatası (`baseline-58ka90by`) da saklandı.
 - Hub/installer son regresyonu **48 passed, 2 subtests**, 37.38 s; `results/baseline-ic5u_wpv-hub.{json,xml}`, beklenmedik DB/pool girişimi 0/0.
 
-**Güncel sınır:** canlı kullanım sırasında otomatik online drain/taşıma açılmadı; gerçek offline gate aktif kullanımda güvenli biçimde busy döner. Tam Hub/Router/DB/runtime taşıması, runtime’ı code/data/state yerleşiminden ayıran doğrulanmış paket dönüşümü, non-ASCII Windows PostgreSQL kökü ve SDK’sız kurulum 05/08 bağımlılığıyla kapalıdır. Bunlar kullanıcının yapmasını beklediğimiz rutin testler değildir. 03’ün bütün ilk kabul maddeleri tamamlandı denmez; durum DOĞRULAMA EKSİK kalır. 04 için kayıt/yol/offline içerik taşıma arayüzleri testlidir; 04 geliştirmesi bu kısıtlarla ilerletilecekse kabul borcu açık taşınmalıdır. Kullanıcının 01/manuel kabul ertelemesi yayın onayı değildir.
+**Önceki takip sınırı (Unicode maddesi aşağıdaki son takip ile güncellendi):** canlı kullanım sırasında otomatik online drain/taşıma açılmadı; gerçek offline gate aktif kullanımda güvenli biçimde busy döner. Tam Hub/Router/DB/runtime taşıması, runtime’ı code/data/state yerleşiminden ayıran doğrulanmış paket dönüşümü, non-ASCII Windows PostgreSQL kökü ve SDK’sız kurulum 05/08 bağımlılığıyla kapalıdır. Bunlar kullanıcının yapmasını beklediğimiz rutin testler değildir. 03’ün bütün ilk kabul maddeleri tamamlandı denmez; durum DOĞRULAMA EKSİK kalır. 04 için kayıt/yol/offline içerik taşıma arayüzleri testlidir; 04 geliştirmesi bu kısıtlarla ilerletilecekse kabul borcu açık taşınmalıdır. Kullanıcının 01/manuel kabul ertelemesi yayın onayı değildir.
 
 Son geniş takip regresyonu **142 passed, 70 subtests**, 68.43 s; `.tmp/lifecycle/results/stage03-readiness-final.xml`. Önceki örtüşen koşularla toplanmaz. Generated wrapper `--check`, JS syntax, Python AST ve belge bağlantı kontrolleri son kaynakta denetlenir. Bu takip ayrı yerel commit ile korunur; push/04 uygulaması yoktur.
+
+
+## Son takip — Unicode yeni kurulum desteği
+
+Kullanıcının 04 öncesi düzeltme talebiyle yeni native Hub/Router Unicode kurulum sorunu giderildi. Yukarıdaki PG16.3 genel yol engeli tarihsel kayıttır; yeni kurulumda Windows 10 1903+ ve hazırlanmış PostgreSQL 16.15-1 runtime kullanılır. Gerçek Türkçe/Çince kod ve veri yolunda Hub/Router kabulü geçti. Mevcut eski runtime veya DB yerinde değiştirilmez; tam taşıma ve paket kabulü hâlâ tamamlanmadı. Kod arayüzleri, üretici/türetilmiş paket sınırı, testler, başarısız ilk denemeler ve güncel devir: [Unicode PostgreSQL takip sonucu](03-unicode-postgres-followup.md).

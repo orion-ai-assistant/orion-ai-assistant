@@ -11,6 +11,9 @@ LOCAL_DB_DIR = os.path.join(BASE_DIR, ".local_db")
 CACHE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Orion", "cache")
 
 def install_windows():
+    from services.shared.windows_postgres import (
+        ARCHIVE_NAME, ARCHIVE_URL, provision_runtime, verify_unicode_runtime,
+    )
     os.makedirs(LOCAL_DB_DIR, exist_ok=True)
     
     # 1. Install Redis
@@ -34,26 +37,18 @@ def install_windows():
     pg_dir = os.path.join(LOCAL_DB_DIR, "postgres")
     if not os.path.exists(os.path.join(pg_dir, "bin", "pg_ctl.exe")):
         os.makedirs(CACHE_DIR, exist_ok=True)
-        pg_zip = os.path.join(CACHE_DIR, "postgres.zip")
+        pg_zip = os.path.join(CACHE_DIR, ARCHIVE_NAME)
         if not os.path.exists(pg_zip):
             print("[*] Downloading Portable PostgreSQL 16 for Windows (this might take a few minutes)...")
-            urllib.request.urlretrieve("https://get.enterprisedb.com/postgresql/postgresql-16.3-1-windows-x64-binaries.zip", pg_zip)
+            urllib.request.urlretrieve(ARCHIVE_URL, pg_zip)
         else:
             print("[*] Portable PostgreSQL zip found in cache.")
         
         print("[*] Extracting PostgreSQL...")
-        with zipfile.ZipFile(pg_zip, 'r') as zip_ref:
-            zip_ref.extractall(LOCAL_DB_DIR)
-        
-        # EDB zip creates a 'pgsql' folder, let's rename it
-        pgsql_extracted = os.path.join(LOCAL_DB_DIR, "pgsql")
-        if os.path.exists(pgsql_extracted):
-            # Clean up existing target if any
-            if os.path.exists(pg_dir):
-                shutil.rmtree(pg_dir, ignore_errors=True)
-            os.rename(pgsql_extracted, pg_dir)
+        provision_runtime(pg_zip, pg_dir)
         print("[OK] Portable PostgreSQL binaries extracted.")
-        
+    if not pg_dir.isascii():
+        verify_unicode_runtime(pg_dir)
     data_dir = os.path.join(pg_dir, "data")
     if not os.path.exists(os.path.join(data_dir, "PG_VERSION")):
         # Initialize Database
@@ -62,9 +57,9 @@ def install_windows():
         psql_exe = os.path.join(pg_dir, "bin", "psql.exe")
         
         print("[*] Initializing PostgreSQL Database Cluster...")
-        # Clear existing data directory if it's partially initialized
-        if os.path.exists(data_dir):
-            shutil.rmtree(data_dir, ignore_errors=True)
+        # A failed/unknown cluster requires explicit repair, never a data wipe.
+        if os.path.exists(data_dir) and os.listdir(data_dir):
+            raise ValueError('PostgreSQL data directory is not empty; explicit repair required')
             
         subprocess.run([initdb_exe, "-D", data_dir, "-U", "postgres", "--auth=trust", "--locale=C", "--encoding=UTF8"], check=True)
         
@@ -78,8 +73,8 @@ def install_windows():
             # have already been verified, including their actual data directory.
             command = [psql_exe, '-h', '127.0.0.1', '-p', str(port), '-U', 'postgres',
                        '-d', 'postgres', '-w', '-X', '-v', 'ON_ERROR_STOP=1']
-            subprocess.run(command, input="CREATE USER orion WITH PASSWORD 'orion';\nCREATE DATABASE orion OWNER orion;",
-                           text=True, check=True, timeout=10)
+            subprocess.run(command, input="CREATE USER orion WITH PASSWORD 'orion';\nGRANT pg_read_all_settings TO orion;\nCREATE DATABASE orion OWNER orion;",
+                           text=True, encoding='utf-8', env=dict(os.environ, PGCLIENTENCODING='UTF8'), check=True, timeout=10)
         finally:
             temporary_db.stop()
 

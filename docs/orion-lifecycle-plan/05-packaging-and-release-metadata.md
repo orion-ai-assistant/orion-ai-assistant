@@ -41,3 +41,8 @@ Yalnız bu aşamanın işini uygula. Ön koşulda eksik sözleşme varsa dar kap
 - Geri alma yöntemi: —
 - Plan veya bağımlılık değişikliği: —
 - Sonraki aşamaya uygunluk: Henüz doğrulanmadı.
+
+
+## 03’ten gelen runtime hazırlık girdisi
+
+05’in CI/paket çalışması başlamadı. Ancak 04 öncesi kullanıcı talebiyle PostgreSQL Unicode kaynak kurulumu ön koşulu dar kapsamda düzeltildi: [Unicode takip kaydı](03-unicode-postgres-followup.md). Sabit özetli üretici 16.15-1 arşivinden staging’de uygulama bazında UTF-8 manifestli sunucu runtime’ı hazırlanır; makbuzda üretici ve türetilmiş EXE özetleri ayrıdır. 05 bu dönüşümü paket üretiminde, son imzadan önce yapmalı; hazırlama kodunu kullanıcıdaki aktif runtime’ı yerinde yamalamaya çevirmemelidir. Kaynak kurulumunun SHA256 kontrolü imzalı sürüm metaverisinin veya temiz VM kabulünün yerine geçmez. Eski runtime/DB dönüşümü ayrıca doğrulanacaktır.

@@ -344,10 +344,11 @@ def test_service_supervisor_uses_installer_dependencies_and_service_python(tmp_p
 def test_router_vendored_engine_has_one_canonical_source():
     router = ROOT.parent / 'orion-router/core'
     for name in ('process_lifecycle.py', 'process_child.py', 'process_child.cjs',
-                 'windows_job.py', 'process_host.py'):
+                 'windows_job.py', 'process_host.py', 'windows_postgres.py'):
         assert (ROOT / 'services/shared' / name).read_bytes() == (router / name).read_bytes()
     expected = (ROOT / 'services/shared/native_postgres.py').read_text().replace(
         'from services.shared.process_lifecycle import', 'from core.process_lifecycle import')
+    expected = expected.replace('from services.shared.windows_postgres import', 'from core.windows_postgres import')
     assert expected == (router / 'native_postgres.py').read_text()
 
 

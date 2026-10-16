@@ -14,6 +14,9 @@ from services.shared.process_lifecycle import (
 class Postgres:
     def __init__(self, ctl, data, port, user, database, password=None):
         self.ctl, self.data = Path(ctl).resolve(), Path(data).resolve()
+        if os.name == 'nt' and not (str(self.ctl) + str(self.data)).isascii():
+            from services.shared.windows_postgres import verify_unicode_runtime
+            verify_unicode_runtime(self.ctl.parent.parent)
         self.port, self.user, self.database, self.password = int(port), user, database, password
         self.executable = self.ctl.with_name('postgres.exe' if os.name == 'nt' else 'postgres')
         self.psql = self.ctl.with_name('psql.exe' if os.name == 'nt' else 'psql')
@@ -42,12 +45,12 @@ class Postgres:
             raise LifecycleError('PostgreSQL ownership unavailable') from exc
 
     def sql(self, query):
-        env = dict(os.environ, PGCONNECT_TIMEOUT='3')
+        env = dict(os.environ, PGCONNECT_TIMEOUT='3', PGCLIENTENCODING='UTF8')
         if self.password is not None:
             env['PGPASSWORD'] = self.password
         result = subprocess.run([str(self.psql), '-h', '127.0.0.1', '-p', str(self.port),
                                  '-U', self.user, '-d', self.database, '-w', '-X', '-At', '-c', query],
-                                capture_output=True, text=True, env=env, timeout=5,
+                                capture_output=True, text=True, encoding='utf-8', env=env, timeout=5,
                                 **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
         if result.returncode:
             raise LifecycleError('PostgreSQL authenticated readiness failed')

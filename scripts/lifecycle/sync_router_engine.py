@@ -14,11 +14,12 @@ def main():
         raise SystemExit('Expected sibling Router checkout missing')
     failed = []
     names = ('process_lifecycle.py', 'process_child.py', 'process_child.cjs', 'native_postgres.py',
-             'windows_job.py', 'process_host.py')
+             'windows_job.py', 'process_host.py', 'windows_postgres.py')
     for name in names:
         source = (ROOT / 'services/shared' / name).read_bytes()
         if name == 'native_postgres.py':
             source = source.replace(b'from services.shared.process_lifecycle import', b'from core.process_lifecycle import')
+            source = source.replace(b'from services.shared.windows_postgres import', b'from core.windows_postgres import')
         target = destination / name
         if args.write:
             target.write_bytes(source)

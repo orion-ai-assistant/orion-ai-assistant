@@ -122,8 +122,16 @@ def plan_installation(root=None, models_path=None, registry_path=None, registry_
         code = checked_path(str(selected / 'Hub'))
         if code.exists() and any(code.iterdir()):
             raise BootstrapError('Unregistered Hub target is occupied; no files will be overwritten')
-    if native and os.name == 'nt' and not str(code).isascii():
-        raise BootstrapError('The bundled PostgreSQL 16.3 source runtime cannot initialize a non-ASCII Windows code path. Choose an ASCII installation root; models may use a separate Unicode path. No files were installed.')
+    if native and os.name == 'nt':
+        if sys.getwindowsversion().build < 18362:
+            raise BootstrapError('Native installation requires Windows 10 1903 or newer')
+        runtime = code / '.local_db/postgres'
+        if existing and runtime.exists() and not str(code).isascii():
+            api = globals().get('_BUNDLED_POSTGRES')
+            if api is None:
+                from services.shared import windows_postgres
+                api = vars(windows_postgres)
+            api['verify_unicode_runtime'](runtime)
     registered_models = (record or {}).get('locations', {}).get('models', str(selected / 'Models'))
     models = checked_path(models_path or registered_models)
     if record and models_path and os.path.normcase(str(models)) != os.path.normcase(registered_models):

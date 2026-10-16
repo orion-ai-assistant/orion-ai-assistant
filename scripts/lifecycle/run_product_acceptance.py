@@ -117,7 +117,7 @@ def environment(scratch):
     return env
 
 
-def setup(kind, scratch, source_root=None):
+def setup(kind, scratch, source_root=None, postgres_archive=None):
     root = source_root or scratch / kind
     root.mkdir(parents=True)
     env = environment(scratch)
@@ -128,7 +128,8 @@ def setup(kind, scratch, source_root=None):
         copy_source(ROOT / 'services/shared', root / 'services/shared')
         shutil.copy2(ROOT / 'services/hub/run_local.py', hub / 'run_local.py')
         py = runtime(ROOT / 'services/hub/.venv', hub / '.venv')
-        binaries(ROOT / '.local_db/postgres', root / '.local_db/postgres')
+        if not postgres_archive:
+            binaries(ROOT / '.local_db/postgres', root / '.local_db/postgres')
         binaries(ROOT / '.local_db/redis', root / '.local_db/redis')
         data = root / '.local_db/postgres/data'
         ctl = root / '.local_db/postgres/bin/pg_ctl.exe'
@@ -146,13 +147,28 @@ def setup(kind, scratch, source_root=None):
         # Empty dotenv files prevent any source-checkout settings from loading.
         (root / 'services/.env.global').touch()
         (root / 'services/.env.global.local').touch()
-        subprocess.run([str(ctl.with_name('initdb.exe')), '-D', str(data), '-U', 'orion',
-                        '--auth=trust', '--locale=C', '-E', 'UTF8'], env=env,
-                       stdout=subprocess.DEVNULL, check=True, timeout=90)
+        with (scratch / 'initdb.log').open('wb') as log:
+            if postgres_archive:
+                from services.shared.windows_postgres import ARCHIVE_NAME
+                cache = Path(env['LOCALAPPDATA']) / 'Orion/cache'
+                cache.mkdir(parents=True)
+                cached = cache / ARCHIVE_NAME
+                if postgres_archive.resolve().anchor.lower() == cached.anchor.lower():
+                    os.link(postgres_archive.resolve(), cached)
+                else:
+                    shutil.copy2(postgres_archive, cached)
+                shutil.copy2(ROOT / 'local_db_setup.py', root / 'local_db_setup.py')
+                subprocess.run([str(py), str(root / 'local_db_setup.py')], cwd=root, env=env,
+                               stdout=log, stderr=log, check=True, timeout=180)
+            else:
+                subprocess.run([str(ctl.with_name('initdb.exe')), '-D', str(data), '-U', 'orion',
+                                '--auth=trust', '--locale=C', '-E', 'UTF8'], env=env,
+                               stdout=log, stderr=log, check=True, timeout=120)
         db = Postgres(ctl, data, dbport, 'orion', 'postgres')
-        db.ensure()
         try:
-            db.sql('CREATE DATABASE orion OWNER orion')
+            db.ensure()
+            if not postgres_archive:
+                db.sql('CREATE DATABASE orion OWNER orion')
         finally:
             db.stop()
         db.database = 'orion'
@@ -165,7 +181,7 @@ def setup(kind, scratch, source_root=None):
         # Only tracked public source and the new lifecycle files; never user data.
         names = subprocess.check_output(['git', '-C', str(source), 'ls-files'], text=True).splitlines()
         names += [str(p.relative_to(source)) for p in (source / 'core').glob('*lifecycle*.py')]
-        names += ['core/native_postgres.py', 'core/process_child.py', 'core/process_child.cjs',
+        names += ['core/native_postgres.py', 'core/windows_postgres.py', 'core/process_child.py', 'core/process_child.cjs',
                   'core/windows_job.py', 'core/process_host.py']
         for name in set(names):
             relative = Path(name)
@@ -180,7 +196,11 @@ def setup(kind, scratch, source_root=None):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(original, target)
         shutil.copytree(source / 'dashboard/out', root / 'dashboard/out')
-        binaries(source / 'tools/pgsql', root / 'tools/pgsql')
+        if postgres_archive:
+            from services.shared.windows_postgres import provision_runtime
+            provision_runtime(postgres_archive, root / 'tools/pgsql')
+        else:
+            binaries(source / 'tools/pgsql', root / 'tools/pgsql')
         binaries(source / 'tools/ffmpeg', root / 'tools/ffmpeg')
         (root / 'tools/pgsql.ready').touch()
         py = runtime(source / '.venv', root / '.venv')
@@ -221,7 +241,11 @@ def main():
     parser.add_argument('--scratch-base', type=Path, help='Create a fresh test directory at an explicit location')
     parser.add_argument('--registered-paths', action='store_true', help='Exercise registered custom Hub paths and content host')
     parser.add_argument('--setup-offline', action='store_true', help='Also run real source installer setup using the existing dependency cache only')
+    parser.add_argument('--postgres-archive', type=Path, help='Prepare a fresh pinned UTF-8 runtime from this archive; no live binaries changed')
+    parser.add_argument('--unicode-root', action='store_true', help='Exercise Turkish and Chinese code/data paths without short-name aliases')
     args = parser.parse_args()
+    if args.unicode_root and (not args.postgres_archive or args.reuse):
+        parser.error('--unicode-root requires a fresh --postgres-archive fixture')
     if args.registered_paths and (args.kind != 'hub' or args.reuse):
         parser.error('--registered-paths requires a new Hub fixture')
     if args.setup_offline and not args.registered_paths:
@@ -251,7 +275,7 @@ def main():
                 shutil.copy2(file, archive / file.name)
             shutil.copy2(scratch / 'result.json', archive / 'result.json')
             source = ROOT.parent / 'orion-router'
-            for name in ('core/process_lifecycle.py', 'core/process_child.cjs', 'core/native_postgres.py',
+            for name in ('core/process_lifecycle.py', 'core/process_child.cjs', 'core/native_postgres.py', 'core/windows_postgres.py',
                          'core/process_child.py', 'core/windows_job.py', 'core/process_host.py',
                          'bin/common.py', 'bin/dev.py', 'bin/prod.py'):
                 shutil.copy2(source / name, root / name)
@@ -270,7 +294,9 @@ def main():
             stop = [str(py), '-m', 'core.lifecycle_cli', 'stop']
         else:
             custom = scratch / 'Custom Installation' / 'Hub' if args.registered_paths else None
-            root, env, db, start, stop, component = setup(args.kind, scratch, custom)
+            if args.unicode_root:
+                custom = scratch / 'T\u00fcrk\u00e7e \u0130\u0131\u015e\u015f\u011e\u011f \u4e2d\u6587' / ('Hub' if args.kind == 'hub' else 'Router')
+            root, env, db, start, stop, component = setup(args.kind, scratch, custom, args.postgres_archive)
         if args.registered_paths:
             from services.shared.bootstrap_registration import register_bootstrap
             from services.shared.installation_registry import Registry
@@ -309,6 +335,11 @@ def main():
         first = Runtime(root, component).read()
         assert first['status'] == 'ready'
         assert db.ready()
+        if args.unicode_root:
+            assert db.sql("SELECT 'T\u00fcrk\u00e7e \u0130\u0131\u015e\u015f\u011e\u011f \u4e2d\u6587'") == 'T\u00fcrk\u00e7e \u0130\u0131\u015e\u015f\u011e\u011f \u4e2d\u6587'
+            db.sql('CREATE EXTENSION IF NOT EXISTS pg_trgm')
+            assert db.sql("SELECT similarity('Orion', 'Orion')") == '1'
+            report['checks'].append('Turkish/Chinese executable and data paths, UTF-8 SQL roundtrip and native pg_trgm extension load')
         report['checks'].append('3 concurrent real starts, one ready supervisor, authenticated durable database')
         if args.registered_paths:
             db.sql('CREATE TABLE IF NOT EXISTS orion_lifecycle_acceptance (value text)')
