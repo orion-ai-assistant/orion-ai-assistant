@@ -8,6 +8,8 @@ Durum: BAŞLANMADI. Bu dosyada test sonuçları ve tamamlanma kanıtı henüz yo
 
 Ön koşul aşamalar: [02](02-installation-registry-and-router-selection.md), [03](03-installation-paths-and-migration.md)
 
+16 Ekim 2026 son kullanıcı kararı: yeni oturumda yalnız 05 geliştirmesine geçilecek. 01/03/04 açık kabul borçları korunur; Computer Use ve manuel pencere/logon kontrolleri 05 sonrasındaki kullanıcı denemesine ertelendi. 03'ün eski runtime/DB dönüşümünde 05/08'e bağımlı eksikleri ve 04'ün bu manuel kontrolleri, 05 kod/paket geliştirmesini döngüsel biçimde bloke etmez. Temiz bilgisayar/SDK'sız paket kabulü ise kanıt olmadan geçmiş sayılmaz. [Hazır oturum promptu](05-session-prompt.md).
+
 Ortak kararlar; bölüm 2 veri/runtime düzeni; 02–03 sonuç kayıtlarındaki kayıt ve yol sözleşmeleri.
 
 Ön koşulların yalnızca durum etiketini değil, sonuç kaydını ve mevcut koddaki karşılığını doğrula. İlgisiz gelecek aşamaların tamamını okumak veya uygulamak gerekmez. Repo talimatları ayrıca geçerlidir.

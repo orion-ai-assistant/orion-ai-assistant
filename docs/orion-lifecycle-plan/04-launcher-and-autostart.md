@@ -2,6 +2,8 @@
 
 Durum: DOĞRULAMA EKSİK. 16 Ekim 2026: kaynak kurulum başlatıcısı, açık tercih akışı ve izole Windows Startup kısayolu uygulandı; gerçek Unicode Hub/DB/Flutter sunucusu testi geçti. Temiz VM/gerçek oturum açılışı ve pencere odaklama/kapatma OS kabulü açık. 01/03 kabul borcu korunur; 05–08 uygulanmadı.
 
+**Son kullanıcı kararı:** Computer Use kullanılmayacak. Gerçek pencere/manuel kullanım kabulünü kullanıcı Aşama 05 sonrasında yapacak; şimdi kod ve izole entegrasyon doğrulaması yeterli çalışma kapsamıdır. 04'ün bu manuel kabul borcu yeni oturumda 05 geliştirmesine engel yapılmayacak; geçilmiş veya yayın onayı verilmiş sayılmayacak. Yeni oturum metni: [Aşama 05 promptu](05-session-prompt.md).
+
 [Ana plan](../orion-installation-lifecycle-implementation-plan.md) · [Ortak sözleşmeler](shared-contracts.md)
 
 ## Ön koşullar ve okunacaklar
@@ -77,3 +79,33 @@ Temiz Windows VM oturumu ve gerçek logon/logoff bu ortamda çalıştırılmadı
 01'in aktif sohbet/araç/ses/OS kabulü, 03'ün tam DB/runtime taşıması ve eski kurulum dönüşümü açık kalır. Windows başlangıcı kullanıcının hesabında etkinleştirilmedi; yalnız yeni test dizinleri kullanıldı. Kullanıcının Hub `docs/orion-update-strategy-proposal.md`, `services/hub/uv.lock` ve Flutter `chat_presentation_test.dart` değişiklikleri görev dışında tutulur.
 
 Geri alma: önce kendi kayıtlı kurulumunu açık `stop` ile kontrollü kapat. Etkinleştirdiysen tercihi açıkça kapatıp yalnız bu kurulumun sahipli Startup/masaüstü linklerini kaldır; başka linkleri silme. Ardından görev commit'ini geri al; install wrapper'ları ve canonical registry helper'ı birlikte tut. DB/state/kimlikleri veya D'deki depoları silme/taşıma. Push yapılmaz.
+
+## Son takip — C AppData doğrulaması ve manuel kabulün ertelenmesi
+
+Kullanıcı VM yerine C AppData altında denemeyi yetkilendirdi; ardından Computer Use'u açıkça durdurup manuel pencere testlerini Aşama 05 sonrasına erteledi. D development depoları kurulum/taşıma/silme hedefi olarak kullanılmadı. Başlatıcı kodu değişmedi; ek worker regresyonunda bulunan dar kapanış düzeltmesi aşağıda kayıtlıdır.
+
+`C:/Users/krsta/AppData/Local/Orion/lifecycle-tests/stage04-desktop-dhz35mg9/result.json`: **kod/entegrasyon kapsamı başarılı**. Yeni `Türkçe İıŞşĞğ 中文/Hub`, yeni PostgreSQL/Redis verileri/portları/TLS/UUID, mevcut build'den kopyalanan Flutter server ve yalnız fixture'ın `isolated Startup` / `isolated Desktop` linkleri kullanıldı. Başlangıç + iki elle başlatma eşzamanlı çağrısı tek `run_id` ile ready oldu. Gerçek Startup `.lnk` pencere kapalı tercihiyle çalıştı. Gerçek Desktop `.lnk` ayrı test profilli tarayıcıyı açtı; DB örnek satırı, TLS/UUID dosya hash'leri ve supervisor kimliği aynı kaldı. Son açık launcher `stop` sonucu `stopped`, yaşayan ürün çocukları `[]`, DB owner `null`. Ayrı profille doğrulanmış test browser süreçleri OS handle'larıyla kapatıldı; kullanıcı browser profiline dokunulmadı.
+
+Gerçek kullanıcı Startup klasörünün tüm dosya hash'leri önceki 04 audit'iyle aynı; `Orion.lnk` yok. Kullanıcı public kurulum kayıtları yerine yalnız fixture'ın mutlak kaydı kullanıldı. C source fixture mevcut development runtime bağımlılıklarını okur: D sürücüsünden bağımsız paket veya SDK'sız temiz bilgisayar kanıtı değildir.
+
+Computer Use'un genel pencere listeleme çağrısı otomatik incelemede ilgisiz pencere bilgilerini açığa çıkarma riskiyle reddedildi; yalnız Orion adayını döndüren daraltılmış seçim çalıştı. Pencere içeriği incelemesi ise geçerli browser URL'sini yeterli güvenle doğrulayamadığı için araç tarafından durduruldu. Kullanıcı bunun ardından Computer Use'u iptal etti. Gerçek HWND focus/close ve WinForms görsel kabulü **geçti sayılmaz**; kullanıcı denemesine bırakıldı. Bu ürünün çalışmaması olarak raporlanmaz.
+
+Test sürücüsünün son rapor yazımında `KnownFolder` test `USERPROFILE` ortamında yeniden çözümlendiği için yalnız rapor üretimi hata verdi; `final-stop.log` zaten başarılıydı. Test harness'i gerçek Startup yolunu ortam izolasyonundan önce saklayacak şekilde düzeltildi. Son bağımsız audit fixture'ın stop/DB/Startup durumunu doğruladı ve sonuç JSON'unu yazdı. Ürün başlatıcı kodunda bu nedenle değişiklik gerekmedi. C'deki test driver ve audit kaynakları `C:/Users/krsta/.codex/visualizations/2026/10/16/01a145ed-90b6-7cc3-8ede-90852ca4543d/` altında korunur.
+
+01'in tüm ürünle aktif sohbet/araç/ses kapanışı, gerçek OS/power-loss ve legacy yükseltme kabulleri; 03'ün tam DB/runtime/Router taşıması ve 05/08 paket dönüşümü bu testle tamamlanmadı. Kullanıcının 05'e ilerleme kararı bu özellikleri hazır veya kabul edilmiş yapmaz.
+
+### Ek kod doğrulaması ve kuyruk gözcüsü kapanış düzeltmesi
+
+Kaynak başlatıcının önceki testleri yanında mevcut `jobs` seti C AppData geçici alanlarıyla yeniden çalıştırıldı. İlk `stage04-code-nlsrwgx8` koşusu 10 testten sonra **240 s timeout** verdi. Daraltılmış `stage04-code-cgmodq5e`, `stage04-code-tfy4usal`, `stage04-code-43xsgx8s` tanıları da sınırlı sürede durduruldu; pytest iptal sırasında bir test için passed yazsa da sarmalayıcı exit 124 verdiğinden bunlar başarı değildir. İlk koşudan kalan yalnız fixture Redis'i kendi C cwd/OS handle kimliğiyle kapatıldı; sonraki koşular kendi Windows Job'larında tutuldu.
+
+Async görev tanısı: API lifespan `test_api_lifespan_runs_watchdog_without_worker` çıkışta watchdog'u beklerken gözcünün `cancelling()==1` olduğu halde `job_safety.py` uyku satırında kaldığı görüldü. Redis await'inden dönen görevde iptal isteği tüketilmiş ama iptal sayacı kalmıştı. `services/hub/src/orion/kernel/job_safety.py:queue_watchdog`, Redis işlemleri sonrasında pending cancellation'ı açıkça `CancelledError` ile devam ettirir; yeni beş saniyelik/perpetual döngüye girmez. `test_worker_resilience.py` içindeki yeni deterministik test, bağımlılığın iptali yutmasını simüle eder ve gözcünün zaman aşımına düşmeden iptal olmasını ister. Bu dar 01 kapanış ön koşulu düzeltmesidir; 05/06 özelliği eklenmedi.
+
+Son koşular (sırayla, Computer Use yok):
+
+- `stage04_code_checks.py jobs`: **35 passed + 9 subtests**, 20.24 s; `C:/Users/krsta/AppData/Local/Orion/lifecycle-tests/stage04-code-d4yqmp8c/{result.json,output.log,TEMP/tests.xml}`. Mevcut gerçek Redis/ACK/crash/iptal testleri ve yeni cancellation regresyonu dahil.
+- `stage04_code_checks.py hub`: **51 passed + 2 subtests**, 7.81 s; `C:/Users/krsta/AppData/Local/Orion/lifecycle-tests/stage04-code-4jqpyo3p/{result.json,output.log,TEMP/tests.xml}`.
+- Her iki sette beklenmedik gerçek DB connect/pool girişimi **0/0**. C runner mevcut `run_baseline.py ... --worker` listesini, ayrı C TEMP/AppData/kimlik yolları ve sahipli test Job'ı ile çağırır. Model/SDK/dependency indirilmedi. Önceki setlerle sayılar toplanmaz.
+
+Üretilen wrapper `--check`, launcher tercih JS syntax ve `git diff --check` geçti. Mevcut aiohttp/httpx deprecation uyarıları bu görevde dependency/lock değiştirmeden korundu. 01'in diğer açık kabulleri bu düzeltmeyle geçmiş sayılmaz.
+
+Son audit `C:/Users/krsta/AppData/Local/Orion/lifecycle-tests/stage04-followup-final-audit.json`: **success true**; beş sahipli test runner kaydı stopped, yaşayan supervisor/çocuk yok, tüm bu takibin fixture cwd'lerinde kalan süreç `[]`. Gerçek Startup dosya hash'leri korundu, Orion Startup linki yok. İki değişen Python AST ve 45 yerel Markdown bağlantısı doğrulandı. Başlangıçtaki ilgisiz Hub/Flutter diff'leri görev commit'ine alınmaz. Yeni oturum yalnız [05 promptuyla](05-session-prompt.md) devam eder; bu oturumda 05 uygulaması ve push yok.

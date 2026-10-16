@@ -1,5 +1,7 @@
 # Aşama 04 oturum devri — 16 Ekim 2026
 
+**Güncel kullanıcı kararı:** Computer Use kullanılmayacak; manuel pencere ve gerçek oturum kabulü Aşama 05 sonrasındaki kullanıcı denemesine ertelendi. Kod/izole entegrasyon testleri yapılıp sonuçlar commit'lendikten sonra yeni oturumda yalnız 05'e geçilecek. [Hazır Aşama 05 promptu](05-session-prompt.md). Aşağıdaki önceki "ayrı talimat gerekir" ifadesi bu son kullanıcı talimatıyla karşılandı; 05 bu oturumda uygulanmadı.
+
 [Ana rehber](../orion-installation-lifecycle-implementation-plan.md) · [04 kapsam/sonuç](04-launcher-and-autostart.md) · [Önceki Unicode devri](03-unicode-postgres-followup.md)
 
 Kullanıcı yalnız 04'ü uygulama, testleri agent'ın sırayla çalıştırması, sonuçları MD'ye kaydetme, görev commit'i oluşturma ve durma talimatı verdi. Push yok. Gerçek hesabın Windows başlangıcını etkinleştirme yetkisi yok; izole Startup fixture testi yetkilidir. D'deki üç development deposu ve ilgisiz kullanıcı diff'leri korunur. Orion AppData kurulum/test alanları gerektiğinde yeniden oluşturulabilir; başka uygulamalara dokunulmaz.
@@ -17,3 +19,7 @@ Gerçek son ürün kanıtı `.tmp/lifecycle/product-aswv20ee/result.json`: başa
 Regresyon: **75 test + 10 alt test** (kayıt/başlatıcı/bootstrap/host), **51 test + 2 alt test** (Hub/installer), **1 headless ekran testi**, son ek Desktop/Startup ve gerçek sentetik listener/health ile **17 launcher testi**. Örtüşür; toplanmaz. Tam komut/kanıt/ilk hata geçmişi 04 sonuç dosyasındadır. Son denetimde görev fixture'larında yaşayan süreç/DB yok, gerçek kullanıcı Startup'ında Orion linki yok. Wrapper eşitliği ve 11 Python AST geçti.
 
 Önceden var olan Hub `docs/orion-update-strategy-proposal.md`, `services/hub/uv.lock`, Flutter `main_app/app/test/chat_presentation_test.dart` diff'leri görev commit'ine alınmaz; Router'da yeni görev diff'i yok. Son commit kimliği için `git log -1 --oneline` kullan. Kendi süreçlerini kontrollü stop ile kapatmadan state/DB silme. Push yapılmadı; 05'e başlanmadı.
+
+C AppData son takip: `stage04-desktop-dhz35mg9/result.json` kod/entegrasyon audit'i başarılı; gerçek izole Startup/Desktop `.lnk` çağrıları, DB örnek satırı/kimlikler ve aynı supervisor korundu. Test kapatıldı; ürün çocukları `[]`, DB owner `null`, gerçek Startup hash'leri aynı ve Orion linki yok. Computer Use focus/close kabulü araç URL politika kontrolünde durdu, ardından kullanıcı bu testleri iptal etti; geçmiş sayılmaz. Ayrıntılar 04 sonuç dosyasının son bölümündedir.
+
+Ek kod testleri gerçek bir dar kapanış açığı buldu ve düzeltti: `job_safety.queue_watchdog` Redis await'i iptali yuttuğunda pending cancellation ile sonsuz döngüye devam etmiyor. Yeni deterministik regresyon ve mevcut gerçek Redis setiyle **35 test + 9 alt test**, ardından Hub/installer **51 test + 2 alt test** geçti. C kanıtları `stage04-code-d4yqmp8c` / `stage04-code-4jqpyo3p`; ilk timeout ve async görev tanıları silinmedi. Kod/test yalnız bu düzeltmeyle sınırlıdır; 01 diğer kabul borcu açık kalır.

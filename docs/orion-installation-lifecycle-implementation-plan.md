@@ -4,6 +4,8 @@ Tarih: 16 Ekim 2026. Aşama 00/02 tamamlandı; 01/03 DOĞRULAMA EKSİK. Aşama 0
 
 Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyalarına ayrılmıştır. Önce bu rehberi, sonra ortak kararları ve yalnız seçilen aşamanın gerekli belgelerini oku. Son kullanıcı talimatı: yalnız 04, testleri kendin sırayla çalıştır, sonuçları MD'ye kaydet, görev değişikliklerini commit et ve dur; push yapma. Hesabın Windows başlangıcı otomatik etkinleştirilmez. Eksik kabulü geçmiş veya yayını onaylanmış gösterme.
 
+**Son takip kararı:** kullanıcı Computer Use'u durdurdu; pencere/gerçek logon manuel kabulünü Aşama 05 sonrasına erteledi. C AppData gerçek kaynak kurulum/izole Startup/Desktop çağrıları geçti ve test süreçleri kapatıldı. Bu oturum kod testi/sonuç commit'iyle biter; yeni oturumda yalnız 05'e geçiş yetkilidir. [Kopyalanabilir 05 promptu](orion-lifecycle-plan/05-session-prompt.md). 01/03/04 açık borçları görünür kalır; 05 geliştirmesini bu ertelenmiş manuel kontrollerle bloke etme.
+
 ## Şimdi nereden başlanacak?
 
 **Güncel 04 devri:** [04 oturum devrini](orion-lifecycle-plan/04-session-handoff.md) ve [04 sonuç kaydını](orion-lifecycle-plan/04-launcher-and-autostart.md) oku. Kaynak kurulum tek PowerShell girişi, Desktop/Startup linkleri, ayrı başlangıç/pencere tercihleri, yerel hata/log/onarma erişimi ve mevcut pencereye yönlendirme kodu var. Gerçek Unicode Hub/PG/Flutter sunucusu testi geçti. Temiz VM/logon, gerçek HWND/pencere kapanışı ve WinForms görsel kabulü açık; bu nedenle 04 tamamlandı sayılmaz. 01/03 borcu korunur. Yalnız 04 commit'inden sonra durulur; sonraki aşamaya geçilmez. Aşağıdaki 03 giriş paragrafı tarihsel devir bağlamıdır.
@@ -54,7 +56,7 @@ Konum taşıma 03 içinde kendi kalıcı günlüğü ve kurtarma testleriyle tam
 
 ## Yeni oturumda verilecek görev
 
-> [04 oturum devir kaydını](orion-lifecycle-plan/04-session-handoff.md) kullan. 04 kaynak çekirdeğini yeniden yazma; eksik temiz VM/logon ve gerçek pencere kabulünü geçmiş sayma. 01/03 borcunu koru. 05–08'e geçiş ayrıca kullanıcı talimatı gerektirir.
+> [Hazır 05 promptunu](orion-lifecycle-plan/05-session-prompt.md) kullan. Son kullanıcı 05 geliştirmesini yeni oturum için yetkilendirdi; Computer Use/manuel pencere kabulü sonraya ertelendi. Önceki 01/03/04 borçlarını geçmiş sayma; 06–08'e geçme.
 
 ## Belge otoritesi ve geçmiş
 

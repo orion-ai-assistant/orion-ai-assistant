@@ -13,6 +13,20 @@ from orion.worker import main as worker
 
 
 class WorkerResilienceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_watchdog_exits_when_dependency_consumes_cancellation(self):
+        from orion.kernel import job_safety
+        async def interrupted_scan(redis):
+            asyncio.current_task().cancel()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                pass
+        with patch.object(job_safety, 'index_legacy_queued', interrupted_scan), patch.object(
+                job_safety, 'sweep_waiting', AsyncMock()):
+            task = asyncio.create_task(job_safety.queue_watchdog(None))
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=.5)
+
     def setUp(self):
         cleanup = patch('orion.kernel.media_store.media_cleanup_loop', AsyncMock())
         cleanup.start()

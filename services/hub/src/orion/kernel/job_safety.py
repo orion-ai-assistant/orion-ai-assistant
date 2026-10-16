@@ -230,6 +230,12 @@ async def queue_watchdog(redis):
             await sweep_waiting(redis)
         except (RedisError, OSError):
             logging.warning('Queue watchdog Redis unavailable; retrying', exc_info=True)
+        # A Redis await can complete while cancellation is being delivered and
+        # consume CancelledError internally. Do not resume the perpetual loop
+        # with a pending shutdown request; API lifespan is waiting for this task.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError
         await asyncio.sleep(5)
 
 
