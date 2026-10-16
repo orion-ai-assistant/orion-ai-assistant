@@ -54,7 +54,8 @@ def main():
         print("MODEL_FILE not set in .env")
         sys.exit(1)
         
-    model_path = os.path.join(base_dir, "models", model_file)
+    models_dir = os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(base_dir, 'models'))
+    model_path = os.path.join(models_dir, model_file)
     if not os.path.exists(model_path):
         # Fallback to absolute if needed, or if it's already absolute
         if os.path.exists(model_file):
@@ -101,7 +102,7 @@ def main():
     # Multimodal / Vision
     mmproj_file = env_vars.get("MMPROJ_FILE", "")
     if mmproj_file:
-        mmproj_path = os.path.join(base_dir, "models", mmproj_file)
+        mmproj_path = os.path.join(models_dir, mmproj_file)
         if os.path.exists(mmproj_path):
             cmd.extend(["--mmproj", mmproj_path])
         elif os.path.exists(mmproj_file):

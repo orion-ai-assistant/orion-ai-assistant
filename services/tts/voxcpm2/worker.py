@@ -75,6 +75,8 @@ def start_worker():
 
     # Model yolunu belirle
     MODEL_PATH = args.model_id
+    if os.environ.get('ORION_NATIVE_MODELS_DIR') and not os.path.isabs(MODEL_PATH):
+        MODEL_PATH = os.path.join(os.environ['ORION_NATIVE_MODELS_DIR'], MODEL_PATH)
     if not MODEL_PATH.startswith("/") and not os.path.exists(MODEL_PATH):
         # Eğer relatif yol ise ve direkt bulunamazsa /app/models/ altında ara
         potential_path = f"/app/models/{MODEL_PATH}"

@@ -54,7 +54,7 @@ def resolve_model():
     if model_file:
         folder = os.path.dirname(model_file)
         if folder:
-            p = os.path.join(CURRENT_DIR, "models", folder)
+            p = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), folder)
             if os.path.isdir(p):
                 return p
 
@@ -64,7 +64,7 @@ def resolve_model():
         if os.path.isdir(whisper_model):
             return whisper_model
         clean_name = os.path.basename(whisper_model.rstrip("/\\"))
-        p = os.path.join(CURRENT_DIR, "models", clean_name)
+        p = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), clean_name)
         if os.path.isdir(p):
             return p
         if os.path.isdir(f"/models/{clean_name}"):

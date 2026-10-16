@@ -95,12 +95,16 @@ def _download_zip_model(model_key: str, model_data: dict, target_dir: str) -> bo
 # Model check
 # ---------------------------------------------------------------------------
 def check_models(service_id: str) -> list[dict]:
+    with config.installation_operation():
+        return _check_models(service_id)
+
+
+def _check_models(service_id: str) -> list[dict]:
     manifest, m_path = config.find_manifest(service_id)
     if not manifest:
         return []
 
-    models_rel_path = manifest.get("models_path", "models")
-    models_dir = os.path.join(os.path.dirname(m_path), models_rel_path)
+    models_dir = config.models_directory(service_id, os.path.dirname(m_path), manifest)
     
     # Sadece model kataloğu varsa klasörü oluştur
     if manifest.get("models_catalog"):
@@ -249,12 +253,18 @@ def _first_valid_model(folder: str, prefix: str) -> str | None:
 # Background task
 # ---------------------------------------------------------------------------
 def run_model_download(service_id: str, service_dir: str, model_data: dict):
+    # A move holds the same lock through copy, validation and registry switch.
+    # No new native download may write through the previous location meanwhile.
+    with config.installation_operation():
+        return _run_model_download(service_id, service_dir, model_data)
+
+
+def _run_model_download(service_id: str, service_dir: str, model_data: dict):
     model_key = f"{service_id}:{model_data['id']}"
     config.DOWNLOADING_MODELS[model_key] = {"progress": "Başlatılıyor...", "total_mb": 0}
     try:
         manifest, _ = config.find_manifest(service_id)
-        models_rel_path = manifest.get("models_path", "models") if manifest else "models"
-        target_dir = os.path.join(service_dir, models_rel_path, model_data.get("folder", ""))
+        target_dir = os.path.join(config.models_directory(service_id, service_dir, manifest or {}), model_data.get("folder", ""))
         os.makedirs(target_dir, exist_ok=True)
 
         if model_data.get("archive_format") == "zip":
@@ -379,7 +389,12 @@ def _remote_size(url: str) -> int:
 
 
 def delete_model(service_id: str, model_id: str) -> dict:
-    models_list = check_models(service_id)
+    with config.installation_operation():
+        return _delete_model(service_id, model_id)
+
+
+def _delete_model(service_id: str, model_id: str) -> dict:
+    models_list = _check_models(service_id)
     model_entry = next((m for m in models_list if m["id"] == model_id), None)
     if not model_entry:
         return {"status": "error", "message": i18n.t("MSG_MODEL_NOT_FOUND")}
@@ -392,11 +407,10 @@ def delete_model(service_id: str, model_id: str) -> dict:
     if not manifest:
         return {"status": "error", "message": i18n.t("MSG_MANIFEST_NOT_FOUND")}
         
-    models_rel_path = manifest.get("models_path", "models")
-    models_dir = os.path.abspath(os.path.join(os.path.dirname(m_path), models_rel_path))
-    
-    resolved_path = os.path.abspath(path)
-    if not resolved_path.startswith(models_dir):
+    from pathlib import Path
+    models_dir = Path(config.models_directory(service_id, os.path.dirname(m_path), manifest)).resolve()
+    resolved_path = Path(path).resolve()
+    if resolved_path == models_dir or not resolved_path.is_relative_to(models_dir):
         return {"status": "error", "message": i18n.t("MSG_INVALID_PATH")}
         
     try:

@@ -353,7 +353,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         return err, "", "", {}, set()
 
     from .core.models import VALID_EXTENSIONS 
-    m_dir = os.path.join(s_dir, manifest.get("models_path", "models"))
+    m_dir = config.models_directory(service_id, s_dir, manifest)
     model_file = model_resolver._resolve_model_path(service_id, m_dir, model_file, VALID_EXTENSIONS)
     
     # Akıllı MMPROJ Otomatik Algılama: 
@@ -601,13 +601,15 @@ def start_local_service(service_id: str) -> bool:
             key, separator, value = line.strip().partition('=')
             if separator and not key.startswith('#'):
                 clean_env[key] = value.strip().strip('"')
+    clean_env['ORION_NATIVE_MODELS_DIR'] = config.models_directory(service_id, s_dir, manifest)
     port_key = manifest.get('category', '').upper() + '_PORT'
     if not clean_env.get(port_key):
         raise LifecycleError('Service readiness port missing: ' + port_key)
     root = config.PROJECT_ROOT
     clean_env['PYTHONPATH'] = root
-    return ensure_started(s_dir, 'service', [python_at(os.path.join(root, 'installer')), '-m',
-        'services.shared.service_supervisor', s_dir, target, clean_env[port_key], python_at(s_dir)], env=clean_env)
+    with config.installation_operation():
+        return ensure_started(s_dir, 'service', [python_at(os.path.join(root, 'installer')), '-m',
+            'services.shared.service_supervisor', s_dir, target, clean_env[port_key], python_at(s_dir)], env=clean_env)
 
 
 def remove_service(service_id: str, hardware: str = None, keep_data: bool = False) -> bool:
@@ -853,41 +855,17 @@ def run_local_installation(service_id: str, service_dir: str, build_env: dict = 
             except Exception as e:
                 print(f"[DEBUG] Failed to write .env in local mode: {e}")
 
-        # Native Router setup support
+        # Existing native Router is an independent installation. Reusing it
+        # must not fetch/reset its tree, rewrite its config, or remove data when
+        # .git/HEAD is absent. New packaged provisioning belongs to stage 05/08.
         if service_id == "orion-router":
-            print("[*] Installing Orion Router globally...")
-            if os.name == 'nt':
-                import shutil
-                appdata = os.environ.get("LOCALAPPDATA", "")
-                if appdata:
-                    r_dir = os.path.join(appdata, "OrionRouter")
-                    # If repo exists but is corrupt (missing .git/HEAD), we must wipe it entirely
-                    if os.path.exists(r_dir) and not os.path.exists(os.path.join(r_dir, ".git", "HEAD")):
-                        import time, stat
-                        try:
-                            subprocess.run(["wmic", "process", "where", "commandline like '%orionrouter%' or commandline like '%manager.py prod%'", "call", "terminate"], capture_output=True)
-                        except FileNotFoundError:
-                            pass
-                        time.sleep(1)
-                        def on_rm_error(func, path, exc_info):
-                            try:
-                                os.chmod(path, stat.S_IWRITE)
-                                func(path)
-                            except: pass
-                        shutil.rmtree(r_dir, onerror=on_rm_error)
-                subprocess.run(["powershell", "-c", "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.ps1))) local -NoStart; exit 0"], check=True)
-                if appdata:
-                    _sync_router_config_and_dashboard(os.path.join(appdata, "OrionRouter"))
-                    _register_local_router_trust_source(os.path.join(appdata, "OrionRouter"))
-            else:
-                subprocess.run(["bash", "-c", "curl -sL https://raw.githubusercontent.com/orion-ai-assistant/orion-router/main/install.sh | bash -s local --no-start"], check=True)
-                r_dir = os.path.expanduser(os.getenv('ORION_INSTALL_DIR', '~/.orion-router'))
-                if os.path.exists(r_dir):
-                    _sync_router_config_and_dashboard(r_dir)
-                    _register_local_router_trust_source(r_dir)
+            from services.shared.router_installation import find_router_script
+            _, script = find_router_script()
+            if script is None:
+                raise RuntimeError('Mevcut Router klasörünü seçip kaydedin. Yeni Router paket kurulumu henüz hazır değil.')
             start_local_service(service_id)
             return
-            
+
         setup_dir = service_dir
             
         venv_dir = os.path.join(setup_dir, ".venv")

@@ -389,7 +389,7 @@ def handle_setup(args):
 
     print("[OK] All required tools are present.")
 
-    if mode == "local":
+    if mode == "local" and os.environ.get('ORION_SKIP_GLOBAL_REGISTRATION') != '1':
 
         print("[*] Setting up 'orion' global CLI command...")
         try:
@@ -418,7 +418,12 @@ def handle_setup(args):
             print(f"[!] Warning: Could not setup global CLI command: {e}")
 
     print("[*] Setting up Installer Virtual Environment...")
-    setup_environment("installer")
+    installer_python = setup_environment("installer")
+    if mode == 'local' and os.environ.get('ORION_BOOTSTRAP_REGISTER') == '1':
+        # The installer environment now has the lock dependencies. Registration
+        # runs only after successful setup and uses this source's known module.
+        subprocess.run([installer_python, '-m', 'services.shared.bootstrap_registration'],
+                       cwd=base_dir, check=True)
     print(f"\n[OK] Setup completed successfully! You can now use 'python manager.py start {mode}' or other commands.")
 
 def _owns_compose_project(project, working_dir):

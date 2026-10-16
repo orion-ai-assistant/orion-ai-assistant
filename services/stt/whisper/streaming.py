@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(CURRENT_DIR, ".env"), override=True)
 model_folder = os.path.dirname(os.getenv("MODEL_FILE", "").strip())
 model_name = model_folder or os.getenv("WHISPER_MODEL", "whisper-small-finetuned-tr").strip()
-LOCAL_MODEL = os.path.join(CURRENT_DIR, "models", model_name)
+LOCAL_MODEL = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), model_name)
 MODEL_SIZE = LOCAL_MODEL if os.path.isdir(LOCAL_MODEL) else model_name
 
 # Cihaz Seçimi: "cuda" (GPU) veya "cpu" (İşlemci)

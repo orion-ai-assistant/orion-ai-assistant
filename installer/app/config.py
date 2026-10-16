@@ -33,6 +33,23 @@ def get_env_global() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 # Manifest helpers
 # ---------------------------------------------------------------------------
+def models_directory(service_id, service_dir, manifest):
+    from services.shared.model_locations import models_directory as resolve
+    settings = _load_global_env()
+    return str(resolve(service_id, service_dir, manifest,
+                       mode=os.environ.get('ORION_INSTALL_MODE', settings.get('ORION_INSTALL_MODE', 'docker')),
+                       settings=settings))
+
+
+def installation_operation():
+    from contextlib import nullcontext
+    settings = _load_global_env()
+    if os.environ.get('ORION_INSTALL_MODE', settings.get('ORION_INSTALL_MODE', 'docker')) != 'local':
+        return nullcontext()
+    from services.shared.installation_registry import Registry, operation_lock
+    return operation_lock(Registry(settings.get('ORION_INSTALLATION_REGISTRY')).path)
+
+
 def _load_global_env() -> dict[str, str]:
     """global.env dosyasını okur ve URL'leri HOST+PORT'tan otomatik türetir."""
     env = {}

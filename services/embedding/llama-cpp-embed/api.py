@@ -53,7 +53,7 @@ def main():
         print("MODEL_FILE not set in .env")
         sys.exit(1)
         
-    model_path = os.path.join(base_dir, "models", model_file)
+    model_path = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(base_dir, 'models')), model_file)
     if not os.path.exists(model_path):
         if os.path.exists(model_file):
             model_path = model_file

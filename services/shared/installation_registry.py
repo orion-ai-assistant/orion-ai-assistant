@@ -22,6 +22,11 @@ class RegistryError(ValueError):
 
 
 def default_registry_path():
+    override = os.environ.get('ORION_INSTALLATION_REGISTRY')
+    if override is not None:
+        if normalized_path(override) != override:
+            raise RegistryError('Explicit installation registry path must be normalized')
+        return Path(override)
     if os.name == 'nt':
         base = Path(os.environ.get('LOCALAPPDATA', Path.home() / 'AppData' / 'Local')) / 'Orion'
     else:
@@ -56,12 +61,19 @@ def _keys(value, required, optional=()):
 
 def _validate_record(record):
     """Return an independent validated record; unknown schema/fields fail closed."""
-    _keys(record, {'schema_version', 'installation_id', 'root', 'components', 'preferences'})
+    _keys(record, {'schema_version', 'installation_id', 'root', 'components', 'preferences'}, {'locations'})
     if type(record['schema_version']) is not int or record['schema_version'] != SCHEMA_VERSION:
         raise RegistryError('Unsupported installation registry schema')
     _uuid(record['installation_id'])
     if normalized_path(record['root']) != record['root']:
         raise RegistryError('Root path must be normalized')
+    if 'locations' in record:
+        locations = record['locations']
+        if not isinstance(locations, dict) or locations.keys() - {'models', 'downloads', 'runtime', 'backups'}:
+            raise RegistryError('Invalid shared installation locations')
+        for value in locations.values():
+            if normalized_path(value) != value:
+                raise RegistryError('Shared installation locations must be normalized')
     _keys(record['preferences'], PREFERENCES)
     if any(type(value) is not bool for value in record['preferences'].values()):
         raise RegistryError('Preferences must be booleans')
@@ -131,6 +143,16 @@ def _lock(path):
     except ImportError:
         from process_lifecycle import InstanceLock
     return InstanceLock(path.parent, 'installation-registry-' + path.name)
+
+
+def operation_lock(registry_path):
+    """Serialize migration/update operations; acquire before Registry.update lock."""
+    try:
+        from .process_lifecycle import InstanceLock
+    except ImportError:
+        from process_lifecycle import InstanceLock
+    path = Path(registry_path)
+    return InstanceLock(path.parent, 'installation-operation-' + path.name)
 
 
 def component_record(kind, root, *, distribution='legacy-source', component_id=None,
@@ -260,7 +282,7 @@ def _atomic_write(path, data):
 
 class Registry:
     def __init__(self, path=None):
-        self.path = Path(path) if path is not None else default_registry_path()
+        self.path = Path(normalized_path(str(path))) if path is not None else default_registry_path()
         self.backup_path = self.path.with_name(self.path.name + '.bak')
 
     def _bytes(self, path):
