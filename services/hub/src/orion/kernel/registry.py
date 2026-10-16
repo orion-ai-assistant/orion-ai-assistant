@@ -83,6 +83,16 @@ async def check_db_health(timeout: float = 1.0) -> bool:
 
 
 async def _ensure_tables(conn: asyncpg.Connection) -> None:
+    # Multiple native listeners and the Worker initialize the same fresh DB.
+    # IF NOT EXISTS alone does not serialize PostgreSQL catalog creation.
+    await conn.execute('SELECT pg_advisory_lock(51730101)')
+    try:
+        await _create_tables(conn)
+    finally:
+        await conn.execute('SELECT pg_advisory_unlock(51730101)')
+
+
+async def _create_tables(conn: asyncpg.Connection) -> None:
     try:
         # --- Settings ---
         await conn.execute(
@@ -154,8 +164,8 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
             "create index if not exists idx_orion_chat_messages_chat_id_id on orion_chat_messages (chat_id, id asc);"
         )
     except (asyncpg.exceptions.UniqueViolationError, asyncpg.exceptions.DuplicateTableError):
-        # Ignore concurrent table creation race conditions
-        pass
+        # A failure after serialization indicates an actual schema problem.
+        raise
 
 
 # ---------------------------------------------------------------------------

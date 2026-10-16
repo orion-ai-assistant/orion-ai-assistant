@@ -106,7 +106,16 @@ async def acquire_owner(redis):
     for proc in psutil.process_iter(['pid', 'cmdline']):
         try:
             if proc.pid not in launch_chain and 'orion.worker.main' in (proc.info['cmdline'] or []):
-                raise RuntimeError('Another local Orion Worker is running (possibly pre-upgrade)')
+                # Separate installations have independent Redis journals/locks.
+                # Legacy -m launchers identify their installation by cwd; new
+                # launchers also carry an absolute process_child.py path.
+                root = Path(__file__).resolve().parents[5]
+                command = proc.info['cmdline'] or []
+                adapters = [Path(arg) for arg in command if Path(arg).name == 'process_child.py']
+                same_root = (any(path.resolve() == root / 'services/shared/process_child.py' for path in adapters)
+                             if adapters else Path(proc.cwd()).resolve() in {root, root / 'services/hub'})
+                if same_root:
+                    raise RuntimeError('Another local Orion Worker is running (possibly pre-upgrade)')
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     current = await redis.get(OWNER_KEY)

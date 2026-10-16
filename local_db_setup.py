@@ -68,17 +68,21 @@ def install_windows():
             
         subprocess.run([initdb_exe, "-D", data_dir, "-U", "postgres", "--auth=trust", "--locale=C", "--encoding=UTF8"], check=True)
         
-        print("[*] Starting temporary PostgreSQL to create users...")
-        subprocess.run([pg_ctl_exe, "start", "-D", data_dir, "-o", "-F", "-w"])
-        
+        from services.shared.native_postgres import Postgres
+        from services.shared.environment import get_env
+        port = int(get_env('POSTGRES_PORT', default='5445', required=False))
+        temporary_db = Postgres(pg_ctl_exe, data_dir, port, 'postgres', 'postgres')
+        temporary_db.ensure()
         try:
-            print("[*] Creating orion user and orion database...")
-            subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE USER orion WITH PASSWORD 'orion';"])
-            subprocess.run([psql_exe, "-U", "postgres", "-c", "CREATE DATABASE orion OWNER orion;"])
+            # SQL travels over stdin; the cluster and authenticated connection
+            # have already been verified, including their actual data directory.
+            command = [psql_exe, '-h', '127.0.0.1', '-p', str(port), '-U', 'postgres',
+                       '-d', 'postgres', '-w', '-X', '-v', 'ON_ERROR_STOP=1']
+            subprocess.run(command, input="CREATE USER orion WITH PASSWORD 'orion';\nCREATE DATABASE orion OWNER orion;",
+                           text=True, check=True, timeout=10)
         finally:
-            print("[*] Stopping temporary PostgreSQL...")
-            subprocess.run([pg_ctl_exe, "stop", "-D", data_dir, "-m", "fast"])
-            
+            temporary_db.stop()
+
         print("[OK] Portable PostgreSQL database cluster initialized.")
     else:
         print("[OK] Portable PostgreSQL database cluster already initialized.")

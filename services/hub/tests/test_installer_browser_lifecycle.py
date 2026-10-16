@@ -31,15 +31,12 @@ class InstallerBrowserLifecycleTests(unittest.TestCase):
                 self.assertEqual({d['id'] for d in services.get_services()}, {'orion-hub', 'tts'})
                 self.assertEqual(config.find_manifest('missing'), (None, None))
 
-    def test_stop_closes_browser_before_force_terminating_hub(self):
-        order = []
+    def test_stop_delegates_to_verified_hub_supervisor(self):
         with patch.dict(os.environ, {'ORION_INSTALL_MODE': 'local'}), \
                 patch.object(services, '_get_context', return_value=({'id': 'orion-hub'}, '/test/hub', {})), \
-                patch('services.shared.browser_shutdown.stop_hub_browsers', side_effect=lambda _: order.append('browser') or True), \
-                patch.object(services, '_kill_local_service_procs', side_effect=lambda _: order.append('hub')), \
-                patch.object(services.os.path, 'exists', return_value=False):
+                patch('services.shared.native_services.stop_hub', return_value=True) as stop:
             self.assertTrue(services.stop_service('orion-hub'))
-        self.assertEqual(order, ['browser', 'hub'])
+            stop.assert_called_once_with(config.PROJECT_ROOT)
 
     def test_helper_marks_stopping_and_runs_only_hub_python(self):
         with tempfile.TemporaryDirectory() as temporary:

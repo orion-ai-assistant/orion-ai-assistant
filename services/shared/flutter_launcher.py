@@ -43,7 +43,7 @@ def flutter_url(get_env):
     return f'http://localhost:{port}'
 
 
-def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping):
+def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping, runtime=None):
     """Return only our child process, or None. An occupied port is never killed."""
     if not enabled(get_env('ORION_FLUTTER_AUTOSTART', default='1', required=False)):
         return None
@@ -56,11 +56,12 @@ def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping
     script = directory / 'tool' / 'serve_web.py'
     with socket.socket() as probe:
         probe.settimeout(.3)
-        if probe.connect_ex(('127.0.0.1', port)) == 0:
+        if probe.connect_ex(('127.0.0.1', port)) == 0 and not (runtime and 'flutter' in runtime.children):
             raise OSError(f'Flutter port {port} is already occupied; no process was changed')
     env = os.environ.copy()
     env['ORION_UI_HUB_URL'] = 'http://localhost:' + str(get_env('ORION_LOCAL_PORT', default='8910', required=False))
-    proc = subprocess.Popen([python, str(script), '--host', '127.0.0.1', '--port', str(port)], env=env,
+    launch = (lambda argv, **kw: runtime.launch('flutter', argv, python=True, **kw)) if runtime else subprocess.Popen
+    proc = launch([python, str(script), '--host', '127.0.0.1', '--port', str(port)], env=env,
                             cwd=str(directory), stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
                             creationflags=0x08000000 if os.name == 'nt' else 0)
     url = flutter_url(get_env)

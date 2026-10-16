@@ -113,7 +113,13 @@ class WorkerSupervisorTests(unittest.TestCase):
         apis = [Mock(pid=pid) for pid in range(200, 204)]
         for proc in apis:
             proc.poll.return_value = None
-        children = apis + [self.worker, self.replacement]
+        redis = Mock(pid=199)
+        redis.child = {'process': {}}
+        redis.poll.return_value = None
+        children = [redis] + apis + [self.worker, self.replacement]
+        runtime = Mock(children={label: {'process': {}} for label in ('api', 'public', 'local', 'mobile')})
+        runtime.requested.return_value = False
+        runtime.launch.side_effect = children
         handlers = {}
         now = [0]
         waits = [0]
@@ -140,7 +146,14 @@ class WorkerSupervisorTests(unittest.TestCase):
             stack.enter_context(patch('services.shared.browser_shutdown.allow_hub_browsers'))
             stop_browsers = stack.enter_context(patch('services.shared.browser_shutdown.stop_hub_browsers'))
             stack.enter_context(patch.object(run_local.socket, 'socket'))
-            stack.enter_context(patch.object(run_local.subprocess, 'Popen', side_effect=children))
+            stack.enter_context(patch.object(run_local.os.path, 'isfile', return_value=True))
+            stack.enter_context(patch('services.shared.native_services.hub_database'))
+            stack.enter_context(patch('services.shared.process_lifecycle.owns_listener', return_value=True))
+            stack.enter_context(patch('services.shared.process_lifecycle.wait_health'))
+            stack.enter_context(patch.object(run_local, 'worker_ready', return_value=True))
+            stack.enter_context(patch('services.shared.process_lifecycle.living', return_value=True))
+            stack.enter_context(patch('orion.kernel.local_security.tls_identity', return_value={'cert': 'fake', 'id': 'fake'}))
+            stack.enter_context(patch.object(run_local.socket, 'create_connection'))
             stack.enter_context(patch.object(run_local.threading, 'Thread'))
             stack.enter_context(patch.object(run_local.threading, 'Event', return_value=event))
             stack.enter_context(patch.object(event, 'wait', side_effect=wait))
@@ -150,16 +163,14 @@ class WorkerSupervisorTests(unittest.TestCase):
             stack.enter_context(patch('builtins.print'))
             write = stack.enter_context(patch.object(run_local, 'write_pids'))
             with self.assertRaises(SystemExit) as exited:
-                run_local.main()
+                run_local._main(runtime)
         self.assertEqual(exited.exception.code, 0)
         self.assertEqual(write.call_count, 2)
         self.assertIn(self.replacement.pid, write.call_args.args[1])
         self.assertNotIn(self.worker.pid, write.call_args.args[1])
         self.worker.terminate.assert_not_called()
-        for proc in apis + [self.replacement]:
-            proc.terminate.assert_called_once()
-            proc.wait.assert_called_once_with(timeout=5)
-        stop_browsers.assert_called_once()
+        runtime.stop_children.assert_called_once()
+        runtime.database.stop.assert_called_once()
         self.assertTrue(event.is_set())
 
 

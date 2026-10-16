@@ -282,14 +282,13 @@ def cmd_run(alias, extra_args):
         print("\n[!] Durduruldu.")
         if proc:
             try:
-                if os.name == 'nt':
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    proc.terminate()
-                    proc.wait(timeout=1.0)
+                # Ctrl+C has reached the console child; allow orderly exit.
+                # Popen retains the exact OS process handle for the fallback.
+                proc.wait(timeout=5)
             except Exception:
                 try:
                     proc.kill()
+                    proc.wait(timeout=5)
                 except Exception:
                     pass
     except Exception as e:
@@ -350,47 +349,16 @@ def get_pg_status(pg_ctl, pg_data):
         return False
 
 def clean_stale_postmaster_lock(pg_data):
-    """
-    postmaster.pid dosyası, sunucu force-kill ile kapatıldığında geride kalabilir.
-    Bir sonraki 'pg_ctl stop' çağrısı bu bayat PID'e sinyal göndermeye çalışıp
-    'No such process' hatası verir. Bu fonksiyon o dosyayı temizler.
-    """
-    lock_file = os.path.join(pg_data, "postmaster.pid")
-    if os.path.exists(lock_file):
-        try:
-            os.remove(lock_file)
-        except OSError:
-            pass
+    # Only PostgreSQL may remove its stale postmaster lock after validation.
+    return False
 
 def start_postgres_blocking(pg_ctl, pg_data, show_terminals, result_holder, postgres_port):
-    """
-    pg_ctl start -w komutu doğası gereği bloklayıcıdır (sunucu hazır olana kadar bekler).
-    Router ve Hub'ı bekletmemek için bu fonksiyon ayrı bir thread içinde çalıştırılır.
-    """
-    pg_log_dir = os.path.join(pg_data, "log")
-    if not os.path.exists(pg_log_dir):
-        os.makedirs(pg_log_dir)
-    pg_log_file = os.path.join(pg_log_dir, "postgres.log")
-
-    cmd = [pg_ctl, "start", "-D", pg_data, "-l", pg_log_file, "-o", f"-F -p {postgres_port}", "-w"]
+    from services.shared.native_services import hub_database
     try:
-        if os.name == 'nt':
-            NO_WINDOW = 0x08000000 | 0x00000200
-            if show_terminals:
-                proc = subprocess.run(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
-            else:
-                proc = subprocess.run(
-                    cmd, creationflags=NO_WINDOW,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-        else:
-            proc = subprocess.run(
-                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-        result_holder["success"] = (proc.returncode == 0)
-    except Exception as e:
-        result_holder["success"] = False
-        result_holder["error"] = str(e)
+        hub_database(os.path.dirname(os.path.abspath(__file__)), load_env_var).ensure()
+        result_holder["success"] = True
+    except Exception as error:
+        result_holder.update(success=False, error=str(error))
 
 # --- KOMUT İŞLEYİCİLER ---
 def cmd_help(args=None):
@@ -471,189 +439,31 @@ def handle_setup(args):
     setup_environment("installer")
     print(f"\n[OK] Setup completed successfully! You can now use 'python manager.py start {mode}' or other commands.")
 
+def _owns_compose_project(project, working_dir):
+    canonical = lambda path: os.path.normcase(os.path.realpath(path))
+    from installer.app import config
+    if not working_dir:
+        return False
+    env = config._load_global_env()
+    return any(canonical(working_dir) == canonical(directory) and
+        project == env.get(manifest.get('category', 'misc').upper() + '_PROJECT_NAME',
+                           'orion-' + manifest.get('category', 'misc'))
+        for manifest, path in config.all_manifests()
+        for directory in [os.path.dirname(path)])
+
+
 def handle_start(args):
     mode = get_mode_from_args(args)
     show_terminals = "--show-terminals" in args
 
     if mode == "local":
+        from services.shared.native_services import start_hub, start_router
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        hub_port = load_env_port("HUB_PORT")
-        router_port = load_env_port("ROUTER_PORT")
-        redis_port = load_env_port("REDIS_PORT")
-
-        pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
-        pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
-        pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
-
-        postgres_running = os.path.exists(pg_ctl) and os.path.exists(pg_data) and get_pg_status(pg_ctl, pg_data)
-        redis_running = is_port_in_use(redis_port)
-        hub_running = is_port_in_use(hub_port)
-        router_running = is_port_in_use(router_port)
-
-        if postgres_running and redis_running and hub_running and router_running:
-            print("\n[!] All local services are already running.")
-            print("    Please run 'python manager.py stop' before starting again.")
-            return
-
-        print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
-
-        local_db_script = os.path.join(base_dir, "local_db_setup.py")
-        if os.path.exists(local_db_script):
-            if not os.path.exists(pg_ctl) or not os.path.exists(os.path.join(pg_data, "PG_VERSION")):
-                print("[*] Local database missing or uninitialized. Running setup...")
-                subprocess.run([sys.executable, local_db_script], check=True)
-
-        # SADECE PENCERE GİZLEME VE YENİ GRUP BAYRAĞI (ÇAKIŞMAYAN KOMBİNASYON)
-        NO_WINDOW = 0x08000000 | 0x00000200 if os.name == 'nt' else 0
-
-        # 1. POSTGRESQL — bloklayıcı 'pg_ctl start -w' çağrısını ayrı bir thread'e alıyoruz
-        #    ki Router ve Hub, PostgreSQL hazır olana kadar BEKLEMESİN.
-        pg_thread = None
-        pg_result = {}
-        pg_start_time = None
-        if os.path.exists(pg_ctl) and os.path.exists(pg_data):
-            if postgres_running:
-                postgres_port = load_env_port("POSTGRES_PORT")
-                print(f"[!] Orion Hub database is already running on port {postgres_port}.")
-            else:
-                # Önceki bir force-kill'den kalmış bayat kilit dosyası varsa temizle,
-                # yoksa pg_ctl start bazı durumlarda gereksiz uyarı/çakışma verebiliyor.
-                clean_stale_postmaster_lock(pg_data)
-                pg_start_time = time.time()
-                postgres_port = load_env_port("POSTGRES_PORT")
-                pg_thread = threading.Thread(
-                    target=start_postgres_blocking,
-                    args=(pg_ctl, pg_data, show_terminals, pg_result, postgres_port),
-                    daemon=True
-                )
-                pg_thread.start()
-
-        # 2. ORION ROUTER — hemen, PostgreSQL'i beklemeden başlat
-        plat, path = find_orionrouter_script()
-        if path:
-            if router_running:
-                print(f"[!] Orion Router is already running on port {router_port}.")
-            else:
-                print("[*] Starting Orion Router...")
-                router_env = os.environ.copy()
-                shared_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "services", "llm", "llama-cpp", "bin", "ffmpeg")
-                if all(os.path.isfile(os.path.join(shared_ffmpeg, name)) for name in ("ffmpeg.exe", "ffprobe.exe")):
-                    router_env.setdefault("FFMPEG_DIR", shared_ffmpeg)
-                if plat == "win":
-                    if show_terminals:
-                        cmd_router = ["powershell", "-NoExit", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start"]
-                        subprocess.Popen(cmd_router, env=router_env, creationflags=subprocess.CREATE_NEW_CONSOLE)
-                    else:
-                        cmd_router = ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "start", "--silent"]
-                        subprocess.Popen(cmd_router, env=router_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
-                else:
-                    if show_terminals:
-                        cmd_router = [path, "start"]
-                        subprocess.Popen(cmd_router, env=router_env)
-                    else:
-                        cmd_router = [path, "start", "--silent"]
-                        subprocess.Popen(cmd_router, env=router_env, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            if not router_running:
-                print("[!] Orion Router is not installed yet. Please install it from the Orion Installer panel.")
-
-        # 3. POSTGRESQL'İN HAZIR OLMASINI BEKLE (sadece burada, Hub'ı başlatmadan önce)
-        #    pg_ctl start -w zaten "database system is ready to accept connections"
-        #    olana kadar bloke olur; bu join'i Hub'dan ÖNCEYE aldık ki Hub, DB hazır
-        #    olmadan asla başlamasın. Router bundan etkilenmiyor, o zaten bağımsız.
-        if pg_thread:
-            pg_thread.join()
-            pg_elapsed = time.time() - pg_start_time if pg_start_time else None
-            if pg_result.get("success"):
-                if pg_elapsed is not None and pg_elapsed > 8:
-                    pg_log_file = os.path.join(pg_data, "log", "postgres.log")
-                    log_tail = tail_file(pg_log_file, 25)
-                    if log_tail:
-                        print(f"\n[i] PostgreSQL took longer than expected ({pg_elapsed:.1f}s). Last lines of {pg_log_file}:")
-                        print("    " + "-" * 60)
-                        for line in log_tail:
-                            print("    " + line.rstrip())
-                        print("    " + "-" * 60)
-                        print("    Look for lines like 'database system was not properly shut down'")
-                        print("    or 'redo starts at' — these mean it's replaying WAL (crash recovery),")
-                        print("    which is the most common reason for a slow local startup.\n")
-            else:
-                print(f"[!] Orion Hub failed to start. Check the log at: {os.path.join(pg_data, 'log', 'postgres.log')}")
-                print("[!] Starting Hub anyway, but it may fail to connect to the database.")
-
-        # 4. ORION HUB — artık DB hazır olduktan SONRA başlıyor
-        hub_dir = os.path.join(base_dir, "services", "hub")
-        hub_py = setup_environment("services/hub")
-        if os.path.exists(os.path.join(hub_dir, "run_local.py")) and hub_py and os.path.exists(hub_py):
-            if hub_running:
-                print(f"[!] Orion Hub is already running on port {hub_port}.")
-            else:
-                print("[*] Starting Orion Hub...")
-                log_path = os.path.join(hub_dir, "hub.log")
-                pid_path = os.path.join(hub_dir, "hub.pid")
-                if os.path.exists(log_path):
-                    open(log_path, "w").close()
-                if os.path.exists(pid_path):
-                    open(pid_path, "w").close()
-                
-                log_handle = open(log_path, "a", encoding="utf-8")
-
-                local_env = os.environ.copy()
-                local_env["HUB_PORT"] = str(hub_port)
-                local_env["PYTHONUNBUFFERED"] = "1"
-                existing_pythonpath = local_env.get("PYTHONPATH", "")
-                local_env["PYTHONPATH"] = os.pathsep.join(filter(None, [base_dir, existing_pythonpath]))
-
-                if os.name == 'nt':
-                    if show_terminals:
-                        cmd_hub = ["cmd", "/k", hub_py, "run_local.py"]
-                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=subprocess.CREATE_NEW_CONSOLE)
-                    else:
-                        cmd_hub = [hub_py, "run_local.py"]
-                        subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL, stdout=log_handle, stderr=log_handle)
-                else:
-                    cmd_hub = [hub_py, "run_local.py"]
-                    subprocess.Popen(cmd_hub, cwd=hub_dir, env=local_env, start_new_session=not show_terminals, stdin=subprocess.DEVNULL, stdout=log_handle, stderr=log_handle)
-        else:
-            if not hub_running:
-                print("[!] Orion Hub files or environment missing. Cannot start Hub.")
-
-        # 5. GERÇEK HAZIR OLMA SÜRELERİNİ ÖLÇ (tahmin değil, ölçüm)
-        #    Router bağımsız başladığı için onun süresini hâlâ ölçüyoruz;
-        #    Hub zaten DB'den sonra başladığı için onun süresi artık normalde çok kısa olmalı.
-        readiness_results = {}
-        measure_threads = []
-
-        def _measure(name, port, timeout=120):
-            elapsed = wait_for_port(port, timeout=timeout)
-            readiness_results[name] = elapsed
-
-        if path and not router_running:
-            t = threading.Thread(target=_measure, args=("Orion Router", router_port), daemon=True)
-            measure_threads.append(t)
-        if os.path.exists(os.path.join(hub_dir, "run_local.py")) and hub_py and os.path.exists(hub_py) and not hub_running:
-            t = threading.Thread(target=_measure, args=("Orion Hub", hub_port), daemon=True)
-            measure_threads.append(t)
-
-        for t in measure_threads:
-            t.start()
-        for t in measure_threads:
-            t.join()
-
-        if measure_threads:
-            print("\n--- ACTUAL READINESS TIMES ---")
-            for name, elapsed in readiness_results.items():
-                if elapsed is not None:
-                    print(f"    {name.ljust(20)} : {elapsed:.1f}s")
-                else:
-                    print(f"    {name.ljust(20)} : did NOT open its port within timeout")
-            print("--------------------------------------------------------")
-
-        if show_terminals:
-            print("\n[OK] Orion Hub and Orion Router have been started in separate visible windows.")
-        else:
-            print("\n[OK] Orion Hub and Orion Router have been started in the background.")
-            print("[i] To view live logs at any time, run: python manager.py logs")
+        _, router = find_orionrouter_script()
+        if router:
+            start_router(router)
+        start_hub(base_dir)
+        print("[OK] Local services verified ready.")
     else:
         print(f"\nStarting Orion AI Assistant in {mode.upper()} mode...")
         if not shutil.which("docker"):
@@ -671,7 +481,7 @@ def handle_start(args):
                 if len(parts) < 3:
                     continue
                 cname, proj, working_dir = parts
-                if not (proj.startswith("orion-") or cname.startswith("orion-")):
+                if not _owns_compose_project(proj, working_dir):
                     continue
                 # Check .disabled / .enabled markers (same logic as web app)
                 if working_dir:
@@ -710,155 +520,24 @@ def handle_stop(args):
     print(f"\nStopping Orion AI Assistant in {mode.upper()} mode...")
 
     if mode == "local":
+        from services.shared.native_services import stop_hub, stop_router
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        hub_dir = os.path.join(base_dir, "services", "hub")
-        pid_path = os.path.join(hub_dir, "hub.pid")
-
-        # ── 1. Hub (API, Worker, Redis) ──────────────────────────────────────
-        def stop_hub():
-            from services.shared.browser_shutdown import stop_hub_browsers
-            if not stop_hub_browsers(hub_dir):
-                print('[!] Orion browser shutdown could not be confirmed.')
-            pids = []
-            if os.path.exists(pid_path):
-                try:
-                    with open(pid_path, "r") as f:
-                        pids = [int(line.strip()) for line in f if line.strip().isdigit()]
-                except Exception as e:
-                    print(f"[!] Could not read PID file: {e}")
-
-            if pids:
-                print("[*] Stopping Orion Hub...")
-                # Graceful: SIGTERM tüm PID'lere
-                for pid in pids:
-                    if os.name == 'nt':
-                        try:
-                            check_cmd = f'tasklist /FI "PID eq {pid}" /NH'
-                            output = subprocess.check_output(check_cmd, shell=True).decode(errors='ignore')
-                            if "python" not in output.lower() and "cmd" not in output.lower() and "redis" not in output.lower():
-                                continue
-                        except Exception:
-                            pass
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except (ProcessLookupError, PermissionError, OSError):
-                        pass
-
-                # 2 saniye bekle, sonra hâlâ yaşayanları zorla kapat
-                time.sleep(2)
-                for pid in pids:
-                    try:
-                        os.kill(pid, 0)  # process hâlâ var mı?
-                        if os.name == 'nt':
-                            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
-                        else:
-                            os.kill(pid, signal.SIGKILL)
-                    except (ProcessLookupError, OSError):
-                        pass  # zaten kapandı
-
-                try:
-                    os.remove(pid_path)
-                except OSError:
-                    pass
-                print("[OK] Orion Hub stopped.")
-            else:
-                print("[i] No hub.pid found. Hub may not be running.")
-
-            # Redis: sadece Orion dizinindeki redis-server'ı hedefle
-            if os.name == 'nt':
-                subprocess.run(
-                    ["powershell", "-c",
-                     "Get-Process redis-server -ErrorAction SilentlyContinue"
-                     " | Where-Object {$_.Path -like '*orion*'}"
-                     " | Stop-Process -Force"],
-                    capture_output=True
-                )
-            else:
-                subprocess.run(["pkill", "-f", "redis-server.*orion"], capture_output=True)
-
-        # ── 2. PostgreSQL (Hub'ın kendi portable instance'ı) ─────────────────
-        def stop_postgres():
-            pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
-            pg_ctl_name = "pg_ctl.exe" if os.name == 'nt' else "pg_ctl"
-            pg_ctl = os.path.join(base_dir, ".local_db", "postgres", "bin", pg_ctl_name)
-
-            if not (os.path.exists(pg_ctl) and os.path.exists(pg_data)):
-                return
-
-            if get_pg_status(pg_ctl, pg_data):
-                result = subprocess.run(
-                    [pg_ctl, "stop", "-D", pg_data, "-m", "fast", "-t", "8"],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    print("[!] Orion Hub stop failed, forcing stop...")
-                    if os.name == 'nt':
-                        subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
-                    else:
-                        subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
-            else:
-                print("[i] Orion Hub database is not running (already stopped).")
-
-            clean_stale_postmaster_lock(pg_data)
-
-        # ── 3. Orion Router ───────────────────────────────────────────────────
-        def stop_router():
-            plat, path = find_orionrouter_script()
-            if path:
-                print("[*] Stopping Orion Router...")
-                if plat == "win":
-                    subprocess.run(
-                        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path, "stop"],
-                        capture_output=True
-                    )
-                else:
-                    subprocess.run([path, "stop"], capture_output=True)
-                print("[OK] Orion Router stopped.")
-
-        # ── Hepsini aynı anda başlat ──────────────────────────────────────────
-        t_hub    = threading.Thread(target=stop_hub,      name="stop-hub")
-        t_pg     = threading.Thread(target=stop_postgres, name="stop-pg")
-        t_router = threading.Thread(target=stop_router,   name="stop-router")
-
-        for t in [t_hub, t_pg, t_router]:
-            t.start()
-        for t in [t_hub, t_pg, t_router]:
-            t.join()
-
-        # ── Son kontrol: hâlâ açık port var mı? ─────────────────────────────
-        hub_port = load_env_port("HUB_PORT")
-        if is_port_in_use(hub_port):
-            print(f"[!] Hub port {hub_port} still open, force-stopping orphan...")
-            if os.name == 'nt':
-                subprocess.run(
-                    ["powershell", "-c",
-                     f"Get-Process -Id (Get-NetTCPConnection -LocalPort {hub_port}"
-                     f" -ErrorAction SilentlyContinue).OwningProcess"
-                     f" -ErrorAction SilentlyContinue | Stop-Process -Force"],
-                    capture_output=True
-                )
-            else:
-                subprocess.run(f"lsof -t -i:{hub_port} | xargs kill -9", shell=True, capture_output=True)
-
-        postgres_port = load_env_port("POSTGRES_PORT")
-        if is_port_in_use(postgres_port):
-            print(f"[!] PostgreSQL port {postgres_port} still open, force-stopping orphan...")
-            if os.name == 'nt':
-                subprocess.run(["taskkill", "/F", "/IM", "postgres.exe", "/T"], capture_output=True)
-            else:
-                subprocess.run(["pkill", "-9", "-f", "postgres"], capture_output=True)
-            pg_data = os.path.join(base_dir, ".local_db", "postgres", "data")
-            clean_stale_postmaster_lock(pg_data)
-
-        print("[OK] All local services stopped.")
+        stop_hub(base_dir)
+        _, router = find_orionrouter_script()
+        if router:
+            stop_router(router)
+        print("[OK] Local services verified stopped.")
     else:
         print("[*] Stopping Orion services...")
-        res = subprocess.run(["docker", "ps", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
+        res = subprocess.run(["docker", "ps", "--format", '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}'], capture_output=True, text=True)
         containers = []
         for line in res.stdout.strip().splitlines():
             if "|" in line:
-                cname, proj = line.split("|", 1)
-                if proj.startswith("orion-") or cname.startswith("orion-"):
+                parts = line.split("|", 2)
+                if len(parts) != 3:
+                    continue
+                cname, proj, working_dir = parts
+                if _owns_compose_project(proj, working_dir):
                     containers.append(cname)
                     
         if containers:
@@ -871,97 +550,15 @@ def handle_status(args):
     mode = get_mode_from_args(args)
     print(f"\n[*] Checking Orion AI Assistant status ({mode.upper()} mode)...\n")
     if mode == "local":
-        # Check if Docker has running Orion containers to warn about port sharing
-        docker_active = False
-        try:
-            res = subprocess.run(["docker", "ps", "--format", '{{.Names}}|{{.State}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)
-            if res.returncode == 0:
-                for line in res.stdout.strip().splitlines():
-                    if "|" in line:
-                        parts = line.split("|", 2)
-                        if len(parts) == 3:
-                            cname, state, proj = parts
-                            if state.upper() == "RUNNING" and (proj.startswith("orion-") or cname.startswith("orion-")):
-                                docker_active = True
-                                break
-        except Exception:
-            pass
-
-        if docker_active:
-            print("\033[93m[!] UYARI: Docker modundaki Orion konteynerleri aktif durumda.")
-            print("    Aynı portlar paylaşıldığı için aşağıdaki yerel durum raporu YANILTICI olabilir.\033[0m\n")
-
-        print("--- CORE SERVICES ---")
-        hub_port = load_env_port("HUB_PORT")
-        router_port = load_env_port("ROUTER_PORT")
-        postgres_port = load_env_port("POSTGRES_PORT")
-        redis_port = load_env_port("REDIS_PORT")
-        core_services = [
-            ("Orion Hub", [hub_port, postgres_port, redis_port]),
-            ("Orion Router", [router_port])
-        ]
-        all_running = True
-        hub_running = False
-        for name, ports in core_services:
-            is_running = all(is_port_in_use(p) for p in ports)
-            if name == "Orion Hub":
-                hub_running = is_running
-
-            status_text = "\033[92mRUNNING\033[0m" if is_running else "\033[91mSTOPPED\033[0m"
-            print(f"  {name.ljust(20)} : {status_text}")
-            if not is_running:
-                all_running = False
-
-        print("\n--- AI MODELS ---")
-        models = [
-            ("Orion LLM", "llm/llama-cpp", "LLM_PORT"),
-            ("Orion Embedding", "embedding/llama-cpp-embed", "EMBED_PORT"),
-            ("Orion TTS", "tts", "TTS_PORT")
-        ]
-
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        for name, rel_path, port_key in models:
-            s_dir = os.path.join(base_dir, "services", rel_path)
-            manifest_path = os.path.join(s_dir, "manifest.json")
-            try:
-                port = load_env_port(port_key)
-            except Exception:
-                port = None
-
-            st = "DISABLED"
-            if port and is_port_in_use(port):
-                st = "ACTIVE"
-            else:
-                if os.path.exists(manifest_path):
-                    try:
-                        with open(manifest_path, "r", encoding="utf-8") as f:
-                            m_data = json.load(f)
-                        
-                        env_path = os.path.join(s_dir, ".env")
-                        if os.path.exists(env_path):
-                            disabled_path = os.path.join(s_dir, ".disabled")
-                            enabled_path = os.path.join(s_dir, ".enabled")
-                            is_manifest_disabled = m_data.get("status") == "disabled"
-                            
-                            if is_manifest_disabled:
-                                is_active = os.path.exists(enabled_path)
-                            else:
-                                is_active = not os.path.exists(disabled_path)
-                            
-                            if is_active:
-                                st = "STOPPED"
-                    except Exception:
-                        pass
-
-            if st == "ACTIVE":
-                color = "\033[92m"  # Green
-            elif st == "STOPPED":
-                color = "\033[91m"  # Red
-            else:
-                color = "\033[90m"  # Gray
-            print(f"  {name.ljust(20)} : {color}{st}\033[0m")
-
-        print("\n" + ("All core services are RUNNING." if all_running else "Some services are STOPPED. Run 'python manager.py start' to launch them."))
+        from services.shared.native_services import component_status, router_root
+        root = os.path.dirname(os.path.abspath(__file__))
+        print(f"  Orion Hub: {component_status(root, 'hub')}")
+        _, script = find_orionrouter_script()
+        router_state = component_status(router_root(script), 'router-prod') if script else 'unverified'
+        print(f"  Orion Router: {router_state}")
+        for name, relative in [('Orion LLM', 'llm/llama-cpp'),
+                               ('Orion Embedding', 'embedding/llama-cpp-embed'), ('Orion TTS', 'tts')]:
+            print(f"  {name}: {component_status(os.path.join(root, 'services', relative), 'service')}")
     else:
         print("--- DOCKER SERVICES ---")
         res = subprocess.run(["docker", "ps", "-a", "--format", '{{.Names}}|{{.State}}|{{.Label "com.docker.compose.project"}}'], capture_output=True, text=True)

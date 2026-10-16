@@ -27,7 +27,7 @@ class RawBrowserFixture(unittest.TestCase):
             cls.addClassCleanup(patcher.stop)
         # The fixture supplies its own isolated profile; setup must never open
         # the person's normal Chrome via the production inspect launcher.
-        inspect = patch('orion.browser.manager.open_inspect_window', AsyncMock(return_value=None))
+        inspect = patch('orion.browser.manager.auto_approve_browser_dialogs', return_value=None)
         inspect.start()
         cls.addClassCleanup(inspect.stop)
         startup = None
@@ -35,7 +35,10 @@ class RawBrowserFixture(unittest.TestCase):
             startup = subprocess.STARTUPINFO()
             startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startup.wShowWindow = 7
-        cls.process = subprocess.Popen([find_binary('chrome'), '--remote-debugging-port=0',
+        options = (['--headless=new', '--disable-background-networking', '--disable-sync',
+                    '--disable-component-update', '--host-resolver-rules=MAP * 127.0.0.1']
+                   if os.getenv('ORION_BROWSER_TEST_HEADLESS') == '1' else [])
+        cls.process = subprocess.Popen([find_binary('chrome'), *options, '--remote-debugging-port=0',
             '--user-data-dir=' + str(cls.profile), '--no-first-run', '--no-default-browser-check',
             'about:blank'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startup)
         cls.manager = BrowserManager('isolated-test')

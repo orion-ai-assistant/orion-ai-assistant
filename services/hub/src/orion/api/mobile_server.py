@@ -40,12 +40,13 @@ async def serve():
     if serving.done():
         return await serving
     zc, info = None, None
+    discovery_enabled = os.getenv('ORION_MDNS', '1').lower() not in {'0', 'false', 'off', 'no'}
     async def refresh_discovery():
         nonlocal zc, info
         from orion.kernel.pinned_router import resolve_trusted_routers
         while True:
             try:
-                if zc is None:
+                if discovery_enabled and zc is None:
                     zc, info = await asyncio.to_thread(advertise, identity, port)
                 from orion.kernel.router_bootstrap import bootstrap_local_router
                 await bootstrap_local_router()
@@ -53,7 +54,7 @@ async def serve():
                 current = local_address()
                 family = socket.AF_INET6 if ':' in current else socket.AF_INET
                 addresses = [socket.inet_pton(family, current)]
-                if [current] != info.parsed_addresses():
+                if info is not None and [current] != info.parsed_addresses():
                     info.addresses = addresses
                     await asyncio.to_thread(zc.update_service, info)
             except Exception:
