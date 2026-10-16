@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 import fastapi
 import os
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from . import config
 from .core import models
@@ -24,6 +24,32 @@ class ContentMove(BaseModel):
 
 class ContentRecovery(BaseModel):
     journal: str
+
+
+class LauncherPreferences(BaseModel):
+    start_with_windows: StrictBool
+    show_client: StrictBool
+
+
+@router.get('/api/installation/launcher')
+def launcher_preferences():
+    try:
+        record = config.installation_registry().read()
+        return {'registered': record is not None, 'windows': os.name == 'nt',
+                'preferences': record['preferences'] if record else None}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post('/api/installation/launcher')
+def set_launcher_preferences(request: LauncherPreferences):
+    from services.shared.launcher import preferences
+    try:
+        record = preferences(config.installation_registry(), start_with_windows=request.start_with_windows,
+                             show_client=request.show_client)
+        return {'preferences': record['preferences']}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get('/api/installation/locations')

@@ -9,6 +9,14 @@ from services.shared.flutter_launcher import start_flutter, open_window
 
 
 class FlutterLauncherTests(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').name == 'nt', 'Windows focus adapter')
+    def test_repeat_open_focuses_dedicated_profile_without_new_browser(self):
+        profile = Path(tempfile.gettempdir()) / 'isolated-orion-ui'
+        with patch('services.shared.windows_autostart.focus_window', return_value=True) as focus, patch('services.shared.flutter_launcher.subprocess.Popen') as spawn:
+            self.assertTrue(open_window('http://localhost:8090/', profile=profile, reuse_existing=True))
+        focus.assert_called_once_with(profile)
+        spawn.assert_not_called()
+
     def test_strict_app_window_never_falls_back_to_normal_browser_tab(self):
         with patch('services.shared.flutter_launcher.shutil.which', return_value=None), patch('services.shared.flutter_launcher.Path.is_file', return_value=False), patch('services.shared.flutter_launcher.webbrowser.open') as tab:
             self.assertFalse(open_window('http://localhost:8910/panel', allow_tab_fallback=False))

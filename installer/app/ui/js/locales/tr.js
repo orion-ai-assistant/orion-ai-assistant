@@ -1,5 +1,12 @@
 window.orionLocales = window.orionLocales || {};
 window.orionLocales.tr = {
+    launcher_title: "Windows başlangıcı ve Orion penceresi",
+    launcher_note: "Pencereyi kapatmak servisleri açık bırakır. Servisleri kapatmak için Durdur'u kullanın.",
+    launcher_startup: "Windows oturumumu açtığımda Orion'u başlat",
+    launcher_window: "Oturum açılışında Orion penceresini göster",
+    launcher_save: "Tercihleri kaydet",
+    launcher_saved: "Başlangıç tercihleri kaydedildi.",
+    launcher_unavailable: "Bu seçenek için kayıtlı bir Windows kurulumu gerekiyor.",
     storage_title: "Model ve indirme konumları",
     storage_note: "Taşımadan önce kayıtlı servisleri kapatın. Kaynak kopya korunur. DB ve uygulama taşıması henüz desteklenmiyor.",
     storage_kind: "İçerik",

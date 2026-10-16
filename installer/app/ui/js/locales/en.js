@@ -1,5 +1,12 @@
 window.orionLocales = window.orionLocales || {};
 window.orionLocales.en = {
+    launcher_title: "Windows startup and Orion window",
+    launcher_note: "Closing the window keeps services running. Use Stop to stop services.",
+    launcher_startup: "Start Orion when I sign in to Windows",
+    launcher_window: "Show the Orion window at sign-in",
+    launcher_save: "Save preferences",
+    launcher_saved: "Startup preferences saved.",
+    launcher_unavailable: "These options require a registered Windows installation.",
     storage_title: "Model and download locations",
     storage_note: "Close the registered services before moving content. The source copy is retained. Moving the database or application is not supported yet.",
     storage_kind: "Content",

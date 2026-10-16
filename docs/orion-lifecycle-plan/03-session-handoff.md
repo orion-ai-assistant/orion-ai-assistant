@@ -93,3 +93,7 @@ Tam eski DB/runtime/Hub/Router taşıması 05/08 bağımlılığıyla kapalı ka
 Güncel sonraki oturum promptu:
 
 > Ana rehberi, `docs/orion-lifecycle-plan/03-session-handoff.md` dosyasının son devir bölümünü, `03-unicode-postgres-followup.md` ve Aşama 04 planını oku. Yalnız Aşama 04’ü uygula: mevcut kayıtlı yollarla tek başlatıcı ve Windows başlangıcı akışını geliştir. Yeni native Hub/Router Unicode kurulum desteği gerçek testten geçti; eski runtime’ı yerinde yamalama veya DB/runtime konum taşımasını açma. 01/03 açık kabul borcunu koru. Testleri kendin çalıştır; ağır ürün/DB/Next koşularını sırayla yürüt. Ayrı AppData test izni sürüyor; mevcut veri, kimlik ve kullanıcı diff’lerini koru. Windows başlangıcını benim hesabımda etkinleştirme; yalnız izole testte doğrula. Sonuçları MD’ye kaydet, görev değişikliklerine ayrı yerel commit at ve dur. Push yapma. Manuel denememi tek tuşla başlatma hazır olduğunda yapacağım.
+
+## Sonraki 04 oturumu kaydı
+
+Bu prompt sonraki oturumda uygulandı. Güncel devam noktası [04 oturum devri](04-session-handoff.md) ve [04 sonuçlarıdır](04-launcher-and-autostart.md). Kaynak başlatıcı/tercih çekirdeği ve izole gerçek Startup çağrısı uygulandı; temiz VM/logon ve gerçek pencere OS kabulü açık olduğundan 04 DOĞRULAMA EKSİK. 01/03 borcu, eski runtime dönüşümü ve DB taşıma sınırları aynen korunur. 05–08'e geçilmedi; görev commit'inden sonra durulur, push yoktur.

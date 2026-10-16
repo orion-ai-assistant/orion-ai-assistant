@@ -145,14 +145,14 @@ def _lock(path):
     return InstanceLock(path.parent, 'installation-registry-' + path.name)
 
 
-def operation_lock(registry_path):
+def operation_lock(registry_path, *, timeout=15):
     """Serialize migration/update operations; acquire before Registry.update lock."""
     try:
         from .process_lifecycle import InstanceLock
     except ImportError:
         from process_lifecycle import InstanceLock
     path = Path(registry_path)
-    return InstanceLock(path.parent, 'installation-operation-' + path.name)
+    return InstanceLock(path.parent, 'installation-operation-' + path.name, timeout=timeout)
 
 
 def component_record(kind, root, *, distribution='legacy-source', component_id=None,

@@ -243,7 +243,10 @@ def main():
     parser.add_argument('--setup-offline', action='store_true', help='Also run real source installer setup using the existing dependency cache only')
     parser.add_argument('--postgres-archive', type=Path, help='Prepare a fresh pinned UTF-8 runtime from this archive; no live binaries changed')
     parser.add_argument('--unicode-root', action='store_true', help='Exercise Turkish and Chinese code/data paths without short-name aliases')
+    parser.add_argument('--launcher', action='store_true', help='Use the stable entry and isolated Startup link for registered Hub acceptance')
     args = parser.parse_args()
+    if args.launcher and not args.registered_paths:
+        parser.error('--launcher requires --registered-paths')
     if args.unicode_root and (not args.postgres_archive or args.reuse):
         parser.error('--unicode-root requires a fresh --postgres-archive fixture')
     if args.registered_paths and (args.kind != 'hub' or args.reuse):
@@ -325,13 +328,28 @@ def main():
             assert register_bootstrap(root, root=root.parent, models_path=model_root, registry_path=store.path) == registered
             env['ORION_INSTALLATION_REGISTRY'] = str(store.path)
             report['checks'].append('custom Hub root with spaces registered twice with unchanged component identity')
+        if args.launcher:
+            from services.shared.launcher import install_entry, preferences
+            entry = install_entry(store, desktop=False)
+            isolated_startup = scratch / 'isolated Startup'
+            isolated_startup.mkdir()
+            preferences(store, start_with_windows=True, show_client=False, startup_directory=isolated_startup)
+            # Built web files are copied; no Flutter build/SDK/network operation.
+            client = scratch / 'Client'
+            copy_source(ROOT.parent / 'orion-ai-assistant-flutter/main_app/app/build/web', client / 'build/web')
+            (client / 'tool').mkdir()
+            shutil.copy2(ROOT.parent / 'orion-ai-assistant-flutter/main_app/app/tool/serve_web.py', client / 'tool/serve_web.py')
+            env.update(ORION_FLUTTER_APP_DIR=str(client), ORION_FLUTTER_AUTOSTART='1', ORION_FLUTTER_PORT=str(port()))
+            start = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(entry), '-Background', '-NonInteractive']
+            stop = [str(root / 'services/hub/.venv/Scripts/python.exe'), '-m', 'services.shared.launcher', '--registry', str(store.path), 'stop']
+            report['checks'].append('stable source entry and real COM Startup link created only in isolated directory; real built Flutter server enabled')
         def call(argv, label):
             with (scratch / (label + '.log')).open('wb') as log:
                 result = subprocess.run(argv, cwd=root, env=env, stdout=log, stderr=log, timeout=220)
             if result.returncode:
                 raise AssertionError(f'{label} exited {result.returncode}; inspect retained logs')
         with ThreadPoolExecutor(max_workers=3) as workers:
-            list(workers.map(lambda i: call(start, f'concurrent-start-{i}'), range(3)))
+            list(workers.map(lambda i: call(start + (['-Startup'] if args.launcher and i == 0 else []), f'concurrent-start-{i}'), range(3)))
         first = Runtime(root, component).read()
         assert first['status'] == 'ready'
         assert db.ready()
@@ -375,6 +393,21 @@ def main():
         call(start, 'repeat-start')
         assert Runtime(root, component).read()['run_id'] == first['run_id']
         report['checks'].append('repeat start retains supervisor identity')
+        if args.launcher:
+            # Validate the actual source UI health plus its owned listener without
+            # opening the user's browser. Browser close/focus is a separate OS acceptance.
+            import urllib.request
+            from services.shared.process_lifecycle import owns_listener
+            ui = Runtime(root, component).read()['children']['flutter']
+            assert owns_listener(ui['process'], int(env['ORION_FLUTTER_PORT']))
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                    'http://127.0.0.1:' + env['ORION_FLUTTER_PORT'] + '/__orion_flutter_health__') as response:
+                assert response.read() == b'orion-flutter-web'
+            preferences(store, start_with_windows=False, show_client=True, startup_directory=isolated_startup)
+            call(start + ['-Startup'], 'disabled-startup')
+            assert Runtime(root, component).read()['run_id'] == first['run_id']
+            assert not (isolated_startup / 'Orion.lnk').exists()
+            report['checks'].append('login/manual concurrent launches share one supervisor; owned Flutter listener/health; disabled stale startup is inert; real Startup folder untouched')
         call(stop, 'stop')
         record = Runtime(root, component).read()
         assert record['status'] == 'stopped'

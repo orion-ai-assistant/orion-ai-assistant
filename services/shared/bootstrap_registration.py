@@ -82,6 +82,11 @@ def main():
     register_bootstrap(Path(__file__).resolve().parents[2], root=os.environ['ORION_INSTALL_ROOT'],
                        models_path=os.environ['ORION_MODELS_PATH'],
                        registry_path=os.environ['ORION_INSTALLATION_REGISTRY'])
+    if os.name == 'nt' and os.environ.get('ORION_SKIP_GLOBAL_REGISTRATION') != '1':
+        from .launcher import install_entry
+        store = Registry(os.environ['ORION_INSTALLATION_REGISTRY'])
+        with operation_lock(store.path):
+            install_entry(store)
 
 
 if __name__ == '__main__':

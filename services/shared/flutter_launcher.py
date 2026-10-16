@@ -18,9 +18,13 @@ def app_directory(repo_root, get_env):
     return Path(get_env('ORION_FLUTTER_APP_DIR', default=str(default), required=False)).resolve()
 
 
-def open_window(url, *, allow_tab_fallback=True):
+def open_window(url, *, allow_tab_fallback=True, profile=None, reuse_existing=False):
     """A dedicated UI profile must never become Orion's automation profile."""
-    profile = Path(os.getenv('LOCALAPPDATA') or Path.home() / '.local' / 'share') / 'Orion' / 'flutter-ui-profile'
+    profile = Path(profile) if profile is not None else Path(os.getenv('LOCALAPPDATA') or Path.home() / '.local' / 'share') / 'Orion' / 'flutter-ui-profile'
+    if reuse_existing and os.name == 'nt':
+        from .windows_autostart import focus_window
+        if focus_window(profile):
+            return True
     candidates = [shutil.which(name) for name in ('msedge', 'google-chrome', 'chromium', 'brave-browser')]
     for root in (os.getenv('PROGRAMFILES'), os.getenv('PROGRAMFILES(X86)'), os.getenv('LOCALAPPDATA')):
         if root:
