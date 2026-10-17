@@ -21,19 +21,25 @@ ROOT_VALID_DAYS = 365 * 5
 PASSPHRASE_ENV = 'ORION_RELEASE_KEY_PASSPHRASE'
 
 
-def _passphrase(confirm=False):
+def _passphrase(confirm=False, enforce_length=True):
     value = os.environ.get(PASSPHRASE_ENV)
     if value is None:
-        value = getpass.getpass('Release key passphrase: ')
+        value = getpass.getpass('Release key passphrase (typing is hidden): ')
+        print(f'  ({len(value)} characters entered)')
         if confirm and getpass.getpass('Repeat passphrase: ') != value:
             raise ValueError('Passphrases differ')
-    if len(value) < 8:
+    if enforce_length and len(value) < 8:
         raise ValueError('Passphrase must be at least 8 characters')
     return value.encode('utf-8')
 
 
-def load_signer(key_path):
-    private = serialization.load_pem_private_key(Path(key_path).read_bytes(), _passphrase())
+def load_signer(key_path, passphrase=None):
+    """Decrypt the release key. `passphrase` (bytes) avoids prompting again."""
+    try:
+        private = serialization.load_pem_private_key(
+            Path(key_path).read_bytes(), passphrase or _passphrase(enforce_length=False))
+    except (ValueError, TypeError) as error:
+        raise ValueError('Could not unlock the release key: wrong passphrase?') from error
     return CryptoSigner(private, SSlibKey.from_crypto(private.public_key()))
 
 

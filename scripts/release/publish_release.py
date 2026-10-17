@@ -98,6 +98,12 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     base = feed_url(args.repo, args.tag)
+    # Unlock once up front so a wrong passphrase fails before anything is staged;
+    # the child signing processes get it only through their own environment.
+    import release_keys
+    passphrase = release_keys._passphrase(enforce_length=False)
+    release_keys.load_signer(args.key, passphrase)
+    os.environ[release_keys.PASSPHRASE_ENV] = passphrase.decode('utf-8')
     version = args.version or current_feed_version(base) + 1
     work = args.work / f'v{version}'
     if work.exists():
