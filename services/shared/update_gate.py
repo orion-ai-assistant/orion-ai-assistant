@@ -40,6 +40,23 @@ async def wait_for_admission():
         await asyncio.sleep(.2)
 
 
+def require_start_admission(root=None):
+    """Only the fixed health helper may start a quarantined candidate."""
+    if root is not None:
+        marker = Path(root) / '.orion-converted.json'
+        if marker.exists():
+            raise RuntimeError('Legacy installation converted; use the registered launcher')
+        from .runtime_layout import component
+        if component(root) is None:
+            return
+    if not blocked():
+        return
+    registry = os.getenv('ORION_INSTALLATION_REGISTRY')
+    active = json.loads((Path(registry).parent / 'updates/active.json').read_text(encoding='utf-8'))
+    if not os.getenv('ORION_UPDATE_OPERATION') or active.get('operation_id') != os.getenv('ORION_UPDATE_OPERATION'):
+        raise RuntimeError('Update/recovery in progress; use the retained helper')
+
+
 async def admitted(coroutine):
     try:
         await wait_for_admission()

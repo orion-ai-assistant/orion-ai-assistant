@@ -119,6 +119,9 @@ def install(client, names, root, registry, *, settings=None):
                     'from services.shared.launcher import install_entry; '
                     'from services.shared.installation_registry import Registry; install_entry(Registry(),desktop=False)'],
                     cwd=tree, env=env, check=True, timeout=30)
+        if not any(c['kind'] == 'hub' for c in components):
+            from services.shared.launcher import install_entry
+            install_entry(registry, desktop=False)
         return registry.read()
 
 
@@ -131,10 +134,20 @@ if __name__ == '__main__':
     parser.add_argument('--root', required=True, type=Path)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('--settings', type=Path, help='Optional private JSON component -> initial settings')
+    parser.add_argument('--launch', action='store_true')
+    parser.add_argument('--background', action='store_true')
+    parser.add_argument('--start-with-windows', action='store_true')
+    parser.add_argument('--no-window', action='store_true')
     parser.add_argument('targets', nargs='+')
     args = parser.parse_args()
     client = ReleaseClient(trusted_root=args.trusted_root, cache=args.cache,
         metadata_url=args.metadata_url, targets_url=args.targets_url)
     result = install(client, args.targets, args.root, args.registry,
                      settings=json.loads(args.settings.read_text()) if args.settings else None)
+    from services.shared.launcher import install_entry, preferences, launch
+    registry = Registry(args.registry)
+    install_entry(registry, desktop=True)
+    preferences(registry, start_with_windows=args.start_with_windows, show_client=not args.no_window)
+    if args.launch:
+        launch(registry, background=args.background)
     print(json.dumps({'status': 'installed', 'installation_id': result['installation_id']}))

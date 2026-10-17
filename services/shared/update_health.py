@@ -13,10 +13,20 @@ def probe(registry, record):
     from .update_gate import blocked
     if not blocked(registry.path):
         raise RuntimeError('Candidate health requires closed admission')
-    hub = next(c for c in record['components'] if c['kind'] == 'hub')
-    root = Path(hub['code_path'])
     operation = json.loads((registry.path.parent / 'updates/active.json').read_text(encoding='utf-8'))['operation_id']
+    hub = next((c for c in record['components'] if c['kind'] == 'hub'), None)
+    if hub is None:
+        with launch_environment(registry):
+            os.environ['ORION_UPDATE_OPERATION'] = operation
+            router = next(c for c in record['components'] if c['kind'] == 'router')
+            start_router(str(Path(router['code_path']) / 'cli.py'))
+            verify_router(router)
+            if not router_database_probe(record, running=True):
+                raise RuntimeError('Router database/schema health failed')
+        return {'database': True, 'router_identity': True}
+    root = Path(hub['code_path'])
     with launch_environment(registry):
+        os.environ['ORION_UPDATE_OPERATION'] = operation
         for item in record['components']:
             if item['kind'] == 'router':
                 start_router(str(Path(item['code_path']) / 'cli.py'))
@@ -92,6 +102,43 @@ def runtime_probe():
         if live.get('id') != router['router_uuid'] or live.get('fp') != router['tls_spki_sha256']:
             raise RuntimeError('Router live identity mismatch')
     return dict(hub_api=True, worker=True, database=True, client_api=True, router_identity=True)
+
+
+def verify_router(router):
+    from .process_lifecycle import Runtime, child_running, owns_listener
+    from .router_verification import _local_identity
+    state = Runtime(router['code_path'], 'router-prod').read()
+    if not state or state['status'] != 'ready' or not child_running(state['children']['backend']):
+        raise RuntimeError('Router supervisor/backend not ready')
+    if not owns_listener(state['children']['backend']['process'], router['tls_port']):
+        raise RuntimeError('Router listener ownership mismatch')
+    live = _local_identity(router['tls_port'], router['certificate_path'], router['tls_spki_sha256'])
+    if live.get('id') != router['router_uuid'] or live.get('fp') != router['tls_spki_sha256']:
+        raise RuntimeError('Router identity changed')
+
+
+def router_database_probe(record, *, running=False):
+    router = next(c for c in record['components'] if c['kind'] == 'router')
+    root = Path(router['code_path'])
+    program = '''from bin.common import database, read_env
+from core.runtime_layout import data_root
+from pathlib import Path
+db=database(data_root(Path.cwd())/'.pgdata-prod', read_env('POSTGRES_PORT',''), 'router_user', 'orion_router')
+owned=db.owner() is not None
+try:
+    if not owned: db.ensure()
+    assert db.ready()
+    assert db.sql("SELECT (to_regclass('public.router_virtual_keys') IS NOT NULL AND to_regclass('public.router_configs') IS NOT NULL)::text").strip() == 'true'
+finally:
+    if not owned: db.stop()
+'''
+    if running:
+        program = program.replace('if not owned: db.ensure()', "assert owned, 'Health database must already be owned'")
+    from .legacy_conversion import runtime_python
+    result = subprocess.run([str(runtime_python(router)), '-B', '-c', program],
+                            cwd=root, capture_output=True, timeout=90,
+                            **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
+    return result.returncode == 0
 
 
 if __name__ == '__main__':

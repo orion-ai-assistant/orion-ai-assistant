@@ -10,7 +10,7 @@ Son kullanıcı yalnız 06 geliştirmesine devam edilmesini istedi. Aşağıdaki
 
 06'nın kalıcı işlem/SDK'sız ayrı yardımcı/kurtarma uygulaması ve sınırları [06 sonuç kaydında](orion-lifecycle-plan/06-update-helper-and-recovery.md); kullanıcı bugün [izole manuel web denemesini](orion-lifecycle-plan/06-manual-test.md) yapabilir. Geliştirme testleri temiz VM/güç kesintisi veya gerçek kullanıcı pencere/logon kabulünün yerine geçmez.
 
-Tarih: 17 Ekim 2026. Aşama 00/02 tamamlandı; 01/03/04 DOĞRULAMA EKSİK. Aşama 05 paket üretimi, TUF güveni ve paketli kod/data/state arayüzleri uygulandı; **05 DOĞRULAMA EKSİK:** temiz Windows VM ve üretim güven kökü/yayın kabulü açık. 06 yardımcı/kurtarma uygulandı, **DOĞRULAMA EKSİK**; 07–08 başlamadı. [06 sonuç kaydı](orion-lifecycle-plan/06-update-helper-and-recovery.md), [05 sonuç kaydı](orion-lifecycle-plan/05-packaging-and-release-metadata.md), [04 sonuç kaydı](orion-lifecycle-plan/04-launcher-and-autostart.md).
+Tarih: 17 Ekim 2026. Aşama 00/02 tamamlandı; 01/03/04 DOĞRULAMA EKSİK. Aşama 05 paket üretimi, TUF güveni ve paketli kod/data/state arayüzleri uygulandı; **05 DOĞRULAMA EKSİK:** temiz Windows VM ve üretim güven kökü/yayın kabulü açık. 06 yardımcı/kurtarma uygulandı, **DOĞRULAMA EKSİK**; 07–08 kaynak/fixture testleri tamam, kabul doğrulaması eksik. [06 sonuç kaydı](orion-lifecycle-plan/06-update-helper-and-recovery.md), [05 sonuç kaydı](orion-lifecycle-plan/05-packaging-and-release-metadata.md), [04 sonuç kaydı](orion-lifecycle-plan/04-launcher-and-autostart.md).
 
 Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyalarına ayrılmıştır. Önce bu rehberi, sonra ortak kararları ve yalnız seçilen aşamanın gerekli belgelerini oku. Güncel kullanıcı talimatı: yalnız 06, testleri kendin sırayla çalıştır, sonuçları MD'ye kaydet, görev değişikliklerini yerel commit et ve dur; push yapma. Windows başlangıcı ve otomatik güncelleme etkinleştirilmez. Computer Use ve manuel pencere/logon kontrolü bu oturumun ön koşulu değildir. Eksik kabulü geçmiş veya yayını onaylanmış gösterme.
 
@@ -48,9 +48,9 @@ Numaralar önerilen çalışma sırasıdır; ön koşul sütunu teknik bağıml�
 | 05 | [Hazır paket ve sürüm metaverisi](orion-lifecycle-plan/05-packaging-and-release-metadata.md) | 02, 03 | DOĞRULAMA EKSİK |
 | 06 | [Güncelleme yardımcısı ve kurtarma](orion-lifecycle-plan/06-update-helper-and-recovery.md) | 01, 02, 03, 05 | DOĞRULAMA EKSİK |
 | 07 | [Otomasyon ve Flutter ekranı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) | 04, 06 | DOĞRULAMA EKSİK |
-| 08 | [Router geçişi ve kontrollü yayın](orion-lifecycle-plan/08-router-transition-and-rollout.md) | 04, 05, 06, 07 | BAŞLANMADI |
+| 08 | [Router geçişi ve kontrollü yayın](orion-lifecycle-plan/08-router-transition-and-rollout.md) | 04, 05, 06, 07 | DOĞRULAMA EKSİK |
 
-Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04/05/06/07 açık kabulleri kendi sonuç kayıtlarında korunur; 08 başlamadı.
+Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04/05/06/07 açık kabulleri kendi sonuç kayıtlarında korunur; 08 kaynak/fixture testleri tamam, kabul doğrulaması eksik.
 
 ## Her oturumun çalışma yöntemi
 

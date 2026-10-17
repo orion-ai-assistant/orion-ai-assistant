@@ -41,12 +41,14 @@ def _targets(record):
 
 
 class StoppedInstallation:
-    def __init__(self, registry):
+    def __init__(self, registry, *, operation_locked=False):
         self.registry, self.stack, self.held = registry, ExitStack(), False
+        self.operation_locked = operation_locked
 
     def __enter__(self):
         try:
-            self.stack.enter_context(operation_lock(self.registry.path))
+            if not self.operation_locked:
+                self.stack.enter_context(operation_lock(self.registry.path))
             self.record = self.registry.read()
             if self.record is None:
                 raise MigrationError('No registered installation')

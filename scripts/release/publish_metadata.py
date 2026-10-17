@@ -87,7 +87,11 @@ if __name__ == '__main__':
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--keys', type=Path, required=True, help='Private JSON role -> PEM paths (not logged)')
     parser.add_argument('--version', type=int, required=True)
+    parser.add_argument('--channel', choices=['beta', 'stable'], required=True)
+    parser.add_argument('--acceptance', type=Path, required=True)
     args = parser.parse_args()
+    from services.shared.release_acceptance import verify_acceptance
+    verify_acceptance(args.artifacts, args.acceptance, args.channel)
     root = Metadata.from_file(str(args.root))
     if root.signed.roles['root'].threshold < 2 or len(root.signed.roles['root'].keyids) < 3:
         raise ValueError('Production root policy requires at least 2-of-3 offline root keys')

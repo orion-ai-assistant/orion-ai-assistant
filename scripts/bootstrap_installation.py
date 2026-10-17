@@ -115,6 +115,8 @@ def plan_installation(root=None, models_path=None, registry_path=None, registry_
         if hub['distribution'] not in {'legacy-source', 'development'}:
             raise BootstrapError('This source installer cannot modify packaged/container/remote Hubs')
         code = checked_path(hub['code_path'])
+        if (code / '.orion-converted.json').exists():
+            raise BootstrapError('Legacy installation converted; use the registered package launcher')
         if not code.is_dir():
             raise BootstrapError('Registered Hub disk/path is missing; repair required')
         verify_project(code)

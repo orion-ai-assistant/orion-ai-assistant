@@ -37,8 +37,8 @@ def validate_source(value):
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
             raise UpdateError('Release source requires credential-free HTTPS')
     targets = value['targets']
-    if not isinstance(targets, dict) or not targets or set(targets) - {'hub', 'client'}:
-        raise UpdateError('Only Hub/Client stable targets supported')
+    if not isinstance(targets, dict) or not targets or set(targets) - {'hub', 'client', 'router'}:
+        raise UpdateError('Unknown stable component target')
     from .release_packages import archive_name
     for name in targets.values():
         archive_name(name)
@@ -48,7 +48,10 @@ def validate_source(value):
 
 
 class AutomaticUpdates:
-    def __init__(self, registry, *, helper=None, client_factory=None, clock=None):
+    def __init__(self, registry, *, helper=None, client_factory=None, clock=None, scope='hub'):
+        if scope not in {'hub', 'router'}:
+            raise UpdateError('Unknown update preference scope')
+        self.scope = scope
         self.registry = registry if isinstance(registry, Registry) else Registry(registry)
         self.helper = helper or UpdateHelper(self.registry)
         self.base = self.helper.base
@@ -56,9 +59,13 @@ class AutomaticUpdates:
         self.client_factory = client_factory
 
     def policy(self):
-        value = read_json(self.base / 'policy.json', {'schema': 1, 'paused': False, 'deferred_until': 0})
-        if (not isinstance(value, dict) or set(value) != {'schema', 'paused', 'deferred_until'}
+        defaults = {'schema': 1, 'paused': False, 'deferred_until': 0}
+        if self.scope == 'router':
+            defaults['enabled'] = False
+        value = read_json(self.base / ('router-policy.json' if self.scope == 'router' else 'policy.json'), defaults)
+        if (not isinstance(value, dict) or set(value) != set(defaults)
                 or value['schema'] != 1 or type(value['paused']) is not bool
+                or (self.scope == 'router' and type(value['enabled']) is not bool)
                 or type(value['deferred_until']) not in (int, float) or value['deferred_until'] < 0):
             raise UpdateError('Invalid automatic update policy')
         return value
@@ -69,6 +76,7 @@ class AutomaticUpdates:
 
     def preferences(self, *, enabled=None, paused=None, defer_hours=None):
         with operation_lock(self.registry.path, timeout=0):
+            policy = self.policy()
             if enabled is not None:
                 if type(enabled) is not bool:
                     raise UpdateError('Expected boolean update preference')
@@ -77,8 +85,10 @@ class AutomaticUpdates:
                 def change(record):
                     record['preferences']['automatic_updates'] = enabled
                     return record
-                self.registry.update(change)
-            policy = self.policy()
+                if self.scope == 'hub':
+                    self.registry.update(change)
+                else:
+                    policy['enabled'] = enabled
             if paused is not None:
                 if type(paused) is not bool:
                     raise UpdateError('Expected boolean network pause')
@@ -87,18 +97,19 @@ class AutomaticUpdates:
                 if defer_hours not in (0, 24):
                     raise UpdateError('Deferral must be zero or 24 hours')
                 policy['deferred_until'] = self.clock() + 86400 if defer_hours else 0
-            write_json(self.base / 'policy.json', policy)
+            write_json(self.base / ('router-policy.json' if self.scope == 'router' else 'policy.json'), policy)
         return self.status()
 
     def allowed(self, *, activate=False):
         policy = self.policy()
-        return (self.registry.read()['preferences']['automatic_updates']
+        enabled = policy['enabled'] if self.scope == 'router' else self.registry.read()['preferences']['automatic_updates']
+        return (enabled
                 and (policy['deferred_until'] <= self.clock() if activate else not policy['paused']))
 
     def status(self):
         record = self.registry.read()
         tx = self.helper.status()
-        state = read_json(self.base / 'automatic.json', {'schema': 1})
+        state = read_json(self.state_path, {'schema': 1})
         versions = {}
         for item in record['components']:
             versions[item['kind']] = {'package_id': item.get('package', {}).get('id'),
@@ -115,7 +126,7 @@ class AutomaticUpdates:
                        'packages': {c['kind']: c.get('package', {}).get('id')
                                     for c in (tx.get('proposed') or {}).get('components', [])
                                     if c['kind'] in tx['changes']}}
-        return {'schema': 1, 'automatic_updates': record['preferences']['automatic_updates'],
+        return {'schema': 1, 'automatic_updates': self.policy().get('enabled', record['preferences']['automatic_updates']),
                 'configured': self.source() is not None, 'channel': 'stable', 'versions': versions,
                 'policy': self.policy(), 'last_attempt': state.get('last_attempt'),
                 'last_success': state.get('last_success'), 'error': state.get('error') or
@@ -123,20 +134,24 @@ class AutomaticUpdates:
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
                 'activation': 'next_safe_launch', 'router_independent': True}
 
-    def check(self):
+    @property
+    def state_path(self):
+        return self.base / ('router-automatic.json' if self.scope == 'router' else 'automatic.json')
+
+    def check(self, *, manual=False):
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
             source = self.source()
-            if source is None or not self.allowed():
+            if source is None or (not manual and not self.allowed()):
                 return
-            state = read_json(self.base / 'automatic.json', {'schema': 1})
-            if self.clock() - state.get('last_attempt', 0) < INTERVAL:
+            state = read_json(self.state_path, {'schema': 1})
+            if not manual and self.clock() - state.get('last_attempt', 0) < INTERVAL:
                 return
             pending = self.helper.status()
             if pending and pending['phase'] not in TERMINAL:
                 return
             state.update(last_attempt=self.clock(), error=None)
-            write_json(self.base / 'automatic.json', state)
+            write_json(self.state_path, state)
             try:
                 from .release_packages import ReleaseClient
                 client = self.client_factory() if self.client_factory else ReleaseClient(
@@ -145,7 +160,10 @@ class AutomaticUpdates:
                     metadata_url=source['metadata_url'], targets_url=source['targets_url'])
                 record = self.registry.read()
                 selected = {k: v for k, v in source['targets'].items()
-                            if any(c['kind'] == k for c in record['components'])}
+                            if (k == 'router') == (self.scope == 'router')
+                            and any(c['kind'] == k for c in record['components'])}
+                if not selected:
+                    return
                 checked, targets = client.check(list(selected.values()))
                 if targets is None:
                     raise UpdateError(checked.get('reason', 'CheckUnavailable'))
@@ -159,7 +177,7 @@ class AutomaticUpdates:
                     if target.custom['sequence'] > current['sequence']:
                         names.append(name)
                 state['last_success'] = self.clock()
-                write_json(self.base / 'automatic.json', state)
+                write_json(self.state_path, state)
                 if names:
                     # Recheck under the helper's operation lock, including user disabling it.
                     class Selection:
@@ -168,12 +186,12 @@ class AutomaticUpdates:
 
                         def prepare(self, target, destination):
                             return client.prepare(target, destination)
-                    self.helper.prepare(Selection(), names, automatic=True)
+                    self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.
                 state['error'] = type(error).__name__
             finally:
-                write_json(self.base / 'automatic.json', state)
+                write_json(self.state_path, state)
 
     def startup(self):
         tx = self.helper.status()
@@ -229,4 +247,14 @@ def watch(automatic):
                 if stopped:
                     return
             automatic.check()
-            time.sleep(300)
+            router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')
+            request = canonical_path(automatic.base / 'router-request.json')
+            if request.exists():
+                value = read_json(request, {})
+                if value == {'schema': 1, 'installation_id': automatic.registry.read()['installation_id'], 'action': 'prepare'}:
+                    request.unlink()
+                    router.check(manual=True)
+                else:
+                    raise UpdateError('Invalid Router update request')
+            router.check()
+            time.sleep(5)

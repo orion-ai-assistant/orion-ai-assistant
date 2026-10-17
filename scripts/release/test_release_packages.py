@@ -354,9 +354,23 @@ def test_production_signing_cli_loads_role_pem_with_two_of_three_offline_root(re
     keys = tmp / 'TEST-role-paths.json'
     keys.write_text(json.dumps(paths))
     output = tmp / 'cli-signed'
+    evidence = tmp / 'acceptance'
+    evidence.mkdir()
+    checks = {}
+    for name in ('clean_windows_vm', 'upgrade_from_previous', 'failed_release_recovery', 'uninstall_preserves_data'):
+        (evidence / (name + '.txt')).write_text('TEST evidence ' + name)
+        checks[name] = {'passed': True, 'report': name + '.txt', 'sha256': sha256(evidence / (name + '.txt'))}
+    packages = {}
+    for path in artifacts.glob('*.target.json'):
+        target = json.loads(path.read_text(encoding='utf-8'))
+        packages[target['custom']['package_id']] = target['hashes']['sha256']
+    acceptance = evidence / 'acceptance.json'
+    acceptance.write_text(json.dumps({'schema': 1, 'channel': 'beta', 'test_only': False,
+                                      'packages': packages, 'checks': checks}))
     result = subprocess.run([sys.executable, str(Path(__file__).with_name('publish_metadata.py')),
         '--artifacts', str(artifacts), '--output', str(output), '--root', str(trusted),
-        '--keys', str(keys), '--version', '2'], capture_output=True, timeout=20)
+        '--keys', str(keys), '--version', '2', '--channel', 'beta', '--acceptance', str(acceptance)],
+        capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
     timestamp = Metadata.from_file(str(output / 'metadata/timestamp.json'))
     root.verify_delegate('timestamp', timestamp)

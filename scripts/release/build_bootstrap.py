@@ -58,7 +58,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None)
         # It must also be present when recovery runs without a working Hub.
         shutil.copyfile(ROOT / 'services/shared/launcher_entry.ps1',
                         tree / 'services/shared/launcher_entry.ps1')
-        for name in ('install_new.py', 'update_local.py', 'update_automatic.py'):
+        for name in ('install_new.py', 'update_local.py', 'update_automatic.py', 'manage_installation.py'):
             destination = tree / 'scripts/release' / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).with_name(name), destination)
@@ -73,13 +73,18 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None)
             'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '
             '[Parameter(Mandatory=$true)][string]$TargetsUrl, '
             '[Parameter(Mandatory=$true)][string[]]$Targets, '
-            '[string]$Root=(Join-Path $env:LOCALAPPDATA "Orion"), [string]$Registry)\n'
+            '[string]$Root=(Join-Path $env:LOCALAPPDATA "Orion"), [string]$Registry, '
+            '[switch]$NoStart, [switch]$Background, [switch]$StartWithWindows, [switch]$NoWindow)\n'
             '$ErrorActionPreference="Stop"\n'
             'if (-not $Registry) { $Registry=Join-Path $env:LOCALAPPDATA "Orion/install.json" }\n'
             '$cache=Join-Path $env:LOCALAPPDATA "Orion/release-cache"\n'
+            '$launch=@(); if (-not $NoStart) { $launch += "--launch" }; '
+            'if ($Background) { $launch += "--background" }; '
+            'if ($StartWithWindows) { $launch += "--start-with-windows" }; '
+            'if ($NoWindow) { $launch += "--no-window" }\n'
             '& "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
             '--trusted-root "$PSScriptRoot/trusted-root.json" --cache $cache --metadata-url $MetadataUrl '
-            '--targets-url $TargetsUrl --root $Root --registry $Registry @Targets\nexit $LASTEXITCODE\n')
+            '--targets-url $TargetsUrl --root $Root --registry $Registry @launch @Targets\nexit $LASTEXITCODE\n')
         # The standard cache/registry is inside the default root. install_new
         # validates occupied component directories instead of requiring that this
         # bootstrap metadata parent be empty.

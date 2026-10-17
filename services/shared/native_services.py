@@ -12,6 +12,8 @@ def packaged_hub_operation(action):
     def decorate(function):
         @wraps(function)
         def run(root, *, update_operation=None):
+            if (Path(root) / '.orion-converted.json').exists():
+                raise LifecycleError('Legacy installation converted; use the registered launcher')
             from .runtime_layout import component
             if not component(root):
                 return function(root)
@@ -157,6 +159,8 @@ def router_python(root):
 
 
 def start_router(script):
+    from .update_gate import require_start_admission
+    require_start_admission(router_root(script))
     if dispatch_if_needed('start-router', Path(__file__).resolve().parents[2], script):
         return True
     from services.shared.process_lifecycle import ensure_started

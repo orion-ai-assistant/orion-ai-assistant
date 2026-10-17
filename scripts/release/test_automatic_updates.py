@@ -139,7 +139,7 @@ def test_preference_or_unconfigured_feed_never_starts_a_check(installed):
 
 
 @pytest.mark.parametrize('field,value', [('channel', 'beta'), ('metadata_url', 'http://release.example'),
-    ('targets', {'router': 'router.zip'}), ('targets', {'hub': '../escape.zip'})])
+    ('targets', {'unknown': 'unknown.zip'}), ('targets', {'hub': '../escape.zip'})])
 def test_feed_rejects_other_channels_router_and_unsafe_transport(automatic, field, value):
     service, *_ = automatic
     source = deepcopy(service.source())
@@ -170,7 +170,7 @@ def test_watcher_checks_without_activation_and_exits_after_services_stop(automat
     service, now, data, host = automatic
     host.idle = False
     def stop_later(seconds):
-        assert seconds == 300
+        assert seconds == 5
         assert service.helper.status()['phase'] == 'staged'
         assert host.stopped_calls == 0
         host.idle = True

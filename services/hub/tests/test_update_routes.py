@@ -9,6 +9,8 @@ from orion.api import update_routes as api
 from orion.api.auth_routes import get_current_user
 from orion.api.access_boundary import AccessBoundary
 
+CHANGE_PREFERENCES = api.change_preferences
+
 
 class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -30,7 +32,8 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
             response = await client.get('/api/v1/updates')
             self.assertEqual(response.status_code, 200)
             self.assertFalse(response.json()['can_manage'])
-            for body in ({'automatic_updates': True}, {'defer_hours': 24}, {'paused': False}):
+            for body in ({'automatic_updates': True}, {'defer_hours': 24}, {'paused': False},
+                         {'start_with_windows': True}, {'show_client': True}, {'router_automatic_updates': True}):
                 self.assertEqual((await client.put('/api/v1/updates', json=body)).status_code, 403)
         self.change.assert_not_called()
 
@@ -65,3 +68,19 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
         async with self.client() as client:
             self.assertEqual((await client.get('/api/v1/updates')).status_code, 401)
         self.read.assert_not_called()
+
+    def test_windows_preferences_use_explicit_local_adapter_without_changing_update_preference(self):
+        from unittest.mock import Mock
+        registry = Mock()
+        registry.read.return_value = {'preferences': {'start_with_windows': False, 'show_client': True, 'automatic_updates': False}}
+        with patch.object(api, 'Registry', return_value=registry), \
+             patch('services.shared.launcher.preferences') as preferences:
+            CHANGE_PREFERENCES(api.Preferences(start_with_windows=True))
+            preferences.assert_called_once_with(registry, start_with_windows=True, show_client=True)
+            self.assertFalse(registry.read()['preferences']['automatic_updates'])
+
+    def test_mixed_independent_preference_groups_are_rejected_before_mutation(self):
+        with patch.object(api, 'AutomaticUpdates') as updates:
+            with self.assertRaises(ValueError):
+                CHANGE_PREFERENCES(api.Preferences(start_with_windows=True, automatic_updates=True))
+            updates.assert_not_called()

@@ -1,4 +1,4 @@
-param([switch]$Startup, [switch]$Background, [switch]$Repair, [switch]$NonInteractive)
+param([switch]$Startup, [switch]$Background, [switch]$Stop, [switch]$Repair, [switch]$NonInteractive)
 $ErrorActionPreference = 'Stop'
 $registry = Join-Path (Split-Path -Parent $PSScriptRoot) 'install.json'
 function Show-OrionRepair([string]$message) {
@@ -26,7 +26,7 @@ try {
     if ($Startup -and $record.preferences.start_with_windows -eq $false) { exit 0 }
     if ($record.schema_version -ne 1) { throw 'Unsupported installation registry. Repair required.' }
     $pending = Join-Path (Split-Path -Parent $PSScriptRoot) 'updates/active.json'
-    if (Test-Path -LiteralPath $pending) {
+    if (-not $Stop -and (Test-Path -LiteralPath $pending)) {
         $operation = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
         $operationId = [guid]::ParseExact($operation.operation_id, 'D').ToString('D')
         $journalPath = Join-Path (Split-Path -Parent $pending) "$operationId/journal.json"
@@ -36,8 +36,16 @@ try {
         }
     }
     $hubs = @($record.components | Where-Object { $_.kind -eq 'hub' })
-    if ($hubs.Count -ne 1) { throw 'Exactly one registered Hub is required.' }
-    $root = $hubs[0].code_path
+    if ($hubs.Count -gt 1) { throw 'Exactly one registered Hub is required.' }
+    if ($hubs.Count -eq 1) {
+        $root = $hubs[0].code_path
+    } else {
+        $routers = @($record.components | Where-Object { $_.kind -eq 'router' })
+        if ($routers.Count -ne 1) { throw 'No registered Hub or standalone Router.' }
+        $runtimeRecord = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'automatic-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($runtimeRecord.schema -ne 1) { throw 'Invalid retained runtime.' }
+        $root = $runtimeRecord.root
+    }
     if (-not [IO.Path]::IsPathRooted($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) {
         throw 'Registered disk or Hub folder is missing. Reconnect the disk; no empty installation was created.'
     }
@@ -50,6 +58,7 @@ try {
     $arguments = @('-m', 'services.shared.launcher', '--registry', $registry)
     if ($Startup) { $arguments += '--startup' }
     if ($Background) { $arguments += '--background' }
+    if ($Stop) { $arguments += 'stop' }
     Push-Location -LiteralPath $root
     try {
         $output = & $python @arguments 2>&1

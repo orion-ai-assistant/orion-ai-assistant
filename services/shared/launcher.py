@@ -19,8 +19,9 @@ from .installation_paths import canonical_path
 def managed_components(record):
     result = []
     hubs = [c for c in record['components'] if c['kind'] == 'hub']
-    if len(hubs) != 1:
-        raise RegistryError('Exactly one registered Hub is required; repair the installation registry')
+    routers = [c for c in record['components'] if c['kind'] == 'router']
+    if len(hubs) > 1 or (not hubs and (len(routers) != 1 or any(c['kind'] == 'client' for c in record['components']))):
+        raise RegistryError('Select one Hub or one standalone Router')
     if len([c for c in record['components'] if c['kind'] == 'client']) > 1:
         raise RegistryError('Select one registered client before launch')
     for item in record['components']:
@@ -51,7 +52,7 @@ def managed_components(record):
                     or identity.get('root') != os.path.normcase(os.path.realpath(root))):
                 raise RegistryError('Registered lifecycle identity mismatch; repair required')
         result.append(item)
-    if hubs[0] not in result:
+    if hubs and hubs[0] not in result:
         raise RegistryError('Hub local management is not authorized')
     return sorted(result, key=lambda c: c['kind'] != 'router')
 
@@ -61,9 +62,13 @@ def launch_environment(registry):
     # Loaded in this dedicated launcher process, never in a long-lived API host.
     from dotenv import dotenv_values
     values = {}
-    hub = next(c for c in registry.read()['components'] if c['kind'] == 'hub')
-    for base, name in ((hub['code_path'], '.env.global'), (hub['data_path'], '.env.global.local')):
-        values.update({k: v for k, v in dotenv_values(Path(base) / 'services' / name).items() if v is not None})
+    hub = next((c for c in registry.read()['components'] if c['kind'] == 'hub'), None)
+    if hub:
+        for base, name in ((hub['code_path'], '.env.global'), (hub['data_path'], '.env.global.local')):
+            values.update({k: v for k, v in dotenv_values(Path(base) / 'services' / name).items() if v is not None})
+    else:
+        router = next(c for c in registry.read()['components'] if c['kind'] == 'router')
+        values.update({k: v for k, v in dotenv_values(Path(router['data_path']) / '.env').items() if v is not None})
     clients = [c for c in registry.read()['components'] if c['kind'] == 'client']
     if clients:
         client = clients[0]
@@ -75,7 +80,7 @@ def launch_environment(registry):
             metadata = verify_registered_package(client['code_path'])
             if metadata['component'] != 'client':
                 raise RegistryError('Client package component mismatch')
-    else:
+    elif hub:
         values.setdefault('ORION_FLUTTER_APP_DIR', os.environ.get('ORION_FLUTTER_APP_DIR', str(Path(hub['code_path']).parent / 'Client')))
     values.update(ORION_INSTALLATION_REGISTRY=str(registry.path), ORION_FLUTTER_OPEN_WINDOW='0')
     # Popen inherits a snapshot; restore our process even on a failed start.
@@ -146,7 +151,12 @@ def launch(registry, *, startup=False, background=False, stop=False):
                 from .automatic_updates import spawn_watcher
                 spawn_watcher(registry)
             if not stop and not background and (not startup or record['preferences']['show_client']):
-                show_window(registry, next(c for c in components if c['kind'] == 'hub'))
+                hub = next((c for c in components if c['kind'] == 'hub'), None)
+                if hub:
+                    show_window(registry, hub)
+                else:
+                    from .flutter_launcher import open_window
+                    open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard')
         return {'status': 'stopped' if stop else 'ready'}
 
 
@@ -174,6 +184,8 @@ def preferences(registry, *, start_with_windows, show_client, startup_directory=
         record = registry.read()
         if record is None:
             raise RegistryError('No installation registered')
+        if start_with_windows:
+            managed_components(record)
         entry = install_entry(registry, desktop=False)
         directory = canonical_path(startup_directory or known_folder('startup'), must_exist=True)
         path = directory / 'Orion.lnk'

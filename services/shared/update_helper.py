@@ -2,7 +2,7 @@
 
 Activation is deliberately stopped-only for the Stage 05 baseline. A running
 installation stays in waiting_for_idle; the helper never interrupts user work.
-Only Hub/Client updates are enabled here. Independent Router rollout is Stage 08.
+Hub/Client and independently selected Router packages use the same transaction.
 Schema changes and bootstrap replacement fail closed, never restore a stale DB.
 """
 from contextlib import ExitStack
@@ -93,11 +93,11 @@ class UpdateHelper:
         except (ValueError, OSError, KeyError, TypeError) as error:
             raise UpdateError('Update journal invalid; explicit repair required') from error
 
-    def prepare(self, client, names, *, automatic=False):
+    def prepare(self, client, names, *, automatic=False, automatic_scope='hub'):
         with operation_lock(self.registry.path, timeout=0):
             if automatic:
                 from .automatic_updates import AutomaticUpdates
-                if not AutomaticUpdates(self.registry, helper=self).allowed():
+                if not AutomaticUpdates(self.registry, helper=self, scope=automatic_scope).allowed():
                     return None
             pending = self.status()
             if pending and pending['phase'] not in TERMINAL:
@@ -145,8 +145,8 @@ class UpdateHelper:
                 for target in targets.values():
                     release = target.custom
                     kind = release['component']
-                    if kind not in {'hub', 'client'} or kind in seen or kind not in manifests:
-                        raise UpdateError('Only one registered Hub/Client target is accepted; Router rollout is Stage 08')
+                    if kind not in {'hub', 'client', 'router'} or kind in seen or kind not in manifests:
+                        raise UpdateError('Select one signed target per registered component')
                     seen.add(kind)
                     prior = manifests[kind]
                     if release['sequence'] <= prior['sequence']:
@@ -159,8 +159,10 @@ class UpdateHelper:
                     for c in old['components']}, mobile_api=1)
                 # Health cannot start an old Hub without quarantine support, even
                 # for a Client-only update. Fail before downloading/activation.
-                if 'lifecycle.update-quarantine.v1' not in manifests.get('hub', {}).get('capabilities', []):
+                if 'hub' in manifests and 'lifecycle.update-quarantine.v1' not in manifests['hub'].get('capabilities', []):
                     raise UpdateError('Proposed Hub needs lifecycle.update-quarantine.v1; update Hub with Client')
+                if 'router' in manifests and 'lifecycle.update-quarantine.v1' not in manifests['router'].get('capabilities', []):
+                    raise UpdateError('Proposed Router needs lifecycle.update-quarantine.v1')
                 for target in targets.values():
                     kind = target.custom['component']
                     item = next(c for c in proposed['components'] if c['kind'] == kind)
@@ -208,6 +210,12 @@ class UpdateHelper:
     def _verify(self, tx, record, candidate):
         directory = self._directory(tx)
         for item in record['components']:
+            if item['distribution'] == 'legacy-source' and tx.get('conversion'):
+                files = inventory(item['code_path'])
+                files.pop('.orion-converted.json', None)
+                if files != tx['legacy_inventories'][item['kind']]:
+                    raise UpdateError('Legacy source/data changed; explicit repair required')
+                continue
             suffix = 'candidate' if candidate and item['kind'] in tx['changes'] else 'previous'
             verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
 
@@ -215,10 +223,15 @@ class UpdateHelper:
         self._verify(tx, record, candidate)
         directory = self._directory(tx)
         for item in record['components']:
+            if item['distribution'] == 'legacy-source' and tx.get('conversion'):
+                continue
             suffix = 'candidate' if candidate and item['kind'] in tx['changes'] else 'previous'
             self._write(Path(item['state_path']) / 'installed-package.json',
                         (directory / (item['kind'] + '-' + suffix + '.json')).read_bytes(), 'inventory:' + item['kind'])
         self.fault('before:registry')
+        if candidate and tx.get('conversion'):
+            from .legacy_conversion import protect_sources
+            protect_sources(self, tx)
         # Preferences may change while a staged release waits for the next launch.
         # Preserve them on both publication and rollback, under the operation lock.
         record = deepcopy(record)
@@ -265,9 +278,12 @@ class UpdateHelper:
             tx = self.status()
             if tx is None or tx['phase'] in TERMINAL or tx['phase'] == 'repair_required':
                 return tx
+            if tx.get('conversion') and not tx.get('conversion_data_ready'):
+                return self._phase(tx, 'repair_required', reason='Interrupted legacy copy; original data retained; explicit rollback required')
             if automatic and tx['phase'] in {'staged', 'waiting_for_idle'}:
                 from .automatic_updates import AutomaticUpdates
-                if not AutomaticUpdates(self.registry, helper=self).allowed(activate=True):
+                scope = 'router' if tx['changes'] == ['router'] else 'hub'
+                if not AutomaticUpdates(self.registry, helper=self, scope=scope).allowed(activate=True):
                     return tx
             if tx['phase'] in {'checking', 'downloading', 'verifying'}:
                 return self._phase(tx, 'failed', reason='Preparation interrupted; active version unchanged; prepare again')
@@ -303,7 +319,9 @@ class UpdateHelper:
                     raise UpdateError('Health retry limit reached')
                 self._phase(tx, 'health_check', attempts=tx['attempts'] + 1)
                 result = self.host.health(tx['proposed'])
-                required = {'hub_api', 'worker', 'database', 'client_api', 'router_identity'}
+                required = ({'hub_api', 'worker', 'database', 'client_api', 'router_identity'}
+                            if any(c['kind'] == 'hub' for c in tx['proposed']['components'])
+                            else {'database', 'router_identity'})
                 if set(result) != required or not all(v is True for v in result.values()):
                     raise UpdateError('Candidate health failed')
                 # End health in a stopped state. No user job has been admitted,
@@ -336,6 +354,16 @@ class UpdateHelper:
                 self._publish(tx, tx['previous'], False)
                 if not self.host.recovery_health(tx['previous']):
                     raise UpdateError('Previous database/schema needs explicit repair')
+                if tx.get('conversion'):
+                    from .legacy_conversion import unprotect_sources
+                    # Keep admission closed until the old source guard is removed.
+                    if any(c['distribution'] == 'packaged' for c in current['components']):
+                        with self.host.stopped(tx['previous']) as old_idle:
+                            if not old_idle:
+                                raise UpdateError('Legacy rollback consumers still running')
+                            unprotect_sources(self, tx)
+                            return self._phase(tx, 'rolled_back')
+                    unprotect_sources(self, tx)
                 return self._phase(tx, 'rolled_back')
         except Exception as error:
             return self._phase(tx, 'repair_required', reason=type(error).__name__)
@@ -364,6 +392,9 @@ class NativeHost:
         self.registry = registry
 
     def stopped(self, record):
+        if any(c['distribution'] == 'legacy-source' for c in record['components']):
+            from .migration_host import StoppedInstallation
+            return StoppedInstallation(self.registry, operation_locked=True)
         return StoppedPackages(record)
 
     def stop(self, record):
@@ -400,6 +431,9 @@ class NativeHost:
         """Read-only DB check with old runtime; never starts an old Worker/API."""
         import subprocess
         from .launcher import launch_environment
+        if not any(c['kind'] == 'hub' for c in record['components']):
+            from .update_health import router_database_probe
+            return router_database_probe(record)
         hub = next(c for c in record['components'] if c['kind'] == 'hub')
         root = Path(hub['code_path'])
         program = '''from services.shared.native_services import hub_database
@@ -415,7 +449,8 @@ finally:
     db.stop()
 '''
         with launch_environment(self.registry):
-            result = subprocess.run([str(root / 'runtime/python/python.exe'), '-B', '-c', program],
+            from .legacy_conversion import runtime_python
+            result = subprocess.run([str(runtime_python(hub)), '-B', '-c', program],
                                     cwd=root, capture_output=True, timeout=90,
                                     **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
         return result.returncode == 0
