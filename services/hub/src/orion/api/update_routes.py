@@ -25,6 +25,14 @@ def local_control(request):
                 or (request.headers.get('sec-fetch-site') == 'cross-site' and not flutter))
 
 
+def router_managed(registry, record=None):
+    """True when this installation owns a local Router that the update feed also covers."""
+    record = record or registry.read()
+    return bool((AutomaticUpdates(registry).source() or {}).get('targets', {}).get('router')
+                and any(c['kind'] == 'router' and c['ownership'] == 'owned'
+                        and c['management'] == 'local' for c in record['components']))
+
+
 def read_status():
     registry = Registry()
     if registry.read() is None:
@@ -35,9 +43,7 @@ def read_status():
     record = registry.read()
     data['launcher_preferences'] = {k: record['preferences'][k] for k in ('start_with_windows', 'show_client')}
     data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
-    data['router_configured'] = bool((AutomaticUpdates(registry).source() or {}).get('targets', {}).get('router')
-                                     and any(c['kind'] == 'router' and c['ownership'] == 'owned'
-                                             and c['management'] == 'local' for c in record['components']))
+    data['router_configured'] = router_managed(registry, record)
     return data
 
 
@@ -96,6 +102,9 @@ def change_preferences(payload):
                     show_client=payload.show_client if payload.show_client is not None else previous['show_client'])
     else:
         AutomaticUpdates(registry).preferences(enabled=payload.automatic_updates, paused=payload.paused, defer_hours=payload.defer_hours)
+        if payload.automatic_updates is not None and router_managed(registry):
+            # One switch for the whole product: Hub, web client and its local Router.
+            AutomaticUpdates(registry, scope='router').preferences(enabled=payload.automatic_updates)
     return read_status()
 
 

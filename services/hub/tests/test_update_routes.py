@@ -105,3 +105,18 @@ class CheckNowTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CHANGE_PREFERENCES(api.Preferences(check_now=True))
             popen.assert_not_called()
+
+
+class SingleSwitchTests(unittest.TestCase):
+    def test_automatic_updates_switch_also_covers_the_local_router(self):
+        with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=['x']),                 patch.object(api, 'router_managed', return_value=True),                 patch.object(api, 'AutomaticUpdates') as automatic, patch.object(api, 'read_status', return_value={}):
+            CHANGE_PREFERENCES(api.Preferences(automatic_updates=True))
+        scopes = [call.kwargs.get('scope', 'hub') for call in automatic.call_args_list]
+        self.assertEqual(scopes, ['hub', 'router'])
+        for instance in automatic.return_value.preferences.call_args_list:
+            self.assertEqual(instance.kwargs['enabled'], True)
+
+    def test_without_a_managed_router_only_the_hub_scope_changes(self):
+        with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=['x']),                 patch.object(api, 'router_managed', return_value=False),                 patch.object(api, 'AutomaticUpdates') as automatic, patch.object(api, 'read_status', return_value={}):
+            CHANGE_PREFERENCES(api.Preferences(automatic_updates=False))
+        self.assertEqual(automatic.call_count, 1)
