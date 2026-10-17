@@ -1,3 +1,4 @@
+import os
 import requests
 import uuid
 import json
@@ -6,7 +7,7 @@ import json
 url = "http://localhost:7860/api/v1/run/fc65ba5f-9da7-450a-852c-315b7fe4fc2a?stream=true"
 
 # WebUI token / API key
-token = "sk-J3XzvNjhCkvbMFVnstxGTcPjpOHeJJgcOxUBu-Iyzf4"
+token = os.environ.get("LANGFLOW_API_KEY", "")
 # Headers
 headers = {
     "Content-Type": "application/json",

@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 
 # Load API key
-api_key = "AIzaSyAuocOUL7x8a7fUsTAVq1DpHHC8sGXYuLA"
+api_key = os.environ.get("GEMINI_API_KEY", "")
 os.environ["GEMINI_API_KEY"] = api_key
 if not api_key:
     print("WARNING: GEMINI_API_KEY is empty.")
