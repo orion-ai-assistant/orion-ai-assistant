@@ -108,7 +108,7 @@ def _validate_release(value):
                 'profile', 'api', 'requires', 'capabilities', 'data_schema', 'rollback', 'entrypoint'}
     if not isinstance(value, dict) or set(value) != required or type(value['schema']) is not int or value['schema'] != 1:
         raise PackageError('Unsupported release metadata')
-    if value['component'] not in {'hub', 'router', 'client'}:
+    if value['component'] not in {'hub', 'router', 'client', 'bootstrap'}:
         raise PackageError('Unknown package component')
     if not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,159}', value['package_id']):
         raise PackageError('Invalid immutable package identity')

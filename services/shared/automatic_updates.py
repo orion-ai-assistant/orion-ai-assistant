@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from .installation_registry import Registry, RegistryError, operation_lock, _atomic_write
 from .installation_paths import canonical_path, validate_private_directory
 from .update_helper import UpdateHelper, UpdateError
+from .process_lifecycle import LifecycleError
 from .update_gate import TERMINAL
 
 INTERVAL = 6 * 60 * 60
@@ -48,7 +49,8 @@ def validate_source(value):
 
 
 class AutomaticUpdates:
-    def __init__(self, registry, *, helper=None, client_factory=None, clock=None, scope='hub'):
+    def __init__(self, registry, *, helper=None, client_factory=None, clock=None, scope='hub',
+                 bootstrap_root=None, bootstrap_probe=None):
         if scope not in {'hub', 'router'}:
             raise UpdateError('Unknown update preference scope')
         self.scope = scope
@@ -57,6 +59,17 @@ class AutomaticUpdates:
         self.base = self.helper.base
         self.clock = clock or time.time
         self.client_factory = client_factory
+        # Root of the retained bootstrap this process runs from (None outside a bootstrap).
+        self.bootstrap_root = bootstrap_root
+        self.bootstrap_probe = bootstrap_probe
+
+    def new_client(self, source):
+        # python-tuf's Updater refreshes once per instance; every check needs its own.
+        from .release_packages import ReleaseClient
+        return self.client_factory() if self.client_factory else ReleaseClient(
+            trusted_root=self.registry.path.parent / 'bootstrap/trusted-root.json',
+            cache=self.registry.path.parent / 'release-cache',
+            metadata_url=source['metadata_url'], targets_url=source['targets_url'])
 
     def policy(self):
         defaults = {'schema': 1, 'paused': False, 'deferred_until': 0}
@@ -129,10 +142,17 @@ class AutomaticUpdates:
         return {'schema': 1, 'automatic_updates': self.policy().get('enabled', record['preferences']['automatic_updates']),
                 'configured': self.source() is not None, 'channel': 'stable', 'versions': versions,
                 'policy': self.policy(), 'last_attempt': state.get('last_attempt'),
-                'last_success': state.get('last_success'), 'error': state.get('error') or
+                'last_success': state.get('last_success'), 'bootstrap': self._bootstrap_summary(state), 'error': state.get('error') or
                 (tx['phase'] if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None),
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
                 'activation': 'next_safe_launch', 'router_independent': True}
+
+    def _bootstrap_summary(self, state):
+        from . import bootstrap_update
+        try:
+            return {**bootstrap_update.summary(self.registry), 'error': state.get('bootstrap_error')}
+        except (OSError, ValueError):
+            return None
 
     @property
     def state_path(self):
@@ -154,14 +174,14 @@ class AutomaticUpdates:
             pending = self.helper.status()
             if pending and pending['phase'] not in TERMINAL:
                 return
-            state.update(last_attempt=self.clock(), error=None)
+            state.update(last_attempt=self.clock(), error=None, bootstrap_error=None)
             write_json(self.state_path, state)
             try:
-                from .release_packages import ReleaseClient
-                client = self.client_factory() if self.client_factory else ReleaseClient(
-                    trusted_root=self.registry.path.parent / 'bootstrap/trusted-root.json',
-                    cache=self.registry.path.parent / 'release-cache',
-                    metadata_url=source['metadata_url'], targets_url=source['targets_url'])
+                if self.scope == 'hub' and self._adopt_bootstrap(source, state):
+                    # The new bootstrap's watcher takes over and checks components at once.
+                    state['last_attempt'] = 0
+                    return
+                client = self.new_client(source)
                 record = self.registry.read()
                 selected = {k: v for k, v in source['targets'].items()
                             if (k == 'router') == (self.scope == 'router')
@@ -182,6 +202,9 @@ class AutomaticUpdates:
                         names.append(name)
                 state['last_success'] = self.clock()
                 write_json(self.state_path, state)
+                if self.bootstrap_root is not None:
+                    from . import bootstrap_update
+                    bootstrap_update.confirm(self.registry, self.bootstrap_root)
                 if names:
                     # Recheck under the helper's operation lock, including user disabling it.
                     class Selection:
@@ -197,6 +220,17 @@ class AutomaticUpdates:
             finally:
                 write_json(self.state_path, state)
 
+    def _adopt_bootstrap(self, source, state):
+        """Newer signed bootstrap -> prepared beside the running one and made active."""
+        from . import bootstrap_update
+        try:
+            return bootstrap_update.adopt(self, source, **(
+                {'probe': self.bootstrap_probe} if self.bootstrap_probe else {})) is not None
+        except Exception as error:
+            # A failed bootstrap update must never stop Hub/Client/Router checks.
+            state['bootstrap_error'] = getattr(error, 'code', type(error).__name__)
+            return False
+
     def startup(self):
         tx = self.helper.status()
         if tx and tx['phase'] in {'checking', 'downloading', 'verifying'}:
@@ -208,6 +242,14 @@ class AutomaticUpdates:
         return tx
 
 
+def _usable_root(value):
+    root = canonical_path(value, must_exist=True)
+    validate_private_directory(root)
+    for name in ('bootstrap.json', 'runtime/python/python.exe', 'scripts/release/update_automatic.py'):
+        canonical_path(root / name, must_exist=True)
+    return root
+
+
 def runtime_command(registry):
     """Only an installer-owned, independently retained bootstrap may run updates."""
     pointer = read_json(registry.path.parent / 'bootstrap/automatic-runtime.json', None)
@@ -215,10 +257,14 @@ def runtime_command(registry):
         return None
     if not isinstance(pointer, dict) or set(pointer) != {'schema', 'root'} or pointer['schema'] != 1:
         raise UpdateError('Invalid automatic runtime pointer')
-    root = canonical_path(pointer['root'], must_exist=True)
-    validate_private_directory(root)
-    for name in ('bootstrap.json', 'runtime/python/python.exe', 'scripts/release/update_automatic.py'):
-        canonical_path(root / name, must_exist=True)
+    try:
+        root = _usable_root(pointer['root'])
+    except (OSError, ValueError):
+        # An unconfirmed new bootstrap that vanished or is incomplete: use the previous one.
+        from . import bootstrap_update
+        if not bootstrap_update.fallback(registry, pointer['root']):
+            raise
+        root = _usable_root(read_json(registry.path.parent / 'bootstrap/automatic-runtime.json', None)['root'])
     return [str(root / 'runtime/python/python.exe'), '-B', str(root / 'scripts/release/update_automatic.py'),
             '--registry', str(registry.path)]
 
@@ -241,12 +287,37 @@ def spawn_watcher(registry):
                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
 
+def record_check_failure(registry, returncode):
+    """A Hub-triggered check process that exits non-zero must not fail silently.
+
+    Exit 2 is argparse refusing the arguments: the retained bootstrap predates them.
+    Only a fixed error class is stored, never process output.
+    """
+    automatic = AutomaticUpdates(registry)
+    try:
+        with operation_lock(automatic.base / 'automatic.json', timeout=0):
+            try:
+                state = read_json(automatic.state_path, {'schema': 1})
+            except ValueError:
+                state = {'schema': 1}
+            state['error'] = 'BootstrapIncompatible' if returncode == 2 else 'CheckProcessFailed'
+            write_json(automatic.state_path, state)
+    except (LifecycleError, OSError):
+        pass  # A running check owns the state file and records its own outcome.
+
+
 def watch(automatic):
     # Launched by the outer launcher, never by a Hub-owned Job descendant.
     # A user may close Hub while a download is in flight; preparation finishes
     # here and never turns into activation. The next poll exits when stopped.
     with operation_lock(automatic.base / 'watcher.json', timeout=0):
+        if automatic.bootstrap_root is not None:
+            from . import bootstrap_update
+            bootstrap_update.note_started(automatic.registry, automatic.bootstrap_root)
         while automatic.source() is not None:
+            if automatic.bootstrap_root is not None and bootstrap_update.handover_due(
+                    automatic.registry, automatic.bootstrap_root):
+                return 'handover'  # Lock is released on return; the caller starts the new watcher.
             with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
                 if stopped:
                     return

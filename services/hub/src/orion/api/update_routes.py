@@ -1,6 +1,7 @@
 """Authenticated status; local desktop authority for preference changes only."""
 import asyncio
 import subprocess
+import threading
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
@@ -9,7 +10,7 @@ from typing import Literal
 from orion.api.auth_routes import get_current_user
 from orion.api.access_boundary import is_desktop_peer, local_flutter_origin
 from services.shared.installation_registry import Registry
-from services.shared.automatic_updates import AutomaticUpdates, runtime_command
+from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command
 
 router = APIRouter(prefix='/api/v1/updates')
 
@@ -73,8 +74,21 @@ def check_now(registry):
     if command is None:
         raise ValueError('Retained update runtime unavailable')
     # A concurrent check holds the per-installation lock and the extra process exits at once.
-    subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
+    process = subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                               close_fds=True)
+    # A bootstrap too old for these arguments exits at once (argparse code 2). Make that
+    # visible in automatic.json for the card instead of silently doing nothing.
+    threading.Thread(target=_report_failure, args=(process, registry), daemon=True).start()
+
+
+def _report_failure(process, registry):
+    try:
+        code = process.wait()
+        if isinstance(code, int) and code:
+            record_check_failure(registry, code)
+    except Exception:
+        pass  # Diagnostics only; the user can still read the status and retry.
 
 
 def change_preferences(payload):

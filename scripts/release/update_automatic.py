@@ -5,7 +5,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from services.shared.automatic_updates import AutomaticUpdates, watch
+from services.shared.automatic_updates import AutomaticUpdates, spawn_watcher, watch
+from services.shared import bootstrap_update
 from services.shared.installation_registry import Registry
 from services.shared.update_gate import blocked
 from services.shared.process_lifecycle import LifecycleError
@@ -18,12 +19,20 @@ def main():
     parser.add_argument('--now', action='store_true', help='check: skip the 6-hour spacing (refresh button)')
     args = parser.parse_args()
     os.environ['ORION_INSTALLATION_REGISTRY'] = str(args.registry)
-    automatic = AutomaticUpdates(Registry(args.registry))
+    # This bundle's own root: lets the watcher notice that a newer bootstrap became active.
+    automatic = AutomaticUpdates(Registry(args.registry), bootstrap_root=Path(__file__).resolve().parents[2])
     if args.action == 'watch':
-        try:
-            watch(automatic)
-        except LifecycleError:
-            pass  # An existing per-installation watcher already owns polling.
+        while True:
+            try:
+                outcome = watch(automatic)
+            except LifecycleError:
+                break  # An existing per-installation watcher already owns polling.
+            if outcome != 'handover':
+                break
+            # A newer bootstrap is active. The lock is free now: start its watcher and
+            # keep this one until it proves it started, otherwise go back to polling here.
+            if bootstrap_update.supervise_handover(automatic.registry, lambda: spawn_watcher(automatic.registry)):
+                break
     elif args.action == 'check':
         automatic.check(now=args.now)
         AutomaticUpdates(Registry(args.registry), helper=automatic.helper, scope='router').check(now=args.now)

@@ -1,6 +1,7 @@
 """Normal phone sessions see status but cannot control the PC updater."""
 from unittest.mock import patch
 import unittest
+import unittest.mock
 
 from fastapi import FastAPI
 import httpx
@@ -98,6 +99,17 @@ class CheckNowTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     CHANGE_PREFERENCES(api.Preferences(**bad))
             popen.assert_called_once()
+
+    def test_failed_check_process_is_recorded_not_swallowed(self):
+        process = unittest.mock.Mock()
+        process.wait.return_value = 2
+        with patch.object(api, 'record_check_failure') as record:
+            api._report_failure(process, 'registry')
+            record.assert_called_once_with('registry', 2)
+            record.reset_mock()
+            process.wait.return_value = 0
+            api._report_failure(process, 'registry')
+            record.assert_not_called()
 
     def test_check_now_without_retained_runtime_is_refused(self):
         with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=None), \

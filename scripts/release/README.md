@@ -161,8 +161,9 @@ Flutter Windows EXE or public production installer is claimed. See
 Retain the trusted installer ZIP separately from Hub releases. A newly built
 bootstrap contains `scripts/release/update_local.py`, the helper and its bundled
 Python/dependencies. Extract a new bootstrap alongside the old one; never replace
-the only running recovery copy. Trust-root changes still require TUF rotation;
-this is not an unsigned bootstrap self-update channel.
+the only running recovery copy. Trust-root changes still require TUF rotation.
+Since bootstrap sequence 1 the retained bootstrap updates itself through the signed feed
+(see "Retained bootstrap self-update" below); it is not an unsigned channel.
 
 From that retained bootstrap directory, using its bundled runtime:
 
@@ -332,3 +333,55 @@ The `preview` channel binds the exact packages to the automated isolated accepta
 logon and power-loss evidence remain required for `beta`/`stable`.
 Users install with `irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex`
 or `get-orion.cmd`.
+
+
+## Retained bootstrap self-update
+
+The retained bootstrap (`%LOCALAPPDATA%\Orion\Bootstrap-Installer`: own Python plus copies of
+`services/shared` and `scripts/release`) runs checks, the watcher and the apply/rollback helper outside
+the Hub, so it used to be frozen at install time. It is now a signed TUF target, component `bootstrap`,
+target name `orion-bootstrap-windows-x64.zip` (the same stable name `get-orion.ps1` downloads; the plain
+release asset and the hash-prefixed target are the same bytes). Only `ReleaseClient` (signature, hash,
+metadata/product rollback protection, safe extraction) is the trust path.
+
+* Version identity: `scripts/release/bootstrap.json` (`sequence`, `version`, `package_id`
+  `orion-bootstrap-<version>-windows-x86_64-cpu`). `build_bootstrap.py` copies it into the bundle as
+  `orion-release.json` and records `sequence`/`package_id`/`version` in the bundle's `bootstrap.json`
+  (no `sequence` = built before self-update = 0) and writes `<output>.target.json`. Bundles are
+  byte-reproducible (fixed zip timestamps, no `.pyc`).
+* `publish_release.py` builds the bundle into the signed artifact set. It refuses a bundle whose contents
+  changed while its `sequence` was already published, or whose sequence is lower than the feed's
+  (`bootstrap_gate`). To publish a Hub-only release without touching the bootstrap, pass
+  `--reuse-bootstrap <previous orion-bootstrap-windows-x64.zip>` (its `.target.json` must sit beside it;
+  both stay in `.tmp/release/v<N>/artifacts`). The bundle is not part of the isolated package acceptance
+  run; it is bound to the signed set but only checked by the self-update validation below.
+* Adoption (`services/shared/bootstrap_update.py`, called from `AutomaticUpdates.check`, hub scope,
+  before the component check): newer signed `sequence` than the active bootstrap's, no update/recovery
+  transaction active (`helper.status()` terminal, `update_gate.blocked` false). Under the installation
+  operation lock the bundle is prepared in a fresh sibling folder
+  `Bootstrap-Installer-s<sequence>-<id>` (the running bootstrap is never overwritten) and validated:
+  required files, bundle metadata equals the signed release, `trusted-root.json` byte-equal to the installed
+  `bootstrap/trusted-root.json` (a root change stays a separate rotation), a test-only bundle never replaces a
+  production one, and the bundle's own `runtime/python/python.exe` must import the scripts and answer
+  `update_automatic.py --help`. Only then `bootstrap/automatic-runtime.json` is atomically repointed (its
+  schema is unchanged). User data, registry and the trusted root are never touched. Any failure removes the
+  new folder and stores a fixed class in `automatic.json` `bootstrap_error`; Hub/Client/Router checks continue.
+* Hand-over: the watcher notices the pointer no longer names its own bundle, returns (releasing the watcher
+  lock), starts the new watcher through the pointer, and waits up to 60 s for it to prove it started
+  (`bootstrap/self-update.json` `started_at`). If it does not, the pointer returns to the previous bootstrap
+  (`rolled_back`, `error: NewBootstrapDidNotStart`) and the old watcher keeps polling. The failed sequence is
+  not retried; a higher one is. `runtime_command` also falls back automatically when an unconfirmed new
+  bootstrap folder is missing or incomplete.
+* Trial: the previous bootstrap stays until the new one completes one successful check (`confirmed`). Then a
+  previous bootstrap that this mechanism created (marked `.orion-self-updated`) is deleted; the original
+  manually extracted folder is never deleted. Adoption is never stacked on an unconfirmed trial.
+* `automatic.json` `error`: if the Hub-triggered `check --now` process exits non-zero, the Hub records
+  `BootstrapIncompatible` (exit 2: argparse refused the arguments, i.e. the retained bootstrap predates
+  them) or `CheckProcessFailed`. `GET /api/v1/updates` also reports `bootstrap: {sequence, state, error}`.
+* One-time limitation: an install whose bootstrap predates this feature cannot adopt it (it runs the old
+  code). Run `get-orion.ps1` (or extract the new bootstrap ZIP beside the old one and run its
+  `Install-Orion.ps1` flow) once; from then on bootstraps update themselves.
+
+Publish order for a bootstrap change: bump `scripts/release/bootstrap.json` (`sequence`, `version`,
+`package_id`) -> build/accept packages as usual -> `publish_release.py ...` (it builds, gates and signs the
+bundle with the packages).

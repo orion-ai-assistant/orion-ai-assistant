@@ -42,3 +42,12 @@ Yalnız bu aşamanın işini uygula. Ön koşulda eksik sözleşme varsa dar kap
 - Geri alma yöntemi: 08 değişikliklerini (Hub, Router, Flutter) ayrı commit'lerle birlikte geri al; kullanıcı verisi, release/state, yedek ve dönüştürülmüş kurulumların `.orion-converted.json` işaretini silme; açık dönüşüm varsa önce `manage_installation.py restore-registration` kullan.
 - Plan veya bağımlılık değişikliği: yok; yeni zorunlu yayın parametreleri `scripts/release` kullanımını etkiler.
 - Sonraki aşamaya uygunluk: plan bu aşamayla biter; geriye kod değil kabul/yayın doğrulaması kalır. Bkz. [08 deneme rehberi](08-manual-test.md).
+
+
+## Ek: retained bootstrap kendi kendini güncelliyor (dogfooding bulgusu)
+
+- Sorun: `Bootstrap-Installer` kurulum anında donuyordu; güncelleme makinesinin yeni özellikleri (ör. Ayarlar yenile düğmesinin `check --now` bayrağı) mevcut kurulumlara ulaşamıyordu. Eski bootstrap argparse hatasıyla (kod 2) sessizce çıkıyordu.
+- Çözüm: bootstrap paketi imzalı TUF hedefi (`component: bootstrap`, hedef `orion-bootstrap-windows-x64.zip`, kimlik `scripts/release/bootstrap.json`). Yalnız `ReleaseClient` güven yoludur. `services/shared/bootstrap_update.py`: daha yeni `sequence` + aktif güncelleme/kurtarma yok -> yeni kardeş klasörde hazırla -> doğrula (zorunlu dosyalar, imzalı metadata uyumu, kök dosyası kurulu olanla birebir, kendi python.exe'si içe aktarıp `--help` yanıtlar) -> `automatic-runtime.json` işlem kilidi altında atomik yeniden yönlendirilir. Eski watcher devreder; yenisi 60 sn içinde başlamazsa otomatik geri dönülür. Yeni bootstrap bir başarılı kontrol yapana kadar eskisi (silinmeden) kalır; yalnız mekanizmanın oluşturduğu eski klasör silinir.
+- Görünürlük: Hub'ın tetiklediği `check --now` sıfır dışı çıkarsa `automatic.json` `error` = `BootstrapIncompatible` (kod 2) / `CheckProcessFailed`; bootstrap kendi hatası `bootstrap_error`; `GET /api/v1/updates` `bootstrap` alanı.
+- Sınır: bu özellikten önceki bir bootstrap bunu benimseyemez; bir kez `get-orion.ps1` ile yeni bootstrap kurulmalı. Kök değişimi bu yoldan yapılmaz (kök uyuşmazlığı reddedilir).
+- Testler: `scripts/release/test_bootstrap_update.py` (yeni benimsenir, eski/aynı sıra reddedilir, kurcalanmış paket reddedilir, aktif işlemde reddedilir, başlamayan yeni bootstrap geri döner, kök uyuşmazlığı reddedilir, yayın kapısı); Hub `test_update_routes.py`. Gerçek bir yayın/yeni bootstrap ile uçtan uca denenmedi.

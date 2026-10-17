@@ -17,11 +17,16 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tuf.api.metadata import Metadata, Root
-from services.shared.release_packages import extract_zip, sha256
+from services.shared.release_packages import archive_name, extract_zip, sha256, validate_release
 from python_runtime import install_site_hook
 
 
-def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False):
+def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False, release=None):
+    """Also writes <output>.target.json: the bundle is a signed TUF target (component `bootstrap`)
+    so installed bootstraps can update themselves through the ordinary ReleaseClient."""
+    release = validate_release(json.loads(Path(release or Path(__file__).with_name('bootstrap.json')).read_text(encoding='utf-8')))
+    if release['component'] != 'bootstrap' or release['package_id'] != f"orion-bootstrap-{release['version']}-windows-x86_64-cpu":
+        raise ValueError('bootstrap.json must describe the bootstrap component and bind its version in the package id')
     root = Metadata.from_file(str(trusted_root))
     if (not isinstance(root.signed, Root) or root.signed.expires <= datetime.now(timezone.utc)
             or not root.signed.consistent_snapshot):
@@ -47,7 +52,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         python = tree / 'runtime/python'
         (python / 'python311._pth').write_text('python311.zip\n.\nsite-packages\n..\\..\nimport site\n')
         subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
-            '--target', str(python / 'site-packages'), '--require-hashes', '--only-binary', ':all:',
+            '--target', str(python / 'site-packages'), '--no-compile-bytecode', '--require-hashes', '--only-binary', ':all:',
             '-r', str(Path(__file__).with_name('requirements.txt'))], check=True)
         install_site_hook(python)
         # Recovery runs from this independently retained bootstrap, even if the
@@ -72,7 +77,9 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             value = validate_source(json.loads(Path(release_source).read_text(encoding='utf-8')))
             (tree / 'release-source.json').write_text(json.dumps(value), encoding='utf-8')
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
-            'root_sha256': sha256(trusted_root)}))
+            'root_sha256': sha256(trusted_root), 'sequence': release['sequence'],
+            'package_id': release['package_id'], 'version': release['version']}))
+        (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
             'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '
             '[Parameter(Mandatory=$true)][string]$TargetsUrl, '
@@ -95,10 +102,19 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         # The standard cache/registry is inside the default root. install_new
         # validates occupied component directories instead of requiring that this
         # bootstrap metadata parent be empty.
+        # Fixed timestamps and order: the same inputs give the same bytes, so a republished
+        # feed keeps the signed hash of an unchanged bundle.
         with zipfile.ZipFile(output, 'x', zipfile.ZIP_DEFLATED) as stream:
             for path in sorted(tree.rglob('*')):
                 if path.is_file():
-                    stream.write(path, path.relative_to(tree).as_posix())
+                    name = path.relative_to(tree).as_posix()
+                    archive_name(name)
+                    info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+                    info.external_attr = 0o100644 << 16
+                    stream.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=6)
+    description = {'path': output.name, 'length': output.stat().st_size,
+                   'hashes': {'sha256': sha256(output)}, 'custom': release}
+    output.with_suffix('.target.json').write_text(json.dumps(description, indent=2) + '\n', encoding='utf-8')
     return output
 
 
@@ -108,7 +124,8 @@ if __name__ == '__main__':
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--release-source', type=Path)
+    parser.add_argument('--release', type=Path, help='Bootstrap release json (default: bootstrap.json)')
     parser.add_argument('--single-key', action='store_true', help='Accept the one-key root from release_keys.py')
     args = parser.parse_args()
     print(build(args.trusted_root, args.inputs, args.output, release_source=args.release_source,
-                single_key=args.single_key))
+                single_key=args.single_key, release=args.release))
