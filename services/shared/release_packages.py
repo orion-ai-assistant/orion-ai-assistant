@@ -278,23 +278,31 @@ def record_prepared_package(tree, state, target):
     inventory.write_text(json.dumps({'schema': 1, 'manifest': target.custom, 'files': files}, sort_keys=True), encoding='utf-8')
     provenance = {'id': target.custom['package_id'], 'sha256': target.hashes['sha256'],
                   'length': target.length, 'inventory_sha256': sha256(inventory)}
-    _write_verified_cache(tree, state, provenance['inventory_sha256'], files)
+    _write_verified_cache(state, provenance['inventory_sha256'], _scan(tree))
     return provenance
 
 
 VERIFIED_CACHE = 'verified-package.json'
 
 
-def _stat_signature(root, names):
-    signature = {}
-    for name in names:
-        info = (root / name).stat()
-        signature[name] = [info.st_size, info.st_mtime_ns]
-    return signature
+def _scan(root):
+    """One pass over the tree: file name -> [size, mtime_ns]; refuses links/reparse points."""
+    root, files, stack = str(root), {}, [str(root)]
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if entry.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+                    raise PackageError('Link appeared inside installed package')
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    files[os.path.relpath(entry.path, root).replace(os.sep, '/')] = [info.st_size, info.st_mtime_ns]
+    return files
 
 
-def _write_verified_cache(root, state, inventory_sha256, files):
-    """Remember each file's size/mtime right after a full hash verification.
+def _write_verified_cache(state, inventory_sha256, signature):
+    """Remember each file's size/mtime taken BEFORE a full hash verification.
 
     Quick launch checks compare these instead of re-hashing ~1 GB each time. Any
     mismatch falls back to the full hash check, which stays authoritative for
@@ -302,7 +310,7 @@ def _write_verified_cache(root, state, inventory_sha256, files):
     mtimes could also rewrite the private registry, which is outside this check.
     """
     try:
-        value = {'schema': 1, 'inventory_sha256': inventory_sha256, 'files': _stat_signature(root, files)}
+        value = {'schema': 1, 'inventory_sha256': inventory_sha256, 'files': signature}
         temporary = Path(state) / (VERIFIED_CACHE + '.tmp')
         temporary.write_text(json.dumps(value, sort_keys=True), encoding='utf-8')
         os.replace(temporary, Path(state) / VERIFIED_CACHE)
@@ -310,11 +318,11 @@ def _write_verified_cache(root, state, inventory_sha256, files):
         pass  # Only a speed-up: the next check simply hashes again.
 
 
-def _cache_matches(root, state, inventory_sha256, names):
+def _cache_matches(state, inventory_sha256, signature):
     try:
         value = json.loads((Path(state) / VERIFIED_CACHE).read_text(encoding='utf-8'))
         return (value['schema'] == 1 and value['inventory_sha256'] == inventory_sha256
-                and value['files'] == _stat_signature(root, names))
+                and value['files'] == signature)
     except (OSError, ValueError, KeyError, TypeError):
         return False
 
@@ -341,25 +349,27 @@ def verify_package_record(item, *, inventory=None, quick=False):
     the active release; a pending/previous inventory is never quick-verified."""
     from .installation_paths import canonical_path
     root = canonical_path(item['code_path'], must_exist=True)
-    inventory = canonical_path(inventory or Path(item['state_path']) / 'installed-package.json', must_exist=True)
+    state = Path(item['state_path'])
+    active = inventory is None or Path(inventory) == state / 'installed-package.json'
+    inventory = canonical_path(inventory or state / 'installed-package.json', must_exist=True)
     if sha256(inventory) != item['package']['inventory_sha256']:
         raise PackageError('Installed package inventory changed')
     value = json.loads(inventory.read_text(encoding='utf-8'))
     manifest = validate_release(value['manifest'])
     if value['schema'] != 1 or manifest['component'] != item['kind'] or manifest['package_id'] != item['package']['id']:
         raise PackageError('Installed package provenance mismatch')
-    actual = set()
-    for path in root.rglob('*'):
-        if path.is_symlink() or getattr(path.lstat(), 'st_file_attributes', 0) & 0x400:
-            raise PackageError('Link appeared inside installed package')
-        if path.is_file():
-            actual.add(path.relative_to(root).as_posix())
-    if actual != set(value['files']):
+    signature = _scan(root)
+    if set(signature) != set(value['files']):
         raise PackageError('Installed package file set changed')
-    state = Path(item['state_path'])
-    active = inventory is None or Path(inventory) == state / 'installed-package.json'
-    if quick and active and _cache_matches(root, state, item['package']['inventory_sha256'], value['files']):
+    if quick and active and _cache_matches(state, item['package']['inventory_sha256'], signature):
         return manifest
+    for name, digest in value['files'].items():
+        path = canonical_path(root.joinpath(*archive_name(name).parts), must_exist=True)
+        if not path.is_relative_to(root) or sha256(path) != digest:
+            raise PackageError('Installed package file hash mismatch')
+    if active:
+        _write_verified_cache(state, item['package']['inventory_sha256'], signature)
+    return manifest
     for name, digest in value['files'].items():
         path = canonical_path(root.joinpath(*archive_name(name).parts), must_exist=True)
         if not path.is_relative_to(root) or sha256(path) != digest:
