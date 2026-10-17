@@ -404,3 +404,38 @@ def test_installed_package_provenance_detects_code_and_receipt_tampering(repo, m
     (state / 'installed-package.json').write_text('{}')
     with pytest.raises(PackageError, match='inventory'):
         verify_registered_package(tree)
+
+
+def test_quick_registered_check_skips_rehash_but_full_check_and_changes_still_hash(repo, monkeypatch):
+    from services.shared import release_packages
+    from services.shared.installation_registry import Registry, new_registry, component_record
+    tmp, _, name, _, _, _, _, client = repo
+    checker = client()
+    _, targets = checker.check([name])
+    tree = checker.prepare(targets[name], tmp / 'Hub/releases/quick')
+    data, state = tmp / 'Hub/data', tmp / 'Hub/state'
+    data.mkdir()
+    state.mkdir()
+    provenance = record_prepared_package(tree, state, targets[name])
+    assert (state / release_packages.VERIFIED_CACHE).is_file()
+    registry = Registry(tmp / 'install.json')
+    record = new_registry(tmp, [component_record('hub', tree, distribution='packaged',
+        data_path=data, state_path=state, ownership='owned', management='local', package=provenance)])
+    registry.write(record)
+    monkeypatch.setenv('ORION_INSTALLATION_REGISTRY', str(registry.path))
+    real = release_packages.sha256
+    calls = []
+    monkeypatch.setattr(release_packages, 'sha256', lambda path: calls.append(path) or real(path))
+    assert verify_registered_package(tree)['component'] == 'hub'
+    assert [p for p in calls if Path(p).is_relative_to(tree)] == []  # quick: no package file hashed
+    release_packages.verify_package_record(registry.read()['components'][0])  # explicit full check
+    assert any(Path(p).is_relative_to(tree) for p in calls)
+    entrypoint = tree / release()['entrypoint']
+    original = entrypoint.read_bytes()
+    entrypoint.write_bytes(original + b' ')  # size change must be caught by the fallback hash
+    with pytest.raises(PackageError, match='hash'):
+        verify_registered_package(tree)
+    (state / release_packages.VERIFIED_CACHE).unlink()
+    entrypoint.write_bytes(original)
+    assert verify_registered_package(tree)['component'] == 'hub'  # no cache: hashes, then re-caches
+    assert (state / release_packages.VERIFIED_CACHE).is_file()
