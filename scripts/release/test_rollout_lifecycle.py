@@ -258,3 +258,34 @@ def test_stable_publication_rejects_missing_or_unbound_acceptance(repo):
                                  'packages': {target['custom']['package_id']: target['hashes']['sha256']}, 'checks': {}}))
     with pytest.raises(ValueError, match='Missing release acceptance'):
         verify_acceptance(artifacts, report, 'stable')
+
+
+def test_single_key_root_signs_preview_feed_with_stable_names(repo, tmp_path, monkeypatch):
+    import release_keys
+    import publish_release
+    monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'unit-test-passphrase')
+    key, public = release_keys.init(tmp_path / 'keys', tmp_path / 'trusted-root.json')
+    from tuf.api.metadata import Metadata
+    root = Metadata.from_file(str(public))
+    assert release_keys.single_key_root(root)
+    assert b'PRIVATE' not in public.read_bytes()
+    with pytest.raises(ValueError, match='overwrite'):
+        release_keys.init(tmp_path / 'keys', tmp_path / 'trusted-root.json')
+    base, output, name, signers, bootstrap, artifacts, fetcher, factory = repo
+    staging = tmp_path / 'stable'
+    names = publish_release.stage_stable_names(artifacts, staging)
+    assert all('0.' not in value and value.startswith('orion-') for value in names.values())
+    accepted = tmp_path / 'result.json'
+    targets = [json.loads(p.read_text()) for p in staging.glob('*.target.json')]
+    accepted.write_text(json.dumps({'success': True, 'artifacts': [t['custom'] for t in targets]}))
+    publish_release.write_acceptance(staging, accepted, tmp_path / 'acceptance.json')
+    assert verify_acceptance(staging, tmp_path / 'acceptance.json', 'preview')['channel'] == 'preview'
+    accepted.write_text(json.dumps({'success': True, 'artifacts': []}))
+    with pytest.raises(ValueError, match='different packages'):
+        publish_release.write_acceptance(staging, accepted, tmp_path / 'other.json')
+    signer = release_keys.load_signer(key)
+    published = publisher.publish(staging, tmp_path / 'feed', public,
+        {role: [signer] for role in ('targets', 'snapshot', 'timestamp')}, version=1,
+        expiry_days=publisher.SINGLE_KEY_EXPIRY_DAYS)
+    stamp = Metadata.from_file(str(published / 'metadata/timestamp.json'))
+    assert (stamp.signed.expires - stamp.signed.expires.now(stamp.signed.expires.tzinfo)).days > 300

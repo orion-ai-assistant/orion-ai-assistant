@@ -6,8 +6,8 @@ from .release_packages import sha256
 
 
 def verify_acceptance(artifacts, report_path, channel):
-    if channel not in {'beta', 'stable'}:
-        raise ValueError('Choose beta or stable rollout explicitly')
+    if channel not in {'preview', 'beta', 'stable'}:
+        raise ValueError('Choose preview, beta or stable rollout explicitly')
     report_path = Path(report_path)
     value = json.loads(report_path.read_text(encoding='utf-8'))
     if value.get('schema') != 1 or value.get('channel') != channel or value.get('test_only') is not False:
@@ -22,7 +22,9 @@ def verify_acceptance(artifacts, report_path, channel):
         packages[target['custom']['package_id']] = digest
     if not packages or value.get('packages') != packages:
         raise ValueError('Acceptance evidence does not bind this exact package set')
-    required = {'clean_windows_vm', 'upgrade_from_previous', 'failed_release_recovery', 'uninstall_preserves_data'}
+    # Preview binds the exact package set to automated isolated acceptance only.
+    required = set() if channel == 'preview' else {
+        'clean_windows_vm', 'upgrade_from_previous', 'failed_release_recovery', 'uninstall_preserves_data'}
     if channel == 'stable':
         required |= {'windows_logon', 'abrupt_shutdown', 'active_use_and_remote_clients'}
     checks = value.get('checks', {})

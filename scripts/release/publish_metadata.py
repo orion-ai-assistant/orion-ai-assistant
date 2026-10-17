@@ -18,8 +18,14 @@ sys.path.insert(0, str(ROOT))
 from services.shared.release_packages import sha256, validate_release, archive_name
 
 
-def publish(artifacts, output, root_path, signers, *, version, now=None):
+DEFAULT_EXPIRY_DAYS = {'targets': 30, 'snapshot': 7, 'timestamp': 1}
+# One manually signed key cannot refresh a one-day timestamp; republish yearly.
+SINGLE_KEY_EXPIRY_DAYS = {'targets': 365, 'snapshot': 365, 'timestamp': 365}
+
+
+def publish(artifacts, output, root_path, signers, *, version, now=None, expiry_days=None):
     now = now or datetime.now(timezone.utc)
+    days = {**DEFAULT_EXPIRY_DAYS, **(expiry_days or {})}
     root = Metadata.from_file(str(root_path))
     if not isinstance(root.signed, Root) or root.signed.expires <= now or not root.signed.consistent_snapshot:
         raise ValueError('Valid consistent-snapshot TUF root required')
@@ -29,7 +35,7 @@ def publish(artifacts, output, root_path, signers, *, version, now=None):
     output = Path(output)
     if output.exists():
         raise ValueError('Publish a new staging repository, never overwrite an active repository')
-    targets = Metadata(Targets(version=version, expires=now + timedelta(days=30)))
+    targets = Metadata(Targets(version=version, expires=now + timedelta(days=days['targets'])))
     paths = []
     for description in sorted(Path(artifacts).glob('*.target.json')):
         value = json.loads(description.read_text())
@@ -57,10 +63,10 @@ def publish(artifacts, output, root_path, signers, *, version, now=None):
         return metadata.to_bytes()
 
     target_bytes = signed_bytes('targets', targets)
-    snapshot = Metadata(Snapshot(version=version, expires=now + timedelta(days=7),
+    snapshot = Metadata(Snapshot(version=version, expires=now + timedelta(days=days['snapshot']),
         meta={'targets.json': MetaFile.from_data(version, target_bytes, ['sha256'])}))
     snapshot_bytes = signed_bytes('snapshot', snapshot)
-    timestamp = Metadata(Timestamp(version=version, expires=now + timedelta(days=1),
+    timestamp = Metadata(Timestamp(version=version, expires=now + timedelta(days=days['timestamp']),
         snapshot_meta=MetaFile.from_data(version, snapshot_bytes, ['sha256'])))
     timestamp_bytes = signed_bytes('timestamp', timestamp)
     # Complete all signature/threshold validation before publishing anything.
@@ -85,14 +91,27 @@ if __name__ == '__main__':
     parser.add_argument('--artifacts', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--keys', type=Path, required=True, help='Private JSON role -> PEM paths (not logged)')
+    parser.add_argument('--keys', type=Path, help='Private JSON role -> PEM paths (not logged)')
+    parser.add_argument('--single-key', type=Path,
+                        help='Encrypted key from release_keys.py init; requires its one-key public root')
     parser.add_argument('--version', type=int, required=True)
-    parser.add_argument('--channel', choices=['beta', 'stable'], required=True)
+    parser.add_argument('--channel', choices=['preview', 'beta', 'stable'], required=True)
     parser.add_argument('--acceptance', type=Path, required=True)
     args = parser.parse_args()
     from services.shared.release_acceptance import verify_acceptance
     verify_acceptance(args.artifacts, args.acceptance, args.channel)
     root = Metadata.from_file(str(args.root))
+    if args.single_key is not None:
+        from release_keys import load_signer, single_key_root
+        if args.keys is not None or not single_key_root(root):
+            raise ValueError('--single-key needs the one-key root and excludes --keys')
+        signer = load_signer(args.single_key)
+        signers = {role: [signer] for role in ('targets', 'snapshot', 'timestamp')}
+        publish(args.artifacts, args.output, args.root, signers, version=args.version,
+                expiry_days=SINGLE_KEY_EXPIRY_DAYS)
+        sys.exit(0)
+    if args.keys is None:
+        raise ValueError('Provide --keys or --single-key')
     if root.signed.roles['root'].threshold < 2 or len(root.signed.roles['root'].keyids) < 3:
         raise ValueError('Production root policy requires at least 2-of-3 offline root keys')
     offline = set(root.signed.roles['root'].keyids)

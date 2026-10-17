@@ -21,13 +21,17 @@ from services.shared.release_packages import extract_zip, sha256
 from python_runtime import install_site_hook
 
 
-def build(trusted_root, inputs, output, *, test_only=False, release_source=None):
+def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False):
     root = Metadata.from_file(str(trusted_root))
     if (not isinstance(root.signed, Root) or root.signed.expires <= datetime.now(timezone.utc)
             or not root.signed.consistent_snapshot):
         raise ValueError('Unexpired TUF trust root required')
     root.verify_delegate('root', root)
-    if not test_only and (root.signed.roles['root'].threshold < 2 or len(root.signed.roles['root'].keyids) < 3):
+    if single_key:
+        from release_keys import single_key_root
+        if not single_key_root(root):
+            raise ValueError('--single-key requires the one-key root created by release_keys.py init')
+    elif not test_only and (root.signed.roles['root'].threshold < 2 or len(root.signed.roles['root'].keyids) < 3):
         raise ValueError('Production bootstrap requires 2-of-3 offline root policy')
     output = Path(output)
     if output.exists():
@@ -101,5 +105,7 @@ if __name__ == '__main__':
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--release-source', type=Path)
+    parser.add_argument('--single-key', action='store_true', help='Accept the one-key root from release_keys.py')
     args = parser.parse_args()
-    print(build(args.trusted_root, args.inputs, args.output, release_source=args.release_source))
+    print(build(args.trusted_root, args.inputs, args.output, release_source=args.release_source,
+                single_key=args.single_key))

@@ -306,3 +306,29 @@ failure/retry, next-launch activation, rollback preferences and interrupted stag
 These are not a new real package/DB/Windows Job acceptance. That acceptance,
 real active chat/voice/transfer/remote clients, clean VM, power-loss and production
 hosting/signing remain open; previous Stage 01/03/04/05/06 debts remain recorded.
+
+## Simple single-key releases (GitHub Releases feed)
+
+For a small project one Ed25519 key signs everything (TUF threshold 1). Create it once:
+
+```powershell
+.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py init
+```
+
+The encrypted private key goes to `~/.orion-release/release-key.pem` (never in Git; **back it up**,
+losing it means existing installs cannot trust new releases). Commit only
+`scripts/release/trusted-root.json`. Per release: bump `version` and `sequence` in each component's
+release json, build the packages, run `accept_packages.py`, then:
+
+```powershell
+.tmp/stage05-tools/Scripts/python.exe scripts/release/publish_release.py --artifacts .tmp/candidates --accepted-result <accept result.json> --inputs .tmp/inputs
+```
+
+Add `--dry-run` to stage without uploading. Upload needs the `gh` CLI signed in. Packages are published
+under version-free names (`orion-hub-windows-x86_64-cpu.zip`, ...); installs and updates compare the
+signed `sequence`, identically for Hub, Router and Client (Router keeps its own on/off preference).
+Single-key metadata is valid for one year: publish at least once a year, even with no code change.
+The `preview` channel binds the exact packages to the automated isolated acceptance only; clean VM,
+logon and power-loss evidence remain required for `beta`/`stable`.
+Users install with `irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex`
+or `get-orion.cmd`.
