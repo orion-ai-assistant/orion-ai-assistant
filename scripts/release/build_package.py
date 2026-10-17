@@ -6,6 +6,7 @@ No keys, DBs, model weights, worktree-only files or build SDKs are copied.
 """
 import argparse
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -40,6 +41,21 @@ def tracked(root, prefixes, stage):
         shutil.copyfile(source, target)
 
 
+def verify_no_service_worker(web):
+    """The client must be built with `--pwa-strategy=none`.
+
+    A Flutter service worker keeps serving its cached old bundle in the app window after an
+    update; the packaged client therefore may ship neither an active worker nor the code
+    that registers one."""
+    web = Path(web)
+    worker = web / 'flutter_service_worker.js'
+    if worker.exists() and worker.read_text(encoding='utf-8', errors='replace').strip():
+        raise ValueError('Client was built with a service worker; use flutter build web --pwa-strategy=none')
+    bootstrap = (web / 'flutter_bootstrap.js').read_text(encoding='utf-8', errors='replace')
+    if not re.search(r'_flutter\.loader\.load\(\s*\)', bootstrap):
+        raise ValueError('Client bootstrap registers a service worker; use flutter build web --pwa-strategy=none')
+
+
 def build(args):
     if os.name != 'nt':
         raise ValueError('Windows x64 build host required')
@@ -60,6 +76,7 @@ def build(args):
             web = root / 'main_app/app/build/web'
             if not (web / 'index.html').is_file():
                 raise ValueError('flutter build web must succeed first')
+            verify_no_service_worker(web)
             shutil.copytree(web, stage / 'build/web')
             (stage / 'tool').mkdir()
             shutil.copyfile(root / 'main_app/app/tool/serve_web.py', stage / 'tool/serve_web.py')

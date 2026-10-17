@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 
 TERMINAL = {'completed', 'rolled_back', 'failed'}
+# Another process is switching/health-checking/rolling back right now: wait for it, never alarm.
+APPLYING = {'draining', 'backing_up', 'switching', 'health_check', 'rollback_pending'}
 PREPARING = {'checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle'}
 
 
@@ -33,6 +35,28 @@ def blocked(registry=None):
                 or journal['phase'] not in TERMINAL | PREPARING)
     except (OSError, ValueError, KeyError, TypeError):
         return True
+
+
+def progress(registry=None):
+    """Journal phase of an update that is being applied right now, else None.
+
+    Unreadable or inconsistent journals are not progress (they stay a genuine repair case)."""
+    registry = registry or os.getenv('ORION_INSTALLATION_REGISTRY')
+    if not registry:
+        return None
+    pointer = Path(registry).parent / 'updates/active.json'
+    try:
+        from uuid import UUID
+        value = json.loads(pointer.read_text(encoding='utf-8'))
+        identity = value['operation_id']
+        if str(UUID(identity)) != identity or value['schema'] != 1:
+            return None
+        journal = json.loads((pointer.parent / identity / 'journal.json').read_text(encoding='utf-8'))
+        if journal.get('schema') != 1 or journal['operation_id'] != identity:
+            return None
+        return journal['phase'] if journal['phase'] in APPLYING else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 async def wait_for_admission():

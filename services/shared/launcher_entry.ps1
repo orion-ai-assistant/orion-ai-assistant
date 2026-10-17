@@ -20,6 +20,47 @@ function Show-OrionRepair([string]$message) {
     $form.Controls.Add($repairButton)
     [void]$form.ShowDialog()
 }
+# Phases in which the helper is switching versions right now (calm wait), and phases that allow a normal start.
+$applying = @('draining','backing_up','switching','health_check','rollback_pending')
+$allowedPhases = @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')
+function T([string]$text) { [regex]::Unescape($text) }   # Keeps this file ASCII; Windows PowerShell 5.1 reads it as ANSI.
+function Get-OrionUpdatePhase([string]$pending) {
+    $operation = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
+    $operationId = [guid]::ParseExact($operation.operation_id, 'D').ToString('D')
+    $journalPath = Join-Path (Split-Path -Parent $pending) "$operationId/journal.json"
+    $journal = Get-Content -LiteralPath $journalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($operation.schema -ne 1 -or $journal.schema -ne 1 -or $journal.operation_id -ne $operationId) {
+        throw 'Update recovery in progress. Resume the local update helper; installation record and logs remain available.'
+    }
+    return $journal.phase
+}
+function Test-OrionUpdating([string]$pending) {
+    try { return $applying -contains (Get-OrionUpdatePhase $pending) } catch { return $true }
+}
+function Wait-OrionUpdate([string]$pending) {
+    $deadline = [DateTime]::Now.AddMinutes(30)
+    if ($NonInteractive) {
+        while ((Test-OrionUpdating $pending) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Seconds 2 }
+        return
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    $form = New-Object Windows.Forms.Form
+    $form.Text = 'Orion'
+    $form.Width = 520; $form.Height = 170
+    $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'
+    $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.ControlBox = $false; $form.TopMost = $true
+    $label = New-Object Windows.Forms.Label
+    $label.Text = (T 'Orion g\u00fcncelleniyor, birka\u00e7 dakika s\u00fcrebilir.') + "`r`n" + (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak; bu pencereyi kapatmay\u0131n.')
+    $label.SetBounds(20, 20, 470, 50); $form.Controls.Add($label)
+    $bar = New-Object Windows.Forms.ProgressBar
+    $bar.Style = 'Marquee'; $bar.SetBounds(20, 85, 470, 22); $form.Controls.Add($bar)
+    $timer = New-Object Windows.Forms.Timer
+    $timer.Interval = 2000
+    $timer.Add_Tick({ if (-not (Test-OrionUpdating $pending) -or [DateTime]::Now -ge $deadline) { $timer.Stop(); $form.Close() } })
+    $timer.Start()
+    [void]$form.ShowDialog()
+    $timer.Dispose(); $form.Dispose()
+}
 try {
     if ($Repair) { Show-OrionRepair 'Installation record and launcher logs are available locally.'; exit 0 }
     $record = Get-Content -LiteralPath $registry -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -27,11 +68,16 @@ try {
     if ($record.schema_version -ne 1) { throw 'Unsupported installation registry. Repair required.' }
     $pending = Join-Path (Split-Path -Parent $PSScriptRoot) 'updates/active.json'
     if (-not $Stop -and (Test-Path -LiteralPath $pending)) {
-        $operation = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
-        $operationId = [guid]::ParseExact($operation.operation_id, 'D').ToString('D')
-        $journalPath = Join-Path (Split-Path -Parent $pending) "$operationId/journal.json"
-        $journal = Get-Content -LiteralPath $journalPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($operation.schema -ne 1 -or $journal.schema -ne 1 -or $journal.operation_id -ne $operationId -or $journal.phase -notin @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')) {
+        $phase = Get-OrionUpdatePhase $pending
+        if ($applying -contains $phase) {
+            # Another start is switching versions right now: wait calmly, do not show the Repair dialog.
+            Wait-OrionUpdate $pending
+            $phase = Get-OrionUpdatePhase $pending
+            if ($phase -in @('rolled_back', 'failed') -and -not $NonInteractive) {
+                [void][Windows.Forms.MessageBox]::Show((T 'G\u00fcncelleme uygulanamad\u0131; Orion \u00f6nceki s\u00fcr\u00fcmle a\u00e7\u0131l\u0131yor.'), 'Orion')
+            }
+        }
+        if ($phase -notin $allowedPhases) {
             throw 'Update recovery in progress. Resume the local update helper; installation record and logs remain available.'
         }
     }

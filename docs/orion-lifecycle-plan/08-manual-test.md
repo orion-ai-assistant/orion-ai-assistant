@@ -91,3 +91,11 @@ Yalnız temiz makine/VM'de (Orion kurulu değilken):
 ### 5. Hub/Router paneli düğmeleri
 
 Ayarlar'da Hub kartında "Hub yönetimini aç", Router bağlıyken Router kartında "Router yönetimini aç" görünmeli; tıklayınca adres çubuksuz uygulama penceresinde açılır. Telefon oturumunda bu düğmeler görünmez.
+
+### 6. Güncelleme sürerken ikinci açılış (Onarma penceresi çıkmamalı)
+
+Bir güncelleme açılışta uygulanırken (veya "Şimdi güncelle" sırasında) masaüstü kısayoluna tekrar tıkla. Beklenen: kırmızı "Orion - Onarma / Repair" penceresi **değil**, "Orion güncelleniyor, birkaç dakika sürebilir" bekleme penceresi; güncelleme bitince Orion kendiliğinden açılır. Güncelleme geri alınırsa "Güncelleme uygulanamadı; Orion önceki sürümle açılıyor" iletisi ve eski sürümle açılış. Onarma penceresi yalnız gerçek `repair_required`/bozuk günlük durumunda çıkar (30 dk bekleme sınırı sonrası da eski davranış).
+
+### 7. Güncelleme sonrası eski arayüz kalmamalı
+
+Client yeni sürüme güncellendikten sonra uygulama penceresinde (eski sürümdeki) kaldırılmış anahtarlar (ör. "Router otomatik güncellemeleri") **görünmemeli**. Kontrol: Chrome'da `chrome://serviceworker-internals` veya DevTools > Application > Service Workers: Orion adresi için etkin worker olmamalı. Paket artık `--pwa-strategy=none` ile derlenir (service worker yok); eski kurulumlardaki kayıtlı worker, sunucunun kendini silen worker'ı sunmasıyla ilk açılışta kaldırılır. "Şimdi güncelle" sonrası sayfa önbelleksiz yenilenir.

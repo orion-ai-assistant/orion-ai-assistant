@@ -143,6 +143,21 @@ def close_window(registry):
     return len(victims)
 
 
+def wait_for_update(registry, *, timeout=1800, interval=2, sleep=None, clock=time.monotonic):
+    """A second start while an update is being applied waits for it instead of failing.
+
+    Returns True when it had to wait. After `timeout` (or a repair-required journal, which is not
+    progress) the normal blocked-start error is raised by the caller's own checks."""
+    from .update_gate import progress
+    sleep = sleep or time.sleep
+    deadline = clock() + timeout
+    waited = False
+    while progress(registry.path) is not None and clock() < deadline:
+        waited = True
+        sleep(interval)
+    return waited
+
+
 TRAY_SCRIPT = 'Orion-Tray.ps1'
 
 
@@ -205,6 +220,7 @@ def stop_tray(registry, *, timeout=6):
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop:
+        wait_for_update(registry)
         record = registry.read()
         if record and (not startup or record['preferences']['start_with_windows']):
             from .automatic_updates import run_startup

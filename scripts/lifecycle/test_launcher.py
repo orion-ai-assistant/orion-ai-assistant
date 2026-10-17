@@ -209,6 +209,69 @@ while True: server.handle_request()
         self.assertEqual(0, result.returncode)
         self.assertIn(b'available locally', result.stdout)
 
+    def journal(self, phase):
+        import uuid
+        updates = self.store.path.parent / 'updates'
+        operation = getattr(self, 'operation', None) or str(uuid.uuid4())
+        self.operation = operation
+        (updates / operation).mkdir(parents=True, exist_ok=True)
+        (updates / 'active.json').write_text(json.dumps({'schema': 1, 'operation_id': operation}), encoding='utf-8')
+        (updates / operation / 'journal.json').write_text(
+            json.dumps({'schema': 1, 'operation_id': operation, 'phase': phase}), encoding='utf-8')
+
+    def test_second_start_waits_for_an_update_that_is_being_applied(self):
+        from services.shared.update_gate import progress
+        self.journal('switching')
+        self.assertEqual('switching', progress(self.store.path))
+        phases = iter(['health_check', 'completed'])
+        slept = []
+        def sleep(seconds):
+            slept.append(seconds)
+            self.journal(next(phases))
+        self.assertTrue(launcher.wait_for_update(self.store, sleep=sleep, interval=0))
+        self.assertEqual(2, len(slept))
+        self.assertIsNone(progress(self.store.path))
+
+    def test_repair_and_unreadable_journals_are_not_progress_and_never_wait(self):
+        from services.shared.update_gate import progress
+        for phase in ('repair_required', 'staged', 'completed', 'rolled_back'):
+            self.journal(phase)
+            self.assertIsNone(progress(self.store.path))
+            self.assertFalse(launcher.wait_for_update(self.store, sleep=lambda s: self.fail('must not wait')))
+        (self.store.path.parent / 'updates' / self.operation / 'journal.json').write_text('{broken', encoding='utf-8')
+        self.assertIsNone(progress(self.store.path))
+
+    def test_launch_continues_after_the_running_update_finished(self):
+        self.journal('switching')
+        def sleep(seconds):
+            self.journal('completed')
+        with patch('services.shared.launcher.time.sleep', sleep), patch('services.shared.automatic_updates.run_startup'):
+            self.assertEqual({'status': 'ready'}, launcher.launch(self.store, background=True))
+        self.start.assert_called_once()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows PowerShell entry')
+    def test_entry_waits_quietly_for_an_update_then_continues_but_repair_stays_an_error(self):
+        import threading
+        import time
+        entry = launcher.install_entry(self.store, desktop=False)
+        command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(entry), '-NonInteractive']
+        self.journal('repair_required')
+        result = subprocess.run(command, capture_output=True, timeout=30)
+        self.assertEqual(1, result.returncode)
+        self.assertIn(b'Update recovery in progress', result.stdout)
+        self.journal('switching')
+        def finish():
+            time.sleep(4)
+            self.journal('completed')
+        worker = threading.Thread(target=finish)
+        worker.start()
+        started = time.monotonic()
+        result = subprocess.run(command, capture_output=True, timeout=60)
+        worker.join()
+        self.assertGreaterEqual(time.monotonic() - started, 3)
+        self.assertNotIn(b'Update recovery in progress', result.stdout)
+        self.assertIn(b'Python runtime is missing', result.stdout)  # It went on to the normal launch.
+
     def test_unrelated_local_router_failure_preflights_before_hub(self):
         self.store.update(lambda r: {**r, 'components': r['components'] + [component_record(
             'router', self.root / 'absent-router', ownership='owned', management='local')]})

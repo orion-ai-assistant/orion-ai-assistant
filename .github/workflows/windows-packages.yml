@@ -69,7 +69,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Flutter dependency lock mismatch' }
           flutter test --no-pub test/updates_card_test.dart test/settings_refresh_test.dart test/router_access_card_test.dart test/settings_connection_race_test.dart
           if ($LASTEXITCODE -ne 0) { throw 'Flutter update/settings regression failed' }
-          flutter build web --release --no-wasm-dry-run
+          flutter build web --release --no-wasm-dry-run --pwa-strategy=none
       - name: Build Router static dashboard (sequential)
         working-directory: orion-router/dashboard
         env:

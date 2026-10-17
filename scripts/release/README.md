@@ -24,7 +24,8 @@ python scripts/release/build_package.py --source . --release scripts/release/hub
 
 Use the peer repository root and `release/package.json` for Router or Client.
 Build Flutter with `flutter pub get --enforce-lockfile` and `flutter build web
---release --no-wasm-dry-run`; build Router with `npm ci` and `npm run build` first.
+--release --no-wasm-dry-run --pwa-strategy=none` (no service worker: an old one keeps showing the
+previous bundle after an update; `build_package.py` rejects a client that has one); build Router with `npm ci` and `npm run build` first.
 No SDK, venv, installed database, identity, model or development-only file is
 copied. Newly added source modules must be tracked/staged before a local build.
 Only hashed wheel dependencies are installed. Input archive hashes are pinned in
@@ -404,3 +405,9 @@ bundle with the packages).
   `launcher.launch` for installs with a Hub only; one icon per installation (named mutex), exits on
   `bootstrap/tray.exit` (written by `stop_tray` during every launcher stop; terminated only if it ignores it),
   or when the registry disappears. "Cik" hides the icon and runs `Orion.ps1 -Stop`.
+* **Calm "updating" state:** `update_gate.progress()` reports a journal in an applying phase
+  (`draining`..`rollback_pending`). `launcher.launch` and `launcher_entry.ps1` wait for it (progress window,
+  30 min cap) and then continue; `repair_required`/corrupt journals stay a genuine Repair case.
+* **No service worker in the client:** built with `--pwa-strategy=none`; `build_package.verify_no_service_worker`
+  rejects anything else, and `serve_web.py` answers `/flutter_service_worker.js` with a self-removing worker so an
+  already-registered old worker is retired on the next load. "Update now" reloads through `/__orion_refresh__`.
