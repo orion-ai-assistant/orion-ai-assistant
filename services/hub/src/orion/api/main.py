@@ -114,6 +114,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
                           openapi_url=None if public else '/openapi.json')
     from orion.api.router_access import router as access_router
     application.include_router(access_router)
+    from orion.api.update_routes import router as update_router
+    application.include_router(update_router)
     application.state.public = public
     application.state.mobile = mobile
     application.state.discovery_enabled = discovery_enabled

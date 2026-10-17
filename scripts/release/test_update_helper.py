@@ -235,7 +235,7 @@ def test_rejects_unsafe_release_before_preparation(installed, mutation):
 def test_foreign_registry_change_needs_repair(installed):
     helper, client, name, old, data, host = installed
     helper.prepare(client, [name])
-    helper.registry.update(lambda r: {**r, 'preferences': {**r['preferences'], 'show_client': False}})
+    helper.registry.update(lambda r: {**r, 'root': str(Path(r['root']) / 'foreign-root')})
     assert helper.resume()['phase'] == 'repair_required'
     assert blocked(helper.registry.path)
 

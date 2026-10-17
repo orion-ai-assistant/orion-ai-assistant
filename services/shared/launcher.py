@@ -115,6 +115,11 @@ def show_window(registry, hub, *, timeout=30):
 
 def launch(registry, *, startup=False, background=False, stop=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
+    if not stop:
+        record = registry.read()
+        if record and (not startup or record['preferences']['start_with_windows']):
+            from .automatic_updates import run_startup
+            run_startup(registry)
     with operation_lock(registry.path, timeout=180):
         record = registry.read()
         if record is None:
@@ -137,6 +142,9 @@ def launch(registry, *, startup=False, background=False, stop=False):
                     (stop_hub if stop else start_hub)(root)
                 else:
                     (stop_router if stop else start_router)(str(Path(root) / 'cli.py'))
+            if not stop:
+                from .automatic_updates import spawn_watcher
+                spawn_watcher(registry)
             if not stop and not background and (not startup or record['preferences']['show_client']):
                 show_window(registry, next(c for c in components if c['kind'] == 'hub'))
         return {'status': 'stopped' if stop else 'ready'}

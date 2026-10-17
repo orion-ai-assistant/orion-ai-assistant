@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 import uuid
 
 from .installation_registry import Registry, RegistryError, operation_lock, _atomic_write, validate_record
@@ -61,7 +62,7 @@ class UpdateHelper:
     def _phase(self, tx, phase, **fields):
         if phase not in PHASES:
             raise UpdateError('Unknown transaction phase')
-        tx.update(fields, phase=phase)
+        tx.update(fields, phase=phase, updated_at=time.time())
         self._json(self._directory(tx) / 'journal.json', tx, 'journal:' + phase)
         return tx
 
@@ -92,8 +93,12 @@ class UpdateHelper:
         except (ValueError, OSError, KeyError, TypeError) as error:
             raise UpdateError('Update journal invalid; explicit repair required') from error
 
-    def prepare(self, client, names):
+    def prepare(self, client, names, *, automatic=False):
         with operation_lock(self.registry.path, timeout=0):
+            if automatic:
+                from .automatic_updates import AutomaticUpdates
+                if not AutomaticUpdates(self.registry, helper=self).allowed():
+                    return None
             pending = self.status()
             if pending and pending['phase'] not in TERMINAL:
                 raise UpdateError('An update is pending; resume it before starting another')
@@ -214,6 +219,10 @@ class UpdateHelper:
             self._write(Path(item['state_path']) / 'installed-package.json',
                         (directory / (item['kind'] + '-' + suffix + '.json')).read_bytes(), 'inventory:' + item['kind'])
         self.fault('before:registry')
+        # Preferences may change while a staged release waits for the next launch.
+        # Preserve them on both publication and rollback, under the operation lock.
+        record = deepcopy(record)
+        record['preferences'] = self.registry.read()['preferences']
         self.registry.write(record)
         self.fault('after:registry')
 
@@ -251,15 +260,19 @@ class UpdateHelper:
             if not path.is_relative_to(self._directory(tx)) or inventory(path) != snapshot['files']:
                 raise UpdateError('Backup inventory mismatch')
 
-    def resume(self):
+    def resume(self, *, automatic=False):
         with operation_lock(self.registry.path, timeout=0):
             tx = self.status()
             if tx is None or tx['phase'] in TERMINAL or tx['phase'] == 'repair_required':
                 return tx
+            if automatic and tx['phase'] in {'staged', 'waiting_for_idle'}:
+                from .automatic_updates import AutomaticUpdates
+                if not AutomaticUpdates(self.registry, helper=self).allowed(activate=True):
+                    return tx
             if tx['phase'] in {'checking', 'downloading', 'verifying'}:
                 return self._phase(tx, 'failed', reason='Preparation interrupted; active version unchanged; prepare again')
             current = self.registry.read()
-            if current not in (tx['previous'], tx['proposed']):
+            if not any(same_installation(current, value) for value in (tx['previous'], tx['proposed'])):
                 return self._phase(tx, 'repair_required', reason='Registry changed outside this transaction')
             if tx['phase'] == 'rollback_pending':
                 return self._rollback(tx)
@@ -312,7 +325,7 @@ class UpdateHelper:
     def _rollback(self, tx):
         try:
             current = self.registry.read()
-            if current not in (tx['previous'], tx['proposed']):
+            if not any(same_installation(current, value) for value in (tx['previous'], tx['proposed'])):
                 raise UpdateError('Registry changed outside this transaction')
             self.host.stop(current)
             with self.host.stopped(current) as idle:
@@ -337,6 +350,12 @@ class UpdateHelper:
                 return self._phase(tx, 'failed', reason='Preparation cancelled; active version unchanged')
             self._phase(tx, 'rollback_pending')
             return self._rollback(tx)
+
+
+def same_installation(left, right):
+    return (isinstance(left, dict) and isinstance(right, dict)
+            and {k: v for k, v in left.items() if k != 'preferences'}
+            == {k: v for k, v in right.items() if k != 'preferences'})
 
 
 class NativeHost:

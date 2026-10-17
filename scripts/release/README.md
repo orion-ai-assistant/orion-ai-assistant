@@ -151,6 +151,9 @@ Stage 01/03/04 open acceptance remains open; Stage 05 does not authorize Stage
 
 ## Stage 06 explicit local update
 
+Historical Stage 06 scope is below. The user subsequently authorized Stage 07
+development while keeping Stage 06 acceptance debts open; see the Stage 07 section.
+
 17 October user authorization adds Stage 06 only. Flutter remains web; no native
 Flutter Windows EXE or public production installer is claimed. See
 [manual web trial](../../docs/orion-lifecycle-plan/06-manual-test.md).
@@ -231,3 +234,75 @@ restart/cleanup checks for a completed ephemeral fixture after a test-driver
 interruption. The restart adapter holds verified supervisor references before
 normal shutdown and waits for their OS exit; it never treats a stopped journal
 alone as evidence that the last process has exited.
+
+## Stage 07 automatic staging and safe launch
+
+Stage 07 adds source implementation, not production rollout or Stage 08. New
+installs still default to automatic updates off until release acceptance. Existing
+manual trial packages are unchanged. See [results](../../docs/orion-lifecycle-plan/07-automatic-updates-and-flutter.md)
+and [trial instructions](../../docs/orion-lifecycle-plan/07-manual-test.md).
+
+The trusted installer may supply `--release-source <private-json>` to
+`build_bootstrap.py`. Its exact schema is:
+
+```json
+{
+  "schema": 1,
+  "channel": "stable",
+  "metadata_url": "https://<release-host>/metadata/",
+  "targets_url": "https://<release-host>/targets/",
+  "targets": {"hub": "stable/hub.zip", "client": "stable/client.zip"}
+}
+```
+
+These are placeholders, not available production addresses. Target names must
+refer to real TUF-signed packages. Feed membership is installer policy; packages
+still pass signed metadata, monotonic sequence, hash, API and schema checks.
+Only Hub/Client targets are accepted. Every published immutable package needs a
+new version/package ID/sequence; never republish changed bytes under the old ID.
+
+New package installation from the retained bootstrap records
+`bootstrap/automatic-runtime.json {schema:1,root:<retained-bootstrap>}` and copies
+the optional `release-source.json` beside the installed trusted root. The retained
+directory must be private and remain available independently of Hub releases.
+Source installations do not invent this pointer. Existing trial installations
+are not silently migrated, and the sole/running bootstrap is never overwritten.
+
+The outer launcher invokes the retained runtime's fixed
+`scripts/release/update_automatic.py --registry <absolute-install.json> startup`
+before native start, then spawns `watch` after normal startup. `check` is also a
+fixed local CLI action and respects the same six-hour throttle. No arbitrary
+command, script, package path, feed URL or trust root is accepted by the HTTP API.
+Watcher ownership is per installation with an OS lock. It wakes every five minutes,
+checks at most every six hours, stages only, and exits on the next poll after all
+services are proven stopped. It is spawned outside the Hub-owned Job; containment
+and breakaway rules for product children are unchanged.
+
+The next launch applies staged updates only when the preference is on, deferral
+expired and the existing Stage 06 stopped gate succeeds. It never stops running
+user work. A critical/repair journal blocks normal startup and uses the explicit
+Stage 06 recovery CLI. A stopped-only activation may run unchanged dependencies
+for the existing health probe; it does not update their code or independent policy.
+Turning off automation does not abandon an already critical transition.
+
+Preferences and operation locks serialize admission. Registry comparison permits
+only current boolean preferences to differ from transaction snapshots; publication
+and rollback preserve them. `updates/policy.json` stores manual network pause and
+24-hour deferral, while `updates/automatic.json` stores check timestamps and a
+sanitized error class. Pausing affects new network work; a prepared update can
+still apply at safe launch. Metered networks require manual pause. A preference
+write during a locked download returns 409 for retry; started preparation can finish.
+
+Authenticated `GET /api/v1/updates` is available to normal Hub clients. `PUT` only
+accepts `automatic_updates`, `paused`, `defer_hours` (0 or 24), and requires the
+actual desktop peer plus a permitted origin. A phone JWT, paired token, forwarding
+header or mobile listener cannot grant PC management. Router independent updates
+remain Stage 08. Flutter keeps last-known status/time on connection failure and
+discards stale replies on Hub/account changes.
+
+`test_automatic_updates.py` uses signed, disposable local fixtures and a fake native
+health host. It covers live-use staging, preference admission, deferral, network
+failure/retry, next-launch activation, rollback preferences and interrupted staging.
+These are not a new real package/DB/Windows Job acceptance. That acceptance,
+real active chat/voice/transfer/remote clients, clean VM, power-loss and production
+hosting/signing remain open; previous Stage 01/03/04/05/06 debts remain recorded.

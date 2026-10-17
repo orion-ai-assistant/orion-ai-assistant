@@ -21,7 +21,7 @@ from services.shared.release_packages import extract_zip, sha256
 from python_runtime import install_site_hook
 
 
-def build(trusted_root, inputs, output, *, test_only=False):
+def build(trusted_root, inputs, output, *, test_only=False, release_source=None):
     root = Metadata.from_file(str(trusted_root))
     if (not isinstance(root.signed, Root) or root.signed.expires <= datetime.now(timezone.utc)
             or not root.signed.consistent_snapshot):
@@ -58,11 +58,15 @@ def build(trusted_root, inputs, output, *, test_only=False):
         # It must also be present when recovery runs without a working Hub.
         shutil.copyfile(ROOT / 'services/shared/launcher_entry.ps1',
                         tree / 'services/shared/launcher_entry.ps1')
-        for name in ('install_new.py', 'update_local.py'):
+        for name in ('install_new.py', 'update_local.py', 'update_automatic.py'):
             destination = tree / 'scripts/release' / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).with_name(name), destination)
         shutil.copyfile(trusted_root, tree / 'trusted-root.json')
+        if release_source is not None:
+            from services.shared.automatic_updates import validate_source
+            value = validate_source(json.loads(Path(release_source).read_text(encoding='utf-8')))
+            (tree / 'release-source.json').write_text(json.dumps(value), encoding='utf-8')
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root)}))
         (tree / 'Install-Orion.ps1').write_text(
@@ -91,5 +95,6 @@ if __name__ == '__main__':
     parser.add_argument('--trusted-root', type=Path, required=True)
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--release-source', type=Path)
     args = parser.parse_args()
-    print(build(args.trusted_root, args.inputs, args.output))
+    print(build(args.trusted_root, args.inputs, args.output, release_source=args.release_source))

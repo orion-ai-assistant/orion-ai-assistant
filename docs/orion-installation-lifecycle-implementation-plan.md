@@ -1,6 +1,10 @@
 # Orion kurulum ve güncelleme — ana uygulama rehberi
 
-## 17 Ekim 2026 güncel Aşama 06 kararı
+## 17 Ekim 2026 güncel Aşama 07 kararı
+
+Kullanıcı, 06'nın temiz VM/güç kesintisi ve önceki kabul borçları korunarak **yalnız 07 geliştirmesini** açıkça yetkilendirdi. Otomasyon ve Flutter web güncelleme kartı uygulandı; [07 sonuç kaydı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) ve [deneme/başlatma rehberi](orion-lifecycle-plan/07-manual-test.md). 07 **DOĞRULAMA EKSİK**: yeni tam ürün paketiyle uçtan uca kullanım/Windows watcher kabulü, temiz VM ve üretim yayını açık. 08'e geçilmedi. Görev değişiklikleri yerel commit edilir; push, Computer Use, gerçek hesabın Windows başlangıcı/otomatik güncellemesini açma veya mevcut manuel fixture'ı değiştirme yetkisi yoktur. Flutter web ve tek PowerShell kurulum tercihi korunur. Aşağıdaki 06/05/04 yetki metinleri tarihsel kayıttır; güncel kapsamı bu paragraf belirler.
+
+## Aşama 06 devri (tarihsel)
 
 Son kullanıcı yalnız 06 geliştirmesine devam edilmesini istedi. Aşağıdaki 05 oturum yetki sınırları tarihsel kayıttır; güncel kapsam 06'dır. 07–08, push, Windows başlangıcı ve otomatik güncelleme yetkisi yoktur. Önceki 01/03/04/05 açık kabulleri korunur. Flutter **web istemcisi** olarak kalır; native Flutter Windows EXE hedeflenmez. Ana dağıtım tercihi tek PowerShell komutu; isteğe bağlı görsel kurucu aynı doğrulanan motoru çağırabilir. Üretim yayın/güven kökü henüz yoktur.
 
@@ -15,6 +19,8 @@ Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyala
 17 Ekim ek kullanıcı talebiyle Router çevrimdışı hesap hazırlama ve Router'a özel manuel sanal anahtar akışı uygulandı; [arayüz/sonuç kaydı](router-account-access-followup.md) 05 oturumunda okundu ve endpoint/data bağımlılıkları paket sözleşmesine işlendi. Önceki açık kabul etiketleri değişmez.
 
 ## Şimdi nereden başlanacak?
+
+**Güncel 07 devri:** [07 sonuç kaydı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) ve [07 deneme rehberi](orion-lifecycle-plan/07-manual-test.md). Otomasyonun kod testleri ve Flutter web derlemesi var; gerçek yeni paket seti/Windows watcher/aktif kullanım kabulü açık. Aşağıdaki 05/04/03 paragrafları tarihsel devirlerdir.
 
 **Güncel 05 devri:** [05 sonuç kaydını](orion-lifecycle-plan/05-packaging-and-release-metadata.md) ve [paket araçları/güven işletimini](../scripts/release/README.md) oku. Paket geliştirmesi 06–08 yetkisi değildir. SDK'sız PATH ile development bilgisayarında gerçek ZIP testi, temiz VM kabulünün yerine geçmez. Aşağıdaki 04/03 özetleri tarihsel devir bağlamıdır; son watchdog düzeltmesi ve geçen 35 + 9 / 51 + 2 sonuçları korunur.
 
@@ -41,14 +47,14 @@ Numaralar önerilen çalışma sırasıdır; ön koşul sütunu teknik bağıml�
 | 04 | [Başlatıcı ve Windows başlangıcı](orion-lifecycle-plan/04-launcher-and-autostart.md) | 01, 02, 03 | DOĞRULAMA EKSİK |
 | 05 | [Hazır paket ve sürüm metaverisi](orion-lifecycle-plan/05-packaging-and-release-metadata.md) | 02, 03 | DOĞRULAMA EKSİK |
 | 06 | [Güncelleme yardımcısı ve kurtarma](orion-lifecycle-plan/06-update-helper-and-recovery.md) | 01, 02, 03, 05 | DOĞRULAMA EKSİK |
-| 07 | [Otomasyon ve Flutter ekranı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) | 04, 06 | BAŞLANMADI |
+| 07 | [Otomasyon ve Flutter ekranı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) | 04, 06 | DOĞRULAMA EKSİK |
 | 08 | [Router geçişi ve kontrollü yayın](orion-lifecycle-plan/08-router-transition-and-rollout.md) | 04, 05, 06, 07 | BAŞLANMADI |
 
-Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04/05 açık kabulleri kendi sonuç kayıtlarındadır; 06 güncel sonuç kaydından izlenir, 07–08 başlamadı.
+Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04/05/06/07 açık kabulleri kendi sonuç kayıtlarında korunur; 08 başlamadı.
 
 ## Her oturumun çalışma yöntemi
 
-17 Ekim 2026 güncel kapsam: kullanıcı 01/03/04/05 kabul borçları korunarak yalnız 06 geliştirmesini yetkilendirdi. Önceki kapsam istisnaları tarihsel kayıttır. Bu oturumda 06 test/belge/yerel commit sonrasında durulur; 07–08'e geçilmez.
+17 Ekim 2026 güncel kapsam: kullanıcı önceki 01/03/04/05/06 kabul borçları korunarak yalnız 07 geliştirmesini yetkilendirdi. 07 test/belge/yerel commit sonrasında durulur; 08'e geçilmez. Önceki aşamalara ait yetki/kapsam kayıtları tarihsel bağlamdır.
 
 1. Repo talimatlarını ve bu ana rehberi oku. Kullanıcı bir aşama belirttiyse onu seç; belirtmediyse burada belirtilen sıradaki işi seç. Ön koşulları tamamlanmamış aşamayı uygulama; yalnız yukarıdaki 16 Ekim kullanıcı kararı, 01'in açık kabul borcuyla 02 geliştirmesine devam etmek için kayıtlı istisnadır. Sonraki 16 Ekim kullanıcı talimatı 03 geliştirmesini de yetkilendirdi; yayın kabulü veya eksik testlerin tamamlanması anlamına gelmez.
 2. Ortak ürün kararlarını, seçilen aşama dosyasını ve orada belirtilen teknik sözleşmeleri oku. Ön koşulların sonuç kayıtlarını incele; başka aşamaya ait ayrıntıları yalnız arayüz ihtiyacı varsa aç.
@@ -56,7 +62,7 @@ Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLAN
 4. Seçilen aşamayı küçük değişikliklerle uygula; yalnız gerekli ön koşul düzeltmelerini ayrıca belirt. Başka aşama özelliğini kendiliğinden etkinleştirme. Gerçek kullanıcı verisini test amacıyla taşıma/silme; ACL mirasını otomatik değiştirme.
 5. Aşamanın kabul testlerini çalıştır. Komut, ortam, sonuç, çalıştırılamayan kontroller ve korunma kanıtını aşama dosyasına yaz. Geçmeyen/çalıştırılamayan zorunlu kabul koşulunu geçmiş gösterme.
 6. Sonuç kaydına değişen dosyaları, kararlı arayüzleri, geri alma yöntemini ve sonraki aşamanın bilmesi gerekenleri ekle. Ortak sözleşme değiştiyse ilgili bağlantıları güncelle.
-7. Ana tablodaki durumu ve sıradaki aşamayı güncelle; sonucu kaydet ve aşama commit’ini oluştur. Son kullanıcı talimatıyla bu oturumda 06 commit’inden sonra dur; gerçek test/ortam engellerini ve tamamlanmamış kabulü açık bırak. Push yetkisi verilmedi.
+7. Ana tablodaki durumu ve sıradaki aşamayı güncelle; sonucu kaydet ve aşama commit’ini oluştur. Son kullanıcı talimatıyla bu oturumda 07 commit’inden sonra dur; gerçek test/ortam engellerini ve tamamlanmamış kabulü açık bırak. Push yetkisi verilmedi.
 
 ## Bağımlılıklar neden var?
 
@@ -66,7 +72,7 @@ Konum taşıma 03 içinde kendi kalıcı günlüğü ve kurtarma testleriyle tam
 
 ## Yeni oturumda verilecek görev
 
-> Önce [06 sonuç kaydını](orion-lifecycle-plan/06-update-helper-and-recovery.md), [manuel deneme rehberini](orion-lifecycle-plan/06-manual-test.md) ve [yardımcı işletimini](../scripts/release/README.md) oku. Önceki 01/03/04/05 ve 06 açık kabullerini geçmiş sayma. 07–08 için yeni kullanıcı kapsamı gerekir; Computer Use/Windows başlangıcı/otomatik güncelleme etkinleştirme yetkisi yoktur.
+> Önce [07 sonuç kaydını](orion-lifecycle-plan/07-automatic-updates-and-flutter.md), [07 deneme rehberini](orion-lifecycle-plan/07-manual-test.md) ve [yardımcı işletimini](../scripts/release/README.md) oku. Önceki 01/03/04/05/06 ve yeni 07 açık kabullerini geçmiş sayma. 08 veya gerçek hesaba dağıtım için yeni kullanıcı kapsamı gerekir; Computer Use/Windows başlangıcı/otomatik güncelleme etkinleştirme yetkisi yoktur.
 
 ## Belge otoritesi ve geçmiş
 

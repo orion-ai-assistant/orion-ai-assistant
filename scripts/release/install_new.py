@@ -82,6 +82,15 @@ def install(client, names, root, registry, *, settings=None):
         trust = registry.path.parent / 'bootstrap'
         trust.mkdir(exist_ok=True)
         (trust / 'trusted-root.json').write_bytes(client.bootstrap_root)
+        # Keep the independently delivered bootstrap in place. Never copy over a
+        # running/sole recovery runtime or infer one from the candidate Hub.
+        if (ROOT / 'bootstrap.json').is_file():
+            from services.shared.automatic_updates import validate_source, write_json
+            validate_private_directory(ROOT)
+            write_json(trust / 'automatic-runtime.json', {'schema': 1, 'root': str(ROOT)})
+            if (ROOT / 'release-source.json').is_file():
+                source = validate_source(json.loads((ROOT / 'release-source.json').read_text(encoding='utf-8')))
+                write_json(trust / 'release-source.json', source)
         # Registry must exist before setup, so every executable resolves exactly
         # the new data directory. Failures retain it for explicit repair, never wipe.
         for item in components:
