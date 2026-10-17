@@ -118,6 +118,31 @@ def show_window(registry, hub, *, timeout=30):
         time.sleep(.2)
 
 
+def close_window(registry):
+    """Close the Orion app window opened by show_window.
+
+    Only browser processes started with Orion's own dedicated profile directory are
+    touched, so the user's normal Chrome/Edge windows are never affected."""
+    import psutil
+    profile = str(canonical_path(registry.path.parent / 'flutter-ui-profile')).lower().rstrip(chr(92) + '/')
+    victims = []
+    for process in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if (process.info['name'] or '').lower() not in {'chrome.exe', 'msedge.exe', 'chrome', 'msedge'}:
+                continue
+            if any(profile in (arg or '').lower().replace('/', chr(92)) for arg in process.info['cmdline'] or []):
+                victims.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    for process in victims:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    psutil.wait_procs(victims, timeout=5)
+    return len(victims)
+
+
 def launch(registry, *, startup=False, background=False, stop=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop:
@@ -147,6 +172,8 @@ def launch(registry, *, startup=False, background=False, stop=False):
                     (stop_hub if stop else start_hub)(root)
                 else:
                     (stop_router if stop else start_router)(str(Path(root) / 'cli.py'))
+            if stop:
+                close_window(registry)
             if not stop:
                 from .automatic_updates import spawn_watcher
                 spawn_watcher(registry)

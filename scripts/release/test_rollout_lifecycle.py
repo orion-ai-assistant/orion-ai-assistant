@@ -289,3 +289,23 @@ def test_single_key_root_signs_preview_feed_with_stable_names(repo, tmp_path, mo
         expiry_days=publisher.SINGLE_KEY_EXPIRY_DAYS)
     stamp = Metadata.from_file(str(published / 'metadata/timestamp.json'))
     assert (stamp.signed.expires - stamp.signed.expires.now(stamp.signed.expires.tzinfo)).days > 300
+
+
+def test_stop_closes_only_the_orion_app_window(tmp_path, monkeypatch):
+    import psutil
+    from services.shared import launcher
+    from services.shared.installation_registry import Registry
+    registry = Registry(tmp_path / 'install.json')
+    profile = tmp_path / 'flutter-ui-profile'
+    profile.mkdir()
+    ours = Mock(info={'pid': 1, 'name': 'chrome.exe', 'cmdline': ['chrome.exe', '--user-data-dir=' + str(profile).replace(chr(92), '/')]})
+    child = Mock(info={'pid': 2, 'name': 'chrome.exe', 'cmdline': ['chrome.exe', '--type=renderer', '--user-data-dir="' + str(profile) + '"']})
+    theirs = Mock(info={'pid': 3, 'name': 'chrome.exe', 'cmdline': ['chrome.exe', '--user-data-dir=C:/Users/me/Chrome']})
+    other = Mock(info={'pid': 4, 'name': 'notepad.exe', 'cmdline': ['notepad.exe', str(profile)]})
+    monkeypatch.setattr(psutil, 'process_iter', lambda attrs: [ours, child, theirs, other])
+    monkeypatch.setattr(psutil, 'wait_procs', lambda procs, timeout: None)
+    assert launcher.close_window(registry) == 2
+    ours.terminate.assert_called_once()
+    child.terminate.assert_called_once()
+    theirs.terminate.assert_not_called()
+    other.terminate.assert_not_called()
