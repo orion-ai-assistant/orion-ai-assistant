@@ -476,3 +476,12 @@ with operation_lock(sys.argv[1]):
         assert helper.registry.read() == old
     finally:
         child.communicate('\n', timeout=15)
+
+
+def test_health_probe_uses_the_launcher_default_flutter_port(monkeypatch):
+    """Regression: a default install has no ORION_FLUTTER_PORT and the probe used to crash."""
+    from services.shared import update_health
+    monkeypatch.delenv('ORION_FLUTTER_PORT', raising=False)
+    assert update_health.flutter_port() == 8090
+    monkeypatch.setenv('ORION_FLUTTER_PORT', '18090')
+    assert update_health.flutter_port() == 18090

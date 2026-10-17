@@ -37,8 +37,24 @@ def probe(registry, record):
                                 capture_output=True, timeout=180,
                                 **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
         if result.returncode:
+            # Keep the probe output in the private operation folder for local diagnosis only;
+            # the journal and API still expose just the error class.
+            try:
+                log = registry.path.parent / 'updates' / operation / 'health.log'
+                header = 'exit ' + str(result.returncode) + chr(10) + '--- stdout' + chr(10)
+                body = (header.encode() + result.stdout[-32768:]
+                        + (chr(10) + '--- stderr' + chr(10)).encode() + result.stderr[-32768:])
+                log.write_bytes(body)
+            except OSError:
+                pass
             raise RuntimeError('Candidate runtime health failed; see local supervisor logs')
         return json.loads(result.stdout.decode('utf-8').splitlines()[-1])
+
+
+def flutter_port():
+    """Same default as the launcher: a default installation never sets this variable."""
+    from .environment import get_env
+    return int(get_env('ORION_FLUTTER_PORT', default='8090', required=False))
 
 
 def runtime_probe():
@@ -78,10 +94,10 @@ def runtime_probe():
         raise RuntimeError('Worker ownership unavailable')
     if 'client' in items:
         client = state['children']['flutter']
-        wait_health(Child(client), int(get_env('ORION_FLUTTER_PORT')), path='/__orion_flutter_health__',
+        wait_health(Child(client), flutter_port(), path='/__orion_flutter_health__',
                     json_response=False, timeout=10)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open('http://127.0.0.1:' + get_env('ORION_FLUTTER_PORT') + '/__orion_flutter_health__', timeout=3) as response:
+        with opener.open('http://127.0.0.1:' + str(flutter_port()) + '/__orion_flutter_health__', timeout=3) as response:
             if response.read(128) != b'orion-flutter-web':
                 raise RuntimeError('Unexpected web client')
     if 'router' in items:
