@@ -290,7 +290,14 @@ def verify_registered_package(root):
     if len(selected) != 1:
         raise PackageError('Signed package must be installed through the trusted package installer')
     item = selected[0]
-    inventory = canonical_path(Path(item['state_path']) / 'installed-package.json', must_exist=True)
+    return verify_package_record(item)
+
+
+def verify_package_record(item, *, inventory=None):
+    """Verify an explicit registry snapshot, including a pending/previous release."""
+    from .installation_paths import canonical_path
+    root = canonical_path(item['code_path'], must_exist=True)
+    inventory = canonical_path(inventory or Path(item['state_path']) / 'installed-package.json', must_exist=True)
     if sha256(inventory) != item['package']['inventory_sha256']:
         raise PackageError('Installed package inventory changed')
     value = json.loads(inventory.read_text(encoding='utf-8'))

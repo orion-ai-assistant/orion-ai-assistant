@@ -4,6 +4,34 @@ from pathlib import Path
 import sys
 import subprocess
 import shutil
+from functools import wraps
+
+
+def packaged_hub_operation(action):
+    """Packaged manager/installer entrypoints share the update operation lock."""
+    def decorate(function):
+        @wraps(function)
+        def run(root, *, update_operation=None):
+            from .runtime_layout import component
+            if not component(root):
+                return function(root)
+            from .installation_registry import Registry, operation_lock
+            from .update_gate import blocked
+            registry = Registry()
+            if update_operation is not None:
+                # The fixed local helper already owns this lock. Avoid a second
+                # flock on non-Windows hosts; match its durable operation first.
+                import json
+                active = json.loads((registry.path.parent / 'updates/active.json').read_text(encoding='utf-8'))
+                if active['operation_id'] != update_operation or not blocked(registry.path):
+                    raise LifecycleError('Helper operation does not match the admission barrier')
+                return function(root)
+            with operation_lock(registry.path, timeout=180):
+                if action == 'start' and blocked(registry.path):
+                    raise LifecycleError('Update recovery in progress; resume the local helper')
+                return function(root)
+        return run
+    return decorate
 
 LifecycleError = RuntimeError
 
@@ -69,6 +97,7 @@ def component_status(root, component):
         return 'ownership-error'
 
 
+@packaged_hub_operation('start')
 def start_hub(root):
     if dispatch_if_needed('start-hub', root):
         return True
@@ -79,6 +108,7 @@ def start_hub(root):
     return ensure_started(root, 'hub', [python_at(hub), str(hub / 'run_local.py')], env=env)
 
 
+@packaged_hub_operation('stop')
 def stop_hub(root):
     if dispatch_if_needed('stop-hub', root):
         return True

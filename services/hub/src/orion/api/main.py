@@ -18,6 +18,7 @@ from orion.api.owner_routes import router as owner_router
 from orion.api.access_boundary import AccessBoundary
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from services.shared.environment import get_redis_url, get_env
+from services.shared.update_gate import admitted, UpdateAdmission, wait_for_admission
 from orion.kernel.config import get_runtime_settings, seed_database_settings
 
 
@@ -38,7 +39,7 @@ async def service_lifespan(app: FastAPI):
     from orion.kernel.router_bootstrap import bootstrap_local_router
     # Optional Router startup never delays the Hub listener. Association/mobile
     # refresh loops retry installations and servers that become available later.
-    app.state.local_bootstrap_task = asyncio.create_task(bootstrap_local_router())
+    app.state.local_bootstrap_task = asyncio.create_task(admitted(bootstrap_local_router()))
     if hasattr(app.state, 'panel_app'):
         app.state.panel_app.state.redis = app.state.redis
         app.state.panel_app.state.router_association = association
@@ -53,12 +54,18 @@ async def service_lifespan(app: FastAPI):
     if app.state.public and not app.state.mobile:
         from orion.api.discovery import HubDiscovery
         discovery = HubDiscovery(app.version)
-        if app.state.discovery_enabled:
-            discovery.start()
-            association.start()
+        async def start_discovery():
+            await wait_for_admission()
+            if app.state.discovery_enabled:
+                discovery.start()
+                association.start()
+        discovery_task = asyncio.create_task(start_discovery())
         try:
             yield
         finally:
+            discovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await discovery_task
             await discovery.close()
             await association.close()
             await app.state.redis.close()
@@ -66,7 +73,7 @@ async def service_lifespan(app: FastAPI):
     from orion.browser.bridge import BrowserBridge
     from orion.browser.manager import restore_saved_browsers
     bridge = await BrowserBridge().start()
-    restore_task = asyncio.create_task(restore_saved_browsers())
+    restore_task = asyncio.create_task(admitted(restore_saved_browsers()))
     try:
         yield
     finally:
@@ -82,11 +89,11 @@ async def lifespan(app: FastAPI):
     # All API entry points monitor queues, independently of Worker availability.
     from orion.kernel.job_safety import queue_watchdog
     async with service_lifespan(app):
-        watchdog = asyncio.create_task(queue_watchdog(app.state.redis))
+        watchdog = asyncio.create_task(admitted(queue_watchdog(app.state.redis)))
         provisioner = None
         if getattr(app.state, 'public', True) is False:
             from orion.kernel.router_accounts import provisioning_loop
-            provisioner = asyncio.create_task(provisioning_loop(), name='router-account-provisioner')
+            provisioner = asyncio.create_task(admitted(provisioning_loop()), name='router-account-provisioner')
         try:
             yield
         finally:
@@ -239,6 +246,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
         application.add_middleware(LegacyDeviceBoundary)
     from orion.api.https_boundary import RequireTLS, LocalTransportBoundary
     application.add_middleware(LocalTransportBoundary if local_http else RequireTLS)
+    application.add_middleware(UpdateAdmission)
     return application
 
 

@@ -61,7 +61,7 @@ jobs:
         run: |
           .tmp/stage05-tools/Scripts/python.exe scripts/lifecycle/sync_router_engine.py
           if ($LASTEXITCODE -ne 0) { throw 'Independent Router engine drift' }
-          .tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_release_packages.py scripts/lifecycle/test_packaged_environment.py -q --junitxml=.tmp/package-security.xml
+          .tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_release_packages.py scripts/release/test_update_helper.py scripts/lifecycle/test_packaged_environment.py -q --junitxml=.tmp/package-security.xml
       - name: Build Flutter web (sequential)
         working-directory: orion-ai-assistant-flutter/main_app/app
         run: |

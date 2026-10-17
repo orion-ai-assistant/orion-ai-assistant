@@ -139,6 +139,10 @@ async def run_owned() -> None:
         settings = await get_runtime_settings(redis, SETTINGS_DEFAULT_USER)
         semaphore = asyncio.Semaphore(settings.worker_max_concurrency)
         await ensure_consumer_group(redis)
+        from services.shared.update_gate import wait_for_admission
+        # Advertise verified ownership for health, but never replay pending work
+        # or start an external tool while a candidate is under examination.
+        await wait_for_admission()
         await recover_pending(redis, consumer_name, owner)
         from orion.kernel.media_store import media_cleanup_loop
         media_cleanup = asyncio.create_task(media_cleanup_loop(redis, owner))

@@ -25,6 +25,16 @@ try {
     $record = Get-Content -LiteralPath $registry -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($Startup -and $record.preferences.start_with_windows -eq $false) { exit 0 }
     if ($record.schema_version -ne 1) { throw 'Unsupported installation registry. Repair required.' }
+    $pending = Join-Path (Split-Path -Parent $PSScriptRoot) 'updates/active.json'
+    if (Test-Path -LiteralPath $pending) {
+        $operation = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
+        $operationId = [guid]::ParseExact($operation.operation_id, 'D').ToString('D')
+        $journalPath = Join-Path (Split-Path -Parent $pending) "$operationId/journal.json"
+        $journal = Get-Content -LiteralPath $journalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($operation.schema -ne 1 -or $journal.schema -ne 1 -or $journal.operation_id -ne $operationId -or $journal.phase -notin @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')) {
+            throw 'Update recovery in progress. Resume the local update helper; installation record and logs remain available.'
+        }
+    }
     $hubs = @($record.components | Where-Object { $_.kind -eq 'hub' })
     if ($hubs.Count -ne 1) { throw 'Exactly one registered Hub is required.' }
     $root = $hubs[0].code_path

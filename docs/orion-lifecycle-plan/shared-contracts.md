@@ -6,6 +6,8 @@ Durum: tasarım sözleşmesidir; uygulanmış özellik listesi değildir. Her a�
 
 ## 1. Ürün kararları
 
+17 Ekim 2026 Aşama 06 eki: Flutter web kalır; tek komut kurulum ana tercihidir. 06 helper CLI ve işlem şeması [06 kaydında](06-update-helper-and-recovery.md), işletimi [paket rehberindedir](../../scripts/release/README.md). Paketli süreç kayıtları kod kökünü içerdiğinden güncellenen sürümün `state_path` değeri `<component>/state/releases/<package-id>` olur; önceki state ve tüm `data_path`/bileşen UUID'leri korunur. Schema-1 registry değişmez. Yardımcı eski runtime'ı yamalamaz veya eski Job/supervisor kimliğini yeni köke sahiplenmez. 05 taban sürümü için aktivasyon yalnız servisler kapalıyken yapılır; çalışan kullanım `waiting_for_idle` durumunda kalır. Otomatik canlı drain ve 07 zamanlayıcısı etkin değildir.
+
 - İlk hedef Windows'ta kullanıcıya özel yerel kurulumdur. İlk sürüm Windows oturum açılışında çalışır; sistem hizmeti değildir. Docker ve geliştirme kurulumları açıkça tanımlanır, kapsam dışı özellikler yanlışlıkla destekleniyormuş gibi gösterilmez.
 - Varsayılan ana konum `%LOCALAPPDATA%\Orion` olur. İlk kurulumda Gözat ile örneğin `D:\Orion` seçilebilir. D sürücüsü kendiliğinden seçilmez. Mevcut kurulumun konumu yeni varsayılandan önce gelir.
 - İlk ekranda hiçbir seçim yapılmazsa programlar, veriler, modeller ve indirmeler AppData altında kalır. Modeller varsayılan olarak seçilen ana kökün `Models` klasöründedir. Gelişmiş ayarlarda model, büyük indirme/önbellek, motor/runtime paketleri ve yedek konumları ayrı seçilebilir; örneğin uygulama AppData'da, büyük içerikler `D:\Orion` altında olabilir. Hiçbir sürücü kullanıcı adına otomatik seçilmez. Konumlar kurulumdan sonra ayarlardan da değiştirilebilir; taşıma uygulama tarafından yönetilir.

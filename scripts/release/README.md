@@ -148,3 +148,86 @@ integration test. It is **not** a clean-machine/clean-VM or real logon/window te
 
 Stage 01/03/04 open acceptance remains open; Stage 05 does not authorize Stage
 06–08 implementation or production rollout.
+
+## Stage 06 explicit local update
+
+17 October user authorization adds Stage 06 only. Flutter remains web; no native
+Flutter Windows EXE or public production installer is claimed. See
+[manual web trial](../../docs/orion-lifecycle-plan/06-manual-test.md).
+
+Retain the trusted installer ZIP separately from Hub releases. A newly built
+bootstrap contains `scripts/release/update_local.py`, the helper and its bundled
+Python/dependencies. Extract a new bootstrap alongside the old one; never replace
+the only running recovery copy. Trust-root changes still require TUF rotation;
+this is not an unsigned bootstrap self-update channel.
+
+From that retained bootstrap directory, using its bundled runtime:
+
+```powershell
+./runtime/python/python.exe -B -m scripts.release.update_local --registry <absolute-install.json> prepare --metadata-url https://<host>/metadata/ --targets-url https://<host>/targets/ <signed-target.zip>
+./runtime/python/python.exe -B -m scripts.release.update_local --registry <absolute-install.json> resume
+./runtime/python/python.exe -B -m scripts.release.update_local --registry <absolute-install.json> status
+./runtime/python/python.exe -B -m scripts.release.update_local --registry <absolute-install.json> rollback
+```
+
+These are interface examples, **not a published download command**. The trust root
+is fixed at `<registry-parent>/bootstrap/trusted-root.json`. No arbitrary executable,
+script, archive folder or root override is accepted by this CLI. It accepts owned
+registered packaged Hub/Client only. Standalone Router update/conversion remains
+Stage 08. Changing schema versions is rejected before package preparation.
+
+`prepare` verifies the complete proposed set including unchanged Router/Client and
+mobile API 1, stages immutable sibling releases and retains inventories. It leaves
+active code/data untouched. If a prior attempt left the same immutable target,
+it is compared with a fresh TUF-verified extraction in private temporary staging;
+matching bytes can be reused, changed bytes require repair. Existing releases are
+never patched or deleted for retry. Create a fresh `ReleaseClient` for each check
+(python-tuf Updater refresh is one-shot); keep its on-disk cache for trust/high-water
+state. `resume` waits while a registered service is running;
+it does not interrupt active work. For the Stage 05 baseline, explicitly stop the
+installation when convenient, then resume. Automatic live drain/scheduling is not
+enabled. A proposed Hub must declare `lifecycle.update-quarantine.v1`, including
+for Client-only updates. This prevents starting an older Hub that lacks admission
+quarantine during health checks.
+
+The schema-1 journal and pointer live in `<registry-parent>/updates/<UUID>/journal.json`
+and `updates/active.json`. Completed release inventories and the registry are
+replayable publications behind the admission barrier. Lifecycle process/Job records
+embed a code root: each updated release gets external
+`<component>/state/releases/<package-id>`; the old state and user data are preserved.
+The stable PowerShell entry and current launcher refuse normal launch during
+switch/health/repair. Candidate HTTP/WebSocket traffic is denied except health and
+public TLS identity; Worker pending recovery and background provisioning/browser
+restore wait for admission. Health runs the real native API/Worker/DB/web client
+and checks Router UUID/SPKI. It ends with services stopped, ready for an explicit
+launch; no user jobs are replayed by the helper.
+
+Offline data backups are copied only under verified stopped lifecycle locks,
+flushed and hash checked. Automatic rollback selects same-schema previous code and
+inventory; it never restores an old DB snapshot over candidate/user writes.
+Health retries are bounded at two. A lock/access/ownership failure leaves
+the installation closed. The candidate runtime probe has a 180-second bound;
+package inventory verification is part of this work. After a stop request the
+helper waits up to 15 seconds on the verified supervisor process reference before
+rechecking stopped ownership, rather than assuming its stopped journal means its
+OS process has already exited. Failure leaves
+`repair_required` with admission closed. `rollback` retries explicit code recovery
+after resolving the local fault; automatic `resume` does not loop in repair.
+Transactions, previous releases, partial staging and backups are retained; no
+automatic cleanup or uninstall is introduced.
+
+Run `test_update_helper.py` for TUF-backed transaction fault tests, real helper
+process exits and OS lock contention. `accept_update.py --previous-artifacts ...
+--update-artifacts ... --inputs ... --scratch-base <private-AppData-test-root>`
+runs a fresh real package install/update/restart with SDK-free PATH. It requires
+previous candidate ZIPs and a higher-sequence new Hub candidate. It uses ephemeral
+fixture signing only, never production keys or the manual/user installation.
+`--retry-fixture <failed-test-root> --inputs <cache>` is limited to a stopped,
+rolled-back ephemeral fixture. It retains the original root and signed repository,
+builds recovery-v2 alongside the first bootstrap, re-proves the same target, and
+checks update/restart, DB/manual key, model/security hashes and complete shutdown.
+`--audit-fixture <completed-test-root>` repeats inventory/data protection and
+restart/cleanup checks for a completed ephemeral fixture after a test-driver
+interruption. The restart adapter holds verified supervisor references before
+normal shutdown and waits for their OS exit; it never treats a stopped journal
+alone as evidence that the last process has exited.

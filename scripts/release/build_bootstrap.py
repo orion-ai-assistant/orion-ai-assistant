@@ -46,14 +46,22 @@ def build(trusted_root, inputs, output, *, test_only=False):
             '--target', str(python / 'site-packages'), '--require-hashes', '--only-binary', ':all:',
             '-r', str(Path(__file__).with_name('requirements.txt'))], check=True)
         install_site_hook(python)
-        for name in ('installation_registry.py', 'installation_paths.py', 'process_lifecycle.py',
-                     'windows_job.py', 'runtime_layout.py', 'release_packages.py'):
+        # Recovery runs from this independently retained bootstrap, even if the
+        # candidate Hub cannot import or its release tree is unavailable. Never
+        # replace the executing bootstrap; prepare a new installer alongside it.
+        for source in (ROOT / 'services/shared').glob('*.py'):
+            name = source.name
             destination = tree / 'services/shared' / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / 'services/shared' / name, destination)
-        destination = tree / 'scripts/release/install_new.py'
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(Path(__file__).with_name('install_new.py'), destination)
+        # The helper installs this stable guard before its first transaction.
+        # It must also be present when recovery runs without a working Hub.
+        shutil.copyfile(ROOT / 'services/shared/launcher_entry.ps1',
+                        tree / 'services/shared/launcher_entry.ps1')
+        for name in ('install_new.py', 'update_local.py'):
+            destination = tree / 'scripts/release' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(__file__).with_name(name), destination)
         shutil.copyfile(trusted_root, tree / 'trusted-root.json')
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root)}))

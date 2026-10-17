@@ -54,7 +54,7 @@ def fingerprint(root):
     return {p.relative_to(root).as_posix(): sha256(p) for p in root.rglob('*') if p.is_file()}
 
 
-def run(artifacts, base, inputs):
+def run(artifacts, base, inputs, *, after_acceptance=None):
     base = Path(base).resolve()
     base.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix='stage05-', dir=base))
@@ -197,6 +197,8 @@ def run(artifacts, base, inputs):
         report['checks'].append('every package file hash unchanged after runtime start/stop/restart')
         assert Registry(registry).read()['preferences']['automatic_updates'] is False
         assert Registry(registry).read()['preferences']['start_with_windows'] is False
+        if after_acceptance is not None:
+            after_acceptance(scratch, signers, bootstrap, installer, env)
         report['success'] = True
     except Exception as error:
         report['error'] = type(error).__name__ + ': ' + str(error)
@@ -204,6 +206,14 @@ def run(artifacts, base, inputs):
     finally:
         cleanup = []
         for kind, argv, cwd in reversed(processes):
+            # A Stage 06 callback can have selected a different immutable Hub.
+            # Cleanup must use that registered runtime, never the old code path.
+            if kind == 'hub' and after_acceptance is not None:
+                current = Registry(registry).read()
+                active = next(c for c in current['components'] if c['kind'] == 'hub')
+                cwd = Path(active['code_path'])
+                argv = [cwd / 'runtime/python/python.exe', '-m', 'services.shared.launcher',
+                        '--registry', registry, 'stop']
             result = subprocess.run(list(map(str, argv)), cwd=cwd, env=command_env,
                 stdout=log, stderr=log, timeout=180)
             cleanup.append({'component': kind, 'stop_exit': result.returncode})

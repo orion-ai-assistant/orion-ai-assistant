@@ -121,6 +121,9 @@ def launch(registry, *, startup=False, background=False, stop=False):
             raise RegistryError('No Orion installation registered; open installation repair')
         if startup and not record['preferences']['start_with_windows']:
             return {'status': 'disabled'}
+        from .update_gate import blocked
+        if not stop and blocked(registry.path):
+            raise RegistryError('Update recovery in progress; resume the local update helper')
         components = managed_components(record)  # Preflight all paths before any start.
         packages = [json.loads((Path(c['code_path']) / 'orion-release.json').read_text(encoding='utf-8'))
                     for c in record['components'] if c['distribution'] == 'packaged']
