@@ -136,7 +136,11 @@ if __name__ == '__main__':
     parser.add_argument('--settings', type=Path, help='Optional private JSON component -> initial settings')
     parser.add_argument('--launch', action='store_true')
     parser.add_argument('--background', action='store_true')
-    parser.add_argument('--start-with-windows', action='store_true')
+    # Defaults: updates and Windows start are ON (the owner's choice); each can be declined.
+    parser.add_argument('--no-start-with-windows', action='store_true')
+    parser.add_argument('--no-auto-update', action='store_true')
+    parser.add_argument('--no-firewall', action='store_true',
+                        help='Do not ask for the one-time private-network firewall permission')
     parser.add_argument('--no-window', action='store_true')
     parser.add_argument('targets', nargs='+')
     args = parser.parse_args()
@@ -147,7 +151,23 @@ if __name__ == '__main__':
     from services.shared.launcher import install_entry, preferences, launch
     registry = Registry(args.registry)
     install_entry(registry, desktop=True)
-    preferences(registry, start_with_windows=args.start_with_windows, show_client=not args.no_window)
+    preferences(registry, start_with_windows=not args.no_start_with_windows, show_client=not args.no_window)
+    updates = 'off'
+    if not args.no_auto_update:
+        from services.shared.automatic_updates import AutomaticUpdates
+        automatic = AutomaticUpdates(registry)
+        if automatic.source() is not None:  # Only an installer that shipped a release source can update.
+            automatic.preferences(enabled=True)
+            if any(c['kind'] == 'router' for c in registry.read()['components']):
+                AutomaticUpdates(registry, scope='router').preferences(enabled=True)
+            updates = 'on'
+    firewall = 'skipped'
+    if not args.no_firewall and os.environ.get('ORION_SKIP_FIREWALL') != '1':
+        from services.shared.windows_firewall import ensure_rules
+        print('Windows will ask for administrator permission once, to allow Orion on your private network '
+              '(phone and other devices). Declining is fine: Orion still works on this computer.', flush=True)
+        firewall = ensure_rules(registry.read())
     if args.launch:
         launch(registry, background=args.background)
-    print(json.dumps({'status': 'installed', 'installation_id': result['installation_id']}))
+    print(json.dumps({'status': 'installed', 'installation_id': result['installation_id'],
+                      'automatic_updates': updates, 'firewall': firewall}))

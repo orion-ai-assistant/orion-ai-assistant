@@ -48,6 +48,10 @@ def main():
         result = removal_plan(registry, args.components)
     elif args.action == 'uninstall':
         result = uninstall(registry, args.components, expected_revision=args.expected_revision)
+        remaining = registry.read()
+        if remaining is None or not any(c['kind'] in {'hub', 'router'} for c in remaining['components']):
+            from services.shared.windows_firewall import remove_rules
+            result = {**result, 'firewall': remove_rules()} if isinstance(result, dict) else result
     elif args.action == 'plan-cleanup':
         result = cleanup_plan(registry)
     elif args.action == 'purge-code':

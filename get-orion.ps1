@@ -7,7 +7,9 @@ param(
     [string]$Repo = 'orion-ai-assistant/orion-ai-assistant',
     [string]$Tag = 'feed',
     [switch]$NoStart,
-    [switch]$StartWithWindows
+    [switch]$NoStartWithWindows,
+    [switch]$NoAutoUpdate,
+    [switch]$NoFirewall
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -36,7 +38,9 @@ $source = Get-Content -LiteralPath (Join-Path $target 'release-source.json') -Ra
 $names = @($source.targets.hub, $source.targets.router, $source.targets.client) | Where-Object { $_ }
 $arguments = @{ MetadataUrl = $source.metadata_url; TargetsUrl = $source.targets_url; Targets = $names; Root = $orion }
 if ($NoStart) { $arguments.NoStart = $true }
-if ($StartWithWindows) { $arguments.StartWithWindows = $true }
+if ($NoStartWithWindows) { $arguments.NoStartWithWindows = $true }
+if ($NoAutoUpdate) { $arguments.NoAutoUpdate = $true }
+if ($NoFirewall) { $arguments.NoFirewall = $true }
 Write-Host 'Installing (about 320 MB download; this takes a few minutes)...'
 & (Join-Path $target 'Install-Orion.ps1') @arguments
 if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
