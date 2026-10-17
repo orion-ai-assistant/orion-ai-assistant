@@ -20,7 +20,7 @@ INTERVAL = 6 * 60 * 60
 
 def read_json(path, default):
     path = canonical_path(path)
-    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else deepcopy(default)
+    return json.loads(path.read_text(encoding='utf-8-sig')) if path.exists() else deepcopy(default)
 
 
 def write_json(path, value):
@@ -138,14 +138,18 @@ class AutomaticUpdates:
     def state_path(self):
         return self.base / ('router-automatic.json' if self.scope == 'router' else 'automatic.json')
 
-    def check(self, *, manual=False):
+    def check(self, *, manual=False, now=False):
+        """`now` skips only the 6-hour spacing (user pressed refresh); policy still applies."""
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
             source = self.source()
             if source is None or (not manual and not self.allowed()):
                 return
-            state = read_json(self.state_path, {'schema': 1})
-            if not manual and self.clock() - state.get('last_attempt', 0) < INTERVAL:
+            try:
+                state = read_json(self.state_path, {'schema': 1})
+            except ValueError:
+                state = {'schema': 1}  # An unreadable state file must never stop update checks.
+            if not manual and not now and self.clock() - state.get('last_attempt', 0) < INTERVAL:
                 return
             pending = self.helper.status()
             if pending and pending['phase'] not in TERMINAL:
@@ -246,15 +250,18 @@ def watch(automatic):
             with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
                 if stopped:
                     return
-            automatic.check()
-            router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')
-            request = canonical_path(automatic.base / 'router-request.json')
-            if request.exists():
-                value = read_json(request, {})
-                if value == {'schema': 1, 'installation_id': automatic.registry.read()['installation_id'], 'action': 'prepare'}:
-                    request.unlink()
-                    router.check(manual=True)
-                else:
-                    raise UpdateError('Invalid Router update request')
-            router.check()
+            try:
+                automatic.check()
+                router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')
+                request = canonical_path(automatic.base / 'router-request.json')
+                if request.exists():
+                    value = read_json(request, {})
+                    if value == {'schema': 1, 'installation_id': automatic.registry.read()['installation_id'], 'action': 'prepare'}:
+                        request.unlink()
+                        router.check(manual=True)
+                    else:
+                        raise UpdateError('Invalid Router update request')
+                router.check()
+            except (UpdateError, OSError, ValueError):
+                pass  # A bad state/request file must not silently kill the watcher; retry next poll.
             time.sleep(5)

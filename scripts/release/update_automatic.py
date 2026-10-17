@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('action', choices=['check', 'startup', 'watch'])
+    parser.add_argument('--now', action='store_true', help='check: skip the 6-hour spacing (refresh button)')
     args = parser.parse_args()
     os.environ['ORION_INSTALLATION_REGISTRY'] = str(args.registry)
     automatic = AutomaticUpdates(Registry(args.registry))
@@ -24,7 +25,8 @@ def main():
         except LifecycleError:
             pass  # An existing per-installation watcher already owns polling.
     elif args.action == 'check':
-        automatic.check()
+        automatic.check(now=args.now)
+        AutomaticUpdates(Registry(args.registry), helper=automatic.helper, scope='router').check(now=args.now)
     else:
         try:
             automatic.startup()

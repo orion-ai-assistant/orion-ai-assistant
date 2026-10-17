@@ -59,7 +59,7 @@ def installed(repo, monkeypatch):
     store.write(new_registry(base, [item], preferences={'automatic_updates': False}))
     old = store.read()
     release = deepcopy(target.custom)
-    release.update(sequence=release['sequence'] + 1, version='0.1.3', package_id='orion-hub-0.1.3-windows-x86_64-cpu')
+    release.update(sequence=release['sequence'] + 1, version='9.0.1', package_id='orion-hub-9.0.1-windows-x86_64-cpu')
     release['capabilities'] = list(set(release['capabilities']) | {'lifecycle.update-quarantine.v1'})
     updated = artifacts / (release['package_id'] + '.zip')
     with zipfile.ZipFile(updated, 'w') as archive:

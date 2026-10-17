@@ -84,3 +84,24 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 CHANGE_PREFERENCES(api.Preferences(start_with_windows=True, automatic_updates=True))
             updates.assert_not_called()
+
+
+class CheckNowTests(unittest.TestCase):
+    def test_check_now_spawns_only_the_fixed_retained_command(self):
+        with patch.object(api, 'Registry'), \
+                patch.object(api, 'runtime_command', return_value=['py', 'update_automatic.py', '--registry', 'r']), \
+                patch.object(api.subprocess, 'Popen') as popen, \
+                patch.object(api, 'read_status', return_value={'ok': True}):
+            self.assertEqual(CHANGE_PREFERENCES(api.Preferences(check_now=True)), {'ok': True})
+            self.assertEqual(popen.call_args.args[0][-2:], ['check', '--now'])
+            for bad in ({'check_now': False}, {'check_now': True, 'paused': False}):
+                with self.assertRaises(ValueError):
+                    CHANGE_PREFERENCES(api.Preferences(**bad))
+            popen.assert_called_once()
+
+    def test_check_now_without_retained_runtime_is_refused(self):
+        with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=None), \
+                patch.object(api.subprocess, 'Popen') as popen:
+            with self.assertRaises(ValueError):
+                CHANGE_PREFERENCES(api.Preferences(check_now=True))
+            popen.assert_not_called()

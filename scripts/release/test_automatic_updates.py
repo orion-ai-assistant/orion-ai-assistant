@@ -37,7 +37,7 @@ def test_signed_background_stages_without_stopping_active_local_or_remote_work(a
     assert host.stopped_calls == 0
     assert (data / 'identity.manual').read_bytes() == b'encrypted preference sentinel'
     status = service.status()
-    assert status['pending']['packages']['hub'].startswith('orion-hub-0.1.3')
+    assert status['pending']['packages']['hub'].startswith('orion-hub-9.0.1')
     assert status['last_success'] == now[0]
     assert not any(key in json.dumps(status) for key in ('code_path', 'data_path', 'backups', 'identity.manual'))
     assert service.startup()['phase'] == 'waiting_for_idle'
@@ -197,3 +197,37 @@ def test_interrupted_background_download_recovers_without_changing_active_data(a
     now[0] += INTERVAL + 1
     restarted.check()
     assert restarted.helper.status()['phase'] == 'staged'
+
+
+def test_refresh_now_skips_only_the_spacing_not_the_policy(automatic):
+    service, now, data, host = automatic
+    client = service.client_factory()
+    fetcher = client.updater._fetcher
+    factory = service.client_factory
+    fetcher.offline = True
+    service.client_factory = lambda: client
+    service.check()
+    first = service.status()['last_attempt']
+    now[0] += 60
+    service.check()  # Within the spacing: no new attempt.
+    assert service.status()['last_attempt'] == first
+    fetcher.offline = False
+    service.client_factory = factory
+    service.check(now=True)  # Refresh button: immediate retry.
+    assert service.status()['last_attempt'] == now[0]
+    assert service.helper.status()['phase'] == 'staged'
+    service.preferences(enabled=False)
+    now[0] += 60
+    before = service.status()['last_attempt']
+    service.check(now=True)  # Turned off: refresh never overrides the preference.
+    assert service.status()['last_attempt'] == before
+
+
+def test_unreadable_state_file_does_not_stop_checks_or_the_watcher(automatic):
+    service, now, data, host = automatic
+    service.state_path.write_bytes(b'\xef\xbb\xbf{"schema": 1, "last_attempt": 0}')  # BOM is tolerated
+    assert service.status()['last_attempt'] == 0
+    service.state_path.write_bytes(b'not json at all')
+    service.check()
+    assert service.helper.status()['phase'] == 'staged'
+    assert service.status()['last_success'] == now[0]

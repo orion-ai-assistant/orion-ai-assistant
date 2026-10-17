@@ -1,5 +1,6 @@
 """Authenticated status; local desktop authority for preference changes only."""
 import asyncio
+import subprocess
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
@@ -56,11 +57,27 @@ class Preferences(BaseModel):
     router_automatic_updates: StrictBool | None = None
     start_with_windows: StrictBool | None = None
     show_client: StrictBool | None = None
+    check_now: StrictBool | None = None
     model_config = {'extra': 'forbid'}
+
+
+def check_now(registry):
+    """Ask the retained update runtime for an immediate check; never takes commands from HTTP."""
+    command = runtime_command(registry)
+    if command is None:
+        raise ValueError('Retained update runtime unavailable')
+    # A concurrent check holds the per-installation lock and the extra process exits at once.
+    subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
 
 def change_preferences(payload):
     registry = Registry()
+    if payload.check_now is not None:
+        if payload.check_now is not True or any(v is not None for k, v in payload.model_dump().items() if k != 'check_now'):
+            raise ValueError('check_now must be the only field and true')
+        check_now(registry)
+        return read_status()
     groups = [any(value is not None for value in (payload.automatic_updates, payload.paused, payload.defer_hours)),
               payload.router_automatic_updates is not None,
               any(value is not None for value in (payload.start_with_windows, payload.show_client))]

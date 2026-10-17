@@ -193,9 +193,9 @@ def test_product_downgrade_in_fresh_signed_metadata_rejected(repo):
     description = artifacts / 'hub.target.json'
     original = json.loads(description.read_text())
     newer = deepcopy(original)
-    newer['custom']['sequence'] = 2
-    newer['custom']['version'] = '0.1.2'
-    newer['custom']['package_id'] = 'orion-hub-0.1.2-windows-x86_64-cpu'
+    newer['custom']['sequence'] = original['custom']['sequence'] + 1
+    newer['custom']['version'] = '9.0.1'
+    newer['custom']['package_id'] = 'orion-hub-9.0.1-windows-x86_64-cpu'
     newer['path'] = newer['custom']['package_id'] + '.zip'
     newer_artifacts = tmp / 'new-artifacts'
     newer_artifacts.mkdir()
