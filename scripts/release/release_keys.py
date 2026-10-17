@@ -74,10 +74,14 @@ def single_key_root(root):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['init'])
+    parser.add_argument('action', choices=['init', 'check'])
     parser.add_argument('--key-dir', type=Path, default=Path.home() / '.orion-release')
     parser.add_argument('--public-root', type=Path, default=Path(__file__).with_name('trusted-root.json'))
     args = parser.parse_args()
+    if args.action == 'check':
+        load_signer(args.key_dir / 'release-key.pem')
+        print('Passphrase is correct; the release key unlocks.')
+        sys.exit(0)
     key, public = init(args.key_dir, args.public_root)
     print(f'Private key (keep secret, back it up): {key}\nPublic root (commit this): {public}')
     sys.exit(0)
