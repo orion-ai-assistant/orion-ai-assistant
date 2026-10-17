@@ -1,0 +1,109 @@
+name: Windows package candidates
+on:
+  workflow_dispatch:
+    inputs:
+      router_ref:
+        description: Exact Router commit (40 hex characters)
+        required: true
+      client_ref:
+        description: Exact Flutter commit (40 hex characters)
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: windows-packages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: orion-ai-assistant
+      - name: Require immutable peer sources
+        shell: pwsh
+        env:
+          ROUTER_REF: ${{ inputs.router_ref }}
+          CLIENT_REF: ${{ inputs.client_ref }}
+        run: |
+          if ($env:ROUTER_REF -notmatch '^[0-9a-f]{40}$' -or $env:CLIENT_REF -notmatch '^[0-9a-f]{40}$') { throw 'Exact peer commits required' }
+      - uses: actions/checkout@v4
+        with:
+          repository: orion-ai-assistant/orion-router
+          ref: ${{ inputs.router_ref }}
+          path: orion-router
+      - uses: actions/checkout@v4
+        with:
+          repository: orion-ai-assistant/orion-ai-assistant-flutter
+          ref: ${{ inputs.client_ref }}
+          path: orion-ai-assistant-flutter
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.5'
+          channel: stable
+      - name: Install verifier and test dependencies
+        working-directory: orion-ai-assistant
+        run: |
+          uv venv .tmp/stage05-tools --python 3.11
+          if ($LASTEXITCODE -ne 0) { throw 'Verifier environment creation failed' }
+          uv pip install --python .tmp/stage05-tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Verifier dependency installation failed' }
+          uv pip install --python .tmp/stage05-tools/Scripts/python.exe pytest==9.1.1 python-dotenv==1.2.4
+      - name: Verify shared engine and package trust
+        working-directory: orion-ai-assistant
+        run: |
+          .tmp/stage05-tools/Scripts/python.exe scripts/lifecycle/sync_router_engine.py
+          if ($LASTEXITCODE -ne 0) { throw 'Independent Router engine drift' }
+          .tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_release_packages.py scripts/lifecycle/test_packaged_environment.py -q --junitxml=.tmp/package-security.xml
+      - name: Build Flutter web (sequential)
+        working-directory: orion-ai-assistant-flutter/main_app/app
+        run: |
+          flutter pub get --enforce-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Flutter dependency lock mismatch' }
+          flutter build web --release --no-wasm-dry-run
+      - name: Build Router static dashboard (sequential)
+        working-directory: orion-router/dashboard
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'Router dependency installation failed' }
+          npm run build
+      - name: Build final immutable candidates (sequential)
+        working-directory: orion-ai-assistant
+        run: |
+          $python = '.tmp/stage05-tools/Scripts/python.exe'
+          & $python scripts/release/download_inputs.py .tmp/inputs
+          if ($LASTEXITCODE -ne 0) { throw 'Build input verification failed' }
+          foreach ($kind in @('hub', 'router', 'client')) {
+            $source = switch ($kind) { hub { '.' } router { '../orion-router' } client { '../orion-ai-assistant-flutter' } }
+            $release = if ($kind -eq 'hub') { 'scripts/release/hub.json' } else { "$source/release/package.json" }
+            & $python scripts/release/build_package.py --source $source --release $release --output .tmp/candidates --inputs .tmp/inputs --postgres .tmp/inputs/postgresql-16.15-1-windows-x64-binaries.zip
+            if ($LASTEXITCODE -ne 0) { throw "Package build failed: $kind" }
+          }
+          & $python scripts/release/accept_packages.py --artifacts .tmp/candidates --inputs .tmp/inputs --scratch-base "$env:LOCALAPPDATA/Orion/lifecycle-tests"
+          if ($LASTEXITCODE -ne 0) { throw 'Package integration failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-x64-cpu-candidates-${{ github.sha }}
+          path: |
+            orion-ai-assistant/.tmp/candidates/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-package-test-results-${{ github.sha }}
+          path: |
+            orion-ai-assistant/.tmp/package-security.xml
+            ~/AppData/Local/Orion/lifecycle-tests/stage05-*/result.json
+          if-no-files-found: error
+      # This workflow deliberately has no publish/deploy action. Candidate ZIPs
+      # become trusted releases only through offline-root authorized TUF signing.

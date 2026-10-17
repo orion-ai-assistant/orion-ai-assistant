@@ -149,7 +149,8 @@ def _main(runtime):
     if not env.get('JWT_SECRET_KEY') or env.get('JWT_SECRET_KEY') == 'super-secret-default-key-for-dev':
         import secrets
         env['JWT_SECRET_KEY'] = secrets.token_urlsafe(48)
-        overrides = os.path.join(_repo_root, 'services', '.env.global.local')
+        from services.shared.runtime_layout import data_root
+        overrides = str(data_root(_repo_root) / 'services/.env.global.local')
         with open(overrides, 'a', encoding='utf-8') as configuration:
             configuration.write('\n# Hub public entry point signing key\nJWT_SECRET_KEY=' + env['JWT_SECRET_KEY'] + '\n')
     
@@ -166,8 +167,11 @@ def _main(runtime):
     
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     hub_dir = os.path.dirname(os.path.abspath(__file__))
-    pid_path = os.path.join(hub_dir, "hub.pid")
-    log_path = os.path.join(hub_dir, "hub.log")
+    from services.shared.runtime_layout import data_root, component
+    mutable_hub = data_root(base_dir) / 'services/hub'
+    mutable_hub.mkdir(parents=True, exist_ok=True)
+    pid_path = str(mutable_hub / 'hub.pid')
+    log_path = str(mutable_hub / 'hub.log')
     
     # Commands
     hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
@@ -212,7 +216,7 @@ def _main(runtime):
     if not os.path.isfile(redis_exe):
         raise LifecycleError('Portable Redis missing; run setup first')
     redis_proc = runtime.launch('redis', [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)],
-        cwd=os.path.dirname(redis_exe), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=str(mutable_hub), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         creationflags=hide_flags)
     redis_proc.child['native'] = {'kind': 'redis', 'port': int(redis_port)}
     processes.append(redis_proc)

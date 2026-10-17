@@ -57,7 +57,8 @@ class SingleWorkerLock:
     """An OS lock has no expiry and is released by the OS on process death."""
 
     def __init__(self, path=None):
-        self.path = Path(path) if path else Path(__file__).resolve().parents[3] / 'data' / 'worker.lock'
+        from .data_paths import hub_data
+        self.path = Path(path) if path else hub_data() / 'worker.lock'
         self.file = None
 
     def __enter__(self):

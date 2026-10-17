@@ -2,6 +2,8 @@
 
 Durum: tasarım sözleşmesidir; uygulanmış özellik listesi değildir. Her aşamada bu dosyanın ürün kararları ve ilgili teknik bölümleri okunur. Aşamaya özel uygulama/test/sonuç bilgisi ilgili aşama dosyasında tutulur. Ana giriş: [ana plan](../orion-installation-lifecycle-implementation-plan.md).
 
+17 Ekim 2026 Aşama 05 uygulama eki: schema-1 bileşen kaydı isteğe bağlı `package: {id, sha256, length, inventory_sha256}` alanını kabul eder. Bu yalnız `distribution=packaged` için, TUF ile doğrulanmış yeni kurulumdan sonra yazılır. `state/installed-package.json` dosya envanteri kayıt içindeki hash'e bağlıdır; kendiliğinden oluşturulmuş yerel makbuz imza sayılmaz. Başlatıcı/kayıtlı Router incelemesi envanteri denetler; kayıt dışı paket klasörüne güven vermez. Başlangıç TUF kökü güvenilen kurucudan gelir ve `<registry-parent>/bootstrap/trusted-root.json` olarak korunur. Paket arayüzü ve veri alanı ayrıntıları [05 sonuçlarında](05-packaging-and-release-metadata.md) ve [araç rehberinde](../../scripts/release/README.md) yer alır. Üretim kökü/temiz VM/yayın kabulü açık; otomatik güncelleme açılmaz.
+
 ## 1. Ürün kararları
 
 - İlk hedef Windows'ta kullanıcıya özel yerel kurulumdur. İlk sürüm Windows oturum açılışında çalışır; sistem hizmeti değildir. Docker ve geliştirme kurulumları açıkça tanımlanır, kapsam dışı özellikler yanlışlıkla destekleniyormuş gibi gösterilmez.

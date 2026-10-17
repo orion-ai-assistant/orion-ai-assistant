@@ -1,14 +1,16 @@
 # Orion kurulum ve güncelleme — ana uygulama rehberi
 
-Tarih: 16 Ekim 2026. Aşama 00/02 tamamlandı; 01/03 DOĞRULAMA EKSİK. Aşama 04 kaynak başlatıcı ve Windows başlangıcı çekirdeği uygulandı; gerçek Unicode Hub/DB/Flutter sunucusu ve izole Startup testleri geçti. **04 DOĞRULAMA EKSİK:** temiz Windows VM/logon ve gerçek pencere/onarım OS kabulü açık. 05–08 başlamadı. [04 sonuç kaydı](orion-lifecycle-plan/04-launcher-and-autostart.md).
+Tarih: 17 Ekim 2026. Aşama 00/02 tamamlandı; 01/03/04 DOĞRULAMA EKSİK. Aşama 05 paket üretimi, TUF güveni ve paketli kod/data/state arayüzleri uygulandı; **05 DOĞRULAMA EKSİK:** temiz Windows VM ve üretim güven kökü/yayın kabulü açık. 06–08 başlamadı. [05 sonuç kaydı](orion-lifecycle-plan/05-packaging-and-release-metadata.md), [04 sonuç kaydı](orion-lifecycle-plan/04-launcher-and-autostart.md).
 
-Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyalarına ayrılmıştır. Önce bu rehberi, sonra ortak kararları ve yalnız seçilen aşamanın gerekli belgelerini oku. Son kullanıcı talimatı: yalnız 04, testleri kendin sırayla çalıştır, sonuçları MD'ye kaydet, görev değişikliklerini commit et ve dur; push yapma. Hesabın Windows başlangıcı otomatik etkinleştirilmez. Eksik kabulü geçmiş veya yayını onaylanmış gösterme.
+Bu dosya yeni oturumların giriş noktasıdır. Ayrıntılı plan aşama dosyalarına ayrılmıştır. Önce bu rehberi, sonra ortak kararları ve yalnız seçilen aşamanın gerekli belgelerini oku. Güncel kullanıcı talimatı: yalnız 05, testleri kendin sırayla çalıştır, sonuçları MD'ye kaydet, görev değişikliklerini yerel commit et ve dur; push yapma. Windows başlangıcı ve otomatik güncelleme etkinleştirilmez. Computer Use ve manuel pencere/logon kontrolü bu oturumun ön koşulu değildir. Eksik kabulü geçmiş veya yayını onaylanmış gösterme.
 
 **Son takip kararı:** kullanıcı Computer Use'u durdurdu; pencere/gerçek logon manuel kabulünü Aşama 05 sonrasına erteledi. C AppData gerçek kaynak kurulum/izole Startup/Desktop çağrıları geçti ve test süreçleri kapatıldı. Bu oturum kod testi/sonuç commit'iyle biter; yeni oturumda yalnız 05'e geçiş yetkilidir. [Kopyalanabilir 05 promptu](orion-lifecycle-plan/05-session-prompt.md). 01/03/04 açık borçları görünür kalır; 05 geliştirmesini bu ertelenmiş manuel kontrollerle bloke etme.
 
-17 Ekim ek kullanıcı talebiyle Router çevrimdışı hesap hazırlama ve Router'a özel manuel sanal anahtar akışı uygulandı; [arayüz/sonuç kaydı](router-account-access-followup.md) yeni 05 oturumunda okunur. 05–08 henüz başlamadı; önceki açık kabul etiketleri değişmez.
+17 Ekim ek kullanıcı talebiyle Router çevrimdışı hesap hazırlama ve Router'a özel manuel sanal anahtar akışı uygulandı; [arayüz/sonuç kaydı](router-account-access-followup.md) 05 oturumunda okundu ve endpoint/data bağımlılıkları paket sözleşmesine işlendi. Önceki açık kabul etiketleri değişmez.
 
 ## Şimdi nereden başlanacak?
+
+**Güncel 05 devri:** [05 sonuç kaydını](orion-lifecycle-plan/05-packaging-and-release-metadata.md) ve [paket araçları/güven işletimini](../scripts/release/README.md) oku. Paket geliştirmesi 06–08 yetkisi değildir. SDK'sız PATH ile development bilgisayarında gerçek ZIP testi, temiz VM kabulünün yerine geçmez. Aşağıdaki 04/03 özetleri tarihsel devir bağlamıdır; son watchdog düzeltmesi ve geçen 35 + 9 / 51 + 2 sonuçları korunur.
 
 **Güncel 04 devri:** [04 oturum devrini](orion-lifecycle-plan/04-session-handoff.md) ve [04 sonuç kaydını](orion-lifecycle-plan/04-launcher-and-autostart.md) oku. Kaynak kurulum tek PowerShell girişi, Desktop/Startup linkleri, ayrı başlangıç/pencere tercihleri, yerel hata/log/onarma erişimi ve mevcut pencereye yönlendirme kodu var. Gerçek Unicode Hub/PG/Flutter sunucusu testi geçti. Temiz VM/logon, gerçek HWND/pencere kapanışı ve WinForms görsel kabulü açık; bu nedenle 04 tamamlandı sayılmaz. 01/03 borcu korunur. Yalnız 04 commit'inden sonra durulur; sonraki aşamaya geçilmez. Aşağıdaki 03 giriş paragrafı tarihsel devir bağlamıdır.
 
@@ -31,16 +33,16 @@ Numaralar önerilen çalışma sırasıdır; ön koşul sütunu teknik bağıml�
 | 02 | [Kurulum kaydı ve Router seçimi](orion-lifecycle-plan/02-installation-registry-and-router-selection.md) | 01 | TAMAMLANDI |
 | 03 | [Konum seçimi ve kontrollü taşıma](orion-lifecycle-plan/03-installation-paths-and-migration.md) | 02 | DOĞRULAMA EKSİK |
 | 04 | [Başlatıcı ve Windows başlangıcı](orion-lifecycle-plan/04-launcher-and-autostart.md) | 01, 02, 03 | DOĞRULAMA EKSİK |
-| 05 | [Hazır paket ve sürüm metaverisi](orion-lifecycle-plan/05-packaging-and-release-metadata.md) | 02, 03 | BAŞLANMADI |
+| 05 | [Hazır paket ve sürüm metaverisi](orion-lifecycle-plan/05-packaging-and-release-metadata.md) | 02, 03 | DOĞRULAMA EKSİK |
 | 06 | [Güncelleme yardımcısı ve kurtarma](orion-lifecycle-plan/06-update-helper-and-recovery.md) | 01, 02, 03, 05 | BAŞLANMADI |
 | 07 | [Otomasyon ve Flutter ekranı](orion-lifecycle-plan/07-automatic-updates-and-flutter.md) | 04, 06 | BAŞLANMADI |
 | 08 | [Router geçişi ve kontrollü yayın](orion-lifecycle-plan/08-router-transition-and-rollout.md) | 04, 05, 06, 07 | BAŞLANMADI |
 
-Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04 açık kabulleri kendi sonuç kayıtlarındadır; 05–08 başlamadı.
+Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLANDI`. Gerekli test çalıştırılamadıysa aşama tamamlandı sayılmaz; ortam eksikliği ve kalan doğrulama kaydedilir. Aşama tablosu ile kendi dosyasındaki durum birlikte güncellenir. 00/02 tamamlandı; 01/03/04/05 açık kabulleri kendi sonuç kayıtlarındadır; 06–08 başlamadı.
 
 ## Her oturumun çalışma yöntemi
 
-16 Ekim 2026 son kapsam istisnası: kullanıcı 01/03 açık kabul borçları korunarak yalnız 04 geliştirmesini açıkça yetkilendirdi. Bu oturumda 04 uygulanıp test/belge/commit sonrasında durulur; bu istisna 05'e geçiş yetkisi değildir.
+17 Ekim 2026 güncel kapsam: kullanıcı 01/03/04 kabul borçları korunarak yalnız 05 geliştirmesini açıkça yetkilendirdi. Önceki 04 kapsam istisnası tarihsel kayıttır. Bu oturumda 05 test/belge/yerel commit sonrasında durulur; 06–08'e geçilmez.
 
 1. Repo talimatlarını ve bu ana rehberi oku. Kullanıcı bir aşama belirttiyse onu seç; belirtmediyse burada belirtilen sıradaki işi seç. Ön koşulları tamamlanmamış aşamayı uygulama; yalnız yukarıdaki 16 Ekim kullanıcı kararı, 01'in açık kabul borcuyla 02 geliştirmesine devam etmek için kayıtlı istisnadır. Sonraki 16 Ekim kullanıcı talimatı 03 geliştirmesini de yetkilendirdi; yayın kabulü veya eksik testlerin tamamlanması anlamına gelmez.
 2. Ortak ürün kararlarını, seçilen aşama dosyasını ve orada belirtilen teknik sözleşmeleri oku. Ön koşulların sonuç kayıtlarını incele; başka aşamaya ait ayrıntıları yalnız arayüz ihtiyacı varsa aç.
@@ -48,7 +50,7 @@ Durum değerleri: `BAŞLANMADI`, `DEVAM EDİYOR`, `DOĞRULAMA EKSİK`, `TAMAMLAN
 4. Seçilen aşamayı küçük değişikliklerle uygula; yalnız gerekli ön koşul düzeltmelerini ayrıca belirt. Başka aşama özelliğini kendiliğinden etkinleştirme. Gerçek kullanıcı verisini test amacıyla taşıma/silme; ACL mirasını otomatik değiştirme.
 5. Aşamanın kabul testlerini çalıştır. Komut, ortam, sonuç, çalıştırılamayan kontroller ve korunma kanıtını aşama dosyasına yaz. Geçmeyen/çalıştırılamayan zorunlu kabul koşulunu geçmiş gösterme.
 6. Sonuç kaydına değişen dosyaları, kararlı arayüzleri, geri alma yöntemini ve sonraki aşamanın bilmesi gerekenleri ekle. Ortak sözleşme değiştiyse ilgili bağlantıları güncelle.
-7. Ana tablodaki durumu ve sıradaki aşamayı güncelle; sonucu kaydet ve aşama commit’ini oluştur. Son kullanıcı talimatıyla bu oturumda 04 commit’inden sonra dur; gerçek test/ortam engellerini ve tamamlanmamış kabulü açık bırak. Push yetkisi verilmedi.
+7. Ana tablodaki durumu ve sıradaki aşamayı güncelle; sonucu kaydet ve aşama commit’ini oluştur. Son kullanıcı talimatıyla bu oturumda 05 commit’inden sonra dur; gerçek test/ortam engellerini ve tamamlanmamış kabulü açık bırak. Push yetkisi verilmedi.
 
 ## Bağımlılıklar neden var?
 

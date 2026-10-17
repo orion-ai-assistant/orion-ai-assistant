@@ -306,7 +306,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         del config.INSTALL_ERRORS[service_id]
     
     # Yerel ayar dosyasini ilk kurulum aninda kopyala
-    global_env_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
+    global_env_path = os.path.join(config.DATA_SERVICES_DIR, ".env.global.local")
     global_env_example_path = os.path.join(config.SERVICES_DIR, ".env.global.local.example")
     if not os.path.exists(global_env_path) and os.path.exists(global_env_example_path):
         import shutil
@@ -437,7 +437,7 @@ def prepare_install(service_id: str, hardware: str, env_id: str, model_file: str
         added_global_vars["CLI_LANG"] = lang_code
 
     if added_global_vars:
-        global_env_path = os.path.join(config.SERVICES_DIR, ".env.global.local")
+        global_env_path = os.path.join(config.DATA_SERVICES_DIR, ".env.global.local")
         try:
             exists = os.path.exists(global_env_path)
             with open(global_env_path, "a", encoding="utf-8") as gf:
@@ -934,7 +934,7 @@ def run_installation(
         g_vars_global_only = system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global"))
         g_vars_file = {
             **g_vars_global_only,
-            **system_utils._read_env(os.path.join(config.SERVICES_DIR, ".env.global.local"))
+            **system_utils._read_env(os.path.join(config.DATA_SERVICES_DIR, ".env.global.local"))
         }
         
         with open(os.path.join(service_dir, ".env"), "w", encoding="utf-8") as f:

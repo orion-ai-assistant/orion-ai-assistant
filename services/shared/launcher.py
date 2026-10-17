@@ -26,9 +26,20 @@ def managed_components(record):
     for item in record['components']:
         if item['kind'] == 'client' or item['management'] == 'connect-only':
             continue
-        if item['ownership'] != 'owned' or item['distribution'] not in {'legacy-source', 'development'}:
+        if item['ownership'] != 'owned' or item['distribution'] not in {'legacy-source', 'development', 'packaged'}:
             raise RegistryError('Local source ownership/runtime is unavailable; package repair is required')
         root = canonical_path(item['code_path'], must_exist=True)
+        if item['distribution'] == 'packaged':
+            from .release_packages import verify_registered_package
+            release = verify_registered_package(root)
+            if release['component'] != item['kind']:
+                raise RegistryError('Package component mismatch')
+            for field in ('data_path', 'state_path'):
+                target = canonical_path(item[field], must_exist=True)
+                if target == root or root in target.parents or target in root.parents:
+                    raise RegistryError('Package data/state overlaps immutable code')
+            result.append(item)
+            continue
         if Path(item['state_path']) != root / '.orion-lifecycle' or Path(item['data_path']) != root:
             raise RegistryError('External data/state runtime is not supported by this source launcher')
         metadata = root / ('services/hub/pyproject.toml' if item['kind'] == 'hub' else 'pyproject.toml')
@@ -51,14 +62,19 @@ def launch_environment(registry):
     from dotenv import dotenv_values
     values = {}
     hub = next(c for c in registry.read()['components'] if c['kind'] == 'hub')
-    for name in ('.env.global', '.env.global.local'):
-        values.update({k: v for k, v in dotenv_values(Path(hub['code_path']) / 'services' / name).items() if v is not None})
+    for base, name in ((hub['code_path'], '.env.global'), (hub['data_path'], '.env.global.local')):
+        values.update({k: v for k, v in dotenv_values(Path(base) / 'services' / name).items() if v is not None})
     clients = [c for c in registry.read()['components'] if c['kind'] == 'client']
     if clients:
         client = clients[0]
-        if client['distribution'] not in {'legacy-source', 'development'}:
-            raise RegistryError('Client package runtime support requires stage 05')
+        if client['distribution'] not in {'legacy-source', 'development', 'packaged'}:
+            raise RegistryError('Client runtime unsupported')
         values['ORION_FLUTTER_APP_DIR'] = str(canonical_path(client['code_path'], must_exist=True))
+        if client['distribution'] == 'packaged':
+            from .release_packages import verify_registered_package
+            metadata = verify_registered_package(client['code_path'])
+            if metadata['component'] != 'client':
+                raise RegistryError('Client package component mismatch')
     else:
         values.setdefault('ORION_FLUTTER_APP_DIR', os.environ.get('ORION_FLUTTER_APP_DIR', str(Path(hub['code_path']).parent / 'Client')))
     values.update(ORION_INSTALLATION_REGISTRY=str(registry.path), ORION_FLUTTER_OPEN_WINDOW='0')
@@ -106,6 +122,11 @@ def launch(registry, *, startup=False, background=False, stop=False):
         if startup and not record['preferences']['start_with_windows']:
             return {'status': 'disabled'}
         components = managed_components(record)  # Preflight all paths before any start.
+        packages = [json.loads((Path(c['code_path']) / 'orion-release.json').read_text(encoding='utf-8'))
+                    for c in record['components'] if c['distribution'] == 'packaged']
+        if packages and not stop:
+            from .release_packages import compatible
+            compatible(packages)
         with launch_environment(registry):
             for item in (reversed(components) if stop else components):
                 root = item['code_path']

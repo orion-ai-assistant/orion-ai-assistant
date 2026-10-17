@@ -97,7 +97,8 @@ class Job:
     @property
     def cancel_path(self):
         scope = self.record['scope']
-        return Path(scope['root']) / '.orion-lifecycle' / scope['component'] / ('cancel-' + scope['instance_id'])
+        from .runtime_layout import state_root
+        return state_root(Path(scope['root'])) / scope['component'] / ('cancel-' + scope['instance_id'])
 
     def cancel(self):
         # Also closes admission when a pending host has opened a handle but has

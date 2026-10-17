@@ -5,6 +5,7 @@ import urllib.request
 import zipfile
 import subprocess
 import shutil
+from pathlib import Path
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_DB_DIR = os.path.join(BASE_DIR, ".local_db")
@@ -49,7 +50,8 @@ def install_windows():
         print("[OK] Portable PostgreSQL binaries extracted.")
     if not pg_dir.isascii():
         verify_unicode_runtime(pg_dir)
-    data_dir = os.path.join(pg_dir, "data")
+    from services.shared.runtime_layout import data_root
+    data_dir = str(data_root(BASE_DIR) / '.local_db/postgres/data')
     if not os.path.exists(os.path.join(data_dir, "PG_VERSION")):
         # Initialize Database
         initdb_exe = os.path.join(pg_dir, "bin", "initdb.exe")

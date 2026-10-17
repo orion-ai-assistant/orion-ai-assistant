@@ -341,7 +341,8 @@ def wait_health(child, port, *, certificate=None, identity=None, timeout=30,
 
 
 def state_dir(root, component):
-    return Path(root).resolve() / '.orion-lifecycle' / component
+    from .runtime_layout import state_root
+    return state_root(Path(root).resolve()) / component
 
 
 class Runtime:
@@ -405,12 +406,15 @@ class Runtime:
         return value
 
     def save(self):
+        from .runtime_layout import component
+        installed = component(self.root)
+        release = installed['package']['id'] if installed else 'legacy-source'
         database = getattr(self, 'database', None)
         database_record = (dict(ctl=str(database.ctl), data=str(database.data), port=database.port,
                                 user=database.user, database=database.database) if database is not None
                            else getattr(self, 'previous_database', None))
         durable_json(self.path, dict(v=1, component=self.component, installation_id=self.identity['id'],
-                     root=canonical(self.root), run_id=self.run_id, release='legacy-source',
+                     root=canonical(self.root), run_id=self.run_id, release=release,
                      supervisor=self.supervisor, children=self.children, database=database_record, status=self.status))
 
     def requested(self):

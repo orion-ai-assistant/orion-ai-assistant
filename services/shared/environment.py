@@ -16,11 +16,25 @@ def load_environment():
     # services/shared/environment.py -> parents: 1=shared, 2=services, 3=repo_root
     repo_root = this_file.parents[2]
     services_dir = repo_root / "services"
+    from .runtime_layout import data_root, component
+    data_services = data_root(repo_root) / 'services'
 
     env_files = [
         services_dir / ".env.global",
-        services_dir / ".env.global.local",
+        data_services / ".env.global.local",
     ]
+    if component(repo_root):
+        # Packaged standalone entrypoints do not rely on the source launcher's
+        # pre-merged environment. Data overrides must win over package defaults;
+        # explicitly supplied process values still have the highest priority.
+        from dotenv import dotenv_values
+        values = {}
+        for env_file in env_files:
+            if env_file.exists():
+                values.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
+        for key, value in values.items():
+            os.environ.setdefault(key, value)
+        return
     for env_file in env_files:
         if env_file.exists():
             load_dotenv(env_file)

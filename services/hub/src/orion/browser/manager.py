@@ -34,7 +34,8 @@ class BrowserTabMissing(BrowserUnavailable):
 
 
 def browser_root():
-    return Path(__file__).resolve().parents[3] / 'data' / 'browser-profiles'
+    from orion.kernel.data_paths import hub_data
+    return hub_data() / 'browser-profiles'
 
 
 def require_desktop():

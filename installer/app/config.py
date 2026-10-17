@@ -13,6 +13,8 @@ PROJECT_ROOT  = os.path.dirname(INSTALLER_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 SERVICES_DIR  = os.path.join(PROJECT_ROOT, "services")
+from services.shared.runtime_layout import data_root
+DATA_SERVICES_DIR = str(data_root(PROJECT_ROOT) / 'services')
 UI_DIR        = os.path.join(INSTALLER_DIR, "app", "ui")
 
 # ---------------------------------------------------------------------------
@@ -68,7 +70,7 @@ def _load_global_env() -> dict[str, str]:
                     env[k.strip()] = v.strip()
 
     # Yerel ezmeleri yükle (.env.global.local)
-    local_path = os.path.join(SERVICES_DIR, ".env.global.local")
+    local_path = os.path.join(DATA_SERVICES_DIR, ".env.global.local")
     if os.path.exists(local_path):
         with open(local_path, encoding="utf-8", errors="replace") as f:
             for line in f:

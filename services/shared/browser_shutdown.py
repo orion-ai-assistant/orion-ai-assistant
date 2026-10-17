@@ -6,13 +6,19 @@ from pathlib import Path
 import subprocess
 
 
+def hub_data(hub):
+    from .runtime_layout import data_root
+    return data_root(Path(hub).resolve().parents[1]) / 'services/hub/data'
+
+
 def stop_hub_browsers(hub_dir):
     hub = Path(hub_dir).resolve()
-    profiles = hub / 'data' / 'browser-profiles'
+    profiles = hub_data(hub) / 'browser-profiles'
     if not profiles.exists():
         return True
     (profiles / '.stopping').touch()
-    python = hub / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    from .native_services import python_at
+    python = Path(python_at(hub))
     if not python.is_file():
         logging.error('Cannot close Orion browsers: Hub Python is missing')
         return False
@@ -32,4 +38,4 @@ def stop_hub_browsers(hub_dir):
 
 
 def allow_hub_browsers(hub_dir):
-    (Path(hub_dir) / 'data' / 'browser-profiles' / '.stopping').unlink(missing_ok=True)
+    (hub_data(hub_dir) / 'browser-profiles' / '.stopping').unlink(missing_ok=True)

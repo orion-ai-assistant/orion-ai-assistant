@@ -13,7 +13,8 @@ class ProfileBusy(Exception):
 
 def profile_root():
     # Stable across API/worker working directories; data/ is gitignored.
-    return Path(__file__).resolve().parents[5] / 'data' / 'google-profiles'
+    from orion.kernel.data_paths import hub_data
+    return hub_data() / 'google-profiles'
 
 
 def profile_dir(user_id):

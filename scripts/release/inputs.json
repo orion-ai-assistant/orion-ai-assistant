@@ -1,0 +1,22 @@
+{
+  "python": {
+    "filename": "python-3.11.9-embed-amd64.zip",
+    "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+    "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+  },
+  "redis": {
+    "filename": "Redis-x64-5.0.14.1.zip",
+    "url": "https://github.com/tporadowski/redis/releases/download/v5.0.14.1/Redis-x64-5.0.14.1.zip",
+    "sha256": "018ea18a35876383cbb5f4cd0258adfc87747cf9d619bce1cf73a2e36f720ccf"
+  },
+  "ffmpeg": {
+    "filename": "ffmpeg-n8.1.3-18-g46d899d7a0-win64-gpl-shared-8.1.zip",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-16-13-04/ffmpeg-n8.1.3-18-g46d899d7a0-win64-gpl-shared-8.1.zip",
+    "sha256": "e29da5e4ba2279441c1eab58ed5a1ae74f8dc04e93717bdada33745b05c2474d"
+  },
+  "postgres": {
+    "filename": "postgresql-16.15-1-windows-x64-binaries.zip",
+    "url": "https://get.enterprisedb.com/postgresql/postgresql-16.15-1-windows-x64-binaries.zip",
+    "sha256": "25e6fcdfb8caec38691bf461125e7564508760666f7b8e5dc6a5f0818f58f81e"
+  }
+}

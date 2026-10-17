@@ -31,7 +31,8 @@ try {
     if (-not [IO.Path]::IsPathRooted($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) {
         throw 'Registered disk or Hub folder is missing. Reconnect the disk; no empty installation was created.'
     }
-    $python = Join-Path $root 'installer/.venv/Scripts/python.exe'
+    $python = Join-Path $root 'runtime/python/python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { $python = Join-Path $root 'installer/.venv/Scripts/python.exe' }
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { $python = Join-Path $root 'services/hub/.venv/Scripts/python.exe' }
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw 'Orion Python runtime is missing. Repair the existing installation.' }
     $env:ORION_INSTALLATION_REGISTRY = $registry

@@ -123,9 +123,21 @@ def inspect_router_folder(root, *, distribution='legacy-source', expected_identi
         directory = raw_root.resolve(strict=True)
         candidate = replace(candidate, root=str(directory))
         if distribution == 'packaged':
-            return replace(candidate, status='incompatible', reason='Signed package verification is required')
+            from .release_packages import verify_registered_package
+            from .runtime_layout import component
+            try:
+                installed = component(directory)
+            except RuntimeError:
+                return replace(candidate, status='incompatible', reason='Package is not registered by a trusted installer')
+            if not installed or not installed.get('package'):
+                return replace(candidate, status='incompatible', reason='Trusted package installation receipt required')
+            release = verify_registered_package(directory)
+            if release['component'] != 'router':
+                raise ValueError('Package is not Router')
+            data_path = Path(installed['data_path']) / 'persistent'
+            state_path = installed['state_path']
         project = _read_project(directory)
-        version = project.get('version')
+        version = release['version'] if distribution == 'packaged' else project.get('version')
         if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
             raise ValueError('Missing or invalid Router version metadata')
         candidate = replace(candidate, version=version)
@@ -164,7 +176,9 @@ def inspect_router_folder(root, *, distribution='legacy-source', expected_identi
         if ((expected_identity is not None and identity != str(UUID(expected_identity)))
                 or (expected_spki is not None and spki != expected_spki)):
             return replace(candidate, status='identity-mismatch', reason='Recorded UUID/TLS identity differs')
-        candidate = replace(candidate, status='closed-unverified', reason='Unsigned source recognized; runtime unverified')
+        candidate = replace(candidate, status='closed-unverified', reason=(
+            'Installed package inventory verified; runtime unverified' if distribution == 'packaged'
+            else 'Unsigned source recognized; runtime unverified'))
         if live_verifier is None:
             return candidate
         evidence = live_verifier(candidate)

@@ -24,6 +24,13 @@ def dispatch_if_needed(action, root, argument=None):
 
 
 def python_at(root):
+    from .runtime_layout import python_path, component
+    repo = Path(root).resolve().parents[1]
+    if component(repo):
+        path = python_path(repo)
+        if not path.is_file():
+            raise LifecycleError('Packaged Python runtime missing; repair required')
+        return str(path)
     path = Path(root) / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
     if not path.is_file():
         raise LifecycleError('Service environment missing; run setup first')
@@ -32,8 +39,9 @@ def python_at(root):
 
 def hub_database(root, get_env):
     from services.shared.native_postgres import Postgres
+    from .runtime_layout import data_root
     return Postgres(Path(root) / '.local_db/postgres/bin' / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'),
-                    Path(root) / '.local_db/postgres/data', get_env('POSTGRES_PORT'),
+                    data_root(root) / '.local_db/postgres/data', get_env('POSTGRES_PORT'),
                     get_env('POSTGRES_USER'), get_env('POSTGRES_DB'), get_env('POSTGRES_PASSWORD'))
 
 
@@ -103,6 +111,12 @@ def router_root(script):
 
 
 def router_python(root):
+    from .runtime_layout import component, python_path
+    if component(root):
+        path = python_path(root)
+        if not path.is_file():
+            raise LifecycleError('Packaged Router Python missing; repair required')
+        return str(path)
     # Legacy native Router installers use the user's Python; dev checkouts may
     # have a venv. This phase does not silently replace that runtime.
     path = Path(root) / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')

@@ -9,8 +9,9 @@ from urllib.parse import urlsplit
 
 
 def connection_path():
+    from .runtime_layout import data_root
     return Path(os.getenv('ORION_ROUTER_CONNECTION_FILE', str(
-        Path(__file__).resolve().parents[1] / 'hub' / 'data' / 'router-connection.json')))
+        data_root(Path(__file__).resolve().parents[2]) / 'services/hub/data/router-connection.json')))
 
 
 def validate_url(value):

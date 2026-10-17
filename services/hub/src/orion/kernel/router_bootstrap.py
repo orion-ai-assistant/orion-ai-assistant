@@ -34,12 +34,19 @@ def validate_registration(record):
     if project.get('project', {}).get('name') != 'orion-router':
         raise ValueError('Registered installation is not Orion Router')
     paths = {}
+    from services.shared.runtime_layout import component
+    installed = component(root)
+    allowed = root
+    if installed:
+        from services.shared.release_packages import verify_registered_package
+        verify_registered_package(root)
+        allowed = Path(installed['data_path']) / 'persistent'
     for field in ('certificate_path', 'identity_path'):
         raw = Path(record[field])
         if not raw.is_absolute():
             raise ValueError('Router public identity paths must be absolute')
         resolved = raw.resolve()
-        if not resolved.is_relative_to(root):
+        if not resolved.is_relative_to(allowed):
             raise ValueError('Router public identity file escapes its registered installation')
         paths[field] = resolved
     port = int(record.get('tls_port', 9443))
@@ -95,7 +102,9 @@ def read_local_router_candidate():
         candidate = inspect_router_folder(
             root, distribution=item['distribution'], expected_identity=item.get('router_uuid'),
             expected_spki=item.get('tls_spki_sha256'), identity_path=item.get('identity_path'),
-            certificate_path=item.get('certificate_path'))
+            certificate_path=item.get('certificate_path'),
+            data_path=item.get('data_path') if item['distribution'] == 'packaged' else None,
+            state_path=item.get('state_path'))
         if candidate.status not in {'ready', 'closed-unverified'}:
             raise ValueError(f'Registered Router requires repair: {candidate.status}')
         return validate_registration({

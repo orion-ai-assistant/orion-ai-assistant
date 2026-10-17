@@ -82,7 +82,7 @@ def _validate_record(record):
     ids = set()
     managed_paths = set()
     for component in record['components']:
-        _keys(component, {'component_id', 'kind', 'distribution', 'code_path', 'data_path', 'state_path', 'ownership', 'management'}, {'router_uuid', 'tls_spki_sha256', 'identity_path', 'certificate_path', 'tls_port', 'lifecycle_ids'})
+        _keys(component, {'component_id', 'kind', 'distribution', 'code_path', 'data_path', 'state_path', 'ownership', 'management'}, {'router_uuid', 'tls_spki_sha256', 'identity_path', 'certificate_path', 'tls_port', 'lifecycle_ids', 'package'})
         _uuid(component['component_id'])
         if component['component_id'] in ids:
             raise RegistryError('Duplicate component identity')
@@ -107,6 +107,17 @@ def _validate_record(record):
                 if identity in managed_paths:
                     raise RegistryError('Managed components cannot share data or state paths')
                 managed_paths.add(identity)
+        if 'package' in component:
+            package = component['package']
+            _keys(package, {'id', 'sha256', 'length', 'inventory_sha256'})
+            if component['distribution'] != 'packaged' or not isinstance(package['id'], str):
+                raise RegistryError('Package receipt belongs only to a packaged component')
+            if type(package['length']) is not int or package['length'] < 1:
+                raise RegistryError('Invalid package length')
+            for field in ('sha256', 'inventory_sha256'):
+                digest = package[field]
+                if not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                    raise RegistryError('Invalid package receipt hash')
         if 'router_uuid' in component:
             if component['kind'] != 'router':
                 raise RegistryError('Router identity belongs only to a Router')
