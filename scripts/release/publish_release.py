@@ -132,7 +132,14 @@ def main():
     if gh('release', 'view', args.tag, '--repo', args.repo, check=False).returncode != 0:
         gh('release', 'create', args.tag, '--repo', args.repo, '--title', 'Orion release feed',
            '--notes', 'Signed package feed read by the Orion installer and updater. Do not edit by hand.')
+    existing = set(subprocess.run(['gh', 'release', 'view', args.tag, '--repo', args.repo, '--json', 'assets',
+                                   '--jq', '.assets[].name'], capture_output=True, text=True, check=True).stdout.split())
     for path in assets:
+        # Hash-prefixed packages and versioned metadata never change under the same name:
+        # skip what is already online (e.g. an unchanged Client) instead of re-uploading 30-170 MB.
+        if path.name in existing and path.name != BOOTSTRAP_ASSET:
+            print('Already published, skipping:', path.name, flush=True)
+            continue
         gh('release', 'upload', args.tag, str(path), '--repo', args.repo, '--clobber')
     # Publishing the timestamp last makes the new version visible atomically.
     gh('release', 'upload', args.tag, str(repository / 'metadata/timestamp.json'), '--repo', args.repo, '--clobber')
