@@ -11,7 +11,7 @@ from orion.api.auth_routes import get_current_user
 import os
 import sys
 from pathlib import Path
-from orion.api.access_boundary import is_desktop_peer
+from orion.api.access_boundary import is_desktop_peer, host_can_open_windows
 from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable
 from services.shared.flutter_launcher import open_window
 from services.shared.environment import get_env
@@ -20,8 +20,7 @@ router = APIRouter(prefix='/api/v1/browser')
 
 
 def require_local(request):
-    desktop = os.name == 'nt' or sys.platform == 'darwin' or bool(os.getenv('DISPLAY') or os.getenv('WAYLAND_DISPLAY'))
-    if not is_desktop_peer(request.scope) or not desktop or Path('/.dockerenv').exists():
+    if not is_desktop_peer(request.scope) or not host_can_open_windows():
         raise HTTPException(403, 'Tarayıcı bağlantısı yalnızca Hub bilgisayarından yönetilebilir.')
 
 

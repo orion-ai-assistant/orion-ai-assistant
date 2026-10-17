@@ -65,8 +65,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             shutil.copyfile(ROOT / 'services/shared' / name, destination)
         # The helper installs this stable guard before its first transaction.
         # It must also be present when recovery runs without a working Hub.
-        shutil.copyfile(ROOT / 'services/shared/launcher_entry.ps1',
-                        tree / 'services/shared/launcher_entry.ps1')
+        for script in ('launcher_entry.ps1', 'tray.ps1'):
+            shutil.copyfile(ROOT / 'services/shared' / script, tree / 'services/shared' / script)
         for name in ('install_new.py', 'update_local.py', 'update_automatic.py', 'manage_installation.py'):
             destination = tree / 'scripts/release' / name
             destination.parent.mkdir(parents=True, exist_ok=True)

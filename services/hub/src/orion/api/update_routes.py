@@ -1,5 +1,6 @@
 """Authenticated status; local desktop authority for preference changes only."""
 import asyncio
+from contextlib import suppress
 import subprocess
 import threading
 
@@ -10,7 +11,11 @@ from typing import Literal
 from orion.api.auth_routes import get_current_user
 from orion.api.access_boundary import is_desktop_peer, local_flutter_origin
 from services.shared.installation_registry import Registry
+from services.shared import update_now
 from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command
+from services.shared.process_lifecycle import LifecycleError
+from services.shared.installation_registry import operation_lock
+from services.shared.update_helper import UpdateError, UpdateHelper
 
 router = APIRouter(prefix='/api/v1/updates')
 
@@ -45,6 +50,7 @@ def read_status():
     data['launcher_preferences'] = {k: record['preferences'][k] for k in ('start_with_windows', 'show_client')}
     data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
     data['router_configured'] = router_managed(registry, record)
+    data['apply_now'] = update_now.view(registry)
     return data
 
 
@@ -130,3 +136,88 @@ async def preferences(payload: Preferences, request: Request, user: str = Depend
         return await asyncio.to_thread(change_preferences, payload)
     except (OSError, ValueError, RuntimeError) as error:
         raise HTTPException(409, 'Tercih kaydedilemedi. Güncelleme kaynağını ve bekleyen işlemi kontrol edip yeniden deneyin.') from error
+
+
+def watcher_alive(registry):
+    """The retained watcher holds this lock for as long as it runs (outside the Hub's Job)."""
+    try:
+        with operation_lock(registry.path.parent / 'updates/watcher.json', timeout=0):
+            return False
+    except LifecycleError:
+        return True
+
+
+def begin_apply(registry):
+    if runtime_command(registry) is None or not watcher_alive(registry):
+        raise UpdateError('WatcherUnavailable')
+    return update_now.begin(registry, UpdateHelper(registry))
+
+
+async def wait_for_idle_and_hand_over(redis, registry, *, interval=2.0, quiet_checks=3):
+    """Never interrupts work: waits for several quiet readings, closes admission, re-checks."""
+    from orion.kernel import activity
+    quiet = 0
+    try:
+        while True:
+            state = await asyncio.to_thread(update_now.read, registry)
+            if state is None or state['phase'] != 'waiting_for_idle':
+                return  # Cancelled or taken over.
+            seen = await activity.snapshot(redis)
+            await asyncio.to_thread(update_now.update, registry, only={'waiting_for_idle'}, busy=seen['counts'])
+            quiet = 0 if seen['busy'] else quiet + 1
+            if quiet >= quiet_checks:
+                await activity.set_draining(redis, True)
+                if not (await activity.snapshot(redis))['busy'] and await asyncio.to_thread(update_now.handoff, registry):
+                    return
+                await activity.set_draining(redis, False)
+                quiet = 0
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # The Hub cannot judge idleness: stay safe and report instead of applying.
+        await asyncio.to_thread(update_now.update, registry, only={'waiting_for_idle'}, phase='failed', error='ActivityCheckFailed')
+        with suppress(Exception):
+            await activity.set_draining(redis, False)
+
+
+APPLY_MESSAGES = {
+    'NothingStaged': 'Uygulanacak hazır bir güncelleme yok.',
+    'AlreadyRequested': 'Güncelleme isteği zaten alındı.',
+    'WatcherUnavailable': 'Güncelleme yardımcısı çalışmıyor. Orion’u yeniden başlatın; hazır sürüm açılışta uygulanır.',
+    'NotCancellable': 'İstek artık iptal edilemez.',
+}
+
+
+def _apply_error(error):
+    return HTTPException(409, APPLY_MESSAGES.get(str(error), 'Güncelleme başlatılamadı. Durumu kontrol edip yeniden deneyin.'))
+
+
+@router.post('/apply')
+async def apply_now(request: Request, user: str = Depends(get_current_user)):
+    """Explicit "update now": waits for idle, then the retained watcher applies the staged update."""
+    if not local_control(request):
+        raise HTTPException(403, 'Güncelleme yalnızca bu bilgisayardan başlatılabilir.')
+    registry = Registry()
+    try:
+        await asyncio.to_thread(begin_apply, registry)
+    except (UpdateError, OSError, ValueError, RuntimeError) as error:
+        raise _apply_error(error) from error
+    tasks = request.app.state.__dict__.setdefault('apply_tasks', set())
+    task = asyncio.create_task(wait_for_idle_and_hand_over(request.app.state.redis, registry))
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return await asyncio.to_thread(read_status)
+
+
+@router.post('/apply/cancel')
+async def cancel_apply(request: Request, user: str = Depends(get_current_user)):
+    if not local_control(request):
+        raise HTTPException(403, 'Güncelleme yalnızca bu bilgisayardan iptal edilebilir.')
+    try:
+        await asyncio.to_thread(update_now.cancel, Registry())
+    except (UpdateError, OSError, ValueError, RuntimeError) as error:
+        raise _apply_error(error) from error
+    from orion.kernel import activity
+    await activity.set_draining(request.app.state.redis, False)
+    return await asyncio.to_thread(read_status)

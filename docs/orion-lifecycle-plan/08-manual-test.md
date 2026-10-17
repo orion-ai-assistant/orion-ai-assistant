@@ -47,3 +47,47 @@ Kaldırma veri, model ve kurtarma dosyalarını korur. Eski kod temizliği ayrı
 ## Hâlâ açık kabuller
 
 Temiz Windows VM, gerçek legacy dönüşüm, yan yana kurulum, sonraki sürüme yükseltme, VM zorla kapatma, Windows logon, uzak istemcili aktif kullanım ve beta/stable yayın. Stable yayın bu kanıtlar olmadan `publish_metadata.py` tarafından reddedilir.
+
+## Gerçek makine kabulü (elle, 18 Ekim 2026 eklemeleri)
+
+Aşağıdakiler otomatik testlerde yalnız sahte komut çalıştırıcı/sahte süreçlerle denendi. Gerçek UAC, Windows güvenlik duvarı ve tepsi simgesi **senin makinende** doğrulanmalı. Çalışan kurulumunun üzerine gerçek kurulum yapma; temiz bir hesap/VM ya da `get-orion.ps1` ile **ayrı bir kullanıcı** kullan. Mevcut kurulumunu denemek için yalnız 3–5. bölümler güvenlidir.
+
+### 1. Güvenlik duvarı kuralı (`install_new.py`, `services/shared/windows_firewall.py`)
+
+Yalnız temiz makine/VM'de (Orion kurulu değilken):
+
+1. Yönetici olmayan PowerShell'de `irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex` çalıştır.
+2. Kurulum sırasında **bir** UAC penceresi çıkmalı (kural ekleme). Hayır dersen kurulum **bitmeli**; yalnızca ilk açılışta Windows güvenlik duvarı sorusu çıkabilir. Not et: UAC çıktı mı, kaç kez?
+3. Kurulum bitince (yönetici PowerShell):
+   ```powershell
+   Get-NetFirewallRule -DisplayName 'Orion*' | Format-List DisplayName,Enabled,Direction,Action,Profile
+   Get-NetFirewallRule -DisplayName 'Orion*' | Get-NetFirewallPortFilter | Format-List Protocol,LocalPort
+   ```
+   Beklenen: iki kural — `Orion private network (TCP)` ve `Orion private network discovery (UDP)` (UDP 5353) — Inbound, Allow, yalnız **Private** profil, yalnız yerel alt ağ. Kurallar port tabanlıdır (program yolu yok), bu yüzden Hub/Router güncellemesiyle `python.exe` yolu değişse bile yeni güvenlik duvarı sorusu çıkmamalı.
+4. Orion'u başlat (masaüstü kısayolu). Beklenen: "Python'a izin ver" tipi Windows güvenlik duvarı penceresi **çıkmaz** (özel ağdayken). Çıkarsa ekran görüntüsü al; hangi `python.exe` yolunun ve hangi portun sorulduğunu not et (kural TCP portunu kapsamıyorsa buradan anlaşılır). Güncelleme sonrası (yeni `releases\...` yolu) soru tekrar çıkmamalı: bunu bir güncellemeden sonra da dene.
+5. Telefondan aynı Wi-Fi'de Hub'a bağlan: çalışmalı. Public olarak işaretli bir ağda bağlantı **kurulmamalı**.
+6. Kaldırma: kuralı elle sil (`Remove-NetFirewallRule -DisplayName 'Orion*'`) ve yeniden dene; kurulum aracı kuralı tekrar eklemeyi teklif etmeli (UAC).
+
+### 2. Kurulum sonrası temizlik denetimi
+
+`Get-Process python,powershell | ? { $_.Path -like '*Orion*' }` — Orion kapalıyken boş olmalı (3. bölümdeki "Çık" sonrası dahil).
+
+### 3. Tepsi simgesi (yalnız tam Hub kurulumu)
+
+1. Orion'u başlat: saat yanında Orion simgesi (gizli simgeler okunda olabilir).
+2. Pencereyi kapat: simge ve servisler yerinde kalmalı; simgeye **sol tık** pencereyi geri açmalı (yeni pencere değil, mevcut).
+3. Sağ tık menüsü: "Orion'u aç", "Çık". "Çık": simge **hemen** kaybolmalı, birkaç saniyede Hub/Router/Redis/Postgres kapanmalı, pencere kapanmalı. Sonra yukarıdaki 2. bölümdeki komutla artık süreç kalmadığını doğrula; `bootstrap\tray.exit` dosyası kalmamalı.
+4. Görev Yöneticisi'nden tepsi PowerShell'ini (komut satırında `Orion-Tray.ps1`) öldür, Orion'u yeniden başlat: tek simge çıkmalı (ikinci başlatma kendiliğinden çıkar). Router-only kurulumda simge **olmamalı**.
+
+### 4. "Şimdi güncelle"
+
+Önkoşul: ayarlarda güncelleme kaynağı hazır ve bir sürüm hazırlanmış (Ayarlar > Orion güncellemeleri'nde "Bekleyen güncelleme: Güvenli açılışı bekliyor"). Yoksa yenile düğmesine bas.
+
+1. Sohbette uzun bir yanıt başlat; aynı anda "Şimdi güncelle". Beklenen: "Devam eden işlerin bitmesi bekleniyor (sohbet/araç işi)…" ve iş **kesilmez**; yanıt bitince birkaç saniye sonra güncelleme başlar. Bekleme sırasında "İptal" çalışmalı; sonra yeni sohbet mesajı normal gitmeli.
+2. İş yokken bas: "Güncelleniyor, birkaç dakika sürebilir" → sayfa bağlantı kaybı sırasında bu mesajı korumalı → Hub dönünce sayfa kendiliğinden yenilenmeli ve yeni sürümü göstermeli. Pencere açık kalır, tepsi simgesi geri gelir.
+3. Telefondan aynı kartı aç: düğme **görünmemeli** (yalnız PC).
+4. Başarısızlık denemesi (isteğe bağlı): `updates\<op>\health.log` ve kartta "Önceki sürümle devam ediliyor" mesajı; Orion önceki sürümle yeniden açılmış olmalı.
+
+### 5. Hub/Router paneli düğmeleri
+
+Ayarlar'da Hub kartında "Hub yönetimini aç", Router bağlıyken Router kartında "Router yönetimini aç" görünmeli; tıklayınca adres çubuksuz uygulama penceresinde açılır. Telefon oturumunda bu düğmeler görünmez.

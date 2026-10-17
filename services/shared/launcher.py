@@ -143,7 +143,66 @@ def close_window(registry):
     return len(victims)
 
 
-def launch(registry, *, startup=False, background=False, stop=False):
+TRAY_SCRIPT = 'Orion-Tray.ps1'
+
+
+def tray_processes(registry):
+    """Tray icon processes of THIS installation (identified by script path and registry path)."""
+    import psutil
+    script = str(canonical_path(registry.path.parent / 'bootstrap' / TRAY_SCRIPT)).lower()
+    found = []
+    for process in psutil.process_iter(['name', 'cmdline']):
+        try:
+            command = [(arg or '').lower() for arg in process.info['cmdline'] or []]
+            if ((process.info['name'] or '').lower() in {'powershell.exe', 'pwsh.exe'}
+                    and any(script == arg.strip('"') for arg in command)):
+                found.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return found
+
+
+def spawn_tray(registry, *, popen=None):
+    """Show the notification-area icon (full Hub installs only; a Router-only install has none)."""
+    if os.name != 'nt' or tray_processes(registry):
+        return False
+    import subprocess
+    destination = canonical_path(registry.path.parent / 'bootstrap' / TRAY_SCRIPT)
+    source = Path(__file__).with_name('tray.ps1').read_bytes()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists() or destination.read_bytes() != source:
+        _atomic_write(destination, source)
+    # Outside any Hub-owned Job: only the launcher process (or the retained watcher) starts it.
+    (popen or subprocess.Popen)(
+        ['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+         '-File', str(destination), '-Registry', str(registry.path)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
+    return True
+
+
+def stop_tray(registry, *, timeout=6):
+    """Ask the icon to hide itself and exit; terminate it only if it does not (no orphans, no ghost icon)."""
+    if os.name != 'nt':
+        return 0
+    import psutil
+    victims = tray_processes(registry)
+    if not victims:
+        return 0
+    marker = canonical_path(registry.path.parent / 'bootstrap/tray.exit')
+    marker.write_bytes(b'exit')
+    _, alive = psutil.wait_procs(victims, timeout=timeout)
+    for process in alive:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    psutil.wait_procs(alive, timeout=5)
+    marker.unlink(missing_ok=True)
+    return len(victims)
+
+
+def launch(registry, *, startup=False, background=False, stop=False, keep_window=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop:
         record = registry.read()
@@ -173,10 +232,17 @@ def launch(registry, *, startup=False, background=False, stop=False):
                 else:
                     (stop_router if stop else start_router)(str(Path(root) / 'cli.py'))
             if stop:
+                stop_tray(registry)
+            if stop and not keep_window:
                 close_window(registry)
             if not stop:
                 from .automatic_updates import spawn_watcher
                 spawn_watcher(registry)
+                if any(c['kind'] == 'hub' for c in components):
+                    try:
+                        spawn_tray(registry)
+                    except OSError:
+                        pass  # The icon is a convenience; services and window do not depend on it.
             if not stop and not background and (not startup or record['preferences']['show_client']):
                 hub = next((c for c in components if c['kind'] == 'hub'), None)
                 if hub:

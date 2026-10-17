@@ -33,6 +33,10 @@ async def service_lifespan(app: FastAPI):
     from orion.worker.tools._registry import get_registry
     get_registry()
     app.state.redis = Redis.from_url(get_redis_url(), decode_responses=True, protocol=2)
+    from orion.kernel.activity import DRAIN_KEY
+    with suppress(Exception):
+        # A drain flag that outlived the restart it was for must not block new work.
+        await app.state.redis.delete(DRAIN_KEY)
     from orion.api.router_connection import RouterAssociation
     association = RouterAssociation(app.state.redis)
     app.state.router_association = association

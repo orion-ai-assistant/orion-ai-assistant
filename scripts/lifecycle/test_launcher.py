@@ -28,6 +28,8 @@ class LauncherTests(unittest.TestCase):
         self.store.write(new_registry(self.root, [component_record('hub', self.code, ownership='owned', management='local')]))
         self.start = self.enterContext(patch('services.shared.native_services.start_hub'))
         self.window = self.enterContext(patch('services.shared.launcher.show_window'))
+        self.tray = self.enterContext(patch('services.shared.launcher.spawn_tray'))
+        self.tray_stop = self.enterContext(patch('services.shared.launcher.stop_tray'))
 
     def test_disabled_stale_startup_link_does_not_start_anything(self):
         self.assertEqual({'status': 'disabled'}, launcher.launch(self.store, startup=True))

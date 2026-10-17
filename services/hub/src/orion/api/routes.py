@@ -146,12 +146,20 @@ async def ready(request: Request) -> dict[str, Any]:
 
 @router.post("/api/v1/chats/messages", response_model=JobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_chat_message_endpoint(payload: JobCreateRequest, request: Request, current_user: str = Depends(get_current_user)) -> JobCreateResponse:
+    from orion.kernel import activity
+    from orion.api.access_boundary import is_desktop_peer
     if payload.user_id != current_user:
         payload.user_id = current_user
+    redis = request.app.state.redis
+    await activity.require_not_draining(redis)  # An explicit "update now" is about to stop the Hub.
     if payload.chat_id:
-        async with request.app.state.redis.lock(f'chat:lifecycle:{payload.chat_id}', timeout=120, blocking_timeout=10):
-            return await create_job(request.app.state.redis, payload)
-    return await create_job(request.app.state.redis, payload)
+        async with redis.lock(f'chat:lifecycle:{payload.chat_id}', timeout=120, blocking_timeout=10):
+            created = await create_job(redis, payload)
+    else:
+        created = await create_job(redis, payload)
+    if getattr(request.app.state, 'mobile', False) or not is_desktop_peer(request.scope):
+        await activity.mark_remote_chat(redis, created.chat_id)
+    return created
 
 @router.post("/api/v1/chats/{chat_id}/stop", response_model=JobStopResponse)
 async def stop_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)) -> JobStopResponse:
@@ -223,8 +231,12 @@ async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
             status_code = 206
     raw = b''
     if request.method != 'HEAD':
+        from orion.kernel import activity
+        from orion.api.access_boundary import is_desktop_peer
         try:
-            _, raw = await read_media(chat_id, media_id, offset=start, length=length)
+            async with activity.lease(request.app.state.redis, 'transfer', ttl=30,
+                                      remote=getattr(request.app.state, 'mobile', False) or not is_desktop_peer(request.scope)):
+                _, raw = await read_media(chat_id, media_id, offset=start, length=length)
         except LookupError as exc:
             raise HTTPException(404, 'Media not found') from exc
         except RuntimeError as exc:
@@ -357,9 +369,13 @@ async def stt_proxy(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await websocket.accept()
-    
+    from orion.kernel import activity
+    from orion.api.access_boundary import is_desktop_peer
     redis = websocket.app.state.redis
+    if await activity.draining(redis):
+        await websocket.close(code=1013)
+        return
+    await websocket.accept()
     settings = await get_runtime_settings(redis, user_id)
     router_api_key = settings.router_api_key or "orion"
 
@@ -374,6 +390,11 @@ async def stt_proxy(
     })
     target_ws_url = f"{ws_base}/v1/audio/transcriptions/stream?{params}"
 
+    # Live dictation is active work for an explicit "update now" until the socket closes.
+    from contextlib import AsyncExitStack
+    work = AsyncExitStack()
+    await work.enter_async_context(activity.lease(
+        redis, 'voice', remote=getattr(websocket.app.state, 'mobile', False) or not is_desktop_peer(websocket.scope)))
     try:
         from orion.kernel.pinned_router import PinnedWebSocket
         async with PinnedWebSocket(target_ws_url, headers={'Authorization': 'Bearer ' + router_api_key}) as router_ws:
@@ -423,6 +444,8 @@ async def stt_proxy(
             await websocket.close(code=1011)
         except:
             pass
+    finally:
+        await work.aclose()
 
 
 

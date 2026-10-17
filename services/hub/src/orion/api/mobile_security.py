@@ -113,9 +113,10 @@ return 1
 
 @pairing_router.get('/api/v1/pair/capabilities')
 async def pairing_capabilities(request: Request, current_user: str = Depends(get_current_user)):
-    from orion.api.access_boundary import is_desktop_peer
+    from orion.api.access_boundary import is_desktop_peer, host_can_open_windows
     local = is_desktop_peer(request.scope)
-    return JSONResponse({'can_manage_local': local, 'can_create_pairing': local or request.scope.get('scheme') == 'https',
+    # Server-side only: lets the client offer "open in app window" without any URL.
+    return JSONResponse({'can_manage_local': local, 'can_open_panel': local and host_can_open_windows(),'can_create_pairing': local or request.scope.get('scheme') == 'https',
                          'management_url': f'http://127.0.0.1:{int(os.getenv("ORION_LOCAL_PORT", "8910"))}/panel' if local else None},
                         headers={'Cache-Control': 'no-store'})
 

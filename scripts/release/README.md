@@ -385,3 +385,22 @@ metadata/product rollback protection, safe extraction) is the trust path.
 Publish order for a bootstrap change: bump `scripts/release/bootstrap.json` (`sequence`, `version`,
 `package_id`) -> build/accept packages as usual -> `publish_release.py ...` (it builds, gates and signs the
 bundle with the packages).
+
+
+## Explicit "update now" and the tray icon
+
+* **Update now** (`services/shared/update_now.py`, `POST /api/v1/updates/apply`, desktop peer only, same
+  `local_control` rule as the preferences; `POST .../apply/cancel` until the watcher claims). The automatic
+  next-safe-launch path is unchanged. The Hub waits for three quiet readings of `orion/kernel/activity.py`
+  (chat/tool turns from `chat:state:*`, short Redis leases for dictation and media transfer, remote-session
+  markers), closes admission (`orion:update:draining`, new chats/dictation get 503), re-checks and hands over
+  through `updates/apply-now.json` (`waiting_for_idle` -> `requested`). The retained bootstrap's watcher (outside
+  the Hub Job) claims it, stops the services (`launch(stop=True, keep_window=True)`), runs the normal
+  `UpdateHelper.resume` (backup, switch, health, automatic rollback) and restarts everything. The Flutter card
+  polls through the outage and reloads the page when the state is `completed`. Unclaimed (90 s), abandoned or
+  stalled requests become an explicit `failed` with a fixed error code. Needs a running watcher
+  (`GET /api/v1/updates` `apply_now`); without one the request is refused and the next launch applies the update.
+* **Tray icon** (`services/shared/tray.ps1`, installed as `bootstrap/Orion-Tray.ps1`): started by
+  `launcher.launch` for installs with a Hub only; one icon per installation (named mutex), exits on
+  `bootstrap/tray.exit` (written by `stop_tray` during every launcher stop; terminated only if it ignores it),
+  or when the registry disappears. "Cik" hides the icon and runs `Orion.ps1 -Stop`.

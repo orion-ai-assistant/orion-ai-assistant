@@ -92,6 +92,15 @@ def is_desktop_peer(scope) -> bool:
         return False
 
 
+def host_can_open_windows() -> bool:
+    """True when this Hub process runs on an interactive desktop, not in a container."""
+    import os
+    import sys
+    from pathlib import Path
+    desktop = os.name == 'nt' or sys.platform == 'darwin' or bool(os.getenv('DISPLAY') or os.getenv('WAYLAND_DISPLAY'))
+    return desktop and not Path('/.dockerenv').exists()
+
+
 LOCAL_OWNER_WEB_PATHS = {'/api/v1/owner/login', '/api/v1/owner/secure/pairing',
                          '/api/v1/owner/secure/password-info', '/api/v1/owner/secure/password'}
 

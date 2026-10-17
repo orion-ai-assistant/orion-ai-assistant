@@ -321,6 +321,9 @@ def watch(automatic):
             with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
                 if stopped:
                     return
+            from . import update_now
+            # Explicit "update now" runs here, outside the Hub-owned Job that its own stop ends.
+            update_now.process_request(automatic)
             try:
                 automatic.check()
                 router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')

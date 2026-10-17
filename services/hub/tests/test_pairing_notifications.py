@@ -88,6 +88,17 @@ class PairingNotificationTests(unittest.IsolatedAsyncioTestCase):
             response = await client.get('/api/v1/pair/capabilities')
             self.assertFalse(response.json()['can_manage_local'])
             self.assertIsNone(response.json()['management_url'])
+            self.assertFalse(response.json()['can_open_panel'])
+
+    async def test_desktop_peer_can_open_panel_only_on_interactive_host(self):
+        from unittest.mock import patch
+        app = self.app()
+        for interactive in (True, False):
+            with patch('orion.api.access_boundary.host_can_open_windows', return_value=interactive):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://localhost:8443') as client:
+                    data = (await client.get('/api/v1/pair/capabilities')).json()
+            self.assertTrue(data['can_manage_local'])
+            self.assertEqual(data['can_open_panel'], interactive)
 
     async def test_unauthenticated_desktop_cannot_subscribe(self):
         app = self.app(False)
