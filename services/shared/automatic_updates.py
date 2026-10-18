@@ -306,6 +306,13 @@ class AutomaticUpdates:
         for item in record['components']:
             versions[item['kind']] = {'package_id': item.get('package', {}).get('id'),
                                       'distribution': item['distribution']}
+        try:
+            # The retained updater itself (installs, starts and updates the components): shown for diagnosis.
+            pointer = read_json(self.registry.path.parent / 'bootstrap/automatic-runtime.json', None)
+            bundle = read_json(Path(pointer['root']) / 'bootstrap.json', None)
+            versions['bootstrap'] = {'package_id': bundle['package_id'], 'distribution': 'retained'}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
         history = []
         # Journal is the durable source, including operations finished while UI was closed.
         for path in sorted(self.base.glob('*/journal.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:10]:
