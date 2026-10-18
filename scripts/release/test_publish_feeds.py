@@ -82,3 +82,22 @@ def test_default_repositories_and_tags_are_per_feed():
     assert {f['tag'] for f in P.FEEDS.values()} == {'feed'}
     assert P.feed_url('orion-ai-assistant/orion-router', 'feed') == \
         'https://github.com/orion-ai-assistant/orion-router/releases/download/feed/'
+
+
+def _staged(tmp_path, sequence, digest):
+    name = 'orion-hub-windows-x86_64-cpu.zip'
+    (tmp_path / (name[:-4] + '.target.json')).write_text(
+        json.dumps({'hashes': {'sha256': digest}, 'custom': {'component': 'hub', 'sequence': sequence}}))
+    return {'hub': name}
+
+
+def test_package_gate_refuses_changed_bytes_or_a_lower_sequence_but_allows_new_ones(tmp_path):
+    online = {'signed': {'targets': {'orion-hub-windows-x86_64-cpu.zip':
+                                     {'hashes': {'sha256': 'aa'}, 'custom': {'sequence': 5}}}}}
+    P.package_gate(online, tmp_path, _staged(tmp_path, 5, 'aa'))   # identical bytes: fine
+    P.package_gate(online, tmp_path, _staged(tmp_path, 6, 'bb'))   # newer sequence: fine
+    P.package_gate(None, tmp_path, _staged(tmp_path, 1, 'cc'))     # nothing online yet: fine
+    with pytest.raises(ValueError, match='already published'):
+        P.package_gate(online, tmp_path, _staged(tmp_path, 5, 'bb'))
+    with pytest.raises(ValueError, match='below'):
+        P.package_gate(online, tmp_path, _staged(tmp_path, 4, 'aa'))

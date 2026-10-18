@@ -124,7 +124,10 @@ def finalize(work, output):
             destination = output / path.name
             if destination.exists():
                 if build_cache.file_digest(destination) != build_cache.file_digest(path):
-                    raise ValueError(f'{destination} exists with different bytes; assign a new version or output')
+                    # A local, not yet published candidate of an earlier round: the newer build wins.
+                    # publish_release refuses changed bytes under an already published sequence.
+                    print(f'Replacing the earlier candidate {destination.name} (the contents changed)', flush=True)
+                    os.replace(path, destination)
                 continue
             os.replace(path, destination)
 

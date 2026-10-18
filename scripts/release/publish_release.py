@@ -140,6 +140,23 @@ def bootstrap_gate(previous_targets, custom, digest):
                          '--reuse-bootstrap <the published bundle> to keep it unchanged')
 
 
+def package_gate(previous_targets, staging, names):
+    """Same rule as the bootstrap's, for Hub/Client/Router: published bytes under a sequence never change and the
+    sequence never goes down. This is what makes it safe for the build step to replace local, unpublished candidates."""
+    published = (previous_targets or {}).get('signed', {}).get('targets', {})
+    for component, name in names.items():
+        previous = published.get(name)
+        if previous is None or component == 'bootstrap':
+            continue
+        staged = json.loads((Path(staging) / (name[:-4] + '.target.json')).read_text(encoding='utf-8'))
+        sequence, published_sequence = staged['custom']['sequence'], previous['custom']['sequence']
+        if sequence < published_sequence:
+            raise ValueError(f'{component} sequence {sequence} is below the published {published_sequence}')
+        if sequence == published_sequence and previous['hashes']['sha256'] != staged['hashes']['sha256']:
+            raise ValueError(f'{component} contents changed but sequence {sequence} was already published: bump '
+                             f'sequence/version/package_id in its release/package.json')
+
+
 def published_targets(base, version):
     if version < 1:
         return None
@@ -208,7 +225,9 @@ def main():
     description = json.loads(bundle.with_suffix('.target.json').read_text(encoding='utf-8'))
     if description['hashes']['sha256'] != sha256(bundle) or description['custom']['component'] != 'bootstrap':
         raise ValueError('Bootstrap bundle does not match its target description')
-    bootstrap_gate(published_targets(base, current_feed_version(base)), description['custom'], description['hashes']['sha256'])
+    online = published_targets(base, current_feed_version(base))
+    bootstrap_gate(online, description['custom'], description['hashes']['sha256'])
+    package_gate(online, work / 'artifacts', names)
     write_acceptance(work / 'artifacts', args.accepted_result, work / 'acceptance.json')
     subprocess.run([sys.executable, str(HERE / 'publish_metadata.py'), '--artifacts', str(work / 'artifacts'),
                     '--output', str(work / 'repository'), '--root', str(args.public_root), '--single-key', str(args.key),
