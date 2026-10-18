@@ -42,6 +42,107 @@ remain a release-distribution obligation. Model/LLM/STT/TTS engine downloads are
 separate from these host packages. CUDA is not a supported host package profile;
 selection rejects it explicitly rather than silently substituting CPU weights.
 
+## Fast release rounds: `build_release.py`
+
+One command builds, packages and accepts, and prints the wall-clock time of every step:
+
+```powershell
+.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py                 # build + FULL acceptance
+.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py --accept fast   # build + quick pre-check
+.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py --accept none   # build only
+```
+
+Options: `--serial` (one step at a time, also `--jobs N`), `--no-cache` (rebuild everything, the old
+behaviour), `--force-accept` (rerun the full acceptance even for an already accepted set),
+`--output <dir>` (default `.tmp/candidates/<three package ids>`; an existing directory is reused only
+if the bytes match), `--no-prune`. Bump `version`/`sequence` in the release jsons first, as before.
+
+**What is skipped, and why it is safe** (cache under `.tmp/build-cache`, safe to delete at any time):
+
+* *Flutter web / Router dashboard build*: skipped when the hash of every source file (tracked, new
+  unignored and locally edited ones; ignored build output excluded) and of the previous output
+  directory equal what the last good build recorded. Any edit, new file or manual rebuild
+  invalidates it.
+* *Package ZIP*: the key is the content hash of the tracked source files that go into the package
+  (working tree, as the builder copies it), the release json, the dashboard/web output, the pinned
+  inputs (`inputs.json` + PostgreSQL pin), the lock file and the build tooling itself. Equal key: the
+  earlier ZIP is copied byte-for-byte (same sequence **and** same hash, which the updater requires).
+  Any difference: rebuilt, never reused. Hub changes whenever `services/shared` changes, so expect
+  the Hub to rebuild most rounds; the Router and Client rebuild only when their own sources, the
+  dashboard/web output or the release json change.
+* *Runtime layer*: Python + locked wheels, PostgreSQL (UTF-8 prepared, `initdb` self-check), Redis,
+  FFmpeg are about 90 % of a package and independent of its sources. They are prepared and
+  deflated once per input set (`.tmp/build-cache/runtime/<kind>-<key>`, ~1 GB each) and each package
+  copies those already-compressed members verbatim. The ZIP is **byte-identical** to compressing the
+  whole tree in one pass (same member order, same deflate level; a test and a real-package check
+  prove it), so this changes build time, not the artifact. A changed lock file, pin, python/PostgreSQL
+  tooling or runtime recipe rebuilds the layer.
+
+Steps run concurrently (Flutter, dashboard and Hub packaging together; Client and Router as soon as
+their web output exists) with at most `--jobs` (default 3) at a time; each package builds in its own
+temporary directory and logs to `.tmp/build-work/<timestamp>/logs`. `--serial` disables this.
+
+### Acceptance modes
+
+`accept_packages.py --mode full|fast` (also what `--accept` passes) always says which one ran.
+
+* **full** (default): installs the exact Hub+Router+Client set from signed test metadata and
+  exercises it as before (real TUF verification, safe extraction, fresh Hub `initdb`, standalone
+  Router, registered start, Flutter health, Router bootstrap, DB row + encrypted override surviving a
+  restart, immutability fingerprint). It is the **only** result `publish_release.py` accepts
+  (`write_acceptance` refuses `mode: fast`; `release_acceptance.py` still binds the exact hashes). With
+  `--reuse-accepted` (set by `build_release.py`) it is skipped only when this exact package set already
+  passed a full run and the acceptance tooling (`services/shared`, `scripts/release`, `installer/app`
+  without tests) is unchanged; the output says so and names the earlier result.
+* **fast**: an additional pre-check, never a replacement. It compares the ZIPs with the last passing
+  full run and installs only what changed plus what it needs to run (Router: Router alone;
+  Hub or Client: Hub+Client together; the Router only when it changed).
+  It writes `mode: fast`, `success: false`, `fast_success: true`; it cannot be published. With no
+  earlier full run it simply runs the full set.
+
+Trade-off: a fast pass does not prove the whole set. A Hub-only change is not run against the Router
+(the Hub-to-Router bootstrap check and the standalone Router cycle are skipped), a Router-only change
+is not run against the Hub. It does not skip `initdb` or the immutable-package checks of what it does
+install; it saves the unchanged components' extraction, hashing and start/stop cycles. The full run
+stays the gate: run it once before publishing. A full run is also cheaper than before without
+weakening anything: the package fingerprints are hashed with 8 threads, and nothing is rebuilt.
+
+### Disk hygiene: `lifecycle-tests`
+
+Each acceptance run leaves a ~1.3 GB sandbox `stage05-<random>` under
+`%LOCALAPPDATA%\Orion\lifecycle-tests`. Every run starts a detached prune that keeps the newest 3,
+the sandbox of the last passing full acceptance (what a pending publish points to), any sandbox
+containing a file named `PINNED`, and anything younger than one hour; the rest is deleted. By hand:
+
+```powershell
+.tmp/stage05-tools/Scripts/python.exe scripts/release/accept_packages.py --prune --dry-run --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
+.tmp/stage05-tools/Scripts/python.exe scripts/release/accept_packages.py --prune --keep 2 --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
+# also trim the older product-*, stage04-*, router-access-pg-* families:  add --all-prefixes
+```
+
+To keep a sandbox for good: create an empty file `PINNED` inside it. The build cache lives in
+`.tmp/build-cache` (runtime layers ~2 GB, newest two ZIPs per kind); delete it to force a clean build.
+
+### Windows Defender exclusions (owner, administrator PowerShell)
+
+Real-time scanning inspects every file open, and a build or acceptance run opens tens of thousands of
+small files (extracting ~1 GB of PostgreSQL, Python and wheels, hashing, starting `postgres.exe`).
+Excluding the two work folders is the single biggest remaining saving. This is a security setting:
+run it yourself, in an elevated PowerShell, and only if you accept the trade-off for these folders.
+
+```powershell
+Add-MpPreference -ExclusionPath "D:\krstlcm Workspace\DevProjects\orion-ai-assistant\.tmp"
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Orion\lifecycle-tests"
+Get-MpPreference | Select-Object -ExpandProperty ExclusionPath      # verify
+# undo: Remove-MpPreference -ExclusionPath "<same path>"
+```
+
+Both folders only hold build output and throwaway test sandboxes; nothing from them is executed
+outside the isolated acceptance run. Measured effect (profile of one package build, no exclusion
+active): about 35 % of a package build was file open/stat time inside the scanner. Expect the cold
+runtime-layer build and the full acceptance install/start steps to drop by roughly a quarter to a
+third; incremental rounds (mostly hashing and 1-2 small ZIPs) gain little.
+
 ## Trust and signing
 
 Use [python-tuf](https://theupdateframework.readthedocs.io/en/latest/api/tuf.ngclient.updater.html),

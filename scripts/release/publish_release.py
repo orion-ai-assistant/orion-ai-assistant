@@ -66,6 +66,9 @@ def write_acceptance(staging, accepted_result, out):
     result = json.loads(Path(accepted_result).read_text(encoding='utf-8'))
     if result.get('success') is not True:
         raise ValueError('The acceptance run did not succeed')
+    if result.get('mode', 'full') != 'full':
+        # accept_packages.py --mode fast is an iteration pre-check; only a full run of the exact set counts.
+        raise ValueError('Only a full acceptance run (accept_packages.py --mode full) can be published')
     packages = {}
     for path in Path(staging).glob('*.target.json'):
         target = json.loads(path.read_text(encoding='utf-8'))

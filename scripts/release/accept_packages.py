@@ -3,8 +3,19 @@
 Ephemeral in-memory signing keys authorize only a local test repository. Every
 product command uses bundled Python with an SDK-free PATH and isolated registry,
 ports, AppData and data. Product/DB work is sequential. No GUI/logon is exercised.
+
+Two modes (the output names the one that ran):
+  --mode full  (default) installs and exercises the exact Hub+Router+Client set. Only this
+               result is accepted by publish_release.py.
+  --mode fast  a pre-check for iteration: installs and exercises only the components whose
+               ZIP differs from the last passing full run (plus the peers they integrate
+               with). Never publishable: its result.json says `mode: fast, success: false`.
+
+Old sandboxes under the scratch base are pruned automatically (newest N, the last passing
+full run and anything holding a PINNED file are kept); `--prune` runs that rule by hand.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 import inspect
@@ -29,6 +40,12 @@ from publish_metadata import publish
 from install_new import install
 from build_bootstrap import build as build_bootstrap
 from services.shared.release_packages import extract_zip
+import build_cache
+import sandbox_prune
+from timing import Timings
+
+DEFAULT_CACHE = ROOT / '.tmp/build-cache'
+DEFAULT_KEEP = 3
 
 
 class FixtureFetcher(FetcherInterface):
@@ -51,15 +68,87 @@ def port():
 
 
 def fingerprint(root):
-    return {p.relative_to(root).as_posix(): sha256(p) for p in root.rglob('*') if p.is_file()}
+    # Hashing is I/O bound (virus scanner latency per file): a thread pool overlaps it.
+    files = [p for p in Path(root).rglob('*') if p.is_file()]
+    with ThreadPoolExecutor(8) as pool:
+        digests = list(pool.map(sha256, files))
+    return {p.relative_to(root).as_posix(): digest for p, digest in zip(files, digests)}
 
 
-def run(artifacts, base, inputs, *, after_acceptance=None):
+def artifact_set(artifacts):
+    """{component: (sha256, package_id, target json path)} of a candidate directory."""
+    found = {}
+    for path in sorted(Path(artifacts).glob('*.target.json')):
+        value = json.loads(path.read_text(encoding='utf-8'))
+        found[value['custom']['component']] = (value['hashes']['sha256'], value['custom']['package_id'], path)
+    return found
+
+
+def acceptance_tooling_key():
+    """Everything besides the packages that decides what an acceptance run proves."""
+    names = build_cache.git_files(ROOT, ['services/shared', 'scripts/release', 'installer/app'])
+    names = [n for n in names if not Path(n).name.startswith('test_') and Path(n).name not in {'conftest.py', 'README.md'}]
+    return build_cache.hash_files({n: ROOT / n for n in names})
+
+
+def fast_scope(changed):
+    """Components a fast run installs: the changed ones and what they need to run.
+
+    Hub and Client start only together (Flutter health), so either pulls in both. The Router is
+    installed only when it changed: an unchanged Router was fully accepted before, and the
+    Hub-to-Router integration check belongs to the full run (or to a Router change)."""
+    kinds = set()
+    if 'router' in changed:
+        kinds.add('router')
+    if changed & {'hub', 'client'}:
+        kinds |= {'hub', 'client'}
+    return kinds
+
+
+def last_full_acceptance(cache):
+    record = build_cache.Cache(cache).read_record('acceptance.json')
+    if not record or record.get('mode') != 'full':
+        return None
+    result = Path(record.get('result', ''))
+    try:
+        if json.loads(result.read_text(encoding='utf-8')).get('success') is not True:
+            return None
+    except (OSError, ValueError):
+        return None
+    return record
+
+
+def plan(artifacts, mode, cache, *, reuse_accepted=False):
+    """Decide what to run: ('skip', record) | ('full', None) | ('fast', changed kinds)."""
+    current = artifact_set(artifacts)
+    record = last_full_acceptance(cache)
+    packages = {kind: item[0] for kind, item in current.items()}
+    if record and reuse_accepted and mode == 'full' and record['packages'] == packages \
+            and record['tooling'] == acceptance_tooling_key():
+        return 'skip', record
+    if mode == 'fast':
+        if not record or set(record['packages']) != set(packages):
+            return 'full', None  # nothing to compare against: the first run has to be the whole set
+        changed = {kind for kind, digest in packages.items() if record['packages'].get(kind) != digest}
+        if not changed:
+            return 'fast', set()
+        return 'fast', changed
+    return 'full', None
+
+
+def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=None, changed=None, cache=None,
+        keep=DEFAULT_KEEP, prune=True, timings=None):
     base = Path(base).resolve()
     base.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix='stage05-', dir=base))
-    print('Package acceptance:', scratch, flush=True)
-    report = {'success': False, 'trust': 'ephemeral-test-only', 'clean_machine': False,
+    label = 'FULL acceptance (publishable)' if mode == 'full' else 'FAST pre-check (NOT publishable)'
+    print(f'Package acceptance [{label}]:', scratch, flush=True)
+    T = timings or Timings('acceptance ' + mode)
+    # Needs git and the normal PATH: compute before the environment is replaced by the sandbox's.
+    tooling = acceptance_tooling_key() if mode == 'full' else None
+    if prune and os.environ.get('ORION_ACCEPT_PRUNE', '1') != '0':
+        sandbox_prune.prune_in_background(base, keep=keep, protect=[scratch], cache=cache or DEFAULT_CACHE)
+    report = {'success': False, 'mode': mode, 'trust': 'ephemeral-test-only', 'clean_machine': False,
               'checks': [], 'artifacts': []}
     registry = scratch / 'install.json'
     processes = []
@@ -74,6 +163,16 @@ def run(artifacts, base, inputs, *, after_acceptance=None):
     log = (scratch / 'product.log').open('wb')
     command_env = env
     try:
+        available = artifact_set(artifacts)
+        if mode == 'full':
+            kinds = set(available)
+            if len(kinds) != 3:
+                raise RuntimeError('Acceptance needs Hub, Router and Flutter candidates')
+        else:
+            kinds = set(kinds or ())
+            if not kinds or not kinds <= set(available):
+                raise RuntimeError('Fast acceptance needs at least one candidate component')
+        report['scope'] = sorted(kinds)
         signers = {role: [CryptoSigner.generate_ed25519()] for role in ('root', 'targets', 'snapshot', 'timestamp')}
         root = Metadata(Root(expires=datetime.now(timezone.utc) + timedelta(days=1)))
         for role, keys in signers.items():
@@ -82,12 +181,21 @@ def run(artifacts, base, inputs, *, after_acceptance=None):
         root.sign(signers['root'][0])
         bootstrap = scratch / 'TEST-ONLY-root.json'
         bootstrap.write_bytes(root.to_bytes())
-        repository = publish(artifacts, scratch / 'repository', bootstrap, signers, version=1)
-        installer_archive = build_bootstrap(bootstrap, inputs, scratch / 'TEST-ONLY-bootstrap.zip', test_only=True)
-        installer = extract_zip(installer_archive, scratch / 'bootstrap')
-        names = [json.loads(p.read_text())['path'] for p in Path(artifacts).glob('*.target.json')]
-        if len(names) != 3:
-            raise RuntimeError('Acceptance needs Hub, Router and Flutter candidates')
+        with T.step('test TUF repository + bootstrap bundle'):
+            # Fast mode signs only the components under test.
+            subset = Path(artifacts)
+            if kinds != set(available):
+                subset = scratch / 'artifacts-subset'
+                subset.mkdir()
+                for kind in kinds:
+                    target = available[kind][2]
+                    build_cache.link_or_copy(Path(artifacts) / json.loads(target.read_text())['path'],
+                                             subset / json.loads(target.read_text())['path'])
+                    build_cache.link_or_copy(target, subset / target.name)
+            repository = publish(subset, scratch / 'repository', bootstrap, signers, version=1)
+            installer_archive = build_bootstrap(bootstrap, inputs, scratch / 'TEST-ONLY-bootstrap.zip', test_only=True)
+            installer = extract_zip(installer_archive, scratch / 'bootstrap')
+        names = [json.loads(p.read_text())['path'] for p in Path(subset).glob('*.target.json')]
         client = ReleaseClient(trusted_root=bootstrap, cache=scratch / 'cache',
             metadata_url='https://fixture.invalid/metadata/', targets_url='https://fixture.invalid/targets/',
             fetcher=FixtureFetcher(repository))
@@ -113,23 +221,26 @@ def run(artifacts, base, inputs, *, after_acceptance=None):
             'metadata_url="https://fixture.invalid/metadata/", targets_url="https://fixture.invalid/targets/", '
             'fetcher=FixtureFetcher(Path(v["repository"])))\n'
             'install(client,v["names"],Path(v["root"]),Path(v["registry"]),settings=v["settings"])\n', encoding='utf-8')
-        subprocess.run([str(installer / 'runtime/python/python.exe'), '-B', str(fixture), str(scratch / 'fixture.json')],
-                       cwd=installer, env=env, stdout=log, stderr=log, check=True, timeout=300)
+        with T.step('install: TUF verification + safe extraction' + (' + Hub initdb ' if 'hub' in kinds else ' ') + '/'.join(sorted(kinds))):
+            subprocess.run([str(installer / 'runtime/python/python.exe'), '-B', str(fixture), str(scratch / 'fixture.json')],
+                           cwd=installer, env=env, stdout=log, stderr=log, check=True, timeout=300)
         record = Registry(registry).read()
         os.environ.clear()
         os.environ.update(env)
-        report['checks'].append('real TUF verification + safe extraction + fresh Hub initdb in Unicode C AppData')
+        report['checks'].append('real TUF verification + safe extraction' + (
+            ' + fresh Hub initdb in Unicode C AppData' if 'hub' in kinds else ' in Unicode C AppData'))
         items = {c['kind']: c for c in record['components']}
         model = Path(record['locations']['models']) / 'fixture-existing.gguf'
         model.write_bytes(b'existing model sentinel; never opened by any engine')
         model_hash = sha256(model)
-        original = {kind: fingerprint(Path(item['code_path'])) for kind, item in items.items()}
+        with T.step('fingerprint installed package files (sha256, before start)'):
+            original = {kind: fingerprint(Path(item['code_path'])) for kind, item in items.items()}
         for kind, item in items.items():
             report['artifacts'].append(json.loads((Path(item['code_path']) / 'orion-release.json').read_text()))
-        hub = Path(items['hub']['code_path'])
-        python = hub / 'runtime/python/python.exe'
-        router = Path(items['router']['code_path'])
-        router_python = router / 'runtime/python/python.exe'
+        hub = Path(items['hub']['code_path']) if 'hub' in items else None
+        python = hub / 'runtime/python/python.exe' if hub else None
+        router = Path(items['router']['code_path']) if 'router' in items else None
+        router_python = router / 'runtime/python/python.exe' if router else None
         command_env = dict(env)
 
         def call(argv, cwd, timeout=180, extra_env=None):
@@ -138,68 +249,87 @@ def run(artifacts, base, inputs, *, after_acceptance=None):
                            stdin=subprocess.DEVNULL, stdout=log, stderr=log, check=True, timeout=timeout,
                            creationflags=0x08000000 if os.name == 'nt' else 0)
 
-        # Standalone Router has no Hub dependency and no Next/Node at runtime.
-        processes.append(('router', [router_python, '-m', 'core.lifecycle_cli', 'stop'], router))
-        call([router_python, '-m', 'core.lifecycle_cli', 'start'], router)
-        call([router_python, '-m', 'core.lifecycle_cli', 'stop'], router)
-        router_identity = {p: sha256(p) for p in (Path(items['router']['data_path']) / 'persistent').rglob('*') if p.is_file()}
-        report['checks'].append('standalone packaged Router start/health/stop with SDK-free PATH')
-        # Existing launcher starts both components using their independent runtimes.
-        processes.append(('hub', [python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub))
-        entry = [Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe',
-                 '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
-                 registry.parent / 'bootstrap/Orion.ps1', '-Background', '-NonInteractive']
-        call(entry, registry.parent)
-        url = 'http://127.0.0.1:' + str(settings['hub']['ORION_FLUTTER_PORT'])
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        deadline = time.monotonic() + 20
-        while True:
-            try:
-                with opener.open(url + '/__orion_flutter_health__', timeout=2) as response:
-                    assert response.read() == b'orion-flutter-web'
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(.2)
-        report['checks'].append('registered Hub/Router/Flutter package start and real Flutter health')
-        call([python, '-c',
-            "import asyncio; from orion.kernel.router_bootstrap import bootstrap_local_router; "
-            "r=asyncio.run(bootstrap_local_router()); assert r['status'] in {'trusted','owner-configured'},r"], hub)
-        report['checks'].append('registered packaged Router public provenance and live TLS identity bootstrap')
-        # Write an independent DB row and an encrypted per-account override in data;
-        # next process proves persistence without any external provider/model call.
-        probe = (
-            "from services.shared.native_services import hub_database; from services.shared.environment import get_env; "
-            "from orion.kernel.local_security import tls_identity,security_dir; "
-            "db=hub_database('.',get_env); assert db.ready(); db.sql('CREATE TABLE package_probe(value text)'); "
-            "db.sql(\"INSERT INTO package_probe VALUES ('Türkçe 中文')\"); "
-            "i=tls_identity(); print('identity',i['id']); "
-            "from orion.kernel.router_access import save_manual; "
-            "from orion.kernel.router_accounts import _material; "
-            "_material(); save_manual('00000000-0000-4000-8000-000000000001', "
-            "'00000000-0000-4000-8000-000000000002',key='sk-orion-stage05-fixture',enabled=True)"
-        )
-        call([python, '-c', probe], hub, extra_env=settings['hub'])
-        data_before = {p: sha256(p) for p in (Path(items['hub']['data_path']) / 'files/security').glob('*')
-                       if p.is_file() and (p.name in {'hub-key.pem', 'hub-cert.pem', 'hub-id', 'router-access-seed'}
-                                           or p.name.startswith('router-access-'))}
-        call([python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub)
-        call(entry, registry.parent)
-        call([python, '-c', "from services.shared.native_services import hub_database; from services.shared.environment import get_env; db=hub_database('.',get_env); assert db.ready(); assert db.sql('SELECT value FROM package_probe') == 'Türkçe 中文'; from orion.kernel.router_access import manual_state; assert manual_state('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002')['key'] == 'sk-orion-stage05-fixture'"], hub, extra_env=settings['hub'])
-        assert all(sha256(p) == digest for p, digest in data_before.items())
-        call([python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub)
+        router_identity = {}
+        # A fast run exercises Router standalone only when the Router itself changed.
+        standalone_router = router is not None and (mode == 'full' or 'router' in (changed or kinds))
+        if standalone_router:
+            with T.step('standalone Router start/health/stop'):
+                # Standalone Router has no Hub dependency and no Next/Node at runtime.
+                processes.append(('router', [router_python, '-m', 'core.lifecycle_cli', 'stop'], router))
+                call([router_python, '-m', 'core.lifecycle_cli', 'start'], router)
+                call([router_python, '-m', 'core.lifecycle_cli', 'stop'], router)
+                router_identity = {p: sha256(p) for p in (Path(items['router']['data_path']) / 'persistent').rglob('*') if p.is_file()}
+            report['checks'].append('standalone packaged Router start/health/stop with SDK-free PATH')
+        if hub is not None:
+            # Existing launcher starts both components using their independent runtimes.
+            processes.append(('hub', [python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub))
+            entry = [Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe',
+                     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+                     registry.parent / 'bootstrap/Orion.ps1', '-Background', '-NonInteractive']
+            with T.step('registered launcher start + Flutter health'):
+                call(entry, registry.parent)
+                if 'client' in items:
+                    url = 'http://127.0.0.1:' + str(settings['hub']['ORION_FLUTTER_PORT'])
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    deadline = time.monotonic() + 20
+                    while True:
+                        try:
+                            with opener.open(url + '/__orion_flutter_health__', timeout=2) as response:
+                                assert response.read() == b'orion-flutter-web'
+                            break
+                        except OSError:
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(.2)
+            report['checks'].append('registered Hub/Router/Flutter package start and real Flutter health'
+                                    if len(items) == 3 else 'registered ' + '/'.join(sorted(items)) + ' package start and health')
+            if router is not None:
+                with T.step('Router provenance + TLS identity bootstrap'):
+                    call([python, '-c',
+                        "import asyncio; from orion.kernel.router_bootstrap import bootstrap_local_router; "
+                        "r=asyncio.run(bootstrap_local_router()); assert r['status'] in {'trusted','owner-configured'},r"], hub)
+                report['checks'].append('registered packaged Router public provenance and live TLS identity bootstrap')
+            # Write an independent DB row and an encrypted per-account override in data;
+            # next process proves persistence without any external provider/model call.
+            probe = (
+                "from services.shared.native_services import hub_database; from services.shared.environment import get_env; "
+                "from orion.kernel.local_security import tls_identity,security_dir; "
+                "db=hub_database('.',get_env); assert db.ready(); db.sql('CREATE TABLE package_probe(value text)'); "
+                "db.sql(\"INSERT INTO package_probe VALUES ('Türkçe 中文')\"); "
+                "i=tls_identity(); print('identity',i['id']); "
+                "from orion.kernel.router_access import save_manual; "
+                "from orion.kernel.router_accounts import _material; "
+                "_material(); save_manual('00000000-0000-4000-8000-000000000001', "
+                "'00000000-0000-4000-8000-000000000002',key='sk-orion-stage05-fixture',enabled=True)"
+            )
+            with T.step('write DB row + encrypted override, stop, restart, verify persistence'):
+                call([python, '-c', probe], hub, extra_env=settings['hub'])
+                data_before = {p: sha256(p) for p in (Path(items['hub']['data_path']) / 'files/security').glob('*')
+                               if p.is_file() and (p.name in {'hub-key.pem', 'hub-cert.pem', 'hub-id', 'router-access-seed'}
+                                                   or p.name.startswith('router-access-'))}
+                call([python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub)
+                call(entry, registry.parent)
+                call([python, '-c', "from services.shared.native_services import hub_database; from services.shared.environment import get_env; db=hub_database('.',get_env); assert db.ready(); assert db.sql('SELECT value FROM package_probe') == 'Türkçe 中文'; from orion.kernel.router_access import manual_state; assert manual_state('00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002')['key'] == 'sk-orion-stage05-fixture'"], hub, extra_env=settings['hub'])
+                assert all(sha256(p) == digest for p, digest in data_before.items())
+            with T.step('final stop'):
+                call([python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub)
         assert all(sha256(p) == digest for p, digest in router_identity.items())
         assert sha256(model) == model_hash
-        report['checks'].append('package stop/restart preserves real PostgreSQL row, TLS/UUID and data files')
-        for kind, item in items.items():
-            assert fingerprint(Path(item['code_path'])) == original[kind], 'Immutable package was modified: ' + kind
+        if hub is not None:
+            report['checks'].append('package stop/restart preserves real PostgreSQL row, TLS/UUID and data files')
+        with T.step('fingerprint installed package files again (immutability)'):
+            for kind, item in items.items():
+                assert fingerprint(Path(item['code_path'])) == original[kind], 'Immutable package was modified: ' + kind
         report['checks'].append('every package file hash unchanged after runtime start/stop/restart')
         assert Registry(registry).read()['preferences']['automatic_updates'] is False
         assert Registry(registry).read()['preferences']['start_with_windows'] is False
         if after_acceptance is not None:
             after_acceptance(scratch, signers, bootstrap, installer, env)
-        report['success'] = True
+        if mode == 'full':
+            report['success'] = True
+        else:
+            # A fast pass must never satisfy the publish gate (`success` stays False).
+            report['fast_success'] = True
     except Exception as error:
         report['error'] = type(error).__name__ + ': ' + str(error)
         raise
@@ -219,15 +349,69 @@ def run(artifacts, base, inputs, *, after_acceptance=None):
             cleanup.append({'component': kind, 'stop_exit': result.returncode})
         report['cleanup'] = cleanup
         log.close()
+        report['timings'] = T.rows
         (scratch / 'result.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
         print(json.dumps(report, ensure_ascii=True), flush=True)
+    if mode == 'full' and report['success']:
+        record_full_acceptance(cache or DEFAULT_CACHE, artifacts, scratch, tooling)
     return scratch
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--artifacts', type=Path, required=True)
+def record_full_acceptance(cache, artifacts, scratch, tooling):
+    packages = {kind: item[0] for kind, item in artifact_set(artifacts).items()}
+    build_cache.Cache(cache).write_record('acceptance.json', {
+        'mode': 'full', 'packages': packages, 'tooling': tooling,
+        'result': str(Path(scratch) / 'result.json'), 'finished': datetime.now(timezone.utc).isoformat()})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--scratch-base', type=Path, required=True)
-    parser.add_argument('--inputs', type=Path, required=True)
+    parser.add_argument('--inputs', type=Path)
+    parser.add_argument('--mode', choices=['full', 'fast'], default='full')
+    parser.add_argument('--cache', type=Path, default=DEFAULT_CACHE, help='build cache (records the last full acceptance)')
+    parser.add_argument('--reuse-accepted', action='store_true',
+                        help='skip a full run when this exact package set already passed with unchanged acceptance tooling')
+    parser.add_argument('--keep', type=int, default=DEFAULT_KEEP, help='sandboxes to keep when pruning')
+    parser.add_argument('--no-prune', action='store_true', help='do not prune old sandboxes after starting')
+    parser.add_argument('--prune', action='store_true', help='only prune old sandboxes, then exit')
+    parser.add_argument('--dry-run', action='store_true', help='with --prune: list what would be deleted')
+    parser.add_argument('--all-prefixes', action='store_true',
+                        help='with --prune: apply the keep rule to every sandbox family (product-*, stage04-*, ...)')
     args = parser.parse_args()
-    run(args.artifacts.resolve(), args.scratch_base, args.inputs.resolve())
+    if args.prune:
+        sandbox_prune.main(args.scratch_base, keep=args.keep, cache=args.cache, dry_run=args.dry_run,
+                           all_prefixes=args.all_prefixes)
+        return
+    if args.artifacts is None or args.inputs is None:
+        parser.error('--artifacts and --inputs are required unless --prune')
+    artifacts, inputs = args.artifacts.resolve(), args.inputs.resolve()
+    decision, detail = plan(artifacts, args.mode, args.cache, reuse_accepted=args.reuse_accepted)
+    if decision == 'skip':
+        print(f"FULL acceptance SKIPPED: this exact package set already passed a full run with the same acceptance "
+              f"tooling ({detail['finished']}).\nResult: {detail['result']}  (use without --reuse-accepted to run again)")
+        return
+    if args.mode == 'fast' and decision == 'full':
+        print('FAST requested but there is no earlier passing full acceptance to compare with: running FULL.')
+    if decision == 'fast':
+        if not detail:
+            print('FAST pre-check: every package is identical to the last passing full run; nothing to exercise.')
+            return
+        print('FAST pre-check, components changed since the last full run:', ', '.join(sorted(detail)),
+              '\nThis is NOT the publish gate: run again without --mode fast for the full acceptance.')
+        mode, kinds = 'fast', fast_scope(detail)
+    else:
+        mode, kinds = 'full', None
+    timings = Timings('acceptance ' + mode)
+    try:
+        scratch = run(artifacts, args.scratch_base, inputs, mode=mode, kinds=kinds, changed=detail or None, cache=args.cache,
+                      keep=args.keep, prune=not args.no_prune, timings=timings)
+    finally:
+        timings.summary()
+    print(('FULL acceptance PASSED (publishable): ' if mode == 'full' else 'FAST pre-check PASSED (not publishable): ')
+          + str(scratch / 'result.json'))
+
+
+if __name__ == '__main__':
+    main()
