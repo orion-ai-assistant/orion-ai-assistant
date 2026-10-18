@@ -173,6 +173,36 @@ def test_refusals_change_nothing(world):
         world.run('all')
 
 
+def pending_update(world, phase):
+    import uuid
+    record = world.registry.read()
+    identity = str(uuid.uuid4())
+    directory = world.registry.path.parent / 'updates' / identity
+    directory.mkdir(parents=True)
+    journal = {'schema': 1, 'operation_id': identity, 'installation_id': record['installation_id'], 'phase': phase,
+               'previous': record, 'proposed': record, 'changes': ['router'], 'attempts': 0}
+    (directory / 'journal.json').write_text(json.dumps(journal), encoding='utf-8')
+    (directory.parent / 'active.json').write_text(json.dumps({'schema': 1, 'operation_id': identity}), encoding='utf-8')
+    return directory / 'journal.json'
+
+
+def test_a_downloaded_but_not_applied_update_is_cancelled_by_the_uninstall(world):
+    full(world)
+    pending_update(world, 'staged')   # e.g. Router 0.2.4 downloaded, waiting for "Şimdi güncelle"
+    result = world.run('router')
+    assert result['status'] == 'uninstalled' and result['removed'] == ['router']
+
+
+def test_an_update_that_already_switched_still_blocks_the_uninstall(world):
+    full(world)
+    journal = pending_update(world, 'health_check')
+    snapshot = world.registry.path.read_bytes()
+    with pytest.raises(U.UninstallError, match='pending update'):
+        world.run('router')
+    assert world.registry.path.read_bytes() == snapshot
+    assert json.loads(journal.read_text(encoding='utf-8'))['phase'] == 'health_check'
+
+
 def test_scope_must_exist_in_this_installation(world):
     world.fresh(['router'])
     with pytest.raises(U.UninstallError, match='yok'):

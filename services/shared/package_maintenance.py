@@ -14,9 +14,18 @@ from .update_helper import UpdateHelper, UpdateError, inventory, StoppedPackages
 from .update_gate import TERMINAL
 
 
-def _idle_update(helper):
+# An update in these phases has not switched anything yet (the active version is unchanged), exactly what an
+# explicit rollback may cancel. Under the operation lock no prepare/apply is running for it.
+NOT_SWITCHED = {'checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle', 'draining', 'backing_up'}
+
+
+def _idle_update(helper, *, cancel_unapplied=False):
     tx = helper.status()
     if tx and tx['phase'] not in TERMINAL:
+        if cancel_unapplied and not tx.get('conversion') and (tx['proposed'] is None or tx['phase'] in NOT_SWITCHED):
+            # A downloaded-but-not-applied update must not block removing the product it would update.
+            helper._phase(tx, 'failed', reason='Cancelled by uninstall; active version unchanged')
+            return
         raise UpdateError('Resolve the pending update/conversion before maintenance')
 
 
@@ -49,7 +58,7 @@ def remove_links(registry, installation_id):
 def uninstall(registry, kinds, *, expected_revision, helper=None, links=remove_links):
     helper = helper or UpdateHelper(registry)
     with operation_lock(registry.path, timeout=0):
-        _idle_update(helper)
+        _idle_update(helper, cancel_unapplied=True)
         plan = removal_plan(registry, kinds)
         if plan['revision'] != expected_revision:
             raise UpdateError('Installation changed; review a fresh uninstall plan')
