@@ -671,9 +671,12 @@ def run_startup(registry):
 def spawn_watcher(registry):
     command = runtime_command(registry)
     if command:
-        # The separately retained worker survives Hub/browser closure, never activates.
+        # The separately retained worker survives Hub/browser closure, never activates. It runs in its own
+        # bundle folder: the launcher's working directory is the Hub tree, and a watcher whose cwd is inside it
+        # counted as a process using the installation ("busy=python.exe:<watcher>"), so a staged update was
+        # skipped at the next launch.
         subprocess.Popen(command + ['watch'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, cwd=str(Path(command[2]).parents[2]),
                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
 
@@ -714,18 +717,19 @@ def watch(automatic):
                     automatic.registry, automatic.bootstrap_root):
                 update_log.log(base, 'watcher.handover')
                 return 'handover'  # Lock is released on return; the caller starts the new watcher.
+            if _exit_requested(automatic):
+                return
             try:
-                with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
+                # Never waits: the old check gave exiting processes 20 s to settle, so a "Çık" was noticed late.
+                host = automatic.helper.host
+                with getattr(host, 'stopped_now', host.stopped)(automatic.registry.read()) as stopped:
                     if stopped:
                         update_log.log(base, 'watcher.stop', reason='installation stopped')
                         return
             except Exception as error:
                 # A process scan that cannot decide (access denied, a lock held for a moment) must not kill the watcher.
                 update_log.log_exception(base, 'watch.stopped-check', error)
-            marker = automatic.base / 'watcher.exit'
-            if marker.exists():  # Written by an explicit stop ("Çık" / -Stop).
-                marker.unlink(missing_ok=True)
-                update_log.log(base, 'watcher.stop', reason='exit requested')
+            if _exit_requested(automatic):
                 return
             from . import update_now
             # One failing step (a busy lock, a bad state file, a failed check) must never end the watcher:
@@ -761,4 +765,19 @@ def watch(automatic):
             except Exception as error:
                 if type(error) is not LifecycleError:
                     update_log.log_exception(base, 'watch.router', error)
-            time.sleep(5)
+            for _ in range(WATCH_PAUSE * 4):  # The pause between rounds ends as soon as a quit asks for it.
+                if (automatic.base / 'watcher.exit').exists():
+                    break
+                time.sleep(.25)
+
+
+WATCH_PAUSE = 5  # seconds between watcher rounds
+
+
+def _exit_requested(automatic):
+    marker = automatic.base / 'watcher.exit'
+    if marker.exists():  # Written by an explicit stop ("Çık" / -Stop), which waits for this process to end.
+        marker.unlink(missing_ok=True)
+        update_log.log(automatic.base, 'watcher.stop', reason='exit requested')
+        return True
+    return False

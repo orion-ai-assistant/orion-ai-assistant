@@ -603,6 +603,12 @@ class NativeHost:
             return StoppedInstallation(self.registry, operation_locked=True)
         return StoppedPackages(record)
 
+    def stopped_now(self, record):
+        """`stopped` without the settle wait: the watcher only asks "is Orion off?" between its rounds."""
+        if any(c['distribution'] == 'legacy-source' for c in record['components']):
+            return self.stopped(record)
+        return StoppedPackages(record, wait=0)
+
     def quiet_now(self, record):
         """Immediate and side-effect free: could the installation be locked and stopped right now?
         Never waits: a Hub that is running, or a tree that is still exiting, is simply "not now"."""

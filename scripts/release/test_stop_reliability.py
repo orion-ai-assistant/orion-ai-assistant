@@ -290,3 +290,81 @@ def test_supervised_children_stop_together_and_are_not_stopped_twice(tmp_path):
             runtime.__exit__(None, None, None)
         again.assert_not_called()
         assert runtime.status == 'stopped'
+
+
+# ---- the retained watcher ends with the quit, and a launch during a quit says so -------------------------
+
+def test_the_quit_waits_for_the_watcher_to_end(install, tmp_path):
+    """Real PC: the watcher logged its stop 22 s after "Çık"; the launch in between skipped the staged update."""
+    import subprocess
+    import sys
+    registry, *_ = install
+    marker = registry.path.parent / launcher.WATCHER_EXIT
+    code = ('import pathlib,sys,time\n'
+            f'm=pathlib.Path({str(marker)!r})\n'
+            'end=time.time()+20\n'
+            'while not m.exists() and time.time()<end: time.sleep(.05)\n')
+    watcher = subprocess.Popen([sys.executable, '-c', code, str(tmp_path / 'b/update_automatic.py'),
+                                '--registry', str(registry.path), 'watch'])
+    try:
+        deadline = time.monotonic() + 10
+        while not launcher.watcher_processes(registry) and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert watcher.pid in [p.pid for p in launcher.watcher_processes(registry)]  # (+ a venv redirector child)
+        started = time.monotonic()
+        launcher.request_watcher_exit(registry)
+        assert watcher.poll() is not None and time.monotonic() - started < 5
+    finally:
+        watcher.kill()
+
+
+def test_the_watcher_notices_a_quit_without_the_20_second_settle_wait(install):
+    registry, *_ = install
+
+    class Host:
+        def stopped(self, record):
+            raise AssertionError('the waiting check is for applying updates, not for the watcher loop')
+
+        def stopped_now(self, record):
+            from contextlib import nullcontext
+            return nullcontext(True)
+
+    class Helper:
+        base = registry.path.parent / 'updates'
+        host = Host()
+    service = AutomaticUpdates(registry, helper=Helper())
+    (registry.path.parent / 'bootstrap').mkdir()
+    (registry.path.parent / 'bootstrap/release-source.json').write_text(json.dumps({
+        'schema': 1, 'channel': 'stable', 'metadata_url': 'https://release.example/m/',
+        'targets_url': 'https://release.example/t/', 'targets': {'hub': 'hub.zip'}}))
+    assert watch(service) is None
+    assert 'reason=installation stopped' in (Helper.base / 'watcher.log').read_text(encoding='utf-8')
+
+
+def test_the_watcher_runs_outside_the_hub_tree(install, tmp_path):
+    registry, hub, _ = install
+    root = tmp_path / 'bundle'
+    command = [str(root / 'runtime/python/python.exe'), '-B', str(root / 'scripts/release/update_automatic.py'),
+               '--registry', str(registry.path)]
+    with patch('services.shared.automatic_updates.runtime_command', return_value=command), \
+            patch('services.shared.automatic_updates.subprocess.Popen') as popen:
+        from services.shared.automatic_updates import spawn_watcher
+        spawn_watcher(registry)
+    assert Path(popen.call_args.kwargs['cwd']) == root
+
+
+def test_a_launch_during_a_quit_shows_the_quitting_window(install):
+    registry, *_ = install
+    shown = []
+    from contextlib import contextmanager
+    @contextmanager
+    def window(r):
+        shown.append('open')
+        yield
+        shown.append('closed')
+    with launcher.quit_marker(registry):
+        ends = iter([True, True, False])
+        with patch.object(launcher, 'quitting', side_effect=lambda r: next(ends)):
+            assert launcher.wait_for_quit(registry, sleep=lambda s: None, window=window) is True
+    assert shown == ['open', 'closed']
+    assert launcher.wait_for_quit(registry, window=window) is False and shown == ['open', 'closed']

@@ -374,15 +374,18 @@ def quit_marker(registry):
         path.unlink(missing_ok=True)
 
 
-def wait_for_quit(registry, *, sleep=time.sleep, clock=time.monotonic):
+def wait_for_quit(registry, *, sleep=time.sleep, clock=time.monotonic, window=None):
     """Opening Orion right after "Çık": let that quit finish first (seconds) instead of finding the old tree
-    still exiting - which skipped a staged update ("uncoordinated consumers") and raced the stop."""
-    deadline = clock() + QUIT_WAIT
-    waited = False
-    while quitting(registry) and clock() < deadline:
-        waited = True
-        sleep(.25)
-    return waited
+    still exiting - which skipped a staged update ("uncoordinated consumers") and raced the stop. Meanwhile a
+    small "Orion kapanıyor, birazdan açılacak" window shows that the click was not lost."""
+    if not quitting(registry):
+        return False
+    from . import update_ui
+    with (window or update_ui.quitting_window)(registry):
+        deadline = clock() + QUIT_WAIT
+        while quitting(registry) and clock() < deadline:
+            sleep(.25)
+    return True
 
 
 def running_services(components):
@@ -407,11 +410,36 @@ def running_services(components):
     return left
 
 
-def request_watcher_exit(registry):
-    """"Çık" also ends the retained watcher (it would otherwise keep polling, possibly mid-download)."""
+WATCHER_WAIT = 15  # A watcher between rounds ends in a moment; one mid-download is left to finish its step.
+
+
+def watcher_processes(registry):
+    """The retained update watcher(s) of THIS installation (`update_automatic.py --registry <it> watch`)."""
+    import psutil
+    wanted = str(registry.path).lower()
+    found = []
+    for process in psutil.process_iter(['cmdline']):
+        try:
+            command = [(arg or '').strip('"').lower() for arg in process.info['cmdline'] or []]
+            if (any(arg.endswith('update_automatic.py') for arg in command) and 'watch' in command
+                    and wanted in command):
+                found.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return found
+
+
+def request_watcher_exit(registry, *, timeout=WATCHER_WAIT):
+    """"Çık" also ends the retained watcher (it would otherwise keep polling, possibly mid-download), and waits
+    for it (bounded): a launch right after the quit found it still alive and skipped the staged update."""
     marker = registry.path.parent / WATCHER_EXIT
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_bytes(b'exit')
+    try:
+        import psutil
+        psutil.wait_procs(watcher_processes(registry), timeout=timeout)
+    except Exception:
+        pass  # Waiting is a courtesy to the next launch; the marker alone ends the watcher.
 
 
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
