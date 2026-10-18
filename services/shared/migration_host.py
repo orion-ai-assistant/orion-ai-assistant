@@ -115,7 +115,7 @@ class StoppedInstallation:
             try:
                 executable = Path(process.exe()).resolve()
                 if any(executable.is_relative_to(root) for root in roots):
-                    raise MigrationError('An uncoordinated process uses this installation; migration refused')
+                    raise _refused(process, executable)
                 # Unrelated protected desktop applications may deny cwd access.
                 # Only source interpreters need argv/cwd disambiguation; native
                 # product binaries have already been checked by their path.
@@ -123,7 +123,7 @@ class StoppedInstallation:
                     continue
                 paths = [Path(process.cwd()), *[Path(arg) for arg in process.cmdline() if Path(arg).is_absolute()]]
                 if any(path.resolve().is_relative_to(root) for path in paths for root in roots):
-                    raise MigrationError('An uncoordinated process uses this installation; migration refused')
+                    raise _refused(process, executable)
             except psutil.NoSuchProcess:
                 continue
             except (psutil.AccessDenied, OSError, ValueError) as error:
@@ -132,6 +132,13 @@ class StoppedInstallation:
     def __exit__(self, *args):
         self.held = False
         self.stack.close()
+
+
+def _refused(process, executable):
+    """The refusal, naming (for the update log only) which process kept the installation busy."""
+    error = MigrationError('An uncoordinated process uses this installation; migration refused')
+    error.offender = f'{executable.name}:{process.pid}'
+    return error
 
 
 def move_content(registry, name, destination, *, expected_revision, fault=None):

@@ -58,6 +58,8 @@ def run():
     elif args.action == 'check':
         automatic.check(now=args.now)
         AutomaticUpdates(Registry(args.registry), helper=automatic.helper, scope='router').check(now=args.now)
+        if args.now and _outdated_and_failed(automatic):
+            return _recheck_with_new_bootstrap(automatic)
     else:
         try:
             automatic.startup()
@@ -68,6 +70,28 @@ def run():
         if blocked(args.registry):
             return 1
     return 0
+
+
+def _outdated_and_failed(automatic):
+    """This check ran from a bootstrap that was replaced meanwhile and ended in an error."""
+    try:
+        from services.shared.automatic_updates import read_json
+        state = read_json(automatic.state_path, {})
+    except (OSError, ValueError):
+        return False
+    return bool(state.get('error')) and bootstrap_update.handover_due(automatic.registry, automatic.bootstrap_root)
+
+
+def _recheck_with_new_bootstrap(automatic):
+    """One more check through the now-active bootstrap instead of leaving the user with an error."""
+    import subprocess
+    from services.shared.automatic_updates import runtime_command
+    command = runtime_command(automatic.registry)
+    if command is None:
+        return 1
+    update_log.log(automatic.base, 'check.retry', reason='bootstrap-replaced')
+    return subprocess.run(command + ['check', '--now'], stdin=subprocess.DEVNULL, capture_output=True,
+                          timeout=600, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).returncode
 
 
 if __name__ == '__main__':

@@ -231,3 +231,46 @@ def test_unreadable_state_file_does_not_stop_checks_or_the_watcher(automatic):
     service.check()
     assert service.helper.status()['phase'] == 'staged'
     assert service.status()['last_success'] == now[0]
+
+
+def test_launch_with_services_still_up_skips_silently_without_window_or_rehash(automatic):
+    service, now, data, host = automatic
+    host.idle = False
+    service.check()
+    assert service.helper.status()['phase'] == 'staged'
+    host.quiet_now = lambda record: False  # Hub running, or its tree still exiting: "not now"
+    with patch('services.shared.update_ui.updating_window', side_effect=AssertionError('no window')), \
+            patch.object(service.helper, 'resume', side_effect=AssertionError('no re-verify')):
+        assert service.startup()['phase'] == 'staged'
+    assert host.stopped_calls == 0
+    host.quiet_now = lambda record: True
+    host.idle = True
+    assert service.startup()['phase'] == 'completed'
+
+
+def test_launch_loses_the_operation_lock_race_without_failing(automatic):
+    from services.shared.process_lifecycle import LifecycleError
+    service, now, data, host = automatic
+    service.check()
+    host.quiet_now = lambda record: True
+    with patch('services.shared.update_ui.updating_window'), \
+            patch.object(service.helper, 'resume', side_effect=LifecycleError('busy')):
+        assert service.startup()['phase'] == 'staged'
+
+
+def test_feed_failure_while_the_bootstrap_replaces_itself_is_retried_once(automatic, monkeypatch):
+    from services.shared.release_packages import PackageError
+    service, now, data, host = automatic
+    monkeypatch.setattr('services.shared.automatic_updates.RETRY_PAUSE', 0)
+    good = service.client_factory
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise PackageError('trust root being replaced')
+        return good()
+    service.client_factory = flaky
+    service.check(now=True)
+    assert len(calls) == 2
+    assert service.status()['check_outcome'] == 'update_found' and service.status()['error'] is None

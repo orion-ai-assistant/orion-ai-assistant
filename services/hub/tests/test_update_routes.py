@@ -61,7 +61,8 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.read.side_effect = ValueError('private-path-secret')
         async with self.client() as client:
             response = await client.get('/api/v1/updates')
-            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()['busy'])
             self.assertNotIn('private-path-secret', response.text)
 
     async def test_authentication_is_still_required(self):
@@ -137,6 +138,24 @@ class CheckNowTests(unittest.TestCase):
             attempt[0] = clock.time() + 1
             self.assertFalse(api.read_status()['checking'])  # The check already ran and finished.
             api._requested['at'] = 0.0
+
+    def test_activity_follows_journal_and_state_whichever_process_checks(self):
+        pick = api.activity
+        self.assertEqual(pick({'checking': True, 'pending': None}), 'checking')
+        self.assertEqual(pick({'checking': True, 'check_outcome': 'update_found', 'pending': None}), 'found')
+        # A manual check that failed does not hide the watcher's download.
+        self.assertEqual(pick({'checking': False, 'error': 'CheckProcessFailed',
+                               'pending': {'phase': 'downloading'}}), 'downloading')
+        self.assertEqual(pick({'checking': True, 'pending': {'phase': 'staged'}}), 'ready')
+        self.assertEqual(pick({'checking': False, 'pending': None}), 'idle')
+
+    def test_status_never_fails_while_an_operation_holds_the_state(self):
+        from services.shared.process_lifecycle import LifecycleError
+        with patch.object(api, 'read_status', side_effect=[{'available': True, 'pending': None}, LifecycleError('busy')]),                 patch('services.shared.update_log.log_exception') as log, patch.object(api, 'Registry'):
+            self.assertNotIn('busy', api.read_status_or_last())
+            result = api.read_status_or_last()
+        self.assertTrue(result['busy'] and result['available'])
+        self.assertEqual(log.call_args.args[1], 'status.read')
 
     def test_check_now_without_retained_runtime_is_refused(self):
         with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=None), \

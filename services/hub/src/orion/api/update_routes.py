@@ -63,16 +63,53 @@ def read_status():
     if (not data.get('checking') and _requested['at'] and time.time() - _requested['at'] < _REQUEST_GRACE
             and attempt < _requested['at']):
         data['checking'] = True  # Started but not yet running: still "denetleniyor".
+    data['activity'] = activity(data)
     return data
+
+
+PREPARING = {'checking', 'downloading', 'verifying'}
+
+
+def activity(data):
+    """What the PC is doing about updates, from its own files whichever process started the check:
+    `downloading` (a release was found and is being fetched), `ready` (staged, "Şimdi güncelle"),
+    `checking`, or `idle`. The journal phases checking/downloading/verifying only exist once a newer
+    signed release was found, so they are never "just checking"."""
+    pending = data.get('pending') or {}
+    phase = pending.get('phase')
+    if phase in PREPARING:
+        return 'downloading'
+    if phase in {'staged', 'waiting_for_idle'}:
+        return 'ready'
+    if data.get('checking'):
+        return 'found' if data.get('check_outcome') == 'update_found' else 'checking'
+    return 'idle'
+
+
+_last = {'data': None}
+
+
+def read_status_or_last():
+    """Never an HTTP error for the card: while an update operation (a launch-time apply, a check) holds
+    files or locks for a while, answer with the last known state flagged `busy`. The real exception, with
+    its location, goes to the update log (never to the response)."""
+    try:
+        data = read_status()
+        _last['data'] = data
+        return data
+    except Exception as error:
+        try:
+            from services.shared import update_log
+            update_log.log_exception(Registry().path.parent / 'updates', 'status.read', error)
+        except Exception:
+            pass  # Diagnostics only.
+        return {**(_last['data'] or {}), 'busy': True, 'busy_message': 'Güncelleme işlemi sürüyor.'}
 
 
 @router.get('')
 async def status(request: Request, user: str = Depends(get_current_user)):
-    try:
-        result = await asyncio.to_thread(read_status)
-        return {**result, 'can_manage': local_control(request)}
-    except (OSError, ValueError, RuntimeError) as error:
-        raise HTTPException(503, 'Güncelleme bilgileri okunamadı; yerel onarma kaydını kontrol edin.') from error
+    result = await asyncio.to_thread(read_status_or_last)
+    return {**result, 'can_manage': local_control(request)}
 
 
 class Preferences(BaseModel):
