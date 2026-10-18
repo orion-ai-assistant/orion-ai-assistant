@@ -248,6 +248,23 @@ def _run_once(command, *, remove=False):
         return False
 
 
+def _start_outside_job(arguments):
+    """Start the cleanup through WMI (Win32_Process.Create): its parent is the WMI service, so it is in no job of
+    ours. Settings > Apps runs the uninstall dialog in a job that kills every child when the dialog closes and does
+    not allow breakaway; a cleanup started with Popen then died with the window and left the bootstrap runtime."""
+    if os.name != 'nt':
+        return False
+    line = subprocess.list2cmdline(arguments).replace("'", "''")
+    probe = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='" + line
+             + "'}; exit [int]$r.ReturnValue")
+    try:
+        return subprocess.run([_powershell(), '-NoProfile', '-NonInteractive', '-Command', probe],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def schedule_removal(paths, *, root, wait=None, later=None, folder=None, spawn=True, run_once=_run_once):
     """Delete what is still held (the running bootstrap runtime, files a closing process keeps open) once this
     uninstaller exited: a hidden detached PowerShell waits for that PID (`wait`), retries, waits for the result
@@ -273,6 +290,8 @@ def schedule_removal(paths, *, root, wait=None, later=None, folder=None, spawn=T
     if spawn:
         flags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
         arguments = command + (['-Pids', ','.join(map(str, wait))] if wait else [])             + (['-Later', ','.join(map(str, later))] if later else [])
+        if _start_outside_job(arguments):
+            return script
         for extra in (getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0), 0):  # Outlive a job that kills on close.
             try:
                 subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

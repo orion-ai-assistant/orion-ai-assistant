@@ -321,11 +321,13 @@ def test_the_cleanup_starts_when_the_uninstaller_exits_not_when_the_result_windo
     import subprocess
     import sys
     spawned = []
+    monkeypatch.setattr(U, '_start_outside_job', lambda arguments: spawned.append(arguments) and False)
     monkeypatch.setattr(U.subprocess, 'Popen', lambda arguments, **kw: spawned.append(arguments))
     root = tmp_path / 'Orion'
     (root / 'Bootstrap-Installer-s10-abc/runtime').mkdir(parents=True)
     script = U.schedule_removal([root / 'Bootstrap-Installer-s10-abc'], root=root, folder=tmp_path, run_once=lambda c: None)
     monkeypatch.undo()
+    assert spawned[0] == spawned[1]   # WMI first (outside the dialog's job), Popen only when that fails.
     arguments = spawned[0]
     assert arguments[arguments.index('-Pids') + 1] == str(os.getpid())
     assert arguments[arguments.index('-Later') + 1] == str(os.getppid())
@@ -337,3 +339,15 @@ def test_the_cleanup_starts_when_the_uninstaller_exits_not_when_the_result_windo
         assert not root.exists() and dialog.poll() is None   # Removed while the result window is still open.
     finally:
         dialog.kill()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='WMI')
+def test_the_cleanup_is_started_through_wmi_so_closing_the_dialog_cannot_kill_it(tmp_path):
+    import time
+    marker = tmp_path / "it's started.txt"   # A quote in the path: the command line is quoted for PowerShell.
+    assert U._start_outside_job([U._powershell(), '-NoProfile', '-NonInteractive', '-Command',
+                                 f"Set-Content -LiteralPath '{str(marker).replace(chr(39), chr(39) * 2)}' -Value ok"])
+    deadline = time.monotonic() + 30
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert marker.exists()
