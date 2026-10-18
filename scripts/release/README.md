@@ -89,6 +89,16 @@ busy one they no longer stretch dart2js (seen: 130-260 s next to Next.js, packag
 session's acceptance). Flutter's own defaults are already the fast release ones (`-O4`, minified, no
 source maps, `pub get` skipped when the lock matches); `-O1` measured 6 s faster and 4 % larger, not used.
 
+When Flutter is still compiling once Hub and Router are packaged, the full acceptance starts right away
+(`accept_packages.py --client-wait <marker>`): fresh install of Hub+Router, standalone Router cycle, then
+it waits; when the Client package exists it is added through the product's add path (TUF metadata v2 of
+the same test repository, real verification + safe extraction) and the Hub/Client steps run. It is still
+one full, publishable `result.json` with `packages` = the exact three hashes; `install` names the path
+used. Trade-off: in such a round the one-shot install of all three is not what is exercised (it is in every
+round where Flutter does not compile). Measured on the owner's PC: Flutter alone 64.5 s; serial round
+~150 s; overlapped 143 s (Flutter slows to 81 s next to the install, ~60 s remain after the Client).
+Running the acceptance at below-normal priority was slower (179 s), so it runs at normal priority.
+
 ### Acceptance modes
 
 `accept_packages.py --mode full|fast` (also what `--accept` passes) always says which one ran.

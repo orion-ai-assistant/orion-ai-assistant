@@ -17,6 +17,7 @@ Every step prints its wall-clock time; a table at the end shows where the minute
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -162,10 +163,10 @@ def release_ids():
     return ids
 
 
-def finalize(work, output):
-    """Move the three finished (zip, target.json) pairs into the candidate directory."""
+def finalize(work, output, kinds=tuple(COMPONENTS)):
+    """Move the finished (zip, target.json) pairs of `kinds` into the candidate directory."""
     output.mkdir(parents=True, exist_ok=True)
-    for kind in COMPONENTS:
+    for kind in kinds:
         for path in sorted((work / kind).glob('orion-*')):
             destination = output / path.name
             if destination.exists():
@@ -207,6 +208,28 @@ def main(argv=None):
           f"Mode: {'serial' if jobs == 1 else f'parallel x{jobs}'}, cache {'ON' if args.use_cache else 'OFF'}, "
           f"acceptance {args.accept}\nLogs: {log_dir}", flush=True)
     results = {}
+    code = 0
+
+    def acceptance_argv(*extra):
+        argv = [sys.executable, str(HERE / 'accept_packages.py'), '--artifacts', str(output), '--inputs',
+                str(args.inputs), '--scratch-base', str(args.scratch_base), '--cache', str(args.cache),
+                '--mode', args.accept, *extra]
+        if args.no_prune:
+            argv.append('--no-prune')
+        if not args.force_accept and args.accept == 'full':
+            argv.append('--reuse-accepted')
+        return argv
+
+    def show(future):
+        kind, _, reused, summary = future.result()
+        results[kind] = reused
+        print(f'--- package {kind}: ' + ('REUSED identical ZIP (inputs unchanged)' if reused else 'rebuilt'), flush=True)
+        if summary.strip():
+            print('    ' + summary.strip().replace('\n', '\n    '), flush=True)
+
+    early = None  # an acceptance started with Hub+Router while the Client package is still being built
+    stack = ExitStack()
+    marker = work / 'client-ready'
     try:
         with ThreadPoolExecutor(jobs) as pool:
             priority = Priority()
@@ -214,35 +237,39 @@ def main(argv=None):
                                   priority=priority)
             dashboard = pool.submit(run_web, 'router dashboard', cache, timings, use_cache=args.use_cache,
                                     log_dir=log_dir, priority=priority)
-            futures = [pool.submit(run_package, 'hub', work, args, timings, log_dir, None, priority),
-                       pool.submit(run_package, 'client', work, args, timings, log_dir, flutter),
-                       pool.submit(run_package, 'router', work, args, timings, log_dir, dashboard, priority)]
-            for future in [flutter, dashboard]:
-                future.result()
-            for future in futures:
-                kind, _, reused, summary = future.result()
-                results[kind] = reused
-                print(f'--- package {kind}: ' + ('REUSED identical ZIP (inputs unchanged)' if reused else 'rebuilt'), flush=True)
-                if summary.strip():
-                    print('    ' + summary.strip().replace('\n', '\n    '), flush=True)
+            hub = pool.submit(run_package, 'hub', work, args, timings, log_dir, None, priority)
+            client = pool.submit(run_package, 'client', work, args, timings, log_dir, flutter)
+            router = pool.submit(run_package, 'router', work, args, timings, log_dir, dashboard, priority)
+            dashboard.result()
+            show(hub)
+            show(router)
+            if args.accept == 'full' and not client.done():
+                # Flutter (~1 min) is still compiling: install and exercise Hub+Router now, add the Client
+                # when its package exists. Still one full, publishable result for the exact three hashes.
+                finalize(work, output, ('hub', 'router'))
+                print('Acceptance starts now with Hub+Router; the Client joins when its package is ready.', flush=True)
+                stack.enter_context(timings.step('acceptance (full, overlapped with the Client build)'))
+                early = subprocess.Popen(acceptance_argv('--client-wait', str(marker)))
+            flutter.result()
+            show(client)
         finalize(work, output)
-    except BaseException:
+        if early is not None:
+            marker.write_text('ready', encoding='utf-8')
+    except BaseException as error:
+        if early is not None:
+            marker.write_text('failed: ' + type(error).__name__, encoding='utf-8')
+            early.wait()
+        stack.close()
         timings.summary()
         raise
-    finally:
-        pass
     print(f"Candidates ready in {output}: " + ', '.join(f"{k}={'reused' if v else 'rebuilt'}" for k, v in sorted(results.items())),
           flush=True)
-    code = 0
-    if args.accept != 'none':
-        argv = [sys.executable, str(HERE / 'accept_packages.py'), '--artifacts', str(output), '--inputs', str(args.inputs),
-                '--scratch-base', str(args.scratch_base), '--cache', str(args.cache), '--mode', args.accept]
-        if args.no_prune:
-            argv.append('--no-prune')
-        if not args.force_accept and args.accept == 'full':
-            argv.append('--reuse-accepted')
+    if early is not None:
+        with stack:
+            code = early.wait()
+    elif args.accept != 'none':
         with timings.step(f'acceptance ({args.accept})'):
-            code = subprocess.run(argv).returncode
+            code = subprocess.run(acceptance_argv()).returncode
     timings.summary()
     timings.write(work / 'timings.json')
     shutil.rmtree(work / 'runtime', ignore_errors=True)
