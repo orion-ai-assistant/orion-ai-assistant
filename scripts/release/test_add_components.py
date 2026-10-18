@@ -62,10 +62,12 @@ def test_hub_and_client_join_a_router_only_install_and_the_router_stays_exactly_
     journal = json.loads((setup.registry.path.parent / 'updates/add-journal.json').read_text())
     assert journal['phase'] == 'completed'
     # The installation now knows both feeds: Hub/Client from the Hub feed, Router from its own feed.
-    from services.shared.automatic_updates import normalize_sources
-    feeds_now = normalize_sources(json.loads((setup.registry.path.parent / 'bootstrap/release-source.json').read_text()))
+    from services.shared.automatic_updates import normalize_sources, read_sources
+    feeds_now = normalize_sources(read_sources(setup.registry.path.parent / 'bootstrap'))
     assert {k for f in feeds_now for k in f['targets']} == {'hub', 'client', 'router'}
     assert len(feeds_now) == 2
+    # Old Hubs keep reading release-source.json: one feed, schema 1 (see test_version_skew).
+    assert json.loads((setup.registry.path.parent / 'bootstrap/release-source.json').read_text())['schema'] == 1
 
 
 def test_router_joins_a_hub_install_from_its_own_feed(setup):

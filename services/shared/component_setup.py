@@ -267,10 +267,8 @@ def add_components(client, names, root, registry, *, settings=None, skip_existin
             _write_journal(registry, journal)
             finish_setup(registry, items)
             if release_source is not None:
-                from .automatic_updates import merge_sources, read_json, write_json
-                path = registry.path.parent / 'bootstrap/release-source.json'
-                current = read_json(path, None)
-                write_json(path, merge_sources(current, release_source) if current is not None else release_source)
+                from .automatic_updates import add_sources
+                add_sources(registry.path.parent / 'bootstrap', release_source)
         except BaseException as error:
             left = _rollback(registry, journal, root)
             detail = f' Bazı klasörler silinemedi ({", ".join(left)}); elle silebilirsiniz.' if left else ''

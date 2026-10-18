@@ -5,6 +5,11 @@ import uvicorn
 from orion.kernel.local_security import tls_identity
 
 
+# On stop, open connections (the app window's streams/websockets) get this long, then are closed. Without a
+# limit uvicorn waits for them until the supervisor kills the process (10 s per server on every quit).
+GRACEFUL_STOP = 3
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--public', action='store_true')
@@ -27,11 +32,12 @@ def main():
     if args.http_loopback:
         if not args.local:
             raise ValueError('Use --local for the guarded local HTTP app')
-        uvicorn.run(target, host=host, port=port, proxy_headers=False)
+        uvicorn.run(target, host=host, port=port, proxy_headers=False, timeout_graceful_shutdown=GRACEFUL_STOP)
         return
     identity = tls_identity()
     uvicorn.run(target, host=host, port=port,
-                ssl_certfile=identity['cert'], ssl_keyfile=identity['key'], proxy_headers=False)
+                ssl_certfile=identity['cert'], ssl_keyfile=identity['key'], proxy_headers=False,
+                timeout_graceful_shutdown=GRACEFUL_STOP)
 
 
 if __name__ == '__main__':

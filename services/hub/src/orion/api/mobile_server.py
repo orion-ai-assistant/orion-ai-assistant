@@ -32,7 +32,7 @@ async def serve():
     host = os.getenv('ORION_MOBILE_BIND_HOST', '0.0.0.0')
     # ASGI TLS schemes come only from the TLS socket, never forwarded headers.
     config = uvicorn.Config('orion.api.main:mobile_app', host=host, port=port, proxy_headers=False,
-                            ssl_keyfile=identity['key'], ssl_certfile=identity['cert'])
+                            ssl_keyfile=identity['key'], ssl_certfile=identity['cert'], timeout_graceful_shutdown=3)
     server = uvicorn.Server(config)
     serving = asyncio.create_task(server.serve())
     while not server.started and not serving.done():

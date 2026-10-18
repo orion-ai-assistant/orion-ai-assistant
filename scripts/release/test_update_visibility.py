@@ -3,6 +3,7 @@ components, the automatic apply at launch."""
 import json
 import os
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -165,6 +166,38 @@ def test_launch_time_apply_opens_the_window_and_writes_the_result(automatic):
     assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: hub 9.0.1')
 
 
+class PowerCut(BaseException):
+    """Not an Exception: nothing in the helper may catch it, exactly like a killed process."""
+
+
+@pytest.mark.parametrize('cut', ['after:journal:backing_up', 'after:journal:switching', 'after:registry',
+                                 'after:journal:health_check'])
+def test_an_apply_cut_off_mid_way_is_finished_by_the_next_launch_not_waited_for(automatic, cut):
+    """Power loss / Task Manager during the switch: the next launch must neither wait 30 minutes for an
+    applier that is gone nor refuse to start; it resumes (or rolls back) at once, even with updates off."""
+    from services.shared import launcher
+    service, now, data, host = automatic
+    service.check()
+    def fault(label):
+        if label == cut:
+            raise PowerCut(label)
+    service.helper.fault = fault
+    entry = service.registry.path.parent / 'bootstrap/Orion.ps1'
+    entry.write_text('# an older Hub launch rewrote the entry with its own copy', encoding='utf-8')
+    with pytest.raises(PowerCut):
+        service.helper.resume()
+    service.helper.fault = lambda label: None
+    # The entry that the next launch runs is the helper's own, with the recovery step (any Hub version).
+    assert 'Invoke-OrionRecovery' in entry.read_text(encoding='utf-8')
+    assert service.helper.status()['phase'] not in {'completed', 'rolled_back', 'failed'}
+    service.preferences(enabled=False)
+    sleeps = []
+    assert launcher.wait_for_update(service.registry, sleep=sleeps.append) is False and sum(sleeps) < 2
+    result = service.startup()
+    assert result['phase'] in {'completed', 'rolled_back'}, result.get('reason')
+    assert update_ui.read_result(service.registry)['status'] == result['phase']
+
+
 def test_launch_time_apply_that_rolls_back_says_so(automatic):
     service, now, data, host = automatic
     service.check()
@@ -270,3 +303,26 @@ def test_router_only_install_keeps_its_own_scheduler(tmp_path):
                                     clock=lambda: 1_000.0, scope='router')
     router_scope.check(now=True)
     assert [names for names, _ in helper.prepared] == [['router.zip']]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows refuses a replace while the target is open')
+def test_journal_writes_outlast_a_reader_of_the_journal(automatic):
+    """Real PC: a launch-time apply rolled back with PermissionError right after the switch. The updating
+    window and the entry script poll journal.json; a replace that met such a read failed at once."""
+    import threading
+    service, now, data, host = automatic
+    service.check()
+    tx = service.helper.status()
+    journal = service.base / tx['operation_id'] / 'journal.json'
+    reading, done = threading.Event(), threading.Event()
+    def reader():
+        with journal.open('rb'):  # Like Get-Content in updating.ps1: no delete sharing.
+            reading.set()
+            time.sleep(.4)
+        done.set()
+    thread = threading.Thread(target=reader)
+    thread.start()
+    reading.wait(5)
+    service.helper._phase(tx, 'waiting_for_idle')  # Used to raise PermissionError [WinError 5].
+    thread.join()
+    assert done.is_set() and service.helper.status()['phase'] == 'waiting_for_idle'

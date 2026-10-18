@@ -90,6 +90,22 @@ function Test-OrionApplyNow([string]$pending) {
         return $fresh -and (@('stopping', 'applying', 'restarting') -contains $state.phase)
     } catch { return $false }
 }
+function Invoke-OrionRecovery {
+    # An apply cut off by power loss / Task Manager / a closed window stays in a switching phase with nobody
+    # working on it. The retained bootstrap (not the installed Hub, which may predate this) finishes it or rolls
+    # it back; when a live helper still owns the operation it does nothing and the calm wait below applies.
+    try {
+        $runtimeRecord = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'automatic-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $retained = [string]$runtimeRecord.root
+        $helperPython = Join-Path $retained 'runtime/python/python.exe'
+        $helperScript = Join-Path $retained 'scripts/release/update_automatic.py'
+        if ($runtimeRecord.schema -ne 1 -or -not (Test-Path -LiteralPath $helperPython -PathType Leaf) -or -not (Test-Path -LiteralPath $helperScript -PathType Leaf)) { return }
+        $env:ORION_INSTALLATION_REGISTRY = $registry
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $null = & $helperPython -B $helperScript --registry $registry startup 2>&1 } finally { $ErrorActionPreference = $previousPreference }
+    } catch {}
+}
 function Test-OrionUpdating([string]$pending) {
     try { return ($applying -contains (Get-OrionUpdatePhase $pending)) -or (Test-OrionApplyNow $pending) } catch { return $true }
 }
@@ -130,6 +146,10 @@ try {
     $pending = Join-Path (Split-Path -Parent $PSScriptRoot) 'updates/active.json'
     if (-not $Stop -and (Test-Path -LiteralPath $pending)) {
         $phase = Get-OrionUpdatePhase $pending
+        if ($applying -contains $phase) {
+            Invoke-OrionRecovery
+            $phase = Get-OrionUpdatePhase $pending
+        }
         if (($applying -contains $phase) -or (Test-OrionApplyNow $pending)) {
             # Another start is switching versions right now: wait calmly, do not show the Repair dialog.
             Wait-OrionUpdate $pending

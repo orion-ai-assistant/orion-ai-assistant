@@ -540,21 +540,34 @@ class Runtime:
         before_stop = getattr(self, 'before_stop', None)
         if before_stop:
             before_stop()
-        # Python applications first, database-like native children last.
-        ordered = sorted(self.children.values(), key=lambda child: child['control'] is None)
-        for child in ordered:
+        # Python applications first, database-like native children last. The Python applications are
+        # independent of each other: they get their stop signal together and share one deadline (a serial
+        # stop added up to 10 s per child that waited on an open connection - the >20 s tray quit).
+        python = [child for child in self.children.values() if child['control']]
+        if len(python) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(len(python)) as pool:
+                for future in [pool.submit(ManagedChild(child).stop, timeout) for child in python]:
+                    future.result()
+        elif python:
+            ManagedChild(python[0]).stop(timeout)
+        for child in self.children.values():
             if not child['control']:
                 before_native = getattr(self, 'before_native_stop', None)
                 if before_native:
                     before_native(child)
-            ManagedChild(child).stop(timeout)
+                ManagedChild(child).stop(timeout)
         self.status = 'children-stopped'
         self.save()
 
     def __exit__(self, *args):
         try:
             if self.status != 'stopped':
-                self.stop_children()
+                # The supervisor's own shutdown already stopped every child: do not run the whole stop
+                # (browser shutdown process, per-child waits) a second time.
+                if not (self.status == 'children-stopped'
+                        and not any(child_tree_alive(child) for child in self.children.values())):
+                    self.stop_children()
                 database = getattr(self, 'database', None)
                 if database is not None:
                     database.stop()
