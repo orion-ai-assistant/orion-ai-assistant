@@ -144,14 +144,17 @@ def build_runtime(kind, args, destination):
     (destination / 'runtime-inputs.json').write_text(json.dumps(pin, indent=2) + '\n')
 
 
+RUNTIME_KEEP = 3  # runtime layers kept per kind (most recently used first)
+
+
 def runtime_key(kind, args):
     lock = lock_file(kind, args.requirements)
     return build_cache.combine(
         ('kind', kind), ('pins', runtime_pins(kind)), ('postgres', ARCHIVE_SHA256),
-        ('lock', build_cache.file_digest(lock)), ('recipe', RUNTIME_RECIPE),
+        ('lock', build_cache.text_digest(lock)), ('recipe', RUNTIME_RECIPE),
         ('recipe-code', hashlib.sha256(inspect.getsource(build_runtime).encode()).hexdigest()),
-        ('python-runtime', build_cache.file_digest(HERE / 'python_runtime.py')),
-        ('postgres-code', build_cache.file_digest(ROOT / 'services/shared/windows_postgres.py')))
+        ('python-runtime', build_cache.text_digest(HERE / 'python_runtime.py')),
+        ('postgres-code', build_cache.text_digest(ROOT / 'services/shared/windows_postgres.py')))
 
 
 def prepare_runtime(kind, args, timings, scratch_parent):
@@ -161,6 +164,7 @@ def prepare_runtime(kind, args, timings, scratch_parent):
     parent.mkdir(parents=True, exist_ok=True)
     base = parent / f'{kind}-{key[:20]}'
     if (base / 'complete').is_file():
+        os.utime(base / 'complete')  # most recently used: kept by the pruning below
         timings.skipped('runtime layer', 'cached ' + key[:12])
         return base
     with timings.step('runtime layer (python+wheels, postgres, ...)', 'built once per input set'):
@@ -176,9 +180,12 @@ def prepare_runtime(kind, args, timings, scratch_parent):
             shutil.rmtree(scratch, ignore_errors=True)
             raise
     if args.cache:
-        for old in parent.glob(kind + '-*'):
-            if old != base:
-                shutil.rmtree(old, ignore_errors=True)
+        # Keep a few recent layers per kind: worktrees/branches with different locks share one cache and
+        # must not evict each other's layer (a rebuild costs 1-1.5 minutes).
+        layers = sorted((p for p in parent.glob(kind + '-*') if p != base and (p / 'complete').is_file()),
+                        key=lambda p: (p / 'complete').stat().st_mtime, reverse=True)
+        for old in layers[RUNTIME_KEEP - 1:]:
+            shutil.rmtree(old, ignore_errors=True)
     return base
 
 

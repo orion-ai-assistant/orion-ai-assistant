@@ -17,12 +17,14 @@ Every step prints its wall-clock time; a table at the end shows where the minute
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -31,7 +33,17 @@ sys.path[:0] = [str(ROOT), str(HERE)]
 import build_cache
 from timing import Timings
 
-PEERS = ROOT.parent
+def _peers():
+    """Folder holding the Router and Flutter repositories: next to this checkout, or next to the main
+    checkout when this one is a git worktree (e.g. .claude/worktrees/<name>)."""
+    if (ROOT.parent / 'orion-router').is_dir():
+        return ROOT.parent
+    common = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--path-format=absolute',
+                                      '--git-common-dir'], text=True).strip()
+    return Path(common).parent.parent
+
+
+PEERS = _peers()
 COMPONENTS = {
     'hub': {'source': ROOT, 'release': HERE / 'hub.json'},
     'router': {'source': PEERS / 'orion-router', 'release': PEERS / 'orion-router/release/package.json'},
@@ -47,6 +59,28 @@ WEB = {
         repo='router', prefixes=['dashboard'], cwd='dashboard', output='dashboard/out',
         command=['npm', 'run', 'build'], env={'NEXT_TELEMETRY_DISABLED': '1'}),
 }
+class Priority:
+    """The Flutter web build (dart2js, ~1 min) is the critical path of a round that rebuilds it. While it
+    compiles, the other steps (Next.js build, packaging) run at below-normal CPU priority: on an idle
+    machine they still use the free cores, on a busy one they no longer slow dart2js down. When Flutter
+    is reused from the cache every step keeps normal priority."""
+    BELOW_NORMAL = 0x00004000  # Windows BELOW_NORMAL_PRIORITY_CLASS; children (node, python) inherit it
+
+    def __init__(self):
+        self.decided = threading.Event()
+        self.flutter_builds = False
+
+    def decide(self, builds):
+        self.flutter_builds = builds
+        self.decided.set()
+
+    def flags(self, name):
+        if name == 'flutter web' or os.name != 'nt':
+            return 0
+        self.decided.wait()
+        return self.BELOW_NORMAL if self.flutter_builds else 0
+
+
 def web_key(step, repo_root):
     """Key of every file the web build can read: tracked and new unignored files, local edits included.
 
@@ -57,7 +91,16 @@ def web_key(step, repo_root):
                                ('command', step['command']))
 
 
-def run_web(name, cache, timings, *, use_cache, log_dir):
+def run_web(name, cache, timings, *, use_cache, log_dir, priority=None):
+    priority = priority or Priority()
+    try:
+        return _run_web(name, cache, timings, use_cache=use_cache, log_dir=log_dir, priority=priority)
+    finally:
+        if name == 'flutter web':
+            priority.decide(False)  # done, skipped or failed: later steps run at normal priority, none waits
+
+
+def _run_web(name, cache, timings, *, use_cache, log_dir, priority):
     step = WEB[name]
     repo_root = COMPONENTS[step['repo']]['source']
     output = repo_root / step['output']
@@ -70,6 +113,8 @@ def run_web(name, cache, timings, *, use_cache, log_dir):
         if build_cache.hash_tree(output) == record.get('output'):
             timings.skipped(name, f'sources and output unchanged ({key[:12]})')
             return False
+    if name == 'flutter web':
+        priority.decide(True)
     executable = shutil.which(step['command'][0])
     if not executable:
         raise RuntimeError(f"{step['command'][0]} is not on PATH")
@@ -77,7 +122,8 @@ def run_web(name, cache, timings, *, use_cache, log_dir):
     with timings.step(name, 'log ' + str(log)):
         with log.open('wb') as stream:
             result = subprocess.run([executable, *step['command'][1:]], cwd=repo_root / step['cwd'],
-                                    env={**os.environ, **step['env']}, stdout=stream, stderr=subprocess.STDOUT)
+                                    env={**os.environ, **step['env']}, stdout=stream, stderr=subprocess.STDOUT,
+                                    creationflags=priority.flags(name))
         if result.returncode:
             raise RuntimeError(f'{name} failed (exit {result.returncode}); see {log}')
     cache.write_record(record_name, {'key': key, 'output': build_cache.hash_tree(output)})
@@ -92,15 +138,16 @@ def package_command(kind, output, args):
             *(['--cache', str(args.cache)] if args.use_cache else [])]
 
 
-def run_package(kind, work, args, timings, log_dir, after):
+def run_package(kind, work, args, timings, log_dir, after, priority=None):
     if after is not None:
         after.result()  # the web build this package embeds
+    flags = priority.flags(f'package {kind}') if priority and kind != 'client' else 0
     output = work / kind
     log = log_dir / f'package-{kind}.log'
     with timings.step(f'package {kind}', 'log ' + str(log)):
         with log.open('wb') as stream:
             result = subprocess.run(package_command(kind, output, args), stdout=stream, stderr=subprocess.STDOUT,
-                                    env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+                                    env={**os.environ, 'PYTHONIOENCODING': 'utf-8'}, creationflags=flags)
     summary = log.read_text(encoding='utf-8', errors='replace').split('--- build ')[-1] if log.exists() else ''
     if result.returncode:
         raise RuntimeError(f'package {kind} failed (exit {result.returncode}); see {log}')
@@ -116,10 +163,10 @@ def release_ids():
     return ids
 
 
-def finalize(work, output):
-    """Move the three finished (zip, target.json) pairs into the candidate directory."""
+def finalize(work, output, kinds=tuple(COMPONENTS)):
+    """Move the finished (zip, target.json) pairs of `kinds` into the candidate directory."""
     output.mkdir(parents=True, exist_ok=True)
-    for kind in COMPONENTS:
+    for kind in kinds:
         for path in sorted((work / kind).glob('orion-*')):
             destination = output / path.name
             if destination.exists():
@@ -161,39 +208,68 @@ def main(argv=None):
           f"Mode: {'serial' if jobs == 1 else f'parallel x{jobs}'}, cache {'ON' if args.use_cache else 'OFF'}, "
           f"acceptance {args.accept}\nLogs: {log_dir}", flush=True)
     results = {}
-    try:
-        with ThreadPoolExecutor(jobs) as pool:
-            flutter = pool.submit(run_web, 'flutter web', cache, timings, use_cache=args.use_cache, log_dir=log_dir)
-            dashboard = pool.submit(run_web, 'router dashboard', cache, timings, use_cache=args.use_cache, log_dir=log_dir)
-            futures = [pool.submit(run_package, 'hub', work, args, timings, log_dir, None),
-                       pool.submit(run_package, 'client', work, args, timings, log_dir, flutter),
-                       pool.submit(run_package, 'router', work, args, timings, log_dir, dashboard)]
-            for future in [flutter, dashboard]:
-                future.result()
-            for future in futures:
-                kind, _, reused, summary = future.result()
-                results[kind] = reused
-                print(f'--- package {kind}: ' + ('REUSED identical ZIP (inputs unchanged)' if reused else 'rebuilt'), flush=True)
-                if summary.strip():
-                    print('    ' + summary.strip().replace('\n', '\n    '), flush=True)
-        finalize(work, output)
-    except BaseException:
-        timings.summary()
-        raise
-    finally:
-        pass
-    print(f"Candidates ready in {output}: " + ', '.join(f"{k}={'reused' if v else 'rebuilt'}" for k, v in sorted(results.items())),
-          flush=True)
     code = 0
-    if args.accept != 'none':
-        argv = [sys.executable, str(HERE / 'accept_packages.py'), '--artifacts', str(output), '--inputs', str(args.inputs),
-                '--scratch-base', str(args.scratch_base), '--cache', str(args.cache), '--mode', args.accept]
+
+    def acceptance_argv(*extra):
+        argv = [sys.executable, str(HERE / 'accept_packages.py'), '--artifacts', str(output), '--inputs',
+                str(args.inputs), '--scratch-base', str(args.scratch_base), '--cache', str(args.cache),
+                '--mode', args.accept, *extra]
         if args.no_prune:
             argv.append('--no-prune')
         if not args.force_accept and args.accept == 'full':
             argv.append('--reuse-accepted')
+        return argv
+
+    def show(future):
+        kind, _, reused, summary = future.result()
+        results[kind] = reused
+        print(f'--- package {kind}: ' + ('REUSED identical ZIP (inputs unchanged)' if reused else 'rebuilt'), flush=True)
+        if summary.strip():
+            print('    ' + summary.strip().replace('\n', '\n    '), flush=True)
+
+    early = None  # an acceptance started with Hub+Router while the Client package is still being built
+    stack = ExitStack()
+    marker = work / 'client-ready'
+    try:
+        with ThreadPoolExecutor(jobs) as pool:
+            priority = Priority()
+            flutter = pool.submit(run_web, 'flutter web', cache, timings, use_cache=args.use_cache, log_dir=log_dir,
+                                  priority=priority)
+            dashboard = pool.submit(run_web, 'router dashboard', cache, timings, use_cache=args.use_cache,
+                                    log_dir=log_dir, priority=priority)
+            hub = pool.submit(run_package, 'hub', work, args, timings, log_dir, None, priority)
+            client = pool.submit(run_package, 'client', work, args, timings, log_dir, flutter)
+            router = pool.submit(run_package, 'router', work, args, timings, log_dir, dashboard, priority)
+            dashboard.result()
+            show(hub)
+            show(router)
+            if args.accept == 'full' and not client.done():
+                # Flutter (~1 min) is still compiling: install and exercise Hub+Router now, add the Client
+                # when its package exists. Still one full, publishable result for the exact three hashes.
+                finalize(work, output, ('hub', 'router'))
+                print('Acceptance starts now with Hub+Router; the Client joins when its package is ready.', flush=True)
+                stack.enter_context(timings.step('acceptance (full, overlapped with the Client build)'))
+                early = subprocess.Popen(acceptance_argv('--client-wait', str(marker)))
+            flutter.result()
+            show(client)
+        finalize(work, output)
+        if early is not None:
+            marker.write_text('ready', encoding='utf-8')
+    except BaseException as error:
+        if early is not None:
+            marker.write_text('failed: ' + type(error).__name__, encoding='utf-8')
+            early.wait()
+        stack.close()
+        timings.summary()
+        raise
+    print(f"Candidates ready in {output}: " + ', '.join(f"{k}={'reused' if v else 'rebuilt'}" for k, v in sorted(results.items())),
+          flush=True)
+    if early is not None:
+        with stack:
+            code = early.wait()
+    elif args.accept != 'none':
         with timings.step(f'acceptance ({args.accept})'):
-            code = subprocess.run(argv).returncode
+            code = subprocess.run(acceptance_argv()).returncode
     timings.summary()
     timings.write(work / 'timings.json')
     shutil.rmtree(work / 'runtime', ignore_errors=True)

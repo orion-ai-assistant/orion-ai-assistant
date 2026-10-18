@@ -17,6 +17,7 @@ full run and anything holding a PINNED file are kept); `--prune` runs that rule 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import inspect
 import os
@@ -27,6 +28,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(Path(__file__).parent)]
@@ -73,6 +75,19 @@ def fingerprint(root):
     with ThreadPoolExecutor(8) as pool:
         digests = list(pool.map(sha256, files))
     return {p.relative_to(root).as_posix(): digest for p, digest in zip(files, digests)}
+
+
+def zip_contents(archive, digest):
+    """{member name: sha256} of a candidate ZIP whose own sha256 must be `digest` (its signed target).
+
+    This is the immutability baseline: the installed code tree must equal the signed bytes, file by
+    file, before and after every start. Hashing from the archive needs no installed file, so it runs
+    while the installer works."""
+    if sha256(archive) != digest:
+        raise RuntimeError(f'Candidate changed after its target was written: {archive}')
+    with zipfile.ZipFile(archive) as source:
+        return {item.filename: hashlib.sha256(source.read(item)).hexdigest()
+                for item in source.infolist() if not item.is_dir()}
 
 
 def artifact_set(artifacts):
@@ -137,7 +152,7 @@ def plan(artifacts, mode, cache, *, reuse_accepted=False):
 
 
 def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=None, changed=None, cache=None,
-        keep=DEFAULT_KEEP, prune=True, timings=None):
+        keep=DEFAULT_KEEP, prune=True, timings=None, client_ready=None):
     base = Path(base).resolve()
     base.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix='stage05-', dir=base))
@@ -164,15 +179,22 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
     command_env = env
     try:
         available = artifact_set(artifacts)
+        later = {'client'} if client_ready is not None else set()
         if mode == 'full':
-            kinds = set(available)
-            if len(kinds) != 3:
+            # With `client_ready` the Client package is still being built: Hub+Router go first, a Client
+            # candidate of an earlier round in the same directory is ignored until the new one is ready.
+            kinds = set(available) - later
+            if kinds | later != {'hub', 'router', 'client'}:
                 raise RuntimeError('Acceptance needs Hub, Router and Flutter candidates')
+            first = {kind: available[kind][0] for kind in kinds}
         else:
             kinds = set(kinds or ())
             if not kinds or not kinds <= set(available):
                 raise RuntimeError('Fast acceptance needs at least one candidate component')
-        report['scope'] = sorted(kinds)
+        report['scope'] = sorted(kinds | later)
+        report['install'] = ('Hub+Router fresh install, then the Client through the add path (TUF metadata v2) '
+                             'while it was still being built' if later else
+                             'one fresh install of ' + '+'.join(sorted(kinds)))
         signers = {role: [CryptoSigner.generate_ed25519()] for role in ('root', 'targets', 'snapshot', 'timestamp')}
         root = Metadata(Root(expires=datetime.now(timezone.utc) + timedelta(days=1)))
         for role, keys in signers.items():
@@ -196,6 +218,10 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
             installer_archive = build_bootstrap(bootstrap, inputs, scratch / 'TEST-ONLY-bootstrap.zip', test_only=True)
             installer = extract_zip(installer_archive, scratch / 'bootstrap')
         names = [json.loads(p.read_text())['path'] for p in Path(subset).glob('*.target.json')]
+        hashing = ThreadPoolExecutor(len(kinds))
+        signed = {kind: hashing.submit(zip_contents, Path(artifacts) / json.loads(available[kind][2].read_text())['path'],
+                                       available[kind][0]) for kind in kinds}
+        hashing.shutdown(wait=False)
         client = ReleaseClient(trusted_root=bootstrap, cache=scratch / 'cache',
             metadata_url='https://fixture.invalid/metadata/', targets_url='https://fixture.invalid/targets/',
             fetcher=FixtureFetcher(repository))
@@ -215,12 +241,14 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
             'import json,sys\nfrom pathlib import Path\n'
             'from tuf.ngclient.fetcher import FetcherInterface\nfrom tuf.api.exceptions import DownloadHTTPError\n'
             'from services.shared.release_packages import ReleaseClient\nfrom scripts.release.install_new import install\n'
+            'from services.shared.component_setup import add_components\n'
             + inspect.getsource(FixtureFetcher) + '\n'
             'v=json.loads(Path(sys.argv[1]).read_text()); p=Path(v["bootstrap"])\n'
             'client=ReleaseClient(trusted_root=p/"trusted-root.json", cache=p/"cache", '
             'metadata_url="https://fixture.invalid/metadata/", targets_url="https://fixture.invalid/targets/", '
             'fetcher=FixtureFetcher(Path(v["repository"])))\n'
-            'install(client,v["names"],Path(v["root"]),Path(v["registry"]),settings=v["settings"])\n', encoding='utf-8')
+            '(add_components if v.get("add") else install)(client,v["names"],Path(v["root"]),Path(v["registry"]),'
+            'settings=v["settings"])\n', encoding='utf-8')
         with T.step('install: TUF verification + safe extraction' + (' + Hub initdb ' if 'hub' in kinds else ' ') + '/'.join(sorted(kinds))):
             subprocess.run([str(installer / 'runtime/python/python.exe'), '-B', str(fixture), str(scratch / 'fixture.json')],
                            cwd=installer, env=env, stdout=log, stderr=log, check=True, timeout=300)
@@ -233,8 +261,14 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         model = Path(record['locations']['models']) / 'fixture-existing.gguf'
         model.write_bytes(b'existing model sentinel; never opened by any engine')
         model_hash = sha256(model)
-        with T.step('fingerprint installed package files (sha256, before start)'):
-            original = {kind: fingerprint(Path(item['code_path'])) for kind, item in items.items()}
+        with T.step('installed inventory == signed ZIP contents (baseline, hashed during install)'):
+            # The installer's own sha256 inventory of every installed file must be exactly the signed ZIP's
+            # members; the independent re-hash after start/stop/restart (below) is compared with the same
+            # signed contents, so no separate pre-start hash pass of the installed tree is needed.
+            original = {kind: signed[kind].result() for kind in items}
+            for kind, item in items.items():
+                inventory = json.loads((Path(item['state_path']) / 'installed-package.json').read_text(encoding='utf-8'))
+                assert inventory['files'] == original[kind], 'Installed inventory differs from the signed ZIP: ' + kind
         for kind, item in items.items():
             report['artifacts'].append(json.loads((Path(item['code_path']) / 'orion-release.json').read_text()))
         hub = Path(items['hub']['code_path']) if 'hub' in items else None
@@ -260,6 +294,31 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
                 call([router_python, '-m', 'core.lifecycle_cli', 'stop'], router)
                 router_identity = {p: sha256(p) for p in (Path(items['router']['data_path']) / 'persistent').rglob('*') if p.is_file()}
             report['checks'].append('standalone packaged Router start/health/stop with SDK-free PATH')
+        if later:
+            with T.step('wait for the Client package (Flutter build)'):
+                client_ready()
+            available = artifact_set(artifacts)
+            if set(available) != {'hub', 'router', 'client'} or any(available[k][0] != d for k, d in first.items()):
+                raise RuntimeError('Candidate set changed while the acceptance ran')
+            with T.step('add Client: TUF metadata v2 + verification + safe extraction (add path)'):
+                archive = Path(artifacts) / json.loads(available['client'][2].read_text())['path']
+                hashing = ThreadPoolExecutor(1)
+                signed['client'] = hashing.submit(zip_contents, archive, available['client'][0])
+                hashing.shutdown(wait=False)
+                # A newer signed version of the same test repository (same root and keys), listing all three.
+                repository = publish(Path(artifacts), scratch / 'repository-2', bootstrap, signers, version=2)
+                config.update(repository=str(repository), names=[archive.name], add=True)
+                (scratch / 'fixture-add.json').write_text(json.dumps(config))
+                subprocess.run([str(installer / 'runtime/python/python.exe'), '-B', str(fixture),
+                                str(scratch / 'fixture-add.json')],
+                               cwd=installer, env=env, stdout=log, stderr=log, check=True, timeout=300)
+                items = {c['kind']: c for c in Registry(registry).read()['components']}
+                original['client'] = signed['client'].result()
+                inventory = json.loads((Path(items['client']['state_path']) / 'installed-package.json').read_text(encoding='utf-8'))
+                assert inventory['files'] == original['client'], 'Installed inventory differs from the signed ZIP: client'
+            report['artifacts'].append(json.loads((Path(items['client']['code_path']) / 'orion-release.json').read_text()))
+            report['checks'].append('Client added to the Hub+Router installation through the add path '
+                                    '(real TUF verification of metadata v2 + safe extraction)')
         if hub is not None:
             # Existing launcher starts both components using their independent runtimes.
             processes.append(('hub', [python, '-m', 'services.shared.launcher', '--registry', registry, 'stop'], hub))
@@ -320,12 +379,14 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         with T.step('fingerprint installed package files again (immutability)'):
             for kind, item in items.items():
                 assert fingerprint(Path(item['code_path'])) == original[kind], 'Immutable package was modified: ' + kind
-        report['checks'].append('every package file hash unchanged after runtime start/stop/restart')
+        report['checks'].append('every installed file hash equals the signed ZIP after runtime start/stop/restart')
         assert Registry(registry).read()['preferences']['automatic_updates'] is False
         assert Registry(registry).read()['preferences']['start_with_windows'] is False
         if after_acceptance is not None:
             after_acceptance(scratch, signers, bootstrap, installer, env)
         if mode == 'full':
+            # The exact set this pass proves; publish_release and the build cache bind to these hashes.
+            report['packages'] = {kind: item[0] for kind, item in artifact_set(artifacts).items()}
             report['success'] = True
         else:
             # A fast pass must never satisfy the publish gate (`success` stays False).
@@ -357,6 +418,31 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
     return scratch
 
 
+class AlreadyAccepted(Exception):
+    def __init__(self, record):
+        super().__init__('this exact package set already passed a full acceptance')
+        self.record = record
+
+
+def skipped(record):
+    print(f"FULL acceptance SKIPPED: this exact package set already passed a full run with the same acceptance "
+          f"tooling ({record['finished']}).\nResult: {record['result']}  (use without --reuse-accepted to run again)")
+
+
+def wait_for(marker, timeout=1800):
+    """A callable that blocks until `marker` reads 'ready'; anything else (a failed build) aborts the run."""
+    def ready():
+        deadline = time.monotonic() + timeout
+        while not marker.is_file():
+            if time.monotonic() >= deadline:
+                raise RuntimeError('The Client package was not ready in time')
+            time.sleep(.25)
+        state = marker.read_text(encoding='utf-8').strip()
+        if state != 'ready':
+            raise RuntimeError('The Client package build did not finish: ' + state)
+    return ready
+
+
 def record_full_acceptance(cache, artifacts, scratch, tooling):
     packages = {kind: item[0] for kind, item in artifact_set(artifacts).items()}
     build_cache.Cache(cache).write_record('acceptance.json', {
@@ -375,6 +461,9 @@ def main():
                         help='skip a full run when this exact package set already passed with unchanged acceptance tooling')
     parser.add_argument('--keep', type=int, default=DEFAULT_KEEP, help='sandboxes to keep when pruning')
     parser.add_argument('--no-prune', action='store_true', help='do not prune old sandboxes after starting')
+    parser.add_argument('--client-wait', type=Path, metavar='MARKER',
+                        help='full mode: start with the Hub and Router candidates while the Client is still being '
+                             'built; add the Client once MARKER says "ready" (build_release.py writes it)')
     parser.add_argument('--prune', action='store_true', help='only prune old sandboxes, then exit')
     parser.add_argument('--dry-run', action='store_true', help='with --prune: list what would be deleted')
     parser.add_argument('--all-prefixes', action='store_true',
@@ -387,10 +476,13 @@ def main():
     if args.artifacts is None or args.inputs is None:
         parser.error('--artifacts and --inputs are required unless --prune')
     artifacts, inputs = args.artifacts.resolve(), args.inputs.resolve()
-    decision, detail = plan(artifacts, args.mode, args.cache, reuse_accepted=args.reuse_accepted)
+    overlapped = args.client_wait is not None and args.mode == 'full'
+    # Overlapped: the directory may still hold an earlier round's Client, so whether this exact set already
+    # passed can only be decided once the new Client package is there (see `client_ready` below).
+    decision, detail = ('full', None) if overlapped else plan(artifacts, args.mode, args.cache,
+                                                             reuse_accepted=args.reuse_accepted)
     if decision == 'skip':
-        print(f"FULL acceptance SKIPPED: this exact package set already passed a full run with the same acceptance "
-              f"tooling ({detail['finished']}).\nResult: {detail['result']}  (use without --reuse-accepted to run again)")
+        skipped(detail)
         return
     if args.mode == 'fast' and decision == 'full':
         print('FAST requested but there is no earlier passing full acceptance to compare with: running FULL.')
@@ -404,9 +496,21 @@ def main():
     else:
         mode, kinds = 'full', None
     timings = Timings('acceptance ' + mode)
+    client_ready = None
+    if overlapped:
+        wait = wait_for(args.client_wait)
+
+        def client_ready():
+            wait()
+            decision, record = plan(artifacts, 'full', args.cache, reuse_accepted=args.reuse_accepted)
+            if decision == 'skip':
+                raise AlreadyAccepted(record)
     try:
         scratch = run(artifacts, args.scratch_base, inputs, mode=mode, kinds=kinds, changed=detail or None, cache=args.cache,
-                      keep=args.keep, prune=not args.no_prune, timings=timings)
+                      keep=args.keep, prune=not args.no_prune, timings=timings, client_ready=client_ready)
+    except AlreadyAccepted as already:
+        skipped(already.record)  # the Flutter build produced the already accepted Client again
+        return
     finally:
         timings.summary()
     print(('FULL acceptance PASSED (publishable): ' if mode == 'full' else 'FAST pre-check PASSED (not publishable): ')

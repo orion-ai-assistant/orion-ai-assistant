@@ -76,11 +76,28 @@ if the bytes match), `--no-prune`. Bump `version`/`sequence` in the release json
   copies those already-compressed members verbatim. The ZIP is **byte-identical** to compressing the
   whole tree in one pass (same member order, same deflate level; a test and a real-package check
   prove it), so this changes build time, not the artifact. A changed lock file, pin, python/PostgreSQL
-  tooling or runtime recipe rebuilds the layer.
+  tooling or runtime recipe rebuilds the layer. Text inputs of that key are hashed with CRLF read as
+  LF, so a `core.autocrlf` checkout (e.g. a git worktree) and an LF checkout share one layer; the 3 most
+  recently used layers per kind are kept, so branches with different locks do not evict each other.
 
 Steps run concurrently (Flutter, dashboard and Hub packaging together; Client and Router as soon as
 their web output exists) with at most `--jobs` (default 3) at a time; each package builds in its own
 temporary directory and logs to `.tmp/build-work/<timestamp>/logs`. `--serial` disables this.
+While Flutter is actually compiling (dart2js is the critical path, ~50-60 s idle on a 6-core PC), the
+other steps run at below-normal CPU priority: on an idle machine they still use the free cores, on a
+busy one they no longer stretch dart2js (seen: 130-260 s next to Next.js, packaging and another
+session's acceptance). Flutter's own defaults are already the fast release ones (`-O4`, minified, no
+source maps, `pub get` skipped when the lock matches); `-O1` measured 6 s faster and 4 % larger, not used.
+
+When Flutter is still compiling once Hub and Router are packaged, the full acceptance starts right away
+(`accept_packages.py --client-wait <marker>`): fresh install of Hub+Router, standalone Router cycle, then
+it waits; when the Client package exists it is added through the product's add path (TUF metadata v2 of
+the same test repository, real verification + safe extraction) and the Hub/Client steps run. It is still
+one full, publishable `result.json` with `packages` = the exact three hashes; `install` names the path
+used. Trade-off: in such a round the one-shot install of all three is not what is exercised (it is in every
+round where Flutter does not compile). Measured on the owner's PC: Flutter alone 64.5 s; serial round
+~150 s; overlapped 143 s (Flutter slows to 81 s next to the install, ~60 s remain after the Client).
+Running the acceptance at below-normal priority was slower (179 s), so it runs at normal priority.
 
 ### Acceptance modes
 
@@ -89,7 +106,8 @@ temporary directory and logs to `.tmp/build-work/<timestamp>/logs`. `--serial` d
 * **full** (default): installs the exact Hub+Router+Client set from signed test metadata and
   exercises it as before (real TUF verification, safe extraction, fresh Hub `initdb`, standalone
   Router, registered start, Flutter health, Router bootstrap, DB row + encrypted override surviving a
-  restart, immutability fingerprint). It is the **only** result `publish_release.py` accepts
+  restart, immutability: the installer's sha256 inventory and an independent re-hash after the
+  restart must both equal the signed ZIP's members, hashed from the candidate while it installs). It is the **only** result `publish_release.py` accepts
   (`write_acceptance` refuses `mode: fast`; `release_acceptance.py` still binds the exact hashes). With
   `--reuse-accepted` (set by `build_release.py`) it is skipped only when this exact package set already
   passed a full run and the acceptance tooling (`services/shared`, `scripts/release`, `installer/app`
@@ -105,7 +123,14 @@ Trade-off: a fast pass does not prove the whole set. A Hub-only change is not ru
 is not run against the Hub. It does not skip `initdb` or the immutable-package checks of what it does
 install; it saves the unchanged components' extraction, hashing and start/stop cycles. The full run
 stays the gate: run it once before publishing. A full run is also cheaper than before without
-weakening anything: the package fingerprints are hashed with 8 threads, and nothing is rebuilt.
+weakening anything (~150 s -> ~85 s on the owner's PC): the installer hashes and extracts with
+threads (`sha256_many`, `extract_zip`), which overlaps the virus scanner's first-open latency on
+freshly extracted files (the sequential inventory hash alone took 75 s of a 104 s install), and
+the pre-start fingerprint pass became the signed-ZIP comparison above. What is left is real
+product work for the whole set: install ~25 s (extraction, inventory, Hub `initdb` ~6.5 s), Router
+standalone cycle ~15 s, launcher start ~14 s, stop/restart with persistence ~18 s, re-hash ~5 s.
+Nothing package-dependent is reused from an earlier run (no initdb or extraction template): those
+are exactly what a changed package can break; `--force-accept` and a normal full run do the same work.
 
 ### Disk hygiene: `lifecycle-tests`
 
@@ -123,7 +148,11 @@ containing a file named `PINNED`, and anything younger than one hour; the rest i
 To keep a sandbox for good: create an empty file `PINNED` inside it. The build cache lives in
 `.tmp/build-cache` (runtime layers ~2 GB, newest two ZIPs per kind); delete it to force a clean build.
 
-### Windows Defender exclusions (owner, administrator PowerShell)
+### Windows Defender exclusions (optional, developer PCs only, administrator PowerShell)
+
+`scripts/dev/setup-defender-exclusions.ps1` adds (or with `-Remove` undoes; `-WhatIf` only lists) the
+exclusions below plus the Router and Flutter repositories, `~/.orion-lifecycle-tests` and the Pub/npm
+caches. Nothing runs it automatically and it changes nothing for end users. By hand:
 
 Real-time scanning inspects every file open, and a build or acceptance run opens tens of thousands of
 small files (extracting ~1 GB of PostgreSQL, Python and wheels, hashing, starting `postgres.exe`).
