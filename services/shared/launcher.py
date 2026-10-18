@@ -152,13 +152,17 @@ def wait_for_update(registry, *, timeout=1800, interval=2, sleep=None, clock=tim
 
     Returns True when it had to wait. After `timeout` (or a repair-required journal, which is not
     progress) the normal blocked-start error is raised by the caller's own checks."""
-    from .update_gate import progress
+    from .update_gate import interrupted, progress
     from . import update_now
     sleep = sleep or time.sleep
     deadline = clock() + timeout
     waited = False
     while (progress(registry.path) is not None
            or (not apply_owner and update_now.in_progress(registry))) and clock() < deadline:
+        # An apply whose process died (power loss, killed tree) is not progress: nobody would ever finish
+        # it while we wait. The launch-time recovery (run_startup -> startup) resumes or rolls it back.
+        if progress(registry.path) is not None and interrupted(registry.path, sleep=sleep):
+            break
         waited = True
         sleep(interval)
     return waited
@@ -309,6 +313,68 @@ def _stop_component(function, argument, *, sleep=time.sleep):
             sleep(STOP_RETRY_DELAY)
 
 
+def _stop_all(components, stop_hub, stop_router):
+    """Stop Hub and Router at the same time (independent trees and databases; one after the other added
+    their stop times). Stopping never gives up halfway: every component is attempted, failures are returned."""
+    from concurrent.futures import ThreadPoolExecutor
+    def one(item):
+        root = item['code_path']
+        if item['kind'] == 'hub':
+            _stop_component(stop_hub, root)
+        else:
+            _stop_component(stop_router, str(Path(root) / 'cli.py'))
+    failed = {}
+    with ThreadPoolExecutor(max(1, len(components))) as pool:
+        futures = {item['kind']: pool.submit(one, item) for item in components}
+    for kind, future in futures.items():
+        error = future.exception()
+        if error is not None:
+            failed[kind] = type(error).__name__ + ': ' + str(error)
+    return failed
+
+
+QUITTING = 'updates/quitting.json'
+QUIT_WAIT = 90  # A normal quit takes a few seconds; a launch never waits longer than this for one.
+
+
+def quitting(registry):
+    """A stop ("Çık", -Stop) of this installation is running right now (its process is alive)."""
+    try:
+        value = json.loads((registry.path.parent / QUITTING).read_text(encoding='utf-8'))
+        import psutil
+        process = psutil.Process(value['pid'])
+        return abs(process.create_time() - value['started']) < 2 and time.time() - value['at'] < QUIT_WAIT * 2
+    except Exception:
+        return False
+
+
+@contextmanager
+def quit_marker(registry):
+    path = registry.path.parent / QUITTING
+    try:
+        import psutil
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'pid': os.getpid(), 'started': psutil.Process().create_time(),
+                                    'at': time.time()}), encoding='utf-8')
+    except Exception:
+        pass  # Only lets a launch wait politely; never a reason not to stop.
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def wait_for_quit(registry, *, sleep=time.sleep, clock=time.monotonic):
+    """Opening Orion right after "Çık": let that quit finish first (seconds) instead of finding the old tree
+    still exiting - which skipped a staged update ("uncoordinated consumers") and raced the stop."""
+    deadline = clock() + QUIT_WAIT
+    waited = False
+    while quitting(registry) and clock() < deadline:
+        waited = True
+        sleep(.25)
+    return waited
+
+
 def running_services(components):
     """Kinds that still have a running supervisor/child after a stop (verified from their own state)."""
     from .process_lifecycle import Runtime, child_tree_alive, LifecycleError
@@ -339,6 +405,15 @@ def request_watcher_exit(registry):
 
 
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
+    if stop:
+        with quit_marker(registry):
+            return _launch(registry, startup=startup, background=background, stop=True, keep_window=keep_window,
+                           apply_owner=apply_owner)
+    return _launch(registry, startup=startup, background=background, stop=False, keep_window=keep_window,
+                   apply_owner=apply_owner)
+
+
+def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop and is_elevated():
         # Never start services elevated: hand over to a normal-rights Orion and leave.
@@ -346,6 +421,7 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
             return {'status': 'relaunched-deelevated'}
         raise RegistryError(ELEVATED_SELF)
     if not stop:
+        wait_for_quit(registry)
         wait_for_update(registry, apply_owner=apply_owner)
         record = registry.read()
         # The watcher's own restart never re-applies: a failed/rolled-back attempt is not retried behind the
@@ -375,22 +451,15 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
             compatible(packages)
         with launch_environment(registry):
             failed = {}
-            for item in (reversed(components) if stop else components):
-                root = item['code_path']
-                if not stop:
+            if not stop:
+                for item in components:
+                    root = item['code_path']
                     (start_hub if item['kind'] == 'hub' else start_router)(
                         root if item['kind'] == 'hub' else str(Path(root) / 'cli.py'))
-                    continue
-                # Stopping must never give up halfway: a Hub that cannot stop in time used to leave the
-                # Router (and tray, window, watcher) untouched. Every component is attempted; failures are
-                # collected and reported at the end.
-                try:
-                    if item['kind'] == 'hub':
-                        _stop_component(stop_hub, root)
-                    else:
-                        _stop_component(stop_router, str(Path(root) / 'cli.py'))
-                except Exception as error:
-                    failed[item['kind']] = type(error).__name__ + ': ' + str(error)
+            else:
+                if not keep_window:
+                    close_window(registry)  # First: its open connections would hold the servers' shutdown.
+                failed = _stop_all(components, stop_hub, stop_router)
             if stop:
                 from . import update_log
                 updates = registry.path.parent / 'updates'
@@ -404,8 +473,6 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
                     except Exception as error:
                         update_log.log_exception(updates, 'stop.cleanup', error)
                 stop_tray(registry)
-                if not keep_window:
-                    close_window(registry)
                 left = sorted(set(running_services(components)) | set(failed))
                 if any('access denied' in text.lower() for text in failed.values()):
                     raise RegistryError(ELEVATED)

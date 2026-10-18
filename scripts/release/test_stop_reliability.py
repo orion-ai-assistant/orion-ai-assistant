@@ -220,3 +220,63 @@ def test_the_entry_script_shows_stop_failures_and_survives_native_stderr():
     assert 'function Show-OrionStopFailure' in text
     assert 'if ($Stop) { Show-OrionStopFailure' in text
     assert "$ErrorActionPreference = 'Continue'" in text  # stderr of the launcher is not a terminating error
+
+
+# ---- a normal quit takes seconds, and a launch right after it waits for it ------------------------------
+
+def test_hub_and_router_stop_at_the_same_time_and_the_window_closes_first(fakes):
+    registry, calls, stop_hub, stop_router = fakes
+    stop_hub.side_effect = lambda root: (calls.append('hub'), time.sleep(.6))
+    stop_router.side_effect = lambda script: (calls.append('router'), time.sleep(.6))
+    started = time.monotonic()
+    assert launcher.launch(registry, stop=True) == {'status': 'stopped'}
+    assert time.monotonic() - started < 1.1  # Not 0.6 + 0.6.
+    assert calls.index('window') < min(calls.index('hub'), calls.index('router'))
+    assert not (registry.path.parent / launcher.QUITTING).exists()  # The quit marker is gone afterwards.
+
+
+def test_a_launch_waits_for_a_running_quit_instead_of_racing_it(fakes):
+    registry, calls, stop_hub, _ = fakes
+    seen = []
+    def slow_hub(root):
+        seen.append(launcher.quitting(registry))
+        time.sleep(.8)
+    stop_hub.side_effect = slow_hub
+    quit_thread = threading.Thread(target=launcher.launch, args=(registry,), kwargs={'stop': True})
+    quit_thread.start()
+    while not seen:
+        time.sleep(.02)
+    assert launcher.wait_for_quit(registry) is True  # Returned only once the quit was over.
+    assert not launcher.quitting(registry)
+    quit_thread.join()
+    assert seen == [True]
+
+
+def test_a_marker_left_by_a_killed_quit_is_ignored(install):
+    registry, *_ = install
+    # Its pid now belongs to another process (different start time): not a quit in progress.
+    (registry.path.parent / launcher.QUITTING).write_text(json.dumps({'pid': os.getpid(), 'started': 1.0, 'at': time.time()}))
+    assert launcher.wait_for_quit(registry) is False
+
+
+def test_supervised_children_stop_together_and_are_not_stopped_twice(tmp_path):
+    from services.shared import process_lifecycle
+    runtime = process_lifecycle.Runtime.__new__(process_lifecycle.Runtime)
+    runtime.children = {name: {'control': str(tmp_path / name), 'process': None} for name in ('api', 'local', 'mobile')}
+    runtime.children['redis'] = {'control': None, 'process': None}
+    stopped = []
+    def stop(self, timeout=10):
+        time.sleep(.5 if self.child['control'] else 0)
+        stopped.append(self.child['control'] is None)
+    with patch.object(process_lifecycle.Runtime, 'refresh_children'), patch.object(process_lifecycle.Runtime, 'save'), \
+            patch.object(process_lifecycle.ManagedChild, 'stop', stop):
+        started = time.monotonic()
+        runtime.stop_children()
+        assert time.monotonic() - started < 1.2  # Three 0.5 s graceful stops share one wait.
+        assert stopped[-1] is True  # The native child (redis) still goes last.
+        runtime.database, runtime.jobs, runtime.lock = None, {}, type('L', (), {'__exit__': lambda self: None})()
+        with patch.object(process_lifecycle, 'child_tree_alive', return_value=False), \
+                patch.object(process_lifecycle.Runtime, 'stop_children') as again:
+            runtime.__exit__(None, None, None)
+        again.assert_not_called()
+        assert runtime.status == 'stopped'
