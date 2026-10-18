@@ -372,7 +372,7 @@ def test_same_target_can_be_prepared_again_without_patching_orphan_release(insta
     helper, client, name, old, data, host = installed
     if interruption == 'after-extraction':
         def crash(point):
-            if point == 'before:journal:verifying':
+            if point == 'before:candidate:hub':  # The tree is extracted and hashed.
                 raise Crash()
         helper.fault = crash
         with pytest.raises(Crash):
@@ -538,3 +538,34 @@ def test_unchanged_component_is_not_fully_rehashed(installed, monkeypatch):
     helper._verify(tx, tx['proposed'], True, quick=True)
     helper._verify(tx, tx['proposed'], True, quick=True)  # Memoized: no second hash in the same window.
     assert len(calls) == 1
+
+
+
+@pytest.mark.parametrize('case', ['straight', 'interrupted', 'tampered'])
+def test_straight_apply_trusts_the_staging_hash_resume_and_tampering_do_not(installed, monkeypatch, case):
+    helper, client, name, old, data, host = installed
+    tx = helper.prepare(client, [name])
+    import services.shared.release_packages as packages
+    real, hashed = packages.sha256, []
+    monkeypatch.setattr(packages, 'sha256', lambda path: hashed.append(Path(path)) or real(path))
+    releases = Path(old['components'][0]['code_path']).parent
+    if case == 'tampered':
+        # Changed after staging (size differs): caught before anything switches.
+        tree = Path(tx['proposed']['components'][0]['code_path'])
+        entry = next(p for p in tree.rglob('*') if p.is_file() and p.name != 'orion-release.json')
+        entry.write_bytes(entry.read_bytes() + b'!')
+        assert helper.resume()['phase'] == 'failed'
+        return
+    if case == 'interrupted':
+        def die(point):
+            if point == 'after:backup:hub':
+                raise Crash(point)
+        helper.fault = die
+        with pytest.raises(Crash):
+            helper.resume()
+        hashed.clear()
+        helper = UpdateHelper(helper.registry, host=Host())
+    assert helper.resume()['phase'] == 'completed'
+    code = [p for p in hashed if p.is_relative_to(releases)]
+    # Straight from staging the trees' size+mtime cache is enough; a resumed run hashes every file.
+    assert bool(code) == (case == 'interrupted')
