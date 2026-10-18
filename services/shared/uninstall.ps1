@@ -29,17 +29,26 @@ function Invoke-Uninstall([string]$scope, [bool]$deleteData, [bool]$deleteModels
     if ($deleteData) { $arguments += '--delete-data' }
     if ($deleteModels) { $arguments += '--delete-models' }
     $out = Join-Path $env:TEMP ('orion-uninstall-' + [guid]::NewGuid().ToString('N') + '.json')
+    $err = $out + '.err'
     $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden `
-        -RedirectStandardOutput $out -PassThru
+        -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
     while (-not $process.HasExited) { [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 150 }
     $text = ''
     try { $text = (Get-Content -LiteralPath $out -Raw -Encoding UTF8) } catch {}
-    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    # Keep what the uninstaller printed (traceback included) where the user and support can find it.
+    try {
+        $log = Join-Path $env:LOCALAPPDATA 'Orion-uninstall.log'
+        $stamp = (Get-Date).ToString('s') + ' exit=' + $process.ExitCode
+        $errText = ''
+        try { $errText = (Get-Content -LiteralPath $err -Raw -Encoding UTF8) } catch {}
+        Add-Content -LiteralPath $log -Encoding UTF8 -Value ($stamp + "`n" + $text + "`n" + $errText)
+    } catch {}
+    Remove-Item -LiteralPath $out, $err -Force -ErrorAction SilentlyContinue
     try { return ($text.Trim().Split("`n") | Select-Object -Last 1 | ConvertFrom-Json) } catch { return $null }
 }
 
 function Show-Result($result) {
-    if ($null -eq $result) { return (T 'Kaldırma tamamlanamadı. Orion kayıtları oldukları gibi korundu.') }
+    if ($null -eq $result) { return (T 'Kaldırma tamamlanamadı. Orion kayıtları oldukları gibi korundu. Ayrıntı: AppData/Local/Orion-uninstall.log dosyasında.') }
     if ($result.status -eq 'refused') { return $result.message }
     $lines = @((T 'Orion kaldırıldı.'))
     if ($result.data -eq 'kept') { $lines += (T 'Verileriniz ve modelleriniz korundu; Orion''u yeniden kurarsanız kaldığınız yerden devam eder.') }
