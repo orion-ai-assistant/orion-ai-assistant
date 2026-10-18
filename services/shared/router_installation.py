@@ -141,7 +141,9 @@ def inspect_router_folder(root, *, distribution='legacy-source', expected_identi
         if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
             raise ValueError('Missing or invalid Router version metadata')
         candidate = replace(candidate, version=version)
-        if int(version.split('.')[0]) != supported_major:
+        # A signed package carries its compatibility in the manifest (`api`, checked by compatible()); its version
+        # is only a label (1.x, 2.x are fine). Unpackaged source checkouts have no manifest: keep the major gate.
+        if distribution != 'packaged' and int(version.split('.')[0]) != supported_major:
             return replace(candidate, status='incompatible', reason='Unsupported Router major version')
         for filename in ('main.py', 'core/config.py', 'bin/prod.py', 'bin/stop.py'):
             path = (directory / filename).resolve(strict=True)
