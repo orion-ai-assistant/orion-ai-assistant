@@ -38,6 +38,34 @@ function Show-OrionElevated([string]$message) {
     }
     [void][Windows.Forms.MessageBox]::Show($text, 'Orion')
 }
+function Test-OrionElevated {
+    try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false }
+}
+function Start-OrionDeElevated {
+    # Start Orion again with the normal (limited) token. Explorer is the user's de-elevated shell; runas /trustlevel
+    # gives a limited-token process; neither prompts. A stamp stops a loop when de-elevation does not work (UAC off).
+    $stamp = Join-Path (Split-Path -Parent $PSScriptRoot) 'bootstrap/deelevate.stamp'
+    try {
+        if (Test-Path -LiteralPath $stamp) {
+            $age = ([DateTime]::UtcNow - [DateTime]::Parse((Get-Content -LiteralPath $stamp -Raw).Trim(), $null, 'RoundtripKind')).TotalSeconds
+            if ($age -lt 60) { return $false }
+        }
+        [IO.File]::WriteAllText($stamp, [DateTime]::UtcNow.ToString('o'))
+    } catch {}
+    $exe = Join-Path $PSScriptRoot 'Orion.exe'
+    try {
+        if (-not $Startup -and -not $Background -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $exe + '"')
+        } else {
+            $flags = ''
+            if ($Startup) { $flags += ' -Startup' }
+            if ($Background) { $flags += ' -Background' }
+            $inner = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $PSCommandPath + '\"' + $flags
+            Start-Process -FilePath 'runas.exe' -ArgumentList ('/trustlevel:0x20000 "' + $inner + '"') -WindowStyle Hidden
+        }
+        return $true
+    } catch { return $false }
+}
 # Phases in which the helper is switching versions right now (calm wait), and phases that allow a normal start.
 $applying = @('draining','backing_up','switching','health_check','rollback_pending')
 $allowedPhases = @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')
@@ -90,6 +118,11 @@ function Wait-OrionUpdate([string]$pending) {
     $timer.Dispose(); $form.Dispose()
 }
 try {
+    if (-not $Stop -and -not $Repair -and (Test-OrionElevated)) {
+        # Orion never runs elevated: re-open it with normal rights and leave; the message is only the fallback.
+        if (Start-OrionDeElevated) { exit 0 }
+        throw 'ORION-ELEVATED-SELF'
+    }
     if ($Repair) { Show-OrionRepair 'Installation record and launcher logs are available locally.'; exit 0 }
     $record = Get-Content -LiteralPath $registry -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($Startup -and $record.preferences.start_with_windows -eq $false) { exit 0 }

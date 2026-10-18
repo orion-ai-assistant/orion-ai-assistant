@@ -121,7 +121,7 @@ Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez aç
 2. Kurulumdan hemen sonra (Orion yeni açılmışken) güncelleme uygulanırken "uncoordinated process" hatasıyla `failed` olmamalı; en kötü ihtimalle "Servislerin kapanmasını bekliyor" kalır ve sonra uygulanır.
 3. Yenile: kart "Güncellemeler denetleniyor…" → birkaç saniyede "Yeni sürüm bulundu, indiriliyor…" → "(1/2) · 85,3 / 198,0 MB · 1,4 MB/sn" ve **tek** çubuk bayta göre ilerler (yaklaşık 2 sn'de bir değişir), bitince "Hazır: Şimdi güncelle".
 4. Güncelleniyor penceresi: adımlar gerçekten ilerler (Servisler kapatılıyor → Veriler yedekleniyor → Yeni sürüm yerleştiriliyor → Yeni sürüm denetleniyor → Orion yeniden başlatılıyor); sonunda sonuç iletisi ("Güncellendi: …" / "Güncelleme uygulanamadı…") pencerede görünür, sonra Orion açılır.
-5. Yönetici/normal karışımı: Orion'u yönetici PowerShell'den başlatmayı dene (`Orion.ps1`): "Orion yönetici olarak başlatılamaz" iletisi, Onarma penceresi **yok**. Yönetici başlatılmış servisler varken normal kısayol: "Orion yönetici olarak çalışıyor… tepsiden Çık, sonra normal açın" iletisi.
+5. Yönetici/normal karışımı: Orion'u yönetici PowerShell'den veya "Yönetici olarak çalıştır" ile başlat (`Orion.exe` / `Orion.ps1`). Beklenen: ileti **yok**; Orion kendini normal haklarla yeniden açar (Görev Yöneticisi > Ayrıntılar > Yükseltilmiş sütunu: python/powershell süreçleri "Hayır"). UAC kapalıysa (her şey yükseltilmiş) 60 sn içinde ikinci denemede "Orion yönetici olarak başlatılamaz" iletisi, döngü yok. Yönetici başlatılmış eski servisler varken normal kısayol: "Orion yönetici olarak çalışıyor… tepsiden Çık, sonra normal açın" iletisi, Onarma penceresi yok.
 
 ### 5. Hub/Router paneli düğmeleri
 

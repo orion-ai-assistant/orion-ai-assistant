@@ -457,8 +457,11 @@ bundle with the packages).
   whole download (bytes), polls every 2 s while checking/downloading, and says "Yeni sürüm bulundu" as soon as the
   check knows (`check_outcome: update_found` while `checking`). The updating window also shows the recorded result
   (`last-result.json`) before it closes.
-* **Integrity levels.** `launcher.is_elevated()`: Orion is never started from an elevated token
-  (`ORION-ELEVATED-SELF`); an access-denied lifecycle error (services owned by an elevated Orion) is printed as
+* **Integrity levels.** An elevated start (administrator window, "Run as administrator") never starts services:
+  `launcher_entry.ps1` (and `launcher.launch` as a second line) re-opens Orion with normal rights and exits:
+  `explorer.exe Orion.exe` for a plain start (Explorer is the user's de-elevated shell), `runas /trustlevel:0x20000`
+  for `-Startup/-Background`; `bootstrap/deelevate.stamp` stops a loop when that does not work (UAC off) and only then
+  the Turkish message `ORION-ELEVATED-SELF` is shown. An access-denied lifecycle error (services owned by an elevated Orion) is printed as
   `ORION-ELEVATED:` and `launcher_entry.ps1` shows a Turkish message ("Orion yönetici olarak çalışıyor; kapatmak için
   tepsiden Çık, sonra normal açın") instead of the Repair dialog. `ORION_ALLOW_ELEVATED=1` is for sandboxes only.
 * **One transaction, one restart.** For a Hub install the hub-scope check stages Hub, Client **and** the local Router

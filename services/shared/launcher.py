@@ -241,6 +241,44 @@ def is_elevated():
         return False
 
 
+DEELEVATE_STAMP = 'bootstrap/deelevate.stamp'
+DEELEVATE_WINDOW = 60  # a second elevated start within this time means de-elevation does not work here
+
+
+def relaunch_deelevated(registry, *, startup=False, background=False, popen=None, clock=time.time):
+    """Start Orion again with the normal (limited) token, then the caller exits.
+
+    Plain launch: `explorer.exe Orion.exe` (Explorer is the user's de-elevated shell; no prompt, no extra rights).
+    Startup/background flags cannot travel through Explorer, so those use `runas /trustlevel:0x20000` (a
+    limited-token process, also without a prompt). False when that is impossible or was just tried (UAC off,
+    so everything is elevated): the caller then explains instead of looping."""
+    import subprocess
+    folder = registry.path.parent / 'bootstrap'
+    stamp = registry.path.parent / DEELEVATE_STAMP
+    try:
+        if clock() - float(stamp.read_text(encoding='ascii').strip()) < DEELEVATE_WINDOW:
+            return False
+    except (OSError, ValueError):
+        pass
+    exe, entry = folder / 'Orion.exe', folder / 'Orion.ps1'
+    if not startup and not background and exe.is_file():
+        command = ['explorer.exe', str(exe)]
+    elif entry.is_file():
+        flags = (' -Startup' if startup else '') + (' -Background' if background else '')
+        command = ['runas.exe', '/trustlevel:0x20000',
+                   f'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{entry}"{flags}']
+    else:
+        return False
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(clock()), encoding='ascii')
+        (popen or subprocess.Popen)(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError:
+        return False
+    return True
+
+
 def explain(error):
     """Message for the entry script. Access-denied lifecycle errors mean another integrity level owns the
     services: say that in a form the script turns into a clear Turkish dialog (not the Repair dialog)."""
@@ -303,6 +341,9 @@ def request_watcher_exit(registry):
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop and is_elevated():
+        # Never start services elevated: hand over to a normal-rights Orion and leave.
+        if relaunch_deelevated(registry, startup=startup, background=background):
+            return {'status': 'relaunched-deelevated'}
         raise RegistryError(ELEVATED_SELF)
     if not stop:
         wait_for_update(registry, apply_owner=apply_owner)
