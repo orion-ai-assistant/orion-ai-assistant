@@ -40,16 +40,19 @@ def durable_json(path, value):
         stream.flush()
         os.fsync(stream.fileno())
     try:
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 10
         while True:
             try:
                 os.replace(temporary, path)
                 break
             except PermissionError:
-                # Windows readers/antivirus may briefly deny delete sharing.
+                # Windows readers/antivirus may deny replace for a while (a freshly extracted release is
+                # scanned on first use). Once that is over, rewrite in place: state files are small and
+                # every reader tolerates a retry, while failing here made a clean Router shutdown "fail".
                 if time.monotonic() >= deadline:
-                    raise
-                time.sleep(.01)
+                    path.write_bytes(temporary.read_bytes())
+                    break
+                time.sleep(.05)
     finally:
         temporary.unlink(missing_ok=True)
 
