@@ -419,8 +419,10 @@ class ReleaseClient:
         return total
 
     def _prune_layers(self, component, *, keep):
-        """Keep only the runtime layer just used in the download cache (each one is 120-170 MB)."""
-        for path in (self.cache / 'targets').glob(f'orion-{component}-runtime-*.zip'):
+        """Keep only the runtime layer just used in the download cache (each one is 120-170 MB); the combined
+        package the split one replaced is not needed again either."""
+        targets = self.cache / 'targets'
+        for path in [*targets.glob(f'orion-{component}-runtime-*.zip'), *targets.glob(f'orion-{component}-windows-*.zip')]:
             if path.name != quote(keep, ''):
                 try:
                     path.unlink()
