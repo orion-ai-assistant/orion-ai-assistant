@@ -72,13 +72,11 @@ if the bytes match), `--no-prune`. Bump `version`/`sequence` in the release json
   dashboard/web output or the release json change.
 * *Runtime layer*: Python + locked wheels, PostgreSQL (UTF-8 prepared, `initdb` self-check), Redis,
   FFmpeg are about 90 % of a package and independent of its sources. They are prepared and
-  deflated once per input set (`.tmp/build-cache/runtime/<kind>-<key>`, ~1 GB each) and each package
-  copies those already-compressed members verbatim. The ZIP is **byte-identical** to compressing the
-  whole tree in one pass (same member order, same deflate level; a test and a real-package check
-  prove it), so this changes build time, not the artifact. A changed lock file, pin, python/PostgreSQL
-  tooling or runtime recipe rebuilds the layer. Text inputs of that key are hashed with CRLF read as
-  LF, so a `core.autocrlf` checkout (e.g. a git worktree) and an LF checkout share one layer; the 3 most
-  recently used layers per kind are kept, so branches with different locks do not evict each other.
+  deflated once per input set (`.tmp/build-cache/runtime/<kind>-<key>`, ~1 GB each). A changed lock
+  file, pin, python/PostgreSQL tooling or runtime recipe rebuilds the layer. Text inputs of that key are
+  hashed with CRLF read as LF, so a `core.autocrlf` checkout (e.g. a git worktree) and an LF checkout
+  share one layer; the 3 most recently used layers per kind are kept, so branches with different locks do
+  not evict each other.
 * *Byte-reproducible*: the same commit and inputs give the same ZIP sha256 on any PC. Members have a
   fixed date, mode and order (`zip_layers.py`); sources are staged as git stores them (CRLF->LF for
   files committed as LF, so `core.autocrlf` and editor line endings never reach a package); uv's
@@ -86,6 +84,15 @@ if the bytes match), `--no-prune`. Bump `version`/`sequence` in the release json
   random temporary folder, and are never used: Orion runs `python -m`) are removed with their RECORD
   lines. Test: `test_same_inputs_give_byte_identical_package_zips`. This changed the runtime layer, so
   the first Hub and Router built with it differ from earlier builds: release them under a new sequence.
+* *Split packages*: the Hub and Router layer is **its own signed target**, named by its content hash
+  (`orion-hub-runtime-<sha16>.zip`, `orion-router-runtime-<sha16>.zip`). The package ZIP holds only the
+  code plus `orion-runtime.json` (target name, sha256, length of its layer; the same reference is in the
+  signed metadata as the code target's `runtime`), so adding a Python library changes both the layer and
+  the code package hash. Publishing skips a layer that is already online and an installed PC downloads it
+  only when its download cache does not hold that exact layer; installer and updater extract code and
+  layer into ONE tree, exactly the former combined package (inventory, quick/full verification, rollback
+  unchanged). With byte-reproducible builds an unchanged runtime keeps its layer name across PCs
+  and cache wipes. Measured sizes: Hub ~1.3 MB code + 127 MB layer, Router ~5.6 MB code + 167 MB layer.
 
 Steps run concurrently (Flutter, dashboard and Hub packaging together; Client and Router as soon as
 their web output exists) with at most `--jobs` (default 3) at a time; each package builds in its own
@@ -473,8 +480,18 @@ release json, build the packages, run `accept_packages.py`, then:
 ```
 
 Add `--dry-run` to stage without uploading. Upload needs the `gh` CLI signed in. Packages are published
-under version-free names (`orion-hub-windows-x86_64-cpu.zip`, ...); installs and updates compare the
-signed `sequence`, identically for Hub, Router and Client (Router keeps its own on/off preference).
+under version-free names (`orion-hub-code-windows-x86_64-cpu.zip`, `orion-router-code-...`,
+`orion-client-windows-x86_64-cpu.zip`) plus the content-addressed runtime layers; installs and updates
+compare the signed `sequence`, identically for Hub, Router and Client (Router keeps its own on/off preference).
+
+Transition from combined packages: bootstraps that predate split packages read the combined names
+(`orion-hub-windows-x86_64-cpu.zip`, `orion-router-...`). `publish_release.py` lists the last combined
+targets again unchanged (nothing is uploaded), so those installs see no update and no error, adopt the
+new bootstrap (adoption runs before the component check) and that bootstrap updates them through the
+code targets. The first split release therefore needs a bootstrap bump (`bootstrap.json`
+sequence/version/package_id): a reused bundle that still points at the combined names is refused. The
+first split Hub/Router sequence must be above the last combined one, and the first update of every PC
+downloads the layer once.
 Single-key metadata is valid for one year: publish at least once a year, even with no code change.
 The `preview` channel binds the exact packages to the automated isolated acceptance only; clean VM,
 logon and power-loss evidence remain required for `beta`/`stable`.

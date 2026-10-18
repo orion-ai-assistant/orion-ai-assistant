@@ -169,7 +169,9 @@ def accept(old_artifacts, update_artifacts, base, inputs):
         repository = publish(update_artifacts, scratch / 'update-repository', root, signers, version=2)
         names = package_names(update_artifacts)
         config = scratch / 'update-fixture.json'
-        config.write_text(json.dumps({'repository': str(repository), 'names': names, 'registry': str(registry)}))
+        # The installer's own download cache, as on a real PC: an unchanged runtime layer is not fetched again.
+        config.write_text(json.dumps({'repository': str(repository), 'names': names, 'registry': str(registry),
+                                      'cache': str(Path(installer) / 'cache')}))
         script = scratch / 'fixture_update.py'
         script.write_text('''import json,sys,os
 from pathlib import Path
@@ -181,11 +183,20 @@ from services.shared.installation_registry import Registry
 ''' + inspect.getsource(FixtureFetcher) + '''
 c=json.loads(Path(sys.argv[1]).read_text())
 registry=Registry(c['registry'])
+fetcher=FixtureFetcher(Path(c['repository']))
+downloads={}
+original=fetcher._fetch
+def counting(url):
+    for block in original(url):
+        downloads[url.rsplit('/',1)[1]]=downloads.get(url.rsplit('/',1)[1],0)+len(block)
+        yield block
+fetcher._fetch=counting
 client=ReleaseClient(trusted_root=registry.path.parent/'bootstrap/trusted-root.json',
-    cache=registry.path.parent/'update-cache',metadata_url='https://fixture.invalid/metadata/',
-    targets_url='https://fixture.invalid/targets/',fetcher=FixtureFetcher(Path(c['repository'])))
+    cache=Path(c['cache']),metadata_url='https://fixture.invalid/metadata/',
+    targets_url='https://fixture.invalid/targets/',fetcher=fetcher)
 helper=UpdateHelper(registry)
 assert helper.prepare(client,c['names'])['phase']=='staged'
+Path(sys.argv[2]).with_suffix('.downloads.json').write_text(json.dumps(downloads,indent=2),encoding='utf-8')
 result=helper.resume()
 Path(sys.argv[2]).write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
 assert result['phase']=='completed', result.get('reason')
