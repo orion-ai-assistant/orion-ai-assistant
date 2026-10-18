@@ -101,3 +101,18 @@ def test_package_gate_refuses_changed_bytes_or_a_lower_sequence_but_allows_new_o
         P.package_gate(online, tmp_path, _staged(tmp_path, 5, 'bb'))
     with pytest.raises(ValueError, match='below'):
         P.package_gate(online, tmp_path, _staged(tmp_path, 4, 'aa'))
+
+
+def test_unchanged_plain_bootstrap_is_not_uploaded_again(tmp_path):
+    bundle = tmp_path / P.BOOTSTRAP_ASSET
+    bundle.write_bytes(b'bootstrap')
+    digest = P.sha256(bundle)
+    assert not P.needs_upload(bundle, {P.BOOTSTRAP_ASSET: digest})
+    assert P.needs_upload(bundle, {P.BOOTSTRAP_ASSET: '0' * 64})       # Changed bytes under the stable name.
+    assert P.needs_upload(bundle, {P.BOOTSTRAP_ASSET: None})           # No digest reported: upload to be safe.
+    assert P.needs_upload(bundle, {})
+    versioned = tmp_path / '7.targets.json'
+    versioned.write_text('{}')
+    assert not P.needs_upload(versioned, {'7.targets.json': None})
+    assert P.needs_upload(versioned, {'7.targets.json': None}, 7)            # This version's own metadata.
+    assert not P.needs_upload(versioned, {'7.targets.json': P.sha256(versioned)}, 7)

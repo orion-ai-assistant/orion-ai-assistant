@@ -176,6 +176,31 @@ def published_targets(base, version):
         return json.loads(response.read())
 
 
+def online_assets(repo, tag):
+    """name -> sha256 hex (None when GitHub did not report a digest) of the assets already on the release."""
+    out = subprocess.run(['gh', 'release', 'view', tag, '--repo', repo, '--json', 'assets'],
+                         capture_output=True, text=True, check=True).stdout
+    assets = {}
+    for asset in json.loads(out).get('assets', []):
+        digest = asset.get('digest') or ''
+        assets[asset['name']] = digest[len('sha256:'):] if digest.startswith('sha256:') else None
+    return assets
+
+
+def needs_upload(path, existing, version=None):
+    """Hash-prefixed packages never change under the same name: skip what is already online (e.g. an unchanged
+    Client) instead of re-uploading 30-170 MB. Two names can hold other bytes and are uploaded unless the online
+    copy has exactly these (GitHub reports each asset's sha256): the plain bootstrap asset (one name across
+    versions) and this version's own metadata (an earlier run that stopped before its timestamp may have left a
+    differently signed copy, which would break every client's hash check against the new timestamp)."""
+    path = Path(path)
+    if path.name not in existing:
+        return True
+    if path.name != BOOTSTRAP_ASSET and not (version is not None and path.name.startswith(f'{version}.')):
+        return False
+    return existing[path.name] != sha256(path)
+
+
 def gh(*argv, check=True):
     return subprocess.run(['gh', *argv], check=check)
 
@@ -274,14 +299,9 @@ def main():
     if gh('release', 'view', args.tag, '--repo', args.repo, check=False).returncode != 0:
         gh('release', 'create', args.tag, '--repo', args.repo, '--title', 'Orion release feed',
            '--notes', 'Signed package feed read by the Orion installer and updater. Do not edit by hand.')
-    existing = set(subprocess.run(['gh', 'release', 'view', args.tag, '--repo', args.repo, '--json', 'assets',
-                                   '--jq', '.assets[].name'], capture_output=True, text=True, check=True).stdout.split())
+    existing = online_assets(args.repo, args.tag)
     for path in assets:
-        # Hash-prefixed packages never change under the same name: skip what is already online (e.g. an
-        # unchanged Client) instead of re-uploading 30-170 MB. This version's own metadata is always uploaded:
-        # an earlier run that stopped before its timestamp may have left a differently signed copy under the
-        # same name, and keeping that one breaks every client's hash check against the new timestamp.
-        if path.name in existing and path.name != BOOTSTRAP_ASSET and not path.name.startswith(f'{version}.'):
+        if not needs_upload(path, existing, version):
             print('Already published, skipping:', path.name, flush=True)
             continue
         gh('release', 'upload', args.tag, str(path), '--repo', args.repo, '--clobber')
