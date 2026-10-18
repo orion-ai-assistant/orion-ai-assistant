@@ -151,7 +151,7 @@ while True: server.handle_request()
         entry = launcher.install_entry(self.store, desktop=False)
         before = self.store.read()['components']
         launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.root)
-        link = self.root / 'Orion.lnk'
+        link = self.root / 'Orion AI Assistant.lnk'
         self.assertTrue(link.is_file())
         # Inspect actual COM output, including the Unicode path and startup argument.
         cmd = '$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut($env:ORION_TEST_LINK); @($l.TargetPath,$l.Arguments,$l.Description)|ConvertTo-Json'
@@ -160,7 +160,7 @@ while True: server.handle_request()
         target, args, description = json.loads(out)
         self.assertIn(str(entry), args)
         self.assertIn('-Startup', args)
-        self.assertTrue(target.lower().endswith('powershell.exe'))
+        self.assertTrue(target.lower().endswith('powershell.exe'))  # No retained Orion.exe here: PowerShell fallback
         self.assertIn(self.store.read()['installation_id'], description)
         launcher.preferences(self.store, start_with_windows=False, show_client=True, startup_directory=self.root)
         self.assertFalse(link.exists())

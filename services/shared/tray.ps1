@@ -36,7 +36,12 @@ function Close-Tray {
 }
 
 $script:icon = New-Object Windows.Forms.NotifyIcon
+# Same Orion icon as the desktop/Startup entry (embedded in the retained Orion.exe next to this script).
 $script:icon.Icon = [Drawing.SystemIcons]::Application
+try {
+    $exe = Join-Path $PSScriptRoot 'Orion.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) { $script:icon.Icon = [Drawing.Icon]::ExtractAssociatedIcon($exe) }
+} catch {}
 $script:icon.Text = 'Orion'
 $menu = New-Object Windows.Forms.ContextMenuStrip
 $open = $menu.Items.Add("Orion'u a" + [char]0x00E7)

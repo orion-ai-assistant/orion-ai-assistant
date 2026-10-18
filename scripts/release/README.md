@@ -401,6 +401,25 @@ bundle with the packages).
   polls through the outage and reloads the page when the state is `completed`. Unclaimed (90 s), abandoned or
   stalled requests become an explicit `failed` with a fixed error code. Needs a running watcher
   (`GET /api/v1/updates` `apply_now`); without one the request is refused and the next launch applies the update.
+* **Product identity (`Orion.exe`)**: the desktop link and the Windows Startup entry used to target
+  `powershell.exe`, so Task Manager's Startup apps and the desktop showed PowerShell's name and icon.
+  `scripts/release/launcher/Orion.cs` (+ `orion.ico`, made from `installer/app/ui/favicon.png` by
+  `launcher/make_icon.py`, Pillow only for regenerating) is a tiny `/target:winexe`: it starts
+  `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File <own folder>\Orion.ps1` with
+  only `-Startup/-Background/-Stop/-Repair/-NonInteractive` forwarded, without a console flash or waiting.
+  `build_launcher.py` compiles it at release time with the .NET Framework `csc.exe` that ships with Windows
+  (Title/Product "Orion AI Assistant", Company "Orion", version = bootstrap version); that compiler has no
+  `/deterministic`, so the PE timestamp and module id are pinned and the same sources give the same bytes
+  (the `bootstrap_gate` hash check keeps working). `build_bootstrap.py` puts `Orion.exe` in the bundle root and
+  its sha256 in the bundle's `bootstrap.json` (`launcher_sha256`). `launcher.install_entry` copies it next to
+  `bootstrap/Orion.ps1` only from the running/active retained bootstrap and only if the hash matches; nothing is
+  downloaded or compiled on the user's machine. Links then point at `Orion.exe` (icon `Orion.exe,0`,
+  description "Orion AI Assistant"). Startup entry name: `Orion AI Assistant.lnk` (desktop stays `Orion.lnk`).
+  Without `Orion.exe` (source checkout, old bundle) the PowerShell form is kept as fallback.
+  Existing installs: after the bootstrap update, the next `launcher.launch` runs `refresh_links` once per
+  `Orion.exe` hash (`bootstrap/links.json`): it restyles an existing desktop link, replaces our old
+  `Orion.lnk` in Startup by the new name only if Start with Windows is on, and only removes (never creates)
+  it when the user turned it off. Foreign links are preserved; uninstall removes both names.
 * **Tray icon** (`services/shared/tray.ps1`, installed as `bootstrap/Orion-Tray.ps1`): started by
   `launcher.launch` for installs with a Hub only; one icon per installation (named mutex), exits on
   `bootstrap/tray.exit` (written by `stop_tray` during every launcher stop; terminated only if it ignores it),

@@ -35,7 +35,7 @@ class TrayTests(unittest.TestCase):
     def test_script_is_valid_powershell_with_the_required_menu(self):
         text = SCRIPT.read_text(encoding='utf-8')
         self.assertTrue(text.isascii(), 'Windows PowerShell 5.1 reads BOM-less files as ANSI')
-        for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false'):
+        for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false', 'ExtractAssociatedIcon'):
             self.assertIn(needle, text)
         powershell = shutil.which('powershell')
         if os.name != 'nt' or not powershell:

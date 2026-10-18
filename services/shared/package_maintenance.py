@@ -41,10 +41,11 @@ def removal_plan(registry, kinds):
 
 
 def remove_links(registry, installation_id):
+    from .launcher import DESKTOP_LINK, LEGACY_STARTUP_LINK, STARTUP_LINK
     from .windows_autostart import known_folder, shortcut
     entry = registry.path.parent / 'bootstrap/Orion.ps1'
-    for kind in ('startup', 'desktop'):
-        path = known_folder(kind) / 'Orion.lnk'
+    for kind, name in (('startup', STARTUP_LINK), ('startup', LEGACY_STARTUP_LINK), ('desktop', DESKTOP_LINK)):
+        path = known_folder(kind) / name
         if path.exists():
             shortcut(path, entry, installation_id, startup=kind == 'startup', remove=True)
 

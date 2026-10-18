@@ -79,6 +79,15 @@ Yalnız temiz makine/VM'de (Orion kurulu değilken):
 3. Sağ tık menüsü: "Orion'u aç", "Çık". "Çık": simge **hemen** kaybolmalı, birkaç saniyede Hub/Router/Redis/Postgres kapanmalı, pencere kapanmalı. Sonra yukarıdaki 2. bölümdeki komutla artık süreç kalmadığını doğrula; `bootstrap\tray.exit` dosyası kalmamalı.
 4. Görev Yöneticisi'nden tepsi PowerShell'ini (komut satırında `Orion-Tray.ps1`) öldür, Orion'u yeniden başlat: tek simge çıkmalı (ikinci başlatma kendiliğinden çıkar). Router-only kurulumda simge **olmamalı**.
 
+### 3b. Ürün kimliği: Orion.exe (Başlangıç uygulamaları adı + simgesi)
+
+Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez açıldığında:
+
+1. Masaüstündeki Orion kısayolu **Orion simgesi** taşımalı (PowerShell simgesi değil); Özellikler'de hedef `...\Orionootstrap\Orion.exe`, açıklama "Orion AI Assistant".
+2. Görev Yöneticisi > Başlangıç uygulamaları: "Windows açılışında Orion'u başlat" **açıksa** satırın adı "Orion AI Assistant", yayıncı "Orion", Orion simgesiyle görünmeli (artık `powershell.exe` yok). `shell:startup` klasöründe yalnız `Orion AI Assistant.lnk` olmalı. Ayar **kapalıysa** hiçbir Orion girdisi olmamalı (eski `Orion.lnk` de silinmiş olmalı); ayarı açıp kapatınca girdi gelip gitmeli.
+3. Masaüstü kısayoluna çift tıkla: konsol/PowerShell penceresi **çakılmadan** Orion açılmalı. Tepsi simgesi artık Orion simgesi. Tepsi > Çık (veya `Orion.exe -Stop`) hâlâ her şeyi kapatmalı.
+4. Masaüstü kısayolunu sil, Orion'u yeniden aç: kısayol **yeniden oluşmamalı** (yalnız var olan yenilenir).
+
 ### 4. "Şimdi güncelle"
 
 Önkoşul: ayarlarda güncelleme kaynağı hazır ve bir sürüm hazırlanmış (Ayarlar > Orion güncellemeleri'nde "Bekleyen güncelleme: Güvenli açılışı bekliyor"). Yoksa yenile düğmesine bas.

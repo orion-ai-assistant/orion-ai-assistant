@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 from tuf.api.metadata import Metadata, Root
 from services.shared.release_packages import archive_name, extract_zip, sha256, validate_release
 from python_runtime import install_site_hook
+from build_launcher import build_launcher
 
 
 def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False, release=None):
@@ -71,6 +72,9 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             destination = tree / 'scripts/release' / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).with_name(name), destination)
+        # Product identity: Orion.exe (name + icon in Startup apps/desktop) compiled from source with the
+        # .NET Framework csc.exe that ships with Windows. install_entry copies it from here, never downloads it.
+        launcher = build_launcher(tree / 'Orion.exe', release['version'])
         shutil.copyfile(trusted_root, tree / 'trusted-root.json')
         if release_source is not None:
             from services.shared.automatic_updates import validate_source
@@ -78,7 +82,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             (tree / 'release-source.json').write_text(json.dumps(value), encoding='utf-8')
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root), 'sequence': release['sequence'],
-            'package_id': release['package_id'], 'version': release['version']}))
+            'package_id': release['package_id'], 'version': release['version'],
+            'launcher_sha256': sha256(launcher)}))
         (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
             'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '

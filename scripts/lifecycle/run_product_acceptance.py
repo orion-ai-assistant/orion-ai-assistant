@@ -406,7 +406,7 @@ def main():
             preferences(store, start_with_windows=False, show_client=True, startup_directory=isolated_startup)
             call(start + ['-Startup'], 'disabled-startup')
             assert Runtime(root, component).read()['run_id'] == first['run_id']
-            assert not (isolated_startup / 'Orion.lnk').exists()
+            assert not (isolated_startup / 'Orion AI Assistant.lnk').exists()
             report['checks'].append('login/manual concurrent launches share one supervisor; owned Flutter listener/health; disabled stale startup is inert; real Startup folder untouched')
         call(stop, 'stop')
         record = Runtime(root, component).read()

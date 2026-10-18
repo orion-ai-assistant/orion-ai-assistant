@@ -1,16 +1,17 @@
 {
   "schema": 1,
   "component": "bootstrap",
-  "package_id": "orion-bootstrap-0.1.0-windows-x86_64-cpu",
-  "version": "0.1.0",
-  "sequence": 1,
+  "package_id": "orion-bootstrap-0.1.1-windows-x86_64-cpu",
+  "version": "0.1.1",
+  "sequence": 2,
   "platform": "windows",
   "arch": "x86_64",
   "profile": "cpu",
   "api": 1,
   "requires": {},
   "capabilities": [
-    "bootstrap.self-update.v1"
+    "bootstrap.self-update.v1",
+    "launcher.product-identity.v1"
   ],
   "data_schema": 1,
   "rollback": "same-schema-only",

@@ -235,6 +235,11 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
         if not stop and blocked(registry.path):
             raise RegistryError('Update recovery in progress; resume the local update helper')
         components = managed_components(record)  # Preflight all paths before any start.
+        if not stop and os.name == 'nt':
+            try:
+                refresh_links(registry)
+            except (OSError, RuntimeError, ValueError, KeyError):
+                pass  # Name and icon are cosmetic; the next start retries.
         packages = [json.loads((Path(c['code_path']) / 'orion-release.json').read_text(encoding='utf-8'))
                     for c in record['components'] if c['distribution'] == 'packaged']
         if packages and not stop:
@@ -269,6 +274,35 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
         return {'status': 'stopped' if stop else 'ready'}
 
 
+DESKTOP_LINK = 'Orion.lnk'
+STARTUP_LINK = 'Orion AI Assistant.lnk'
+LEGACY_STARTUP_LINK = 'Orion.lnk'  # Installs before Orion.exe named their Startup entry like the desktop one.
+
+
+def retained_launcher(registry):
+    """Orion.exe of the trusted retained bootstrap (the signed bundle that is running, or the active one).
+
+    Nothing is downloaded or compiled on the user's machine; a bundle without an exe, or one whose
+    bytes differ from the hash recorded in its own bootstrap.json, yields None (PowerShell fallback).
+    """
+    from .release_packages import sha256
+    roots = [Path(__file__).resolve().parents[2]]
+    try:
+        from .bootstrap_update import pointer_root
+        roots.append(pointer_root(registry))
+    except Exception:
+        pass
+    for root in roots:
+        try:
+            exe = Path(root) / 'Orion.exe'
+            info = json.loads((Path(root) / 'bootstrap.json').read_text(encoding='utf-8-sig'))
+            if exe.is_file() and not exe.is_symlink() and sha256(exe) == info.get('launcher_sha256'):
+                return exe
+        except (OSError, TypeError, ValueError):
+            continue
+    return None
+
+
 def install_entry(registry, *, desktop=True):
     from .windows_autostart import known_folder, shortcut
     record = registry.read()
@@ -280,9 +314,61 @@ def install_entry(registry, *, desktop=True):
     canonical_path(entry)
     entry.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(entry, Path(__file__).with_name('launcher_entry.ps1').read_bytes())
+    source = retained_launcher(registry)
+    if source is not None:
+        destination = entry.with_name('Orion.exe')
+        data = source.read_bytes()
+        if not destination.exists() or destination.read_bytes() != data:
+            try:
+                _atomic_write(destination, data)
+            except OSError:
+                if not destination.exists():
+                    raise  # A running older copy is fine to keep; a missing one is not.
     if desktop:
-        shortcut(known_folder('desktop') / 'Orion.lnk', entry, record['installation_id'])
+        shortcut(known_folder('desktop') / DESKTOP_LINK, entry, record['installation_id'])
     return entry
+
+
+def _startup_links(directory, entry, installation_id, enabled):
+    """Product-named Startup entry; the pre-Orion.exe `Orion.lnk` is replaced if it is ours."""
+    from .windows_autostart import shortcut
+    if enabled:
+        shortcut(directory / STARTUP_LINK, entry, installation_id, startup=True)
+    elif (directory / STARTUP_LINK).exists():
+        shortcut(directory / STARTUP_LINK, entry, installation_id, startup=True, remove=True)
+    if (directory / LEGACY_STARTUP_LINK).exists():
+        try:
+            shortcut(directory / LEGACY_STARTUP_LINK, entry, installation_id, startup=True, remove=True)
+        except RuntimeError:
+            pass  # Someone else's Orion.lnk: preserved, never ours to touch.
+
+
+def refresh_links(registry):
+    """Give an existing install the product name/icon after a bootstrap update; once per Orion.exe.
+
+    Never creates a Startup entry the user turned off (it only removes ours), and only restyles a
+    desktop link that already exists.
+    """
+    from .release_packages import sha256
+    from .windows_autostart import known_folder, shortcut
+    exe = retained_launcher(registry)
+    if exe is None or registry.path.name != 'install.json':
+        return False
+    marker = registry.path.parent / 'bootstrap/links.json'
+    digest = sha256(exe)
+    try:
+        if json.loads(marker.read_text(encoding='utf-8')).get('launcher_sha256') == digest:
+            return False
+    except (OSError, ValueError, AttributeError):
+        pass
+    record = registry.read()
+    entry = install_entry(registry, desktop=False)
+    desktop = known_folder('desktop') / DESKTOP_LINK
+    if desktop.exists():
+        shortcut(desktop, entry, record['installation_id'])
+    _startup_links(known_folder('startup'), entry, record['installation_id'], record['preferences']['start_with_windows'])
+    _atomic_write(marker, json.dumps({'schema': 1, 'launcher_sha256': digest}).encode())
+    return True
 
 
 def preferences(registry, *, start_with_windows, show_client, startup_directory=None):
@@ -297,18 +383,17 @@ def preferences(registry, *, start_with_windows, show_client, startup_directory=
             managed_components(record)
         entry = install_entry(registry, desktop=False)
         directory = canonical_path(startup_directory or known_folder('startup'), must_exist=True)
-        path = directory / 'Orion.lnk'
         def update(current):
             if current != record:
                 raise RegistryError('Installation changed; retry preferences')
             current['preferences'].update(start_with_windows=start_with_windows, show_client=show_client)
             return current
         if start_with_windows:
-            shortcut(path, entry, record['installation_id'], startup=True)
+            _startup_links(directory, entry, record['installation_id'], True)
             return registry.update(update)
         # A stale link after crash/removal failure remains inert: startup checks the registry.
         result = registry.update(update)
-        shortcut(path, entry, record['installation_id'], startup=True, remove=True)
+        _startup_links(directory, entry, record['installation_id'], False)
         return result
 
 

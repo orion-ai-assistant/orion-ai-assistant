@@ -77,22 +77,37 @@ def known_folder(name):
         ole.CoTaskMemFree(ctypes.cast(pointer, ctypes.c_void_p))
 
 
+PRODUCT_NAME = 'Orion AI Assistant'
+LAUNCHER_EXE = 'Orion.exe'
+
+
 def shortcut(path, entry, installation_id, *, startup=False, remove=False):
-    """Refuse to replace another application's or installation's shortcut."""
-    target = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    args = subprocess.list2cmdline(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle',
-                                  'Hidden', '-File', str(entry), *(['-Startup'] if startup else [])])
-    payload = dict(path=str(path), target=str(target), arguments=args,
-                   description='Orion launcher ' + installation_id, remove=remove)
+    """Refuse to replace another application's or installation's shortcut.
+
+    The link targets Orion.exe (product name and icon) when it sits next to the PowerShell entry;
+    without it the PowerShell form is used. An existing link is ours if it matches either form,
+    so installations created before Orion.exe existed are upgraded in place and never foreign-blocked.
+    """
+    powershell = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    exe = Path(entry).with_name(LAUNCHER_EXE)
+    legacy = dict(target=str(powershell), description='Orion launcher ' + installation_id,
+                  arguments=subprocess.list2cmdline(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle',
+                                                     'Hidden', '-File', str(entry), *(['-Startup'] if startup else [])]))
+    product = dict(target=str(exe), description=PRODUCT_NAME, arguments='-Startup' if startup else '')
+    chosen = product if exe.is_file() else legacy
+    payload = dict(path=str(path), **chosen, icon=str(exe) + ',0' if chosen is product else '',
+                   owned=[legacy, product], remove=remove)
     command = """
 $ErrorActionPreference = 'Stop'
 $p = $env:ORION_LINK_REQUEST | ConvertFrom-Json
 $shell = New-Object -ComObject WScript.Shell
 if (Test-Path -LiteralPath $p.path) {
     $old = $shell.CreateShortcut($p.path)
-    if ($old.Description -cne $p.description -or $old.TargetPath -ine $p.target -or $old.Arguments -cne $p.arguments) {
-        throw 'Shortcut ownership mismatch; existing shortcut preserved'
+    $ours = $false
+    foreach ($o in $p.owned) {
+        if ($old.Description -ceq $o.description -and $old.TargetPath -ieq $o.target -and $old.Arguments -ceq $o.arguments) { $ours = $true }
     }
+    if (-not $ours) { throw 'Shortcut ownership mismatch; existing shortcut preserved' }
 }
 if ($p.remove) {
     if (Test-Path -LiteralPath $p.path) { Remove-Item -LiteralPath $p.path }
@@ -101,13 +116,14 @@ if ($p.remove) {
     $link.TargetPath = $p.target
     $link.Arguments = $p.arguments
     $link.Description = $p.description
+    if ($p.icon) { $link.IconLocation = $p.icon }
     $link.WorkingDirectory = [IO.Path]::GetDirectoryName($p.path)
     $link.WindowStyle = 7
     $link.Save()
 }
 """
     try:
-        subprocess.run([str(target), '-NoProfile', '-NonInteractive', '-Command', command],
+        subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', command],
                        env=dict(os.environ, ORION_LINK_REQUEST=json.dumps(payload)),
                        check=True, capture_output=True, timeout=30, creationflags=0x08000000)
     except subprocess.SubprocessError as error:
