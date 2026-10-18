@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "component": "bootstrap",
-  "package_id": "orion-bootstrap-0.1.10-windows-x86_64-cpu",
-  "version": "0.1.10",
-  "sequence": 11,
+  "package_id": "orion-bootstrap-1.1.0-windows-x86_64-cpu",
+  "version": "1.1.0",
+  "sequence": 12,
   "platform": "windows",
   "arch": "x86_64",
   "profile": "cpu",

@@ -189,6 +189,9 @@ def main():
     parser.add_argument('--reuse-bootstrap', type=Path,
                         help='Previously built orion-bootstrap-windows-x64.zip (with its .target.json) to publish unchanged')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--defer-timestamp', type=Path,
+                        help='upload everything except timestamp.json and record it in this JSON file instead; '
+                             'release.py publishes the timestamps of all feeds back to back at the end')
     args = parser.parse_args()
     args.repo = args.repo or FEEDS[args.feed]['repo']
     args.tag = args.tag or FEEDS[args.feed]['tag']
@@ -256,6 +259,11 @@ def main():
             continue
         gh('release', 'upload', args.tag, str(path), '--repo', args.repo, '--clobber')
     # Publishing the timestamp last makes the new version visible atomically.
+    if args.defer_timestamp:
+        args.defer_timestamp.write_text(json.dumps({'repo': args.repo, 'tag': args.tag,
+                                                    'file': str(repository / 'metadata/timestamp.json')}), encoding='utf-8')
+        print('Everything uploaded; timestamp.json deferred (the new version is not visible yet).')
+        return
     gh('release', 'upload', args.tag, str(repository / 'metadata/timestamp.json'), '--repo', args.repo, '--clobber')
     print('Published. Installer:', base + BOOTSTRAP_ASSET)
 

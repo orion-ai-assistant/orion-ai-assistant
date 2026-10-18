@@ -60,9 +60,11 @@ def staged_bootstrap(feed):
     return None, None
 
 
-def publish(feed, candidates, result, dry_run):
+def publish(feed, candidates, result, dry_run, deferred=None):
     command = [sys.executable, str(HERE / 'publish_release.py'), '--feed', feed, '--artifacts', str(candidates),
                '--accepted-result', str(result), '--inputs', str(ROOT / '.tmp/inputs')]
+    if deferred is not None:
+        command += ['--defer-timestamp', str(deferred)]
     bundle, sequence = staged_bootstrap(feed)
     wanted = json.loads((HERE / 'bootstrap.json').read_text(encoding='utf-8-sig'))['sequence']
     if bundle is not None and sequence == wanted:
@@ -103,8 +105,21 @@ def main():
     print(f'\nBuilt and accepted: {candidates.name}\nAcceptance: {result}', flush=True)
     if args.no_publish:
         return
+    # Every feed's packages and metadata go up first; the timestamps that make them visible follow back to back,
+    # so a check in between cannot see a Router-only (or Hub-only) half of the release.
+    deferred = []
     for feed in args.feeds:  # The Router feed first: the Hub feed no longer lists a Router target.
-        publish(feed, candidates, result, args.dry_run)
+        marker = ROOT / '.tmp/release' / f'{feed}-timestamp.json'
+        marker.unlink(missing_ok=True)
+        publish(feed, candidates, result, args.dry_run, None if args.dry_run else marker)
+        if marker.exists():
+            deferred.append(json.loads(marker.read_text(encoding='utf-8')))
+            marker.unlink()
+    for item in deferred:
+        subprocess.run(['gh', 'release', 'upload', item['tag'], item['file'], '--repo', item['repo'], '--clobber'],
+                       check=True)
+    if deferred:
+        print('Published: ' + ', '.join(d['repo'] for d in deferred) + ' (timestamps uploaded back to back).')
 
 
 if __name__ == '__main__':
