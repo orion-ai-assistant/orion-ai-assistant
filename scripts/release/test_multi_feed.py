@@ -73,12 +73,12 @@ def test_merge_moves_router_to_its_own_feed_and_keeps_the_hub_cache():
 
 def manifest(kind, sequence):
     caps = ['lifecycle.update-quarantine.v1']
-    requires = {'hub': {'client': [1, 1], 'router': [2, 2]}, 'router': {'hub': [1, 1]}}[kind]
+    requires = {'hub': {'client': [1, 1], 'router': [2, 2]}, 'router': {'hub': [1, 1]}, 'client': {}}[kind]
     if kind == 'router':
         caps += ['hubs.accounts.get', 'hubs.account-status.get']
     return {'schema': 1, 'component': kind, 'package_id': f'orion-{kind}-{sequence}.0.0-windows-x86_64-cpu',
             'version': f'{sequence}.0.0', 'sequence': sequence, 'platform': 'windows', 'arch': 'x86_64',
-            'profile': 'cpu', 'api': {'hub': 1, 'router': 2}[kind], 'requires': requires, 'capabilities': caps,
+            'profile': 'cpu', 'api': {'hub': 1, 'router': 2, 'client': 1}[kind], 'requires': requires, 'capabilities': caps,
             'data_schema': 1, 'rollback': 'same-schema-only', 'entrypoint': 'run.py'}
 
 
@@ -112,7 +112,8 @@ class Feeds(FetcherInterface):
 
 
 @pytest.fixture
-def world(request, monkeypatch):
+def feeds(request):
+    """Two signed repositories (Hub feed: hub+client, Router feed: router), versions 1 and 2, one root."""
     base = Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'Orion/lifecycle-tests'
     base.mkdir(parents=True, exist_ok=True)
     owned = tempfile.TemporaryDirectory(prefix='multi-feed-', dir=base)
@@ -126,18 +127,37 @@ def world(request, monkeypatch):
     trusted = tmp / 'trusted-root.json'
     trusted.write_bytes(root.to_bytes())
     repositories, names = {}, {}
-    for key, url, kind in (('hub', HUB, 'hub'), ('router', ROUTER, 'router')):
+    for url, kinds in ((HUB, ('hub', 'client')), (ROUTER, ('router',))):
         for version in (1, 2):
-            artifacts = tmp / f'{key}-artifacts-{version}'
+            artifacts = tmp / f'{kinds[0]}-artifacts-{version}'
             artifacts.mkdir()
-            names[(kind, version)] = package(artifacts, kind, version)
-            out = publisher.publish(artifacts, tmp / f'{key}-repo-{version}', trusted, signers, version=version)
+            for kind in kinds:
+                names[(kind, version)] = package(artifacts, kind, version)
+            out = publisher.publish(artifacts, tmp / f'{kinds[0]}-repo-{version}', trusted, signers, version=version)
             repositories.setdefault(url, {})[version] = out
     fetcher = Feeds({url: repos[1] for url, repos in repositories.items()})
 
     def client(source):
         return ReleaseClient(trusted_root=trusted, cache=tmp / source['cache'], metadata_url=source['metadata_url'],
-                             targets_url=source['targets_url'], fetcher=Feeds(fetcher.directories) if False else fetcher)
+                             targets_url=source['targets_url'], fetcher=fetcher)
+
+    def source(version, kinds=('hub', 'client', 'router')):
+        sources = []
+        if {'hub', 'client'} & set(kinds):
+            sources.append(feed(HUB, {k: names[(k, version)] for k in ('hub', 'client') if k in kinds}, 'release-cache'))
+        if 'router' in kinds:
+            sources.append(feed(ROUTER, {'router': names[('router', version)]}, 'release-cache-router'))
+        return validate_source({'schema': 2, 'channel': 'stable', 'sources': sources})
+
+    def release_to(version):
+        fetcher.directories = {url: repos[version] for url, repos in repositories.items()}
+    return type('Feeds', (), dict(tmp=tmp, trusted=trusted, fetcher=fetcher, names=names, client=staticmethod(client),
+                                  source=staticmethod(source), release_to=staticmethod(release_to)))
+
+
+@pytest.fixture
+def world(feeds, monkeypatch):
+    tmp, client, names = feeds.tmp, feeds.client, feeds.names
 
     def install(kind):
         source = {'hub': feed(HUB, {}, 'release-cache'), 'router': feed(ROUTER, {}, 'release-cache-router')}[kind]
@@ -155,18 +175,14 @@ def world(request, monkeypatch):
     store = Registry(tmp / 'install.json')
     monkeypatch.setenv('ORION_INSTALLATION_REGISTRY', str(store.path))
     store.write(new_registry(tmp, [install('hub'), install('router')], preferences={'automatic_updates': True}))
-    # The Hub feed was published for v1 first; flip both repositories to v2 now (a new release round).
-    fetcher.directories = {url: repos[2] for url, repos in repositories.items()}
-    source = {'schema': 2, 'channel': 'stable', 'sources': [
-        feed(HUB, {'hub': names[('hub', 2)]}, 'release-cache'),
-        feed(ROUTER, {'router': names[('router', 2)]}, 'release-cache-router')]}
+    feeds.release_to(2)  # A new release round was published in both feeds.
     (store.path.parent / 'bootstrap').mkdir()
-    (store.path.parent / 'bootstrap/release-source.json').write_text(json.dumps(validate_source(source)))
+    (store.path.parent / 'bootstrap/release-source.json').write_text(json.dumps(feeds.source(2, ('hub', 'router'))))
     host = Host()
     now = [2_000_000_000.0]
     service = AutomaticUpdates(store, helper=UpdateHelper(store, host=host), client_factory=client, clock=lambda: now[0])
     AutomaticUpdates(store, helper=service.helper, scope='router').preferences(enabled=True)
-    return service, fetcher, host
+    return service, feeds.fetcher, host
 
 
 def test_hub_and_router_from_two_feeds_stage_as_one_transaction(world):
