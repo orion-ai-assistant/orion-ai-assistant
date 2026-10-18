@@ -78,10 +78,48 @@ def known_folder(name):
 
 
 PRODUCT_NAME = 'Orion AI Assistant'
+ROUTER_PRODUCT_NAME = 'Orion Router'
+PRODUCT_NAMES = (PRODUCT_NAME, ROUTER_PRODUCT_NAME)
 LAUNCHER_EXE = 'Orion.exe'
 
+STARTUP_APPROVED = r'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved StartupFolder'
 
-def shortcut(path, entry, installation_id, *, startup=False, remove=False):
+
+def clean_startup_approved(keep_names, stale_names, *, hive=None, key=STARTUP_APPROVED):
+    """Delete orphaned Task Manager "Startup apps" state values of Orion's own link names.
+
+    Explorer keeps one StartupApproved StartupFolder value per Startup link NAME and never deletes it
+    when the link goes away. An old `Orion.lnk` value (installs before the product-named link) then
+    keeps a ghost entry in Task Manager > Startup, listed by the executable's file name ("Orion.exe")
+    instead of "Orion AI Assistant". A value is removed only when its link is absent or is named in
+    `stale_names`; names in `keep_names` (the links that exist now) and every foreign value stay.
+    Returns the names that were removed. Never raises: this is cosmetic state."""
+    if os.name != 'nt':
+        return []
+    removed = []
+    try:
+        import winreg
+        hive = hive if hive is not None else winreg.HKEY_CURRENT_USER
+        with winreg.OpenKey(hive, key, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as handle:
+            names = []
+            index = 0
+            while True:
+                try:
+                    names.append(winreg.EnumValue(handle, index)[0])
+                except OSError:
+                    break
+                index += 1
+            for name in names:
+                if name.casefold() in {n.casefold() for n in stale_names} and name.casefold() not in {
+                        n.casefold() for n in keep_names}:
+                    winreg.DeleteValue(handle, name)
+                    removed.append(name)
+    except (OSError, ImportError):
+        pass
+    return removed
+
+
+def shortcut(path, entry, installation_id, *, startup=False, remove=False, product=PRODUCT_NAME):
     """Refuse to replace another application's or installation's shortcut.
 
     The link targets Orion.exe (product name and icon) when it sits next to the PowerShell entry;
@@ -93,10 +131,12 @@ def shortcut(path, entry, installation_id, *, startup=False, remove=False):
     legacy = dict(target=str(powershell), description='Orion launcher ' + installation_id,
                   arguments=subprocess.list2cmdline(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle',
                                                      'Hidden', '-File', str(entry), *(['-Startup'] if startup else [])]))
-    product = dict(target=str(exe), description=PRODUCT_NAME, arguments='-Startup' if startup else '')
-    chosen = product if exe.is_file() else legacy
-    payload = dict(path=str(path), **chosen, icon=str(exe) + ',0' if chosen is product else '',
-                   owned=[legacy, product], remove=remove)
+    forms = [dict(target=str(exe), description=name, arguments='-Startup' if startup else '') for name in PRODUCT_NAMES]
+    wanted = dict(target=str(exe), description=product, arguments='-Startup' if startup else '')
+    chosen = wanted if exe.is_file() else legacy
+    # Either product name is ours, so a Router-only link is restyled in place when Hub is added (and back).
+    payload = dict(path=str(path), **chosen, icon=str(exe) + ',0' if chosen is wanted else '',
+                   owned=[legacy, *forms], remove=remove)
     command = """
 $ErrorActionPreference = 'Stop'
 $p = $env:ORION_LINK_REQUEST | ConvertFrom-Json

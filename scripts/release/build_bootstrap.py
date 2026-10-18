@@ -66,7 +66,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             shutil.copyfile(ROOT / 'services/shared' / name, destination)
         # The helper installs this stable guard before its first transaction.
         # It must also be present when recovery runs without a working Hub.
-        for script in ('launcher_entry.ps1', 'tray.ps1', 'updating.ps1'):
+        for script in ('launcher_entry.ps1', 'tray.ps1', 'updating.ps1', 'uninstall.ps1'):
             shutil.copyfile(ROOT / 'services/shared' / script, tree / 'services/shared' / script)
         for name in ('install_new.py', 'update_local.py', 'update_automatic.py', 'manage_installation.py'):
             destination = tree / 'scripts/release' / name
@@ -75,6 +75,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         # Product identity: Orion.exe (name + icon in Startup apps/desktop) compiled from source with the
         # .NET Framework csc.exe that ships with Windows. install_entry copies it from here, never downloads it.
         launcher = build_launcher(tree / 'Orion.exe', release['version'])
+        # Router-only installations carry their own product name in the exe's version resource.
+        router_launcher = build_launcher(tree / 'OrionRouter.exe', release['version'], 'Orion Router')
         shutil.copyfile(trusted_root, tree / 'trusted-root.json')
         if release_source is not None:
             from services.shared.automatic_updates import validate_source
@@ -83,12 +85,12 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root), 'sequence': release['sequence'],
             'package_id': release['package_id'], 'version': release['version'],
-            'launcher_sha256': sha256(launcher)}))
+            'launcher_sha256': sha256(launcher),
+            'router_launcher_sha256': sha256(router_launcher)}))
         (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
-            'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '
-            '[Parameter(Mandatory=$true)][string]$TargetsUrl, '
-            '[Parameter(Mandatory=$true)][string[]]$Targets, '
+            'param([string]$MetadataUrl, [string]$TargetsUrl, [string[]]$Targets, [string[]]$Components, '
+            '[switch]$AddMissing, '
             '[string]$Root=(Join-Path $env:LOCALAPPDATA "Orion"), [string]$Registry, '
             '[switch]$NoStart, [switch]$Background, [switch]$NoStartWithWindows, [switch]$NoAutoUpdate, '
             '[switch]$NoFirewall, [switch]$NoWindow)\n'
@@ -101,9 +103,18 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             'if ($NoAutoUpdate) { $launch += "--no-auto-update" }; '
             'if ($NoFirewall) { $launch += "--no-firewall" }; '
             'if ($NoWindow) { $launch += "--no-window" }\n'
-            '& "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
+            '# Components: install from the feeds listed in this bundle (release-source.json), one TUF cache per feed.\n'
+            '# AddMissing: an installation exists; add only what is not registered yet and leave the rest untouched.\n'
+            'if ($Components) {\n'
+            '  $feeds=@("--release-source", "$PSScriptRoot/release-source.json", "--components") + $Components\n'
+            '  if ($AddMissing) { $feeds += "--add-missing" }\n'
+            '  & "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
+            '--trusted-root "$PSScriptRoot/trusted-root.json" --root $Root --registry $Registry @launch @feeds\n'
+            '} else {\n'
+            '  & "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
             '--trusted-root "$PSScriptRoot/trusted-root.json" --cache $cache --metadata-url $MetadataUrl '
-            '--targets-url $TargetsUrl --root $Root --registry $Registry @launch @Targets\nexit $LASTEXITCODE\n')
+            '--targets-url $TargetsUrl --root $Root --registry $Registry @launch @Targets\n'
+            '}\nexit $LASTEXITCODE\n')
         # The standard cache/registry is inside the default root. install_new
         # validates occupied component directories instead of requiring that this
         # bootstrap metadata parent be empty.

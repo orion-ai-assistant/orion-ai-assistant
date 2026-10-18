@@ -27,6 +27,13 @@ from services.shared.release_packages import sha256
 
 DEFAULT_REPO = 'orion-ai-assistant/orion-ai-assistant'
 DEFAULT_TAG = 'feed'
+ROUTER_REPO = 'orion-ai-assistant/orion-router'
+# Two feeds, one key, one public root. Each has its own metadata version counter, its own TUF cache on
+# the installed machine and its own bootstrap bundle. The Router package lives only in the Router feed.
+FEEDS = {
+    'hub': {'repo': DEFAULT_REPO, 'tag': DEFAULT_TAG, 'components': ('hub', 'client'), 'cache': 'release-cache'},
+    'router': {'repo': ROUTER_REPO, 'tag': DEFAULT_TAG, 'components': ('router',), 'cache': 'release-cache-router'},
+}
 from services.shared.bootstrap_update import BOOTSTRAP_TARGET
 
 # One stable name: the plain installer download (get-orion.ps1) and the signed TUF target.
@@ -41,8 +48,11 @@ def stable_name(custom):
     return f"orion-{custom['component']}-{custom['platform']}-{custom['arch']}-{custom['profile']}.zip"
 
 
-def stage_stable_names(artifacts, staging):
-    """Copy candidate ZIPs under version-free target names; return component -> name."""
+def stage_stable_names(artifacts, staging, components=None):
+    """Copy candidate ZIPs under version-free target names; return component -> name.
+
+    `components` limits the copy to this feed's packages (the candidate directory holds all three);
+    the bootstrap candidate, if present, always belongs to every feed."""
     staging = Path(staging)
     staging.mkdir(parents=True)
     names = {}
@@ -50,6 +60,8 @@ def stage_stable_names(artifacts, staging):
         value = json.loads(description.read_text(encoding='utf-8'))
         name = stable_name(value['custom'])
         component = value['custom']['component']
+        if components is not None and component not in components and component != 'bootstrap':
+            continue
         if component in names:
             raise ValueError('Two candidates for ' + component)
         shutil.copyfile(Path(artifacts) / value['path'], staging / name)
@@ -77,10 +89,27 @@ def write_acceptance(staging, accepted_result, out):
     # The bootstrap bundle is signed with the set but is not a product package of the acceptance run.
     bootstrap = {t['custom']['package_id'] for t in (json.loads(p.read_text(encoding='utf-8'))
                  for p in Path(staging).glob('*.target.json')) if t['custom']['component'] == 'bootstrap'}
-    if accepted != set(packages) - bootstrap:
+    # A feed publishes a subset of the accepted set (Hub+Client or Router); never a package that was not accepted.
+    if not set(packages) - bootstrap or not set(packages) - bootstrap <= accepted:
         raise ValueError('Acceptance result is for different packages; rerun accept_packages.py')
     Path(out).write_text(json.dumps({'schema': 1, 'channel': 'preview', 'test_only': False,
                                      'packages': packages, 'checks': {}}), encoding='utf-8')
+
+
+def build_source(feed, names, *, repo, tag, router_repo=None, router_tag='feed', router_target=None):
+    """release-source.json shipped inside this feed's bootstrap bundle.
+
+    Hub feed: the Hub/Client feed (keeps the long-standing `release-cache`) plus, unless `router_repo` is
+    None, the Router feed, so an installed Hub learns where its Router comes from.
+    Router feed: only the Router feed (a Router-only installation)."""
+    own = {'metadata_url': feed_url(repo, tag), 'targets_url': feed_url(repo, tag),
+           'targets': {k: v for k, v in names.items() if k != 'bootstrap'}, 'cache': FEEDS[feed]['cache']}
+    sources = [own]
+    if feed == 'hub' and router_repo:
+        sources.append({'metadata_url': feed_url(router_repo, router_tag), 'targets_url': feed_url(router_repo, router_tag),
+                        'targets': {'router': router_target}, 'cache': FEEDS['router']['cache']})
+    from services.shared.automatic_updates import validate_source
+    return validate_source({'schema': 2, 'channel': 'stable', 'sources': sources})
 
 
 def current_feed_version(base):
@@ -129,14 +158,23 @@ def main():
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--key', type=Path, default=Path.home() / '.orion-release/release-key.pem')
     parser.add_argument('--public-root', type=Path, default=HERE / 'trusted-root.json')
-    parser.add_argument('--repo', default=DEFAULT_REPO)
-    parser.add_argument('--tag', default=DEFAULT_TAG)
+    parser.add_argument('--feed', choices=sorted(FEEDS), default='hub',
+                        help="hub: Hub + Client feed (default). router: the Router's own feed")
+    parser.add_argument('--repo', help='GitHub repository of this feed (default depends on --feed)')
+    parser.add_argument('--tag', help="release tag of this feed (default 'feed')")
+    parser.add_argument('--router-repo', default=ROUTER_REPO,
+                        help="Hub feed only: repository of the Router feed the Hub bootstrap points at")
+    parser.add_argument('--router-tag', default='feed')
+    parser.add_argument('--no-router-source', action='store_true',
+                        help='Hub feed only: bootstrap without a Router feed source')
     parser.add_argument('--work', type=Path, default=ROOT / '.tmp/release')
     parser.add_argument('--version', type=int, help='Metadata version; default is feed version + 1')
     parser.add_argument('--reuse-bootstrap', type=Path,
                         help='Previously built orion-bootstrap-windows-x64.zip (with its .target.json) to publish unchanged')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
+    args.repo = args.repo or FEEDS[args.feed]['repo']
+    args.tag = args.tag or FEEDS[args.feed]['tag']
     base = feed_url(args.repo, args.tag)
     # Unlock once up front so a wrong passphrase fails before anything is staged;
     # the child signing processes get it only through their own environment.
@@ -145,14 +183,19 @@ def main():
     release_keys.load_signer(args.key, passphrase)
     os.environ[release_keys.PASSPHRASE_ENV] = passphrase.decode('utf-8')
     version = args.version or current_feed_version(base) + 1
-    work = args.work / f'v{version}'
+    work = args.work / f'{args.feed}-v{version}'  # one staging folder per feed (their versions count separately)
     if work.exists():
         # Staging of a version that is not online yet (the timestamp goes up last) is disposable: a run that
         # failed anywhere before that just starts over; uploads already done are skipped below.
         print(f'Discarding the unfinished staging of version {version}: {work}')
         shutil.rmtree(work)
-    names = stage_stable_names(args.artifacts, work / 'artifacts')
-    source = {'schema': 1, 'channel': 'stable', 'metadata_url': base, 'targets_url': base, 'targets': names}
+    names = stage_stable_names(args.artifacts, work / 'artifacts', FEEDS[args.feed]['components'])
+    if not (set(names) - {'bootstrap'}):
+        raise ValueError(f"No {'/'.join(FEEDS[args.feed]['components'])} candidate for the {args.feed} feed in {args.artifacts}")
+    router_name = stable_name({'component': 'router', 'platform': 'windows', 'arch': 'x86_64', 'profile': 'cpu'})
+    source = build_source(args.feed, names, repo=args.repo, tag=args.tag,
+                          router_repo=None if args.no_router_source else args.router_repo,
+                          router_tag=args.router_tag, router_target=router_name)
     (work / 'release-source.json').write_text(json.dumps(source), encoding='utf-8')
     bundle = work / 'artifacts' / BOOTSTRAP_ASSET
     if args.reuse_bootstrap:

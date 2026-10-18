@@ -35,7 +35,7 @@ def local_control(request):
 def router_managed(registry, record=None):
     """True when this installation owns a local Router that the update feed also covers."""
     record = record or registry.read()
-    return bool((AutomaticUpdates(registry).source() or {}).get('targets', {}).get('router')
+    return bool(AutomaticUpdates(registry).has_target('router')
                 and any(c['kind'] == 'router' and c['ownership'] == 'owned'
                         and c['management'] == 'local' for c in record['components']))
 

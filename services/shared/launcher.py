@@ -439,15 +439,35 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
 DESKTOP_LINK = 'Orion.lnk'
 STARTUP_LINK = 'Orion AI Assistant.lnk'
 LEGACY_STARTUP_LINK = 'Orion.lnk'  # Installs before Orion.exe named their Startup entry like the desktop one.
+ROUTER_LINK = 'Orion Router.lnk'   # Router-only installations: same file name on the desktop and in Startup.
+ALL_DESKTOP_LINKS = (DESKTOP_LINK, ROUTER_LINK)
+ALL_STARTUP_LINKS = (STARTUP_LINK, ROUTER_LINK, LEGACY_STARTUP_LINK)
 
 
-def retained_launcher(registry):
+def identity(record):
+    """Product identity of this installation: a Hub installation is "Orion AI Assistant"; a Router-only one
+    is "Orion Router" (own links, own Orion.exe version resource, so Task Manager shows the right name)."""
+    from .windows_autostart import PRODUCT_NAME, ROUTER_PRODUCT_NAME
+    hub = record is None or any(c['kind'] == 'hub' for c in record.get('components', []))
+    return {'product': PRODUCT_NAME if hub else ROUTER_PRODUCT_NAME, 'router_only': not hub,
+            'desktop': DESKTOP_LINK if hub else ROUTER_LINK, 'startup': STARTUP_LINK if hub else ROUTER_LINK}
+
+
+def retained_launcher(registry, product=None):
     """Orion.exe of the trusted retained bootstrap (the signed bundle that is running, or the active one).
 
     Nothing is downloaded or compiled on the user's machine; a bundle without an exe, or one whose
     bytes differ from the hash recorded in its own bootstrap.json, yields None (PowerShell fallback).
+    A Router-only installation uses the bundle's `OrionRouter.exe` (file description "Orion Router").
     """
     from .release_packages import sha256
+    if product is None:
+        try:
+            product = identity(registry.read())['product']
+        except (OSError, ValueError, RegistryError):
+            product = None
+    router = product is not None and product != identity(None)['product']
+    name, key = ('OrionRouter.exe', 'router_launcher_sha256') if router else ('Orion.exe', 'launcher_sha256')
     roots = [Path(__file__).resolve().parents[2]]
     try:
         from .bootstrap_update import pointer_root
@@ -456,17 +476,37 @@ def retained_launcher(registry):
         pass
     for root in roots:
         try:
-            exe = Path(root) / 'Orion.exe'
+            exe = Path(root) / name
             info = json.loads((Path(root) / 'bootstrap.json').read_text(encoding='utf-8-sig'))
-            if exe.is_file() and not exe.is_symlink() and sha256(exe) == info.get('launcher_sha256'):
+            if exe.is_file() and not exe.is_symlink() and sha256(exe) == info.get(key):
                 return exe
         except (OSError, TypeError, ValueError):
             continue
     return None
 
 
-def install_entry(registry, *, desktop=True):
+def _remove_own_link(directory, name, entry, installation_id, *, startup):
+    from .windows_autostart import shortcut
+    if (directory / name).exists():
+        try:
+            shortcut(directory / name, entry, installation_id, startup=startup, remove=True)
+        except RuntimeError:
+            pass  # Someone else's link of that name: preserved, never ours to touch.
+
+
+def sync_desktop_link(record, entry, *, create):
+    """The desktop link of the current identity (restyled/created) and no stale link of the other one."""
     from .windows_autostart import known_folder, shortcut
+    ident, directory = identity(record), known_folder('desktop')
+    current = directory / ident['desktop']
+    if create or current.exists():
+        shortcut(current, entry, record['installation_id'], product=ident['product'])
+    for name in ALL_DESKTOP_LINKS:
+        if name != ident['desktop']:
+            _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+
+
+def install_entry(registry, *, desktop=True):
     record = registry.read()
     if record is None:
         raise RegistryError('No installation registered')
@@ -487,22 +527,34 @@ def install_entry(registry, *, desktop=True):
                 if not destination.exists():
                     raise  # A running older copy is fine to keep; a missing one is not.
     if desktop:
-        shortcut(known_folder('desktop') / DESKTOP_LINK, entry, record['installation_id'])
+        sync_desktop_link(record, entry, create=True)
     return entry
 
 
-def _startup_links(directory, entry, installation_id, enabled):
-    """Product-named Startup entry; the pre-Orion.exe `Orion.lnk` is replaced if it is ours."""
-    from .windows_autostart import shortcut
+def _startup_links(directory, entry, installation_id, enabled, record=None):
+    """Product-named Startup entry; the pre-Orion.exe `Orion.lnk` (and the other identity's link) is
+    replaced if it is ours. Stale Task Manager "Startup apps" state of vanished links is dropped too."""
+    from .windows_autostart import shortcut, clean_startup_approved
+    ident = identity(record)
+    current = ident['startup']
     if enabled:
-        shortcut(directory / STARTUP_LINK, entry, installation_id, startup=True)
-    elif (directory / STARTUP_LINK).exists():
-        shortcut(directory / STARTUP_LINK, entry, installation_id, startup=True, remove=True)
-    if (directory / LEGACY_STARTUP_LINK).exists():
-        try:
-            shortcut(directory / LEGACY_STARTUP_LINK, entry, installation_id, startup=True, remove=True)
-        except RuntimeError:
-            pass  # Someone else's Orion.lnk: preserved, never ours to touch.
+        shortcut(directory / current, entry, installation_id, startup=True, product=ident['product'])
+    elif (directory / current).exists():
+        shortcut(directory / current, entry, installation_id, startup=True, remove=True)
+    for name in ALL_STARTUP_LINKS:
+        if name != current:
+            _remove_own_link(directory, name, entry, installation_id, startup=True)
+    clean_startup_approved({n for n in ALL_STARTUP_LINKS if (directory / n).exists()},
+                           [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
+
+
+LINKS_REVISION = 3  # 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+
+
+def register_uninstall_entry(registry):
+    """The Settings > Apps entry (HKCU Uninstall) and its script; cosmetic, never raises."""
+    from .uninstall import register_entry
+    return register_entry(registry)
 
 
 def refresh_links(registry):
@@ -512,24 +564,26 @@ def refresh_links(registry):
     desktop link that already exists.
     """
     from .release_packages import sha256
-    from .windows_autostart import known_folder, shortcut
+    from .windows_autostart import known_folder
+    record = registry.read()
     exe = retained_launcher(registry)
-    if exe is None or registry.path.name != 'install.json':
+    if exe is None or registry.path.name != 'install.json' or record is None:
         return False
+    ident = identity(record)
     marker = registry.path.parent / 'bootstrap/links.json'
     digest = sha256(exe)
+    wanted = {'schema': 1, 'launcher_sha256': digest, 'product': ident['product'], 'revision': LINKS_REVISION}
     try:
-        if json.loads(marker.read_text(encoding='utf-8')).get('launcher_sha256') == digest:
+        if json.loads(marker.read_text(encoding='utf-8')) == wanted:
             return False
     except (OSError, ValueError, AttributeError):
         pass
-    record = registry.read()
     entry = install_entry(registry, desktop=False)
-    desktop = known_folder('desktop') / DESKTOP_LINK
-    if desktop.exists():
-        shortcut(desktop, entry, record['installation_id'])
-    _startup_links(known_folder('startup'), entry, record['installation_id'], record['preferences']['start_with_windows'])
-    _atomic_write(marker, json.dumps({'schema': 1, 'launcher_sha256': digest}).encode())
+    sync_desktop_link(record, entry, create=False)
+    _startup_links(known_folder('startup'), entry, record['installation_id'],
+                   record['preferences']['start_with_windows'], record)
+    register_uninstall_entry(registry)
+    _atomic_write(marker, json.dumps(wanted).encode())
     return True
 
 
@@ -551,11 +605,11 @@ def preferences(registry, *, start_with_windows, show_client, startup_directory=
             current['preferences'].update(start_with_windows=start_with_windows, show_client=show_client)
             return current
         if start_with_windows:
-            _startup_links(directory, entry, record['installation_id'], True)
+            _startup_links(directory, entry, record['installation_id'], True, record)
             return registry.update(update)
         # A stale link after crash/removal failure remains inert: startup checks the registry.
         result = registry.update(update)
-        _startup_links(directory, entry, record['installation_id'], False)
+        _startup_links(directory, entry, record['installation_id'], False, record)
         return result
 
 

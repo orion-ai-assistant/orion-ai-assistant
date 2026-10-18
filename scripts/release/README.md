@@ -619,3 +619,70 @@ bundle with the packages).
 (an identical earlier pass is reused), then sign and publish. The newest staged bootstrap bundle is reused while
 `bootstrap.json` keeps its sequence. The key passphrase is asked once. `--no-publish` stops after acceptance,
 `--dry-run` stages and signs without uploading, `--force-accept` repeats the acceptance.
+
+## Two feeds: Hub/Client feed and the Router's own feed
+
+Same key, same public root (`trusted-root.json`), two GitHub Release feeds (tag `feed` in each repository):
+
+| Feed | Repository | Packages | Bootstrap bundle `release-source.json` |
+| --- | --- | --- | --- |
+| `--feed hub` (default) | `orion-ai-assistant/orion-ai-assistant` | Hub, Client | schema 2: Hub feed (`release-cache`) **and** the Router feed (`release-cache-router`) |
+| `--feed router` | `orion-ai-assistant/orion-router` | Router | schema 2: the Router feed only (a Router-only install never points at the Hub feed) |
+
+`build_release.py` is unchanged: it builds and accepts all three packages once into one candidate directory.
+`publish_release.py --feed ...` publishes the subset that belongs to a feed from that directory; each feed counts
+its own metadata `version`, has its own bootstrap bundle and its own `acceptance.json` (a subset of the accepted
+set; a package that was not accepted is refused). `--repo`/`--tag` override the defaults; `--router-repo`,
+`--router-tag`, `--no-router-source` only affect the Hub bundle's source list.
+
+```powershell
+# Order matters: the Router feed first, then the Hub feed (which no longer lists a Router target).
+python scripts/release/publish_release.py --feed router --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .tmp/inputs
+python scripts/release/publish_release.py --feed hub    --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .tmp/inputs
+```
+
+Both bundles are built from the same `bootstrap.json` (same `sequence`/`package_id`), so bump it once. The Router
+feed's bootstrap asset (`orion-bootstrap-windows-x64.zip` in the Router repo's `feed` release) is what
+`get-orion-router.ps1` downloads.
+
+### `release-source.json`
+
+* schema 1 (unchanged): one feed `{metadata_url, targets_url, targets}`; cache `release-cache`.
+* schema 2: `{"schema": 2, "channel": "stable", "sources": [{metadata_url, targets_url, targets, cache?}, ...]}`
+  (1-4 feeds, HTTPS only, no credentials/query; one component kind per feed; distinct URLs and cache names;
+  `cache` is `release-cache` or `release-cache-<a-z0-9>`; default `release-cache-<hash of the URL>`).
+* Every feed has its own `ReleaseClient` and TUF cache (`<Orion>\release-cache*`), so metadata versions and
+  rollback protection are per feed. `AutomaticUpdates.check`, the watcher, refresh, "Şimdi güncelle" and the
+  bootstrap self-update walk all feeds, merge what is newer into **one** transaction (`compatible()` runs over
+  the merged set and the installed sequences; one restart) and tolerate a failed or unreachable feed
+  (`automatic.json` `feed_errors`; only "every feed failed" is a failed check).
+* The running bootstrap defines the feeds: at the start of a check/watch it merges its bundle's
+  `release-source.json` into `bootstrap/release-source.json` (union by feed URL, the bundle wins for the components
+  it lists). That is how an existing Hub install learns the Router feed after the bootstrap self-updates.
+  A newer bundle from any feed is adopted (highest signed sequence).
+
+## Install, add a component, uninstall
+
+* `Install-Orion.ps1 -Components hub client router [-AddMissing]` (inside the bundle) installs from the bundle's
+  `release-source.json` (`install_new.py --release-source ... --components ...`). With no registry it is a normal
+  first install; **with** a registry it takes the *add* path (`services/shared/component_setup.py`).
+* Add: only components that are not registered are installed (Hub+Client next to a Router-only install, a Router
+  next to a Hub install); registered ones keep their registry entry, code, data, identity and releases. Under the
+  operation lock with `updates/add-journal.json` (previous registry + folders created); any failure or crash rolls
+  the registry back and deletes only the folders the journal created (`recover_incomplete_add` runs first at the
+  next add). Refused with a Turkish message on: already installed, pending/blocked update, foreign trust root,
+  incompatible signed versions, occupied folder, source/development registrations.
+* Router-only installs have their own identity: desktop/Startup link `Orion Router.lnk`, launcher
+  `OrionRouter.exe` (file description "Orion Router"), Settings > Apps entry "Orion Router". Adding Hub swaps the
+  links/exe/entry to "Orion AI Assistant" in place.
+* Uninstall: Settings > Apps > Orion AI Assistant > Uninstall (HKCU `...\Uninstall\OrionAIAssistant`, script
+  `bootstrap\Orion-Uninstall.ps1`) or the tray's "Orion'u kaldır": Hub only / Router only / everything, keep (default)
+  or delete data and models. `services/shared/uninstall.py` builds on `package_maintenance` (plan, expected-revision
+  uninstall, bounded code purge). Kept data gets a marker so a later install adopts it (same secrets/identity).
+  Never touched: `hub-installation.json`, `router-installation.json`, `lifecycle-tests`, anything outside the
+  installation root. Firewall (UAC once; declined/failed never fails the uninstall): the rule shrinks to what
+  remains or is removed with the last component.
+* Startup list: `Task Manager > Startup` names an entry after the target exe's file description. Explorer keeps one
+  `StartupApproved\StartupFolder` value per link *name* and never deletes it; a stale `Orion.lnk` value from older
+  installs lingered and listed "Orion.exe". Install/update (`refresh_links`) and uninstall now delete Orion's
+  orphaned values (`windows_autostart.clean_startup_approved`), foreign values stay.

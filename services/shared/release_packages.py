@@ -306,6 +306,39 @@ class ReleaseClient:
         return destination
 
 
+class FeedSet:
+    """Several ReleaseClients (one per feed, each with its own TUF cache) behind the check/prepare
+    interface of one, so an installer or the update helper handles Hub, Client and Router in one pass."""
+    def __init__(self, routes):
+        # routes: [(client, names owned by that client)]
+        self.routes = [(client, set(names)) for client, names in routes]
+        self.bootstrap_root = self.routes[0][0].bootstrap_root
+        self._owner = {}
+
+    def check(self, names):
+        merged, status = {}, None
+        for client, owned in self.routes:
+            wanted = [n for n in names if n in owned]
+            if not wanted:
+                continue
+            result, targets = client.check(wanted)
+            if targets is None:
+                return result, None
+            status = status or result
+            merged.update(targets)
+            self._owner.update({target.path: client for target in targets.values()})
+        unknown = set(names) - set(merged)
+        if unknown:
+            raise PackageError('Release target is not offered by any configured feed')
+        return status, merged
+
+    def prepare(self, target, destination, progress=None):
+        client = self._owner.get(target.path)
+        if client is None:
+            raise PackageError('A fresh successful metadata check is required')
+        return client.prepare(target, destination, progress=progress)
+
+
 def record_prepared_package(tree, state, target):
     """Local installed-package provenance, made only after TUF prepare succeeds.
 
