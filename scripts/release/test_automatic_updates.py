@@ -170,7 +170,7 @@ def test_watcher_checks_without_activation_and_exits_after_services_stop(automat
     service, now, data, host = automatic
     host.idle = False
     def stop_later(seconds):
-        assert seconds == 5
+        assert seconds == .25  # The 5 s pause is sliced so that a quit ends it at once.
         assert service.helper.status()['phase'] == 'staged'
         assert host.stopped_calls == 0
         host.idle = True

@@ -2,7 +2,8 @@
 # Started by services.shared.update_ui while an update is applied (the Orion app window is closed then,
 # because its Hub is stopped); closed again by the launcher / watcher once Orion is back, or when the
 # update state disappears. It only READS the update journal; it never changes anything.
-param([Parameter(Mandatory = $true)][string]$Registry)
+# -Mode quitting: a launch waits for the previous quit ("Cik") to finish, then Orion opens by itself.
+param([Parameter(Mandatory = $true)][string]$Registry, [ValidateSet('updating', 'quitting')][string]$Mode = 'updating')
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -110,5 +111,16 @@ $timer.Add_Tick({
     }
 })
 $step.Text = (T 'G\u00fcncelleme s\u00fcr\u00fcyor...')
+if ($Mode -eq 'quitting') {
+    $title.Text = (T 'Orion kapan\u0131yor, birazdan a\u00e7\u0131lacak.')
+    $step.Text = (T '\u00d6nceki oturum kapat\u0131l\u0131yor...')
+    $note.Text = (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak.')
+    $deadline = $started.AddMinutes(3)
+    $script:shown = $true   # No update steps or outcome here: only the elapsed time moves.
+    $timer.Add_Tick({
+        $span = [DateTime]::Now - $started
+        $elapsed.Text = (T 'Ge\u00e7en s\u00fcre: ') + ('{0:00}:{1:00}' -f [int][math]::Floor($span.TotalMinutes), $span.Seconds)
+    })
+}
 $timer.Start()
 try { [void]$form.ShowDialog() } finally { $timer.Dispose(); $form.Dispose(); $script:mutex.ReleaseMutex() }

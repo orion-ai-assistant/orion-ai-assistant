@@ -53,8 +53,9 @@ def window_processes(registry):
     return found
 
 
-def spawn_window(registry, *, popen=None):
-    """Show the "Orion is updating" window. False when it is not applicable or already open."""
+def spawn_window(registry, *, popen=None, mode='updating'):
+    """Show the "Orion is updating" window (`mode='quitting'`: "Orion kapanıyor"). False when it is not
+    applicable or already open."""
     if os.name != 'nt' or _disabled() or window_processes(registry):
         return False
     import subprocess
@@ -66,7 +67,7 @@ def spawn_window(registry, *, popen=None):
     (_bootstrap(registry) / EXIT_MARKER).unlink(missing_ok=True)
     (popen or subprocess.Popen)(
         ['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-         '-File', str(destination), '-Registry', str(registry.path)],
+         '-File', str(destination), '-Registry', str(registry.path), *(['-Mode', mode] if mode != 'updating' else [])],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
     return True
@@ -190,3 +191,20 @@ def phase_text(phase):
         'rollback_pending': 'Önceki sürüme dönülüyor…',
         'restarting': 'Orion yeniden başlatılıyor…',
     }.get(phase, 'Güncelleme sürüyor…')
+
+
+@contextmanager
+def quitting_window(registry, *, spawn=spawn_window, stop=stop_window):
+    """A launch that waits for a running quit: same window, "Orion kapanıyor, birazdan açılacak"."""
+    base = registry.path.parent / 'updates'
+    try:
+        spawn(registry, mode='quitting')
+    except Exception as error:
+        update_log.log_exception(base, 'quitting_window.open', error)
+    try:
+        yield
+    finally:
+        try:
+            stop(registry)
+        except Exception as error:
+            update_log.log_exception(base, 'quitting_window.close', error)
