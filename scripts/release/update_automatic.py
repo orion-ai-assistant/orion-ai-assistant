@@ -57,6 +57,13 @@ def run():
                 break
     elif args.action == 'check':
         automatic.check(now=args.now)
+        if automatic.replaced():
+            # The Hub check adopted a newer bootstrap. Its watcher checks every feed at once and stages ONE
+            # transaction; a Router check from here would stage a Router-only update and split the round.
+            if args.now and _outdated_and_failed(automatic):
+                return _recheck_with_new_bootstrap(automatic)
+            update_log.log(automatic.base, 'check.handed-over')
+            return 0
         AutomaticUpdates(Registry(args.registry), helper=automatic.helper, scope='router').check(now=args.now)
         if args.now and _outdated_and_failed(automatic):
             return _recheck_with_new_bootstrap(automatic)

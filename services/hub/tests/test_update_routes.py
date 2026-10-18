@@ -143,6 +143,23 @@ class CheckNowTests(unittest.TestCase):
             self.assertFalse(api.read_status()['checking'])  # The check already ran and finished.
             api._requested['at'] = 0.0
 
+    def test_renewed_updater_and_router_check_still_count_as_checking(self):
+        import time as clock
+        registry = unittest.mock.Mock()
+        registry.read.return_value = {'preferences': {'start_with_windows': False, 'show_client': True}}
+        automatic = unittest.mock.Mock()
+        outcome_at, router_running = [clock.time()], [False]
+        automatic.status.side_effect = lambda: {'checking': False, 'pending': None, 'last_attempt': 0,
+                                                'check_outcome': 'bootstrap_updated', 'check_outcome_at': outcome_at[0]}
+        automatic.running.side_effect = lambda: router_running[0]
+        automatic.policy.return_value = {'enabled': False}
+        with patch.object(api, 'Registry', return_value=registry),                 patch.object(api, 'AutomaticUpdates', return_value=automatic),                 patch.object(api, 'runtime_command', return_value=['x']),                 patch.object(api, 'router_managed', return_value=False),                 patch.object(api.update_now, 'view', return_value=None),                 patch.object(api.update_ui, 'read_result', return_value=None):
+            self.assertEqual(api.read_status()['activity'], 'checking')  # The new watcher is about to check.
+            outcome_at[0] = clock.time() - api._RENEWAL_GRACE - 1
+            self.assertFalse(api.read_status()['checking'])  # Card: the check has not started.
+            router_running[0] = True
+            self.assertTrue(api.read_status()['checking'])  # A minutes-long Router check is a check too.
+
     def test_activity_follows_journal_and_state_whichever_process_checks(self):
         pick = api.activity
         self.assertEqual(pick({'checking': True, 'pending': None}), 'checking')

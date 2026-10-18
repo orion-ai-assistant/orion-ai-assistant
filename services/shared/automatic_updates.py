@@ -23,6 +23,9 @@ from . import update_log
 
 INTERVAL = 6 * 60 * 60
 RETRY_PAUSE = 3  # seconds before the single retry of a feed that failed while the bootstrap replaced itself
+# Last unattended skip logged per (updates folder, scope): the watcher polls every 5 s and a staged
+# update would otherwise write the same "check.skipped" line twelve times a minute.
+_logged_skips = {}
 
 
 def read_json(path, default):
@@ -219,6 +222,17 @@ class AutomaticUpdates:
         self.bootstrap_root = bootstrap_root
         self.bootstrap_probe = bootstrap_probe
 
+    def replaced(self):
+        """A newer bootstrap became active after this process started: its watcher owns the next round
+        (every feed in one transaction), so this process starts no further scope."""
+        if self.bootstrap_root is None:
+            return False
+        from . import bootstrap_update
+        try:
+            return bootstrap_update.handover_due(self.registry, self.bootstrap_root)
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
     def new_client(self, source):
         # python-tuf's Updater refreshes once per instance; every check needs its own, and every feed
         # keeps its own TUF metadata/target cache (metadata versions are counted per feed).
@@ -356,6 +370,14 @@ class AutomaticUpdates:
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
                 'activation': 'next_safe_launch', 'router_independent': True}
 
+    def running(self):
+        """A check of this scope is running now; never raises (the status card only shows it)."""
+        try:
+            state = read_json(self.state_path, {})
+            return isinstance(state, dict) and self._checking(state)
+        except (OSError, ValueError):
+            return False
+
     def _checking(self, state):
         """A check process of this installation is running right now (its pid is recorded while it works)."""
         pid = state.get('running_pid')
@@ -414,7 +436,10 @@ class AutomaticUpdates:
                 state = {'schema': 1}
             state.update(outcome=outcome, outcome_at=self.clock(), error=None)
             write_json(self.state_path, state)
-        update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
+        key = (str(self.base), self.scope)
+        if explicit or _logged_skips.get(key) != outcome:  # Unattended: once per change, not every poll.
+            _logged_skips[key] = outcome
+            update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
 
     def check(self, *, manual=False, now=False, with_router=False):
         """`now` skips only the 6-hour spacing (user pressed refresh); policy still applies."""
@@ -441,6 +466,7 @@ class AutomaticUpdates:
             state.update(last_attempt=self.clock(), error=None, bootstrap_error=None, outcome=None,
                          running_pid=os.getpid())
             write_json(self.state_path, state)
+            _logged_skips.pop((str(self.base), self.scope), None)
             update_log.log(self.base, 'check.start', scope=self.scope, manual=manual, now=now)
             try:
                 if self.scope == 'hub' and self._adopt_bootstrap(sources, state):
@@ -714,6 +740,8 @@ def watch(automatic):
             except Exception as error:
                 if type(error) is not LifecycleError:  # Busy: another check is running; that is normal.
                     update_log.log_exception(base, 'watch.check', error)
+            if automatic.replaced():
+                continue  # This check adopted a newer bootstrap: hand over now, no Router-only round.
             try:
                 router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')
                 request = canonical_path(automatic.base / 'router-request.json')

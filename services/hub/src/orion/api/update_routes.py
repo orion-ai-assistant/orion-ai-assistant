@@ -48,6 +48,9 @@ def router_managed(registry, record=None):
 # it started, so the card would otherwise flicker from "pressed" to "idle" before "checking" appears.
 _requested = {'at': 0.0}
 _REQUEST_GRACE = 20
+# After the retained updater renewed itself its new watcher checks every feed within seconds. Until it
+# reports, the card says "denetleniyor"; past this window the card says the check has not started.
+_RENEWAL_GRACE = 90
 
 
 def read_status():
@@ -70,6 +73,12 @@ def read_status():
     if (not data.get('checking') and _requested['at'] and time.time() - _requested['at'] < _REQUEST_GRACE
             and attempt < _requested['at']):
         data['checking'] = True  # Started but not yet running: still "denetleniyor".
+    if not data.get('checking'):
+        # A Router check runs in its own scope; it is still a check of this PC (and may take minutes).
+        data['checking'] = AutomaticUpdates(registry, scope='router').running() is True
+    if (not data.get('checking') and not data.get('pending') and data.get('check_outcome') == 'bootstrap_updated'
+            and time.time() - (data.get('check_outcome_at') or 0) < _RENEWAL_GRACE):
+        data['checking'] = True  # The renewed updater's watcher is about to check: not a finished outcome.
     data['activity'] = activity(data)
     return data
 
