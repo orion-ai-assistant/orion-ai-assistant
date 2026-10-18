@@ -1,11 +1,18 @@
 # One-command Orion installer: downloads the signed installer bundle from this
-# project's GitHub Release feed, then installs Hub, Router and the web client.
+# project's GitHub Release feed, then installs Hub, the web client and (from the Router's own feed) the Router.
 #   PowerShell: irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex
 # The bundle carries the public trust root; every package is signature-verified
 # by the installer before anything is extracted or run.
+#
+# Already installed? The same command ADDS what is missing and leaves everything else untouched
+# (for example Hub + web client next to a Router-only installation; a Router with -WithRouter).
+#   -NoRouter    fresh install without the Router
+#   -WithRouter  existing installation: also add the Router (from the Router feed) when it is missing
 param(
     [string]$Repo = 'orion-ai-assistant/orion-ai-assistant',
     [string]$Tag = 'feed',
+    [switch]$NoRouter,
+    [switch]$WithRouter,
     [switch]$NoStart,
     [switch]$NoStartWithWindows,
     [switch]$NoAutoUpdate,
@@ -19,13 +26,14 @@ if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -notin 'AMD64') {
     throw 'Orion requires 64-bit Windows 10 (1903) or later.'
 }
 $orion = Join-Path $env:LOCALAPPDATA 'Orion'
-if (Test-Path (Join-Path $orion 'install.json')) {
-    throw "Orion is already installed in $orion. Use the Orion desktop shortcut; updates run from its Settings."
-}
+$existing = Test-Path (Join-Path $orion 'install.json')
 $base = "https://github.com/$Repo/releases/download/$Tag/"
 $bundle = Join-Path $env:TEMP ('orion-bootstrap-' + [guid]::NewGuid().ToString('N') + '.zip')
-$target = Join-Path $orion 'Bootstrap-Installer'
-if (Test-Path $target) { throw "$target already exists from an incomplete install. Remove that folder and retry." }
+# A first installation keeps its bundle as the retained bootstrap; an addition runs from a throw-away copy
+# (the existing installation keeps its own retained bootstrap and updates it itself).
+if ($existing) { $target = Join-Path $env:TEMP ('orion-installer-' + [guid]::NewGuid().ToString('N')) }
+else { $target = Join-Path $orion 'Bootstrap-Installer' }
+if (-not $existing -and (Test-Path $target)) { throw "$target already exists from an incomplete install. Remove that folder and retry." }
 try {
     Write-Host 'Downloading the Orion installer...'
     Invoke-WebRequest -UseBasicParsing -Uri ($base + 'orion-bootstrap-windows-x64.zip') -OutFile $bundle
@@ -34,24 +42,35 @@ try {
 } finally {
     Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
 }
-$source = Get-Content -LiteralPath (Join-Path $target 'release-source.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-$names = @($source.targets.hub, $source.targets.router, $source.targets.client) | Where-Object { $_ }
-$arguments = @{ MetadataUrl = $source.metadata_url; TargetsUrl = $source.targets_url; Targets = $names; Root = $orion }
-# A first start from an administrator window would run Hub/Router with an elevated token that the normal
-# desktop shortcut can no longer manage ("Process job access denied"). Install elevated, start de-elevated.
-$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($elevated -and -not $NoStart) {
-    Write-Host 'Administrator window detected: Orion will be started through the desktop shortcut with normal rights.'
-    $arguments.NoStart = $true
+try {
+    $components = @('hub', 'client')
+    if ($existing) { if ($WithRouter) { $components += 'router' } }
+    elseif (-not $NoRouter) { $components += 'router' }
+    $arguments = @{ Components = $components; Root = $orion }
+    if ($existing) { $arguments.AddMissing = $true }
+    # A first start from an administrator window would run Hub/Router with an elevated token that the normal
+    # desktop shortcut can no longer manage ("Process job access denied"). Install elevated, start de-elevated.
+    $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($elevated -and -not $NoStart -and -not $existing) {
+        Write-Host 'Administrator window detected: Orion will be started through the desktop shortcut with normal rights.'
+        $arguments.NoStart = $true
+    }
+    # Adding to an existing installation never starts or restarts anything the user is running.
+    if ($NoStart -or $existing) { $arguments.NoStart = $true }
+    if ($NoStartWithWindows) { $arguments.NoStartWithWindows = $true }
+    if ($NoAutoUpdate) { $arguments.NoAutoUpdate = $true }
+    if ($NoFirewall) { $arguments.NoFirewall = $true }
+    if ($existing) { Write-Host 'Mevcut Orion kurulumu bulundu: yalnızca eksik bileşenler eklenecek, kurulu olanlara dokunulmaz.' }
+    else { Write-Host 'Installing (about 320 MB download; this takes a few minutes)...' }
+    & (Join-Path $target 'Install-Orion.ps1') @arguments
+    if ($LASTEXITCODE -eq 3) { Write-Host 'Hiçbir şey değiştirilmedi.'; return }
+    if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
+} finally {
+    if ($existing) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
 }
-if ($NoStart) { $arguments.NoStart = $true }
-if ($NoStartWithWindows) { $arguments.NoStartWithWindows = $true }
-if ($NoAutoUpdate) { $arguments.NoAutoUpdate = $true }
-if ($NoFirewall) { $arguments.NoFirewall = $true }
-Write-Host 'Installing (about 320 MB download; this takes a few minutes)...'
-& (Join-Path $target 'Install-Orion.ps1') @arguments
-if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
-if ($elevated -and -not $NoStart) {
+if ($existing) {
+    Write-Host 'Eklendi. Orion''u masaüstü kısayolundan açın.'
+} elseif ($elevated -and -not $NoStart) {
     # explorer.exe always runs with the user's normal token, so the shortcut starts Orion de-elevated.
     $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Orion.lnk'
     if (Test-Path -LiteralPath $shortcut) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $shortcut + '"') }

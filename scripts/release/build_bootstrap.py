@@ -89,9 +89,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             'router_launcher_sha256': sha256(router_launcher)}))
         (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
-            'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '
-            '[Parameter(Mandatory=$true)][string]$TargetsUrl, '
-            '[Parameter(Mandatory=$true)][string[]]$Targets, '
+            'param([string]$MetadataUrl, [string]$TargetsUrl, [string[]]$Targets, [string[]]$Components, '
+            '[switch]$AddMissing, '
             '[string]$Root=(Join-Path $env:LOCALAPPDATA "Orion"), [string]$Registry, '
             '[switch]$NoStart, [switch]$Background, [switch]$NoStartWithWindows, [switch]$NoAutoUpdate, '
             '[switch]$NoFirewall, [switch]$NoWindow)\n'
@@ -104,9 +103,18 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             'if ($NoAutoUpdate) { $launch += "--no-auto-update" }; '
             'if ($NoFirewall) { $launch += "--no-firewall" }; '
             'if ($NoWindow) { $launch += "--no-window" }\n'
-            '& "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
+            '# Components: install from the feeds listed in this bundle (release-source.json), one TUF cache per feed.\n'
+            '# AddMissing: an installation exists; add only what is not registered yet and leave the rest untouched.\n'
+            'if ($Components) {\n'
+            '  $feeds=@("--release-source", "$PSScriptRoot/release-source.json", "--components") + $Components\n'
+            '  if ($AddMissing) { $feeds += "--add-missing" }\n'
+            '  & "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
+            '--trusted-root "$PSScriptRoot/trusted-root.json" --root $Root --registry $Registry @launch @feeds\n'
+            '} else {\n'
+            '  & "$PSScriptRoot/runtime/python/python.exe" -B -m scripts.release.install_new '
             '--trusted-root "$PSScriptRoot/trusted-root.json" --cache $cache --metadata-url $MetadataUrl '
-            '--targets-url $TargetsUrl --root $Root --registry $Registry @launch @Targets\nexit $LASTEXITCODE\n')
+            '--targets-url $TargetsUrl --root $Root --registry $Registry @launch @Targets\n'
+            '}\nexit $LASTEXITCODE\n')
         # The standard cache/registry is inside the default root. install_new
         # validates occupied component directories instead of requiring that this
         # bootstrap metadata parent be empty.
