@@ -528,6 +528,10 @@ class AutomaticUpdates:
 
                         def prepare(self, target, destination, progress=None):
                             return clients[target.path].prepare(target, destination, progress=progress)
+
+                        def download_length(self, target):
+                            owner = clients[target.path]
+                            return owner.download_length(target) if hasattr(owner, 'download_length') else target.length
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:

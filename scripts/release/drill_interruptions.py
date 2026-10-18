@@ -46,6 +46,7 @@ from accept_packages import FixtureFetcher, run
 import build_cache
 from publish_metadata import publish
 from services.shared.installation_registry import Registry
+from services.shared.release_packages import is_layer_description
 from timing import Timings
 
 SCENARIOS = {
@@ -198,6 +199,8 @@ def drill(update_artifacts, scenarios, timings, report):
         names = []
         for description in Path(update_artifacts).glob('*.target.json'):
             value = json.loads(description.read_text(encoding='utf-8'))
+            if is_layer_description(value):
+                continue
             current = installed.get(value['custom']['component'])
             if current and value['custom']['sequence'] > current['sequence']:
                 names.append(value['path'])

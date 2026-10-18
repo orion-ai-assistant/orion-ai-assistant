@@ -15,7 +15,8 @@ from tuf.api.metadata import Metadata, MetaFile, Root, Snapshot, TargetFile, Tar
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from services.shared.release_packages import sha256, validate_release, archive_name
+from services.shared.release_packages import (RUNTIME_REFERENCE, sha256, validate_release, archive_name,
+                                             is_layer_description, validate_layer, validate_runtime_reference)
 
 
 DEFAULT_EXPIRY_DAYS = {'targets': 30, 'snapshot': 7, 'timestamp': 1}
@@ -23,7 +24,9 @@ DEFAULT_EXPIRY_DAYS = {'targets': 30, 'snapshot': 7, 'timestamp': 1}
 SINGLE_KEY_EXPIRY_DAYS = {'targets': 365, 'snapshot': 365, 'timestamp': 365}
 
 
-def publish(artifacts, output, root_path, signers, *, version, now=None, expiry_days=None):
+def publish(artifacts, output, root_path, signers, *, version, now=None, expiry_days=None, carry=None):
+    """`carry`: {name: target dict} of already published targets to list again unchanged (no file is copied):
+    the last combined packages, which bootstraps that predate split packages keep reading."""
     now = now or datetime.now(timezone.utc)
     days = {**DEFAULT_EXPIRY_DAYS, **(expiry_days or {})}
     root = Metadata.from_file(str(root_path))
@@ -36,25 +39,42 @@ def publish(artifacts, output, root_path, signers, *, version, now=None, expiry_
     if output.exists():
         raise ValueError('Publish a new staging repository, never overwrite an active repository')
     targets = Metadata(Targets(version=version, expires=now + timedelta(days=days['targets'])))
-    paths = []
-    for description in sorted(Path(artifacts).glob('*.target.json')):
-        value = json.loads(description.read_text())
+    paths, descriptions = [], [json.loads(d.read_text()) for d in sorted(Path(artifacts).glob('*.target.json'))]
+    layers = {d['path']: d for d in descriptions if is_layer_description(d)}
+    for value in descriptions:
         name = str(archive_name(value['path']))
         path = Path(artifacts) / name
         if path.stat().st_size != value['length'] or sha256(path) != value['hashes']['sha256']:
             raise ValueError('Final artifact changed after build')
-        with zipfile.ZipFile(path) as archive:
-            embedded = archive.getinfo('orion-release.json')
-            if embedded.file_size > 65536 or json.loads(archive.read(embedded)) != value['custom']:
-                raise ValueError('Artifact manifest differs from target description')
         info = TargetFile.from_file(name, str(path), ['sha256'])
-        info.unrecognized_fields['custom'] = validate_release(value['custom'])
+        if name in layers:
+            # A runtime layer has no manifest of its own: the code package's signed reference pins its bytes.
+            info.unrecognized_fields['custom'] = validate_layer(value['custom'])
+        else:
+            with zipfile.ZipFile(path) as archive:
+                embedded = archive.getinfo('orion-release.json')
+                if embedded.file_size > 65536 or json.loads(archive.read(embedded)) != value['custom']:
+                    raise ValueError('Artifact manifest differs from target description')
+                pinned = json.loads(archive.read(RUNTIME_REFERENCE)) if RUNTIME_REFERENCE in archive.namelist() else None
+            if pinned != value.get('runtime'):
+                raise ValueError('Artifact runtime reference differs from target description')
+            info.unrecognized_fields['custom'] = validate_release(value['custom'])
+            if 'runtime' in value:
+                runtime = validate_runtime_reference(value['runtime'], value['custom']['component'])
+                layer = layers.get(runtime['target'])
+                if layer is None or layer['hashes']['sha256'] != runtime['sha256'] or layer['length'] != runtime['length']:
+                    raise ValueError('Runtime layer of ' + name + ' is not among the artifacts')
+                info.unrecognized_fields['runtime'] = runtime
         if name in targets.signed.targets:
             raise ValueError('Duplicate target identity')
         targets.signed.targets[name] = info
         paths.append((path, info))
     if not paths:
         raise ValueError('No final artifacts')
+    for name, entry in (carry or {}).items():
+        if name in targets.signed.targets:
+            raise ValueError('Carried target is also a new artifact: ' + name)
+        targets.signed.targets[name] = TargetFile.from_dict(json.loads(json.dumps(entry)), name)
 
     def signed_bytes(role, metadata):
         for signer in signers[role]:
@@ -97,7 +117,9 @@ if __name__ == '__main__':
     parser.add_argument('--version', type=int, required=True)
     parser.add_argument('--channel', choices=['preview', 'beta', 'stable'], required=True)
     parser.add_argument('--acceptance', type=Path, required=True)
+    parser.add_argument('--carry', type=Path, help='JSON {name: target} of published targets to list again unchanged')
     args = parser.parse_args()
+    carry = json.loads(args.carry.read_text(encoding='utf-8')) if args.carry else None
     from services.shared.release_acceptance import verify_acceptance
     verify_acceptance(args.artifacts, args.acceptance, args.channel)
     root = Metadata.from_file(str(args.root))
@@ -108,7 +130,7 @@ if __name__ == '__main__':
         signer = load_signer(args.single_key)
         signers = {role: [signer] for role in ('targets', 'snapshot', 'timestamp')}
         publish(args.artifacts, args.output, args.root, signers, version=args.version,
-                expiry_days=SINGLE_KEY_EXPIRY_DAYS)
+                expiry_days=SINGLE_KEY_EXPIRY_DAYS, carry=carry)
         sys.exit(0)
     if args.keys is None:
         raise ValueError('Provide --keys or --single-key')
@@ -122,4 +144,4 @@ if __name__ == '__main__':
     for role in ('targets', 'snapshot', 'timestamp'):
         signers[role] = [CryptoSigner.from_priv_key_uri('file2:' + str(Path(path).resolve()), root.signed.keys[keyid])
                          for keyid, path in keys[role].items()]
-    publish(args.artifacts, args.output, args.root, signers, version=args.version)
+    publish(args.artifacts, args.output, args.root, signers, version=args.version, carry=carry)

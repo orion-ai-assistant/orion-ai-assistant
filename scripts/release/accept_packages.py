@@ -37,7 +37,7 @@ from tuf.api.exceptions import DownloadHTTPError
 from tuf.api.metadata import Metadata, Root
 from tuf.ngclient.fetcher import FetcherInterface
 from services.shared.installation_registry import Registry
-from services.shared.release_packages import ReleaseClient, sha256
+from services.shared.release_packages import ReleaseClient, is_layer_description, sha256
 from publish_metadata import publish
 from install_new import install
 from build_bootstrap import build as build_bootstrap
@@ -90,13 +90,35 @@ def zip_contents(archive, digest):
                 for item in source.infolist() if not item.is_dir()}
 
 
+def signed_contents(artifacts, description, digest):
+    """zip_contents of a candidate package, plus those of its runtime layer for a split package: the installer
+    extracts both into one tree."""
+    value = json.loads(Path(description).read_text(encoding='utf-8'))
+    contents = zip_contents(Path(artifacts) / value['path'], digest)
+    if 'runtime' in value:
+        layer = zip_contents(Path(artifacts) / value['runtime']['target'], value['runtime']['sha256'])
+        if set(layer) & set(contents):
+            raise RuntimeError('Package and runtime layer overlap: ' + value['path'])
+        contents.update(layer)
+    return contents
+
+
 def artifact_set(artifacts):
-    """{component: (sha256, package_id, target json path)} of a candidate directory."""
+    """{component: (sha256, package_id, target json path)} of a candidate directory (runtime layers are not
+    components: each code package's ZIP pins its layer, so its sha256 covers the layer too)."""
     found = {}
     for path in sorted(Path(artifacts).glob('*.target.json')):
         value = json.loads(path.read_text(encoding='utf-8'))
+        if is_layer_description(value):
+            continue
         found[value['custom']['component']] = (value['hashes']['sha256'], value['custom']['package_id'], path)
     return found
+
+
+def package_names(artifacts):
+    """Target names to install from a candidate directory: the product packages, never their layers."""
+    return [value['path'] for value in (json.loads(p.read_text(encoding='utf-8'))
+            for p in sorted(Path(artifacts).glob('*.target.json'))) if not is_layer_description(value)]
 
 
 def acceptance_tooling_key():
@@ -211,16 +233,19 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
                 subset.mkdir()
                 for kind in kinds:
                     target = available[kind][2]
-                    build_cache.link_or_copy(Path(artifacts) / json.loads(target.read_text())['path'],
-                                             subset / json.loads(target.read_text())['path'])
+                    value = json.loads(target.read_text())
+                    build_cache.link_or_copy(Path(artifacts) / value['path'], subset / value['path'])
                     build_cache.link_or_copy(target, subset / target.name)
+                    if 'runtime' in value:  # its runtime layer
+                        layer = Path(artifacts) / value['runtime']['target']
+                        build_cache.link_or_copy(layer, subset / layer.name)
+                        build_cache.link_or_copy(layer.with_suffix('.target.json'), subset / (layer.stem + '.target.json'))
             repository = publish(subset, scratch / 'repository', bootstrap, signers, version=1)
             installer_archive = build_bootstrap(bootstrap, inputs, scratch / 'TEST-ONLY-bootstrap.zip', test_only=True)
             installer = extract_zip(installer_archive, scratch / 'bootstrap')
-        names = [json.loads(p.read_text())['path'] for p in Path(subset).glob('*.target.json')]
+        names = package_names(subset)
         hashing = ThreadPoolExecutor(len(kinds))
-        signed = {kind: hashing.submit(zip_contents, Path(artifacts) / json.loads(available[kind][2].read_text())['path'],
-                                       available[kind][0]) for kind in kinds}
+        signed = {kind: hashing.submit(signed_contents, artifacts, available[kind][2], available[kind][0]) for kind in kinds}
         hashing.shutdown(wait=False)
         client = ReleaseClient(trusted_root=bootstrap, cache=scratch / 'cache',
             metadata_url='https://fixture.invalid/metadata/', targets_url='https://fixture.invalid/targets/',
@@ -303,7 +328,7 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
             with T.step('add Client: TUF metadata v2 + verification + safe extraction (add path)'):
                 archive = Path(artifacts) / json.loads(available['client'][2].read_text())['path']
                 hashing = ThreadPoolExecutor(1)
-                signed['client'] = hashing.submit(zip_contents, archive, available['client'][0])
+                signed['client'] = hashing.submit(signed_contents, artifacts, available['client'][2], available['client'][0])
                 hashing.shutdown(wait=False)
                 # A newer signed version of the same test repository (same root and keys), listing all three.
                 repository = publish(Path(artifacts), scratch / 'repository-2', bootstrap, signers, version=2)

@@ -24,7 +24,7 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [str(ROOT), str(HERE)]
-from services.shared.release_packages import sha256
+from services.shared.release_packages import artifact_identity, is_layer_description, sha256
 
 DEFAULT_REPO = 'orion-ai-assistant/orion-ai-assistant'
 DEFAULT_TAG = 'feed'
@@ -45,21 +45,34 @@ def feed_url(repo, tag):
     return f'https://github.com/{repo}/releases/download/{tag}/'
 
 
-def stable_name(custom):
-    return f"orion-{custom['component']}-{custom['platform']}-{custom['arch']}-{custom['profile']}.zip"
+def stable_name(custom, split=False):
+    """Version-free target name. A split Hub/Router code package (its runtime is a separate layer target) has its
+    own name: bootstraps that predate split packages keep reading the combined name and never get a code-only ZIP."""
+    middle = '-code' if split else ''
+    return f"orion-{custom['component']}{middle}-{custom['platform']}-{custom['arch']}-{custom['profile']}.zip"
+
+
+def legacy_names(components):
+    """Combined-package names of these components that split packages replaced."""
+    return {c: stable_name({'component': c, 'platform': 'windows', 'arch': 'x86_64', 'profile': 'cpu'})
+            for c in components if c in {'hub', 'router'}}
 
 
 def stage_stable_names(artifacts, staging, components=None):
     """Copy candidate ZIPs under version-free target names; return component -> name.
 
     `components` limits the copy to this feed's packages (the candidate directory holds all three);
-    the bootstrap candidate, if present, always belongs to every feed."""
+    the bootstrap candidate, if present, always belongs to every feed. Runtime layers keep their
+    content-addressed names and are staged only when a staged code package references them."""
     staging = Path(staging)
     staging.mkdir(parents=True)
-    names = {}
+    names, layers, wanted = {}, {}, set()
     for description in sorted(Path(artifacts).glob('*.target.json')):
         value = json.loads(description.read_text(encoding='utf-8'))
-        name = stable_name(value['custom'])
+        if is_layer_description(value):
+            layers[value['path']] = value
+            continue
+        name = stable_name(value['custom'], split='runtime' in value)
         component = value['custom']['component']
         if components is not None and component not in components and component != 'bootstrap':
             continue
@@ -69,17 +82,25 @@ def stage_stable_names(artifacts, staging, components=None):
         value['path'] = name
         (staging / (name[:-4] + '.target.json')).write_text(json.dumps(value), encoding='utf-8')
         names[component] = name
+        if 'runtime' in value:
+            wanted.add(value['runtime']['target'])
+    for name in sorted(wanted):
+        if name not in layers:
+            raise ValueError('Runtime layer missing from the candidates: ' + name)
+        shutil.copyfile(Path(artifacts) / name, staging / name)
+        (staging / (name[:-4] + '.target.json')).write_text(json.dumps(layers[name]), encoding='utf-8')
     if not names:
         raise ValueError('No candidate packages')
     return names
 
 
+def staged_descriptions(staging):
+    return [json.loads(p.read_text(encoding='utf-8')) for p in sorted(Path(staging).glob('*.target.json'))]
+
+
 def write_unaccepted(staging, out):
     """Explicit developer choice (release.cmd --no-accept): bind the exact package set, with no acceptance run."""
-    packages = {}
-    for path in Path(staging).glob('*.target.json'):
-        target = json.loads(path.read_text(encoding='utf-8'))
-        packages[target['custom']['package_id']] = sha256(Path(staging) / target['path'])
+    packages = {artifact_identity(t): sha256(Path(staging) / t['path']) for t in staged_descriptions(staging)}
     print('WARNING: publishing WITHOUT the automated package acceptance (--skip-acceptance).', flush=True)
     Path(out).write_text(json.dumps({'schema': 1, 'channel': 'preview', 'test_only': False, 'packages': packages,
                                      'checks': {}, 'acceptance_skipped': True}), encoding='utf-8')
@@ -93,16 +114,15 @@ def write_acceptance(staging, accepted_result, out):
     if result.get('mode', 'full') != 'full':
         # accept_packages.py --mode fast is an iteration pre-check; only a full run of the exact set counts.
         raise ValueError('Only a full acceptance run (accept_packages.py --mode full) can be published')
-    packages = {}
-    for path in Path(staging).glob('*.target.json'):
-        target = json.loads(path.read_text(encoding='utf-8'))
-        packages[target['custom']['package_id']] = sha256(Path(staging) / target['path'])
+    descriptions = staged_descriptions(staging)
+    packages = {artifact_identity(t): sha256(Path(staging) / t['path']) for t in descriptions}
     accepted = {item['package_id'] for item in result.get('artifacts', [])}
-    # The bootstrap bundle is signed with the set but is not a product package of the acceptance run.
-    bootstrap = {t['custom']['package_id'] for t in (json.loads(p.read_text(encoding='utf-8'))
-                 for p in Path(staging).glob('*.target.json')) if t['custom']['component'] == 'bootstrap'}
+    # The bootstrap bundle is signed with the set but is not a product package of the acceptance run; a runtime
+    # layer is pinned (name, sha256) by the accepted code package that was installed together with it.
+    other = {artifact_identity(t) for t in descriptions
+             if is_layer_description(t) or t['custom']['component'] == 'bootstrap'}
     # A feed publishes a subset of the accepted set (Hub+Client or Router); never a package that was not accepted.
-    if not set(packages) - bootstrap or not set(packages) - bootstrap <= accepted:
+    if not set(packages) - other or not set(packages) - other <= accepted:
         raise ValueError('Acceptance result is for different packages; rerun accept_packages.py')
     Path(out).write_text(json.dumps({'schema': 1, 'channel': 'preview', 'test_only': False,
                                      'packages': packages, 'checks': {}}), encoding='utf-8')
@@ -154,19 +174,55 @@ def bootstrap_gate(previous_targets, custom, digest):
 
 def package_gate(previous_targets, staging, names):
     """Same rule as the bootstrap's, for Hub/Client/Router: published bytes under a sequence never change and the
-    sequence never goes down. This is what makes it safe for the build step to replace local, unpublished candidates."""
+    sequence never goes down. This is what makes it safe for the build step to replace local, unpublished candidates.
+    The first split package of a component must also pass its last combined package (installed PCs remember the
+    newest sequence they saw per component)."""
     published = (previous_targets or {}).get('signed', {}).get('targets', {})
     for component, name in names.items():
-        previous = published.get(name)
-        if previous is None or component == 'bootstrap':
+        if component == 'bootstrap':
             continue
         staged = json.loads((Path(staging) / (name[:-4] + '.target.json')).read_text(encoding='utf-8'))
+        legacy = published.get(legacy_names([component]).get(component))
+        if legacy is not None and name != legacy_names([component])[component] \
+                and staged['custom']['sequence'] <= legacy['custom']['sequence']:
+            raise ValueError(f"{component} sequence {staged['custom']['sequence']} must be above the published "
+                             f"combined package's {legacy['custom']['sequence']}")
+        previous = published.get(name)
+        if previous is None:
+            continue
         sequence, published_sequence = staged['custom']['sequence'], previous['custom']['sequence']
         if sequence < published_sequence:
             raise ValueError(f'{component} sequence {sequence} is below the published {published_sequence}')
         if sequence == published_sequence and previous['hashes']['sha256'] != staged['hashes']['sha256']:
             raise ValueError(f'{component} contents changed but sequence {sequence} was already published: bump '
                              f'sequence/version/package_id in its release/package.json')
+
+
+def carried_targets(previous_targets, names, components):
+    """Last combined Hub/Router targets, listed again unchanged while their split successors are published.
+
+    Bootstraps that predate split packages read only those names: they keep seeing their current version (no
+    update, no error) and adopt the new bootstrap, which reads the code targets. Nothing is uploaded for them."""
+    published = (previous_targets or {}).get('signed', {}).get('targets', {})
+    return {legacy: published[legacy] for component, legacy in legacy_names(components).items()
+            if legacy in published and names.get(component) not in (None, legacy)}
+
+
+def bootstrap_source_gate(bundle, names):
+    """The bootstrap shipped with split packages must point at their names (it is what installs and updates them);
+    a reused older bundle would keep every PC on the combined targets."""
+    import zipfile
+    from services.shared.automatic_updates import normalize_sources
+    with zipfile.ZipFile(bundle) as archive:
+        if 'release-source.json' not in archive.namelist():
+            return
+        source = json.loads(archive.read('release-source.json'))
+    offered = {kind: name for feed in normalize_sources(source) for kind, name in feed['targets'].items()}
+    stale = sorted(kind for kind, name in names.items() if kind in offered and offered[kind] != name)
+    if stale:
+        raise ValueError('The bootstrap bundle points at other target names for ' + ', '.join(stale) +
+                         ' (packages are split into code + runtime layer now): bump sequence/version/package_id in '
+                         'scripts/release/bootstrap.json so a new bootstrap is built')
 
 
 def published_targets(base, version):
@@ -259,7 +315,8 @@ def main():
     names = stage_stable_names(args.artifacts, work / 'artifacts', FEEDS[args.feed]['components'])
     if not (set(names) - {'bootstrap'}):
         raise ValueError(f"No {'/'.join(FEEDS[args.feed]['components'])} candidate for the {args.feed} feed in {args.artifacts}")
-    router_name = stable_name({'component': 'router', 'platform': 'windows', 'arch': 'x86_64', 'profile': 'cpu'})
+    router_name = stable_name({'component': 'router', 'platform': 'windows', 'arch': 'x86_64', 'profile': 'cpu'},
+                              split=True)
     source = build_source(args.feed, names, repo=args.repo, tag=args.tag,
                           router_repo=None if args.no_router_source else args.router_repo,
                           router_tag=args.router_tag, router_target=router_name)
@@ -277,14 +334,18 @@ def main():
         raise ValueError('Bootstrap bundle does not match its target description')
     online = published_targets(base, current_feed_version(base))
     bootstrap_gate(online, description['custom'], description['hashes']['sha256'])
+    bootstrap_source_gate(bundle, {k: v for k, v in names.items() if k != 'bootstrap'})
     package_gate(online, work / 'artifacts', names)
+    carry = carried_targets(online, names, FEEDS[args.feed]['components'])
+    (work / 'carry.json').write_text(json.dumps(carry), encoding='utf-8')
     if args.skip_acceptance:
         write_unaccepted(work / 'artifacts', work / 'acceptance.json')
     else:
         write_acceptance(work / 'artifacts', args.accepted_result, work / 'acceptance.json')
     subprocess.run([sys.executable, str(HERE / 'publish_metadata.py'), '--artifacts', str(work / 'artifacts'),
                     '--output', str(work / 'repository'), '--root', str(args.public_root), '--single-key', str(args.key),
-                    '--version', str(version), '--channel', 'preview', '--acceptance', str(work / 'acceptance.json')],
+                    '--version', str(version), '--channel', 'preview', '--acceptance', str(work / 'acceptance.json'),
+                    '--carry', str(work / 'carry.json')],
                    check=True)
     repository = work / 'repository'
     versioned = sorted(p for p in (repository / 'targets').iterdir()) + \

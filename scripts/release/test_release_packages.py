@@ -124,12 +124,12 @@ def test_cache_replacement_after_verification_cannot_change_extracted_bytes(repo
     _, targets = checker.check([name])
     target = targets[name]
     cached = Path(checker.updater.download_target(target))
-    original_extract = packages.extract_zip
-    def replace_cache(verified_stream, destination):
+    original_extract = packages.extract_zips
+    def replace_cache(verified_streams, destination):
         cached.write_bytes(b'concurrent cache replacement')
-        assert hasattr(verified_stream, 'read')
-        return original_extract(verified_stream, destination)
-    monkeypatch.setattr(packages, 'extract_zip', replace_cache)
+        assert all(hasattr(stream, 'read') for stream in verified_streams)
+        return original_extract(verified_streams, destination)
+    monkeypatch.setattr(packages, 'extract_zips', replace_cache)
     tree = checker.prepare(target, tmp / 'private-release')
     assert json.loads((tree / 'orion-release.json').read_text()) == target.custom
 

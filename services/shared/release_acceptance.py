@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from .release_packages import sha256
+from .release_packages import artifact_identity, sha256
 
 
 def verify_acceptance(artifacts, report_path, channel):
@@ -19,7 +19,7 @@ def verify_acceptance(artifacts, report_path, channel):
         digest = sha256(archive)
         if digest != target['hashes']['sha256']:
             raise ValueError('Artifact changed after acceptance')
-        packages[target['custom']['package_id']] = digest
+        packages[artifact_identity(target)] = digest
     if not packages or value.get('packages') != packages:
         raise ValueError('Acceptance evidence does not bind this exact package set')
     # Preview binds the exact package set to automated isolated acceptance only.

@@ -266,7 +266,10 @@ class UpdateHelper:
                     raise UpdateError('Proposed Hub needs lifecycle.update-quarantine.v1; update Hub with Client')
                 if 'router' in manifests and 'lifecycle.update-quarantine.v1' not in manifests['router'].get('capabilities', []):
                     raise UpdateError('Proposed Router needs lifecycle.update-quarantine.v1')
-                overall_total = sum(t.length for t in targets.values())
+                # A split package downloads its runtime layer only when the PC does not have it yet.
+                lengths = {name: (client.download_length(t) if hasattr(client, 'download_length') else t.length)
+                           for name, t in targets.items()}
+                overall_total = sum(lengths.values())
                 completed_bytes = 0
                 for number, target in enumerate(targets.values(), 1):
                     kind = target.custom['component']
@@ -303,7 +306,7 @@ class UpdateHelper:
                                 raise UpdateError('Existing staged release differs; explicit repair required')
                     else:
                         client.prepare(target, tree, progress=report)
-                    completed_bytes += target.length
+                    completed_bytes += lengths[target.path]
                     self._phase(tx, 'verifying', progress=verifying)
                     # The inventory is versioned with the transaction, not yet
                     # published as the active component's installed receipt.

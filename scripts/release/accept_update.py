@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from accept_packages import run, FixtureFetcher, fingerprint
+from accept_packages import run, FixtureFetcher, fingerprint, package_names
 from publish_metadata import publish
 from services.shared.installation_registry import Registry
 from services.shared.release_packages import sha256
@@ -167,7 +167,7 @@ def accept(old_artifacts, update_artifacts, base, inputs):
         hub_old = next(c for c in previous['components'] if c['kind'] == 'hub')
         original = fingerprint(Path(hub_old['code_path']))
         repository = publish(update_artifacts, scratch / 'update-repository', root, signers, version=2)
-        names = [json.loads(p.read_text())['path'] for p in Path(update_artifacts).glob('*.target.json')]
+        names = package_names(update_artifacts)
         config = scratch / 'update-fixture.json'
         config.write_text(json.dumps({'repository': str(repository), 'names': names, 'registry': str(registry)}))
         script = scratch / 'fixture_update.py'

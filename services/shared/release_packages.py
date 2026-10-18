@@ -4,6 +4,7 @@ TUF owns signatures, root rotation, metadata expiry and metadata rollback checks
 Orion custom metadata owns product compatibility; caller persists installed
 sequences only after a successful Stage 06 transaction.
 """
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -14,7 +15,7 @@ import re
 import shutil
 import stat
 import tempfile
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 import zipfile
 
 
@@ -62,35 +63,44 @@ def extract_zip(archive, destination, *, max_bytes=8 * 1024**3, max_files=100000
     Caller must hold its installation/build operation lock. No links, device
     files, ADS, duplicate/case-colliding names, or existing targets are accepted.
     """
+    return extract_zips([archive], destination, max_bytes=max_bytes, max_files=max_files)
+
+
+def extract_zips(archives, destination, *, max_bytes=8 * 1024**3, max_files=100000):
+    """extract_zip of several archives into ONE tree (a code package and its runtime layer).
+
+    The archives must not share a path (case-insensitively): every check spans all of them."""
     destination = Path(destination).absolute()
     for parent in (destination, *destination.parents):
         if parent.is_symlink() or (parent.exists() and getattr(parent.lstat(), 'st_file_attributes', 0) & 0x400):
             raise PackageError('Archive destination contains a link/reparse point')
     if destination.exists():
         raise PackageError('Package destination already exists')
-    with zipfile.ZipFile(archive) as source:
+    with ExitStack() as stack:
+        sources = [stack.enter_context(zipfile.ZipFile(archive)) for archive in archives]
         entries, names, spellings, total = [], {}, {}, 0
-        for item in source.infolist():
-            if item.orig_filename != item.filename:
-                raise PackageError('Ambiguous archive member name')
-            name = archive_name(item.filename[:-1] if item.is_dir() else item.filename)
-            mode = item.external_attr >> 16
-            if stat.S_IFMT(mode) not in {0, stat.S_IFREG, stat.S_IFDIR} or item.flag_bits & 1:
-                raise PackageError('Linked, special or encrypted archive member')
-            key = str(name).casefold()
-            if key in names:
-                raise PackageError('Duplicate archive path')
-            # Reject different spellings of implicit parent directories too.
-            for prefix in [name, *name.parents][:-1]:
-                spelling = str(prefix)
-                previous = spellings.setdefault(spelling.casefold(), spelling)
-                if previous != spelling:
-                    raise PackageError('Case-colliding archive parent')
-            names[key] = item.is_dir()
-            total += item.file_size
-            if total > max_bytes or len(names) > max_files:
-                raise PackageError('Archive expansion limit exceeded')
-            entries.append((item, name))
+        for source in sources:
+            for item in source.infolist():
+                if item.orig_filename != item.filename:
+                    raise PackageError('Ambiguous archive member name')
+                name = archive_name(item.filename[:-1] if item.is_dir() else item.filename)
+                mode = item.external_attr >> 16
+                if stat.S_IFMT(mode) not in {0, stat.S_IFREG, stat.S_IFDIR} or item.flag_bits & 1:
+                    raise PackageError('Linked, special or encrypted archive member')
+                key = str(name).casefold()
+                if key in names:
+                    raise PackageError('Duplicate archive path')
+                # Reject different spellings of implicit parent directories too.
+                for prefix in [name, *name.parents][:-1]:
+                    spelling = str(prefix)
+                    previous = spellings.setdefault(spelling.casefold(), spelling)
+                    if previous != spelling:
+                        raise PackageError('Case-colliding archive parent')
+                names[key] = item.is_dir()
+                total += item.file_size
+                if total > max_bytes or len(names) > max_files:
+                    raise PackageError('Archive expansion limit exceeded')
+                entries.append((source, item, name))
         for key in names:
             for parent in PurePosixPath(key).parents:
                 if str(parent) in names and not names[str(parent)]:
@@ -102,17 +112,17 @@ def extract_zip(archive, destination, *, max_bytes=8 * 1024**3, max_files=100000
             tree = Path(temporary) / 'tree'
             tree.mkdir()
             files = []
-            for item, name in entries:
+            for source, item, name in entries:
                 output = tree.joinpath(*name.parts)
                 if item.is_dir():
                     output.mkdir(parents=True, exist_ok=True)
                 else:
                     output.parent.mkdir(parents=True, exist_ok=True)
-                    files.append((item, output))
+                    files.append((source, item, output))
 
             def write(member):
                 # Reading each member to its end makes zipfile verify its CRC.
-                with source.open(member[0]) as src, member[1].open('xb') as dst:
+                with member[0].open(member[1]) as src, member[2].open('xb') as dst:
                     shutil.copyfileobj(src, dst)
             # Threads overlap the per-file close latency of a real-time virus scanner (see sha256_many);
             # ZipFile allows concurrent member reads, and every name was validated above.
@@ -162,6 +172,49 @@ def validate_release(value):
         return _validate_release(value)
     except (TypeError, KeyError, AttributeError) as error:
         raise PackageError('Malformed release field') from error
+
+
+# Split packages: the Hub/Router code package and the runtime layer it runs on (bundled Python + wheels,
+# PostgreSQL, Redis/FFmpeg) are separate signed targets of the same feed. The layer's name carries its content
+# hash, so an unchanged runtime is neither uploaded nor downloaded again; the code target's signed metadata
+# pins it (`runtime`: target name, sha256, length) and prepare() extracts both into ONE tree, identical to the
+# former combined package. Bootstraps that predate this never read the code targets (other stable names).
+RUNTIME_REFERENCE = 'orion-runtime.json'  # the code package's own copy of its signed runtime reference
+LAYER_NAME = re.compile(r'orion-(hub|router)-runtime-[0-9a-f]{16,64}\.zip')
+
+
+def validate_layer(value):
+    """custom of a runtime layer target: {'schema': 1, 'layer': 'runtime', 'for': kind, 'inputs': key}."""
+    if (not isinstance(value, dict) or set(value) != {'schema', 'layer', 'for', 'inputs'} or value['schema'] != 1
+            or value['layer'] != 'runtime' or value['for'] not in {'hub', 'router'}
+            or not isinstance(value['inputs'], str) or not re.fullmatch(r'[0-9a-f]{64}', value['inputs'])):
+        raise PackageError('Unsupported runtime layer metadata')
+    return value
+
+
+def validate_runtime_reference(value, component):
+    match = LAYER_NAME.fullmatch(value['target']) if isinstance(value, dict) and isinstance(value.get('target'), str) else None
+    if (match is None or set(value) != {'target', 'sha256', 'length'} or match.group(1) != component
+            or not isinstance(value['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', value['sha256'])
+            or type(value['length']) is not int or value['length'] < 1):
+        raise PackageError('Invalid runtime layer reference')
+    return value
+
+
+def runtime_reference(target):
+    """The runtime layer a signed code target needs, or None for a complete (combined) package."""
+    value = target.unrecognized_fields.get('runtime')
+    return None if value is None else validate_runtime_reference(value, target.custom['component'])
+
+
+def is_layer_description(value):
+    """A candidate/staged `.target.json` of a runtime layer (not a product package)."""
+    return isinstance(value.get('custom'), dict) and 'layer' in value['custom']
+
+
+def artifact_identity(value):
+    """Acceptance binding key of a candidate `.target.json`: package id, or the content-addressed layer name."""
+    return value['path'] if is_layer_description(value) else value['custom']['package_id']
 
 
 def compatible(releases, *, installed_sequences=None, mobile_api=None):
@@ -249,6 +302,8 @@ class ReleaseClient:
                 validate_release(info.custom)
                 identity = {'sequence': info.custom['sequence'], 'package_id': info.custom['package_id'],
                             'length': info.length, 'hashes': info.hashes}
+                if self._layer(info) is not None:
+                    identity['runtime'] = runtime_reference(info)
                 prior = seen.get(info.custom['component'])
                 if prior and (identity['sequence'] < prior['sequence']
                               or (identity['sequence'] == prior['sequence'] and identity != prior)):
@@ -285,12 +340,18 @@ class ReleaseClient:
         seen = json.loads(self.status_path.read_text())['seen'][current.custom['component']]
         if current.custom['sequence'] != seen['sequence'] or current.hashes != seen['hashes']:
             raise PackageError('Selected package is older than the last verified release')
-        self._progress, self._received, self._total = progress, 0, current.length
+        layer = self._layer(current)
+        parts = [t for t in (layer, current) if t is not None]
+        paths = {t.path: self.updater.find_cached_target(t) for t in parts}
+        # Only what is not cached yet is downloaded: an unchanged runtime layer costs nothing.
+        pending = [t for t in parts if paths[t.path] is None]
+        self._progress, self._received = progress, 0
+        self._total = sum(t.length for t in pending) or current.length
         self._started, self._tick_at = time.monotonic(), 0.0
         try:
-            path = self.updater.find_cached_target(current)
-            if path is None:
-                path = self.updater.download_target(current)
+            for part in pending:
+                paths[part.path] = self.updater.download_target(part)
+            if pending:
                 self._tick(force=True)
         finally:
             self._progress = None
@@ -304,29 +365,67 @@ class ReleaseClient:
         # Copy to our private, exclusive snapshot and verify that exact stream.
         # Concurrent cache writes during copy then fail hash verification; later
         # cache replacement cannot alter the archive we actually extract.
-        with tempfile.TemporaryFile(prefix='.orion-verified-', dir=destination.parent) as snapshot:
-            with Path(path).open('rb') as stream:
-                copied = 0
-                for block in iter(lambda: stream.read(1024 * 1024), b''):
-                    copied += len(block)
-                    if copied > current.length:
-                        raise PackageError('Download cache grew beyond the signed target length')
-                    snapshot.write(block)
-            snapshot.seek(0)
-            current.verify_length_and_hashes(snapshot)
-            snapshot.seek(0)
-            destination = extract_zip(snapshot, destination)
+        with ExitStack() as stack:
+            snapshots = []
+            for part in parts:
+                snapshot = stack.enter_context(tempfile.TemporaryFile(prefix='.orion-verified-', dir=destination.parent))
+                with Path(paths[part.path]).open('rb') as stream:
+                    copied = 0
+                    for block in iter(lambda: stream.read(1024 * 1024), b''):
+                        copied += len(block)
+                        if copied > part.length:
+                            raise PackageError('Download cache grew beyond the signed target length')
+                        snapshot.write(block)
+                snapshot.seek(0)
+                part.verify_length_and_hashes(snapshot)
+                snapshot.seek(0)
+                snapshots.append(snapshot)
+            destination = extract_zips(snapshots, destination)
+        if layer is not None:
+            self._prune_layers(current.custom['component'], keep=layer.path)
         try:
             manifest = json.loads((destination / 'orion-release.json').read_text(encoding='utf-8'))
             if validate_release(manifest) != current.custom:
                 raise PackageError('Archive and signed release metadata disagree')
             if not destination.joinpath(*archive_name(manifest['entrypoint']).parts).is_file():
                 raise PackageError('Package entrypoint missing')
+            if layer is not None and json.loads((destination / RUNTIME_REFERENCE).read_text(encoding='utf-8')) \
+                    != runtime_reference(current):
+                raise PackageError('Package and signed runtime layer reference disagree')
         except Exception:
             # This exact tree was created above, never an active release/data tree.
             shutil.rmtree(destination)
             raise
         return destination
+
+    def _layer(self, target):
+        """Signed TargetFile of the runtime layer `target` needs (validated against its reference), else None."""
+        reference = runtime_reference(target)
+        if reference is None:
+            return None
+        layer = self.updater.get_targetinfo(reference['target'])
+        if (layer is None or layer.length != reference['length'] or layer.hashes.get('sha256') != reference['sha256']
+                or validate_layer(layer.custom)['for'] != target.custom['component']):
+            raise PackageError('Runtime layer missing or not the one the package was built with')
+        return layer
+
+    def download_length(self, target):
+        """Bytes prepare(target) still has to download (an estimate for progress: cached files are re-verified)."""
+        total = 0
+        for part in filter(None, (self._layer(target), target)):
+            cached = self.cache / 'targets' / quote(part.path, '')
+            if not (cached.is_file() and cached.stat().st_size == part.length):
+                total += part.length
+        return total
+
+    def _prune_layers(self, component, *, keep):
+        """Keep only the runtime layer just used in the download cache (each one is 120-170 MB)."""
+        for path in (self.cache / 'targets').glob(f'orion-{component}-runtime-*.zip'):
+            if path.name != quote(keep, ''):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass  # Only disk space: the next prepare tries again.
 
 
 class FeedSet:
@@ -360,6 +459,10 @@ class FeedSet:
         if client is None:
             raise PackageError('A fresh successful metadata check is required')
         return client.prepare(target, destination, progress=progress)
+
+    def download_length(self, target):
+        client = self._owner.get(target.path)
+        return target.length if client is None else client.download_length(target)
 
 
 def record_prepared_package(tree, state, target, *, cache=None):

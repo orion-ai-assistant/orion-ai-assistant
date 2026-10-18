@@ -20,7 +20,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from services.shared.release_packages import archive_name, extract_zip, sha256, validate_release
+from services.shared.release_packages import RUNTIME_REFERENCE, archive_name, extract_zip, sha256, validate_release
 from services.shared.windows_postgres import provision_runtime, verify_unicode_runtime, ARCHIVE_SHA256
 from python_runtime import install_site_hook
 import build_cache
@@ -218,6 +218,38 @@ def prepare_runtime(kind, args, timings, scratch_parent):
     return base
 
 
+def layer_description(kind, base):
+    """Target description of the prepared runtime layer; its name carries its content hash.
+
+    The same layer bytes give the same name in every release, so the publisher skips an online copy and an
+    installed PC that already has it downloads only the code package."""
+    archive, record = base / 'layer.zip', base / 'layer.json'
+    signature = build_cache.stat_signature(archive)
+    try:
+        value = json.loads(record.read_text(encoding='utf-8'))
+        if value['signature'] != signature:
+            raise ValueError
+        digest = value['sha256']
+    except (OSError, ValueError, KeyError):
+        digest = sha256(archive)
+        record.write_text(json.dumps({'signature': signature, 'sha256': digest}), encoding='utf-8')
+    return {'path': f'orion-{kind}-runtime-{digest[:16]}.zip', 'length': signature['size'],
+            'hashes': {'sha256': digest},
+            'custom': {'schema': 1, 'layer': 'runtime', 'for': kind, 'inputs': (base / 'complete').read_text().strip()}}
+
+
+def write_layer(output, base, description):
+    """Put the layer candidate (zip + .target.json) next to its code package."""
+    archive = output / description['path']
+    if not archive.exists():
+        build_cache.link_or_copy(base / 'layer.zip', archive)
+    archive.with_suffix('.target.json').write_text(json.dumps(description, indent=2) + '\n', encoding='utf-8')
+
+
+def reference(description):
+    return {'target': description['path'], 'sha256': description['hashes']['sha256'], 'length': description['length']}
+
+
 def package_key(kind, release, args, root):
     """(key, parts): everything that can change this package's bytes."""
     tooling = build_cache.hash_files({name: (ROOT / name) for name in (
@@ -270,16 +302,24 @@ def build(args, timings=None):
         with timings.step('cache key (hash sources, release json, inputs, tooling)'):
             key, parts = package_key(kind, release, args, root)
         hit = cache.lookup_package(kind, key)
+        layer = None
+        if hit is not None and kind != 'client':
+            # The code package pins its runtime layer: reuse it only together with exactly that layer.
+            base = prepare_runtime(kind, args, timings, output / '.runtime')
+            layer = layer_description(kind, base)
+            if json.loads(hit[1].read_text(encoding='utf-8')).get('runtime') != reference(layer):
+                hit = None
         if hit is not None:
             build_cache.link_or_copy(hit[0], archive)
             shutil.copyfile(hit[1], archive.with_suffix('.target.json'))
+            if layer is not None:
+                write_layer(output, base, layer)
             timings.skipped('package build', f'{kind} inputs unchanged ({key[:12]}); reused identical ZIP')
             print(archive.with_suffix('.target.json').read_text(encoding='utf-8').replace('\n', ' '))
             return archive
     with tempfile.TemporaryDirectory(prefix='.orion-build-', dir=output) as temporary:
         stage = Path(temporary) / 'tree'
         stage.mkdir()
-        layers = []
         with timings.step('stage sources'):
             if kind == 'client':
                 shutil.copytree(web, stage / 'build/web')
@@ -300,7 +340,11 @@ def build(args, timings=None):
         (stage / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         if kind != 'client':
             base = prepare_runtime(kind, args, timings, Path(temporary) / 'runtime')
-            layers.append(base / 'layer.zip')
+            # Split package: the runtime is its own signed target (see layer_description), not inside this ZIP.
+            layer = layer_description(kind, base)
+            write_layer(output, base, layer)
+            # Inside the code ZIP too: its hash then changes with the runtime (a new Python library alone).
+            (stage / RUNTIME_REFERENCE).write_text(json.dumps(reference(layer), indent=2) + '\n', encoding='utf-8')
             with timings.step('runtime smoke test (bundled Python imports the package)'):
                 package_import = 'services.shared.process_lifecycle' if kind == 'hub' else 'core.process_lifecycle'
                 subprocess.run([str(base / 'tree/runtime/python/python.exe'), '-c',
@@ -312,13 +356,15 @@ def build(args, timings=None):
                     str(stage), str(stage / 'services/hub/src'), str(stage / 'installer')], cwd=stage, check=True)
         # TUF signs these final bytes only after UTF-8 preparation and all builds.
         unfinished = Path(temporary) / archive.name
-        with timings.step('write package ZIP', 'deflate sources, copy precompressed runtime layer' if layers else ''):
+        with timings.step('write package ZIP', 'code only; the runtime layer is a separate target' if kind != 'client' else ''):
             sources = {p.relative_to(stage).as_posix(): p for p in stage.rglob('*') if p.is_file()}
-            zip_layers.assemble(unfinished, sources, layers)
+            zip_layers.assemble(unfinished, sources)
         unfinished.rename(archive)
     with timings.step('hash package'):
         description = {'path': archive.name, 'length': archive.stat().st_size,
                        'hashes': {'sha256': sha256(archive)}, 'custom': release}
+        if kind != 'client':
+            description['runtime'] = reference(layer)
     target = archive.with_suffix('.target.json')
     target.write_text(json.dumps(description, indent=2) + '\n', encoding='utf-8')
     if cache is not None:
