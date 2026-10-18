@@ -4,9 +4,11 @@ No release service is configured by default. Only a trusted installer supplies
 the feed and retained bootstrap runtime. API callers cannot choose URLs or code.
 """
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 from urllib.parse import urlsplit
@@ -31,23 +33,107 @@ def write_json(path, value):
     _atomic_write(path, (json.dumps(value, ensure_ascii=True) + '\n').encode())
 
 
-def validate_source(value):
-    if (not isinstance(value, dict) or set(value) != {'schema', 'channel', 'metadata_url', 'targets_url', 'targets'}
-            or value['schema'] != 1 or value['channel'] != 'stable'):
+LEGACY_CACHE = 'release-cache'
+COMPONENT_TARGETS = {'hub', 'client', 'router'}
+
+
+def _validate_feed(value, keys):
+    if not isinstance(value, dict) or not {'metadata_url', 'targets_url', 'targets'} <= set(value) <= keys:
         raise UpdateError('Invalid stable release source')
     for key in ('metadata_url', 'targets_url'):
         url = urlsplit(value[key])
-        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+        if (not isinstance(value[key], str) or url.scheme != 'https' or not url.hostname
+                or url.username or url.password or url.query or url.fragment):
             raise UpdateError('Release source requires credential-free HTTPS')
     targets = value['targets']
-    if not isinstance(targets, dict) or not targets or set(targets) - {'hub', 'client', 'router'}:
+    if not isinstance(targets, dict) or not targets or set(targets) - COMPONENT_TARGETS:
         raise UpdateError('Unknown stable component target')
     from .release_packages import archive_name
     for name in targets.values():
         archive_name(name)
     if len(set(targets.values())) != len(targets):
         raise UpdateError('Duplicate release targets')
+    cache = value.get('cache')
+    if cache is not None and not (isinstance(cache, str) and re.fullmatch(r'release-cache(-[a-z0-9]{1,16})?', cache)):
+        raise UpdateError('Invalid release cache name')
+
+
+def validate_source(value):
+    """Schema 1 is one feed (the original form); schema 2 lists several feeds, each with its own
+    metadata/targets URL, targets and TUF cache (Hub/Client feed + Router feed)."""
+    if not isinstance(value, dict) or value.get('channel') != 'stable':
+        raise UpdateError('Invalid stable release source')
+    if value.get('schema') == 1:
+        if set(value) != {'schema', 'channel', 'metadata_url', 'targets_url', 'targets'}:
+            raise UpdateError('Invalid stable release source')
+        _validate_feed(value, {'schema', 'channel', 'metadata_url', 'targets_url', 'targets'})
+        return value
+    if value.get('schema') != 2 or set(value) != {'schema', 'channel', 'sources'}:
+        raise UpdateError('Invalid stable release source')
+    sources = value['sources']
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 4:
+        raise UpdateError('Invalid stable release source list')
+    seen_urls, seen_kinds, seen_caches = set(), set(), set()
+    for source in sources:
+        _validate_feed(source, {'metadata_url', 'targets_url', 'targets', 'cache'})
+        cache = _cache_name(source, legacy=False)
+        if source['metadata_url'] in seen_urls or cache in seen_caches or seen_kinds & set(source['targets']):
+            raise UpdateError('Release sources must be distinct and own distinct components')
+        seen_urls.add(source['metadata_url'])
+        seen_caches.add(cache)
+        seen_kinds |= set(source['targets'])
     return value
+
+
+def _cache_name(source, *, legacy):
+    if source.get('cache'):
+        return source['cache']
+    if legacy:
+        return LEGACY_CACHE
+    return LEGACY_CACHE + '-' + hashlib.sha256(source['metadata_url'].encode()).hexdigest()[:8]
+
+
+def normalize_sources(value):
+    """A validated source value (either schema) -> list of feeds with an explicit TUF cache name each."""
+    if value is None:
+        return []
+    value = validate_source(value)
+    if value['schema'] == 1:
+        return [{'metadata_url': value['metadata_url'], 'targets_url': value['targets_url'],
+                 'targets': dict(value['targets']), 'cache': LEGACY_CACHE}]
+    return [{'metadata_url': s['metadata_url'], 'targets_url': s['targets_url'], 'targets': dict(s['targets']),
+             'cache': _cache_name(s, legacy=False)} for s in value['sources']]
+
+
+def source_value(sources):
+    """The smallest valid source file for these feeds (one default-cache feed keeps the original form)."""
+    sources = [dict(s) for s in sources if s['targets']]
+    if len(sources) == 1 and sources[0].get('cache', LEGACY_CACHE) == LEGACY_CACHE:
+        s = sources[0]
+        return validate_source({'schema': 1, 'channel': 'stable', 'metadata_url': s['metadata_url'],
+                                'targets_url': s['targets_url'], 'targets': s['targets']})
+    return validate_source({'schema': 2, 'channel': 'stable', 'sources': sources})
+
+
+def merge_sources(existing, incoming):
+    """Union by feed URL. The incoming (newer bootstrap's) feed definition wins and claims its components,
+    so a component that moved to another feed (Router) is not looked up in the old one any more."""
+    incoming = normalize_sources(incoming)
+    claimed = {k for s in incoming for k in s['targets']}
+    urls = {s['metadata_url'] for s in incoming}
+    kept = []
+    for source in normalize_sources(existing):
+        if source['metadata_url'] in urls:
+            continue
+        source['targets'] = {k: v for k, v in source['targets'].items() if k not in claimed}
+        kept.append(source)
+    caches = {s['cache'] for s in kept}
+    merged = list(kept)
+    for source in incoming:
+        if source['cache'] in caches:  # Same cache name for a different feed would mix TUF state.
+            source['cache'] = _cache_name({'metadata_url': source['metadata_url']}, legacy=False)
+        merged.append(source)
+    return source_value(merged)
 
 
 class AutomaticUpdates:
@@ -66,11 +152,19 @@ class AutomaticUpdates:
         self.bootstrap_probe = bootstrap_probe
 
     def new_client(self, source):
-        # python-tuf's Updater refreshes once per instance; every check needs its own.
+        # python-tuf's Updater refreshes once per instance; every check needs its own, and every feed
+        # keeps its own TUF metadata/target cache (metadata versions are counted per feed).
         from .release_packages import ReleaseClient
-        return self.client_factory() if self.client_factory else ReleaseClient(
+        if self.client_factory:
+            try:
+                import inspect
+                takes_source = bool(inspect.signature(self.client_factory).parameters)
+            except (TypeError, ValueError):
+                takes_source = False
+            return self.client_factory(source) if takes_source else self.client_factory()
+        return ReleaseClient(
             trusted_root=self.registry.path.parent / 'bootstrap/trusted-root.json',
-            cache=self.registry.path.parent / 'release-cache',
+            cache=self.registry.path.parent / source.get('cache', LEGACY_CACHE),
             metadata_url=source['metadata_url'], targets_url=source['targets_url'])
 
     def policy(self):
@@ -88,6 +182,13 @@ class AutomaticUpdates:
     def source(self):
         value = read_json(self.registry.path.parent / 'bootstrap/release-source.json', None)
         return validate_source(value) if value is not None else None
+
+    def sources(self):
+        """Every configured feed (Hub/Client feed, Router feed) as a normalized list."""
+        return normalize_sources(self.source())
+
+    def has_target(self, kind):
+        return any(kind in feed['targets'] for feed in self.sources())
 
     def preferences(self, *, enabled=None, paused=None, defer_hours=None):
         with operation_lock(self.registry.path, timeout=0):
@@ -193,6 +294,17 @@ class AutomaticUpdates:
                 pass  # A broken Router policy file must not hold back Hub/Client.
         return kinds
 
+    def _sync_bundled_source(self):
+        """The running bootstrap's feeds (e.g. the Router feed) are merged into this installation's source."""
+        if self.bootstrap_root is None:
+            return
+        from . import bootstrap_update
+        try:
+            if bootstrap_update.sync_source(self.registry, self.bootstrap_root):
+                update_log.log(self.base, 'source.synced')
+        except Exception as error:  # A busy lock or a bad bundled file must never stop update checks.
+            update_log.log_exception(self.base, 'source.sync', error)
+
     def _skip(self, outcome, explicit):
         """An explicit refresh that did nothing must say why (no silent no-op)."""
         if explicit:
@@ -209,8 +321,9 @@ class AutomaticUpdates:
         explicit = manual or now
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
-            source = self.source()
-            if source is None:
+            self._sync_bundled_source()
+            sources = self.sources()
+            if not sources:
                 return self._skip('no_source', explicit)
             if not manual and not self.allowed():
                 enabled = (self.policy()['enabled'] if self.scope == 'router'
@@ -230,31 +343,51 @@ class AutomaticUpdates:
             write_json(self.state_path, state)
             update_log.log(self.base, 'check.start', scope=self.scope, manual=manual, now=now)
             try:
-                if self.scope == 'hub' and self._adopt_bootstrap(source, state):
+                if self.scope == 'hub' and self._adopt_bootstrap(sources, state):
                     # The new bootstrap's watcher takes over and checks components at once.
                     state['last_attempt'] = 0
                     state['outcome'] = 'bootstrap_updated'
                     return
-                client = self.new_client(source)
                 record = self.registry.read()
                 kinds = self._kinds(record, with_router)
-                selected = {k: v for k, v in source['targets'].items()
-                            if k in kinds and any(c['kind'] == k for c in record['components'])}
-                if not selected:
+                installed = {c['kind'] for c in record['components']}
+                clients, found, failures, polled, names = {}, {}, [], 0, []
+                checked = None
+                for feed in sources:
+                    selected = {k: v for k, v in feed['targets'].items() if k in kinds and k in installed}
+                    if not selected:
+                        continue
+                    polled += 1
+                    try:
+                        client = self.new_client(feed)
+                        result, targets = client.check(list(selected.values()))
+                    except Exception as error:
+                        # One feed that cannot even start (bad cache, bad URL) must not block the others.
+                        failures.append(type(error).__name__)
+                        continue
+                    if targets is None:
+                        failures.append(result.get('reason', 'CheckUnavailable'))
+                        continue
+                    checked = checked or result
+                    for kind, name in selected.items():
+                        target = targets[name]
+                        item = next(c for c in record['components'] if c['kind'] == kind)
+                        current = read_json(Path(item['code_path']) / 'orion-release.json', {})
+                        if target.custom['component'] != kind:
+                            raise UpdateError('Stable target component mismatch')
+                        clients[name], found[name] = client, target
+                        if target.custom['sequence'] > current['sequence']:
+                            names.append(name)
+                if not polled:
                     state['outcome'] = 'up_to_date'
                     return
-                checked, targets = client.check(list(selected.values()))
-                if targets is None:
-                    raise UpdateError(checked.get('reason', 'CheckUnavailable'))
-                names = []
-                for kind, name in selected.items():
-                    target = targets[name]
-                    item = next(c for c in record['components'] if c['kind'] == kind)
-                    current = read_json(Path(item['code_path']) / 'orion-release.json', {})
-                    if target.custom['component'] != kind:
-                        raise UpdateError('Stable target component mismatch')
-                    if target.custom['sequence'] > current['sequence']:
-                        names.append(name)
+                if failures and checked is None:
+                    raise UpdateError(failures[0])  # Every feed failed: that is a failed check.
+                if failures:
+                    state['feed_errors'] = failures  # Reachable feeds still update; the failure stays visible.
+                else:
+                    state.pop('feed_errors', None)
+                targets = found
                 state['last_success'] = self.clock()
                 state['outcome'] = 'update_found' if names else 'up_to_date'
                 write_json(self.state_path, state)
@@ -269,7 +402,7 @@ class AutomaticUpdates:
                             return checked, {name: targets[name] for name in requested}
 
                         def prepare(self, target, destination, progress=None):
-                            return client.prepare(target, destination, progress=progress)
+                            return clients[target.path].prepare(target, destination, progress=progress)
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
@@ -398,6 +531,7 @@ def watch(automatic):
         if automatic.bootstrap_root is not None:
             from . import bootstrap_update
             bootstrap_update.note_started(automatic.registry, automatic.bootstrap_root)
+            automatic._sync_bundled_source()
         while automatic.source() is not None:
             if automatic.bootstrap_root is not None and bootstrap_update.handover_due(
                     automatic.registry, automatic.bootstrap_root):

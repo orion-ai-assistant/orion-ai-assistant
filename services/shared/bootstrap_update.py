@@ -146,11 +146,21 @@ def adopt(automatic, source, *, probe=default_probe):
         return None  # Never stack a second adoption on an unconfirmed one.
     if _active(automatic):
         return None  # Not in the middle of a staged/running update or recovery.
-    client = automatic.new_client(source)
-    _, targets = client.check([BOOTSTRAP_TARGET])
-    if targets is None:
-        return None  # Feed without a bootstrap target, or unreachable: the component check reports that.
-    target = targets[BOOTSTRAP_TARGET]
+    # Every feed may carry a bootstrap (the Router feed ships a Router-only one); the newest signed
+    # sequence wins and an unreachable feed never hides the others.
+    from .automatic_updates import normalize_sources
+    candidates = []
+    for feed in source if isinstance(source, list) else normalize_sources(source):
+        try:
+            feed_client = automatic.new_client(feed)
+            _, found = feed_client.check([BOOTSTRAP_TARGET])
+        except Exception:
+            continue
+        if found is not None and BOOTSTRAP_TARGET in found:
+            candidates.append((found[BOOTSTRAP_TARGET].custom.get('sequence', 0), feed_client, found[BOOTSTRAP_TARGET]))
+    if not candidates:
+        return None  # No feed offers a bootstrap, or none is reachable: the component check reports that.
+    _, client, target = max(candidates, key=lambda c: c[0])
     release = target.custom
     if release['component'] != 'bootstrap':
         raise BootstrapUpdateError('ComponentMismatch')
@@ -181,6 +191,25 @@ def adopt(automatic, source, *, probe=default_probe):
             return tree
     except LifecycleError:
         return None  # Another operation owns the lock; try again at the next check.
+
+
+def sync_source(registry, own_root):
+    """The running bootstrap defines which feeds exist: merge its bundled release-source.json into the
+    installation's source (union by feed URL; its components win). Lets a feed split (Router feed)
+    reach installs whose source was written by an older bootstrap. Never changes the trust root."""
+    from .automatic_updates import merge_sources, validate_source, read_json, write_json
+    bundled = Path(own_root) / 'release-source.json'
+    if not bundled.is_file():
+        return False
+    incoming = validate_source(json.loads(bundled.read_text(encoding='utf-8')))
+    path = _folder(registry) / 'release-source.json'
+    with operation_lock(registry.path, timeout=15):
+        current = read_json(path, None)
+        merged = merge_sources(current, incoming) if current is not None else incoming
+        if merged == current:
+            return False
+        write_json(path, merged)
+        return True
 
 
 def handover_due(registry, own_root):
