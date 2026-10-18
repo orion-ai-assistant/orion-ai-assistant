@@ -223,6 +223,33 @@ def stop_tray(registry, *, timeout=6):
     return len(victims)
 
 
+ELEVATED = ('ORION-ELEVATED: Orion baska bir yetki duzeyinde (yonetici olarak) calisiyor. '
+            'Tepsiden Cik ile kapatin, sonra Orion\'u normal (yonetici olmadan) acin.')
+ELEVATED_SELF = ('ORION-ELEVATED-SELF: Orion yonetici olarak baslatilamaz. '
+                 'Orion\'u normal (yonetici olmayan) bir pencereden acin.')
+
+
+def is_elevated():
+    """This process runs with an elevated (administrator) token. Orion never runs that way: services started
+    elevated cannot be managed, stopped or updated by the normal shortcut afterwards (and vice versa)."""
+    if os.name != 'nt' or os.environ.get('ORION_ALLOW_ELEVATED') == '1':
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def explain(error):
+    """Message for the entry script. Access-denied lifecycle errors mean another integrity level owns the
+    services: say that in a form the script turns into a clear Turkish dialog (not the Repair dialog)."""
+    text = str(error)
+    if 'ORION-ELEVATED' in text:
+        return text
+    return ELEVATED if 'access denied' in text.lower() else text
+
+
 STOP_RETRIES = 2          # a briefly busy lifecycle lock is retried; a real shutdown timeout is not
 STOP_RETRY_DELAY = 3
 WATCHER_EXIT = 'updates/watcher.exit'
@@ -257,7 +284,11 @@ def running_services(components):
                               or any(child_tree_alive(c) for c in state['children'].values())):
                     left.append(item['kind'])
                     break
-            except (LifecycleError, OSError, KeyError):
+            except LifecycleError as error:
+                if 'access denied' in str(error).lower():
+                    left.append(item['kind'])  # Owned by another integrity level: certainly not stopped by us.
+                    break
+            except (OSError, KeyError):
                 continue
     return left
 
@@ -271,6 +302,8 @@ def request_watcher_exit(registry):
 
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
+    if not stop and is_elevated():
+        raise RegistryError(ELEVATED_SELF)
     if not stop:
         wait_for_update(registry, apply_owner=apply_owner)
         record = registry.read()
@@ -333,6 +366,8 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
                 if not keep_window:
                     close_window(registry)
                 left = sorted(set(running_services(components)) | set(failed))
+                if any('access denied' in text.lower() for text in failed.values()):
+                    raise RegistryError(ELEVATED)
                 if left:
                     update_log.log(updates, 'stop.incomplete', services=','.join(left),
                                    errors=' | '.join(f'{k}={v}' for k, v in sorted(failed.items())))
@@ -507,7 +542,7 @@ def main(argv=None):
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         # Avoid logging credentials or complete subprocess environment/arguments.
-        print('Orion launcher: ' + str(error))
+        print('Orion launcher: ' + explain(error))
         return 1
 
 

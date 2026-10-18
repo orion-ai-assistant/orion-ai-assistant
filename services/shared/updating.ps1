@@ -17,6 +17,8 @@ $created = $false
 $script:mutex = New-Object System.Threading.Mutex($true, "Local\Orion-Updating-$identity", [ref]$created)
 if (-not $created) { exit 0 }   # One window per installation.
 $started = [DateTime]::Now
+$startedEpoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 5
+$script:shown = $false
 $deadline = $started.AddMinutes(40)
 
 function Read-Json([string]$path) {
@@ -80,6 +82,15 @@ $timer.Add_Tick({
         Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
         $timer.Stop(); $form.Close(); return
     }
+    # The outcome is recorded before Orion restarts; show it here too, so the end is visible (not just a closing window).
+    $result = Read-Json (Join-Path $updates 'last-result.json')
+    if ($result -and $result.at -ge $startedEpoch -and -not $script:shown) {
+        $script:shown = $true
+        $title.Text = [string]$result.message
+        $bar.Style = 'Continuous'; $bar.Value = 100
+        $note.Text = (T 'Orion birazdan yeniden a\u00e7\u0131lacak.')
+    }
+    if ($script:shown) { return }
     $info = Get-Step
     $step.Text = $info[0]
     $span = [DateTime]::Now - $started

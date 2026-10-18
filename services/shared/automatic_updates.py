@@ -268,8 +268,8 @@ class AutomaticUpdates:
                         def check(self, requested):
                             return checked, {name: targets[name] for name in requested}
 
-                        def prepare(self, target, destination):
-                            return client.prepare(target, destination)
+                        def prepare(self, target, destination, progress=None):
+                            return client.prepare(target, destination, progress=progress)
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
@@ -403,10 +403,14 @@ def watch(automatic):
                     automatic.registry, automatic.bootstrap_root):
                 update_log.log(base, 'watcher.handover')
                 return 'handover'  # Lock is released on return; the caller starts the new watcher.
-            with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
-                if stopped:
-                    update_log.log(base, 'watcher.stop', reason='installation stopped')
-                    return
+            try:
+                with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
+                    if stopped:
+                        update_log.log(base, 'watcher.stop', reason='installation stopped')
+                        return
+            except Exception as error:
+                # A process scan that cannot decide (access denied, a lock held for a moment) must not kill the watcher.
+                update_log.log_exception(base, 'watch.stopped-check', error)
             marker = automatic.base / 'watcher.exit'
             if marker.exists():  # Written by an explicit stop ("Çık" / -Stop).
                 marker.unlink(missing_ok=True)

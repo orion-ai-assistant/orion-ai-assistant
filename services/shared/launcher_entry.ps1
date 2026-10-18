@@ -27,6 +27,17 @@ function Show-OrionStopFailure([string]$message) {
     $text = (T 'Orion tamamen kapat\u0131lamad\u0131; baz\u0131 servisler \u00e7al\u0131\u015fmaya devam ediyor olabilir. Biraz sonra \u00c7\u0131k komutunu yeniden deneyin.')
     [void][Windows.Forms.MessageBox]::Show($text + "`r`n`r`n" + $message, 'Orion')
 }
+function Show-OrionElevated([string]$message) {
+    # Orion and the shortcut run at different integrity levels (administrator vs normal): explain, no Repair dialog.
+    if ($NonInteractive) { Write-Output $message; return }
+    Add-Type -AssemblyName System.Windows.Forms
+    if ($message -match 'ORION-ELEVATED-SELF') {
+        $text = (T 'Orion y\u00f6netici olarak ba\u015flat\u0131lamaz. Orion''u normal (y\u00f6netici olmayan) bir pencereden a\u00e7\u0131n.')
+    } else {
+        $text = (T 'Orion y\u00f6netici olarak \u00e7al\u0131\u015f\u0131yor (veya ba\u015fka bir yetki d\u00fczeyinde). Kapatmak i\u00e7in tepsiden \u00c7\u0131k''a bas\u0131n, sonra Orion''u normal (y\u00f6netici olmadan) a\u00e7\u0131n.')
+    }
+    [void][Windows.Forms.MessageBox]::Show($text, 'Orion')
+}
 # Phases in which the helper is switching versions right now (calm wait), and phases that allow a normal start.
 $applying = @('draining','backing_up','switching','health_check','rollback_pending')
 $allowedPhases = @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')
@@ -136,6 +147,7 @@ try {
     if ($code -ne 0) { throw ($output -join "`r`n") }
 } catch {
     try { $_.Exception.Message | Out-File -LiteralPath (Join-Path $PSScriptRoot 'launcher.log') -Encoding UTF8 } catch {}
-    if ($Stop) { Show-OrionStopFailure $_.Exception.Message } else { Show-OrionRepair $_.Exception.Message }
+    if ($_.Exception.Message -match 'ORION-ELEVATED') { Show-OrionElevated $_.Exception.Message }
+    elseif ($Stop) { Show-OrionStopFailure $_.Exception.Message } else { Show-OrionRepair $_.Exception.Message }
     exit 1
 }

@@ -7,6 +7,7 @@ sequences only after a successful Stage 06 transaction.
 from datetime import datetime, timezone
 import hashlib
 import json
+import time
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -178,6 +179,37 @@ class ReleaseClient:
             bootstrap=self.bootstrap_root, fetcher=fetcher)
         self.status_path = self.cache / 'check.json'
         self.checked = False
+        self._progress = None
+        self._received = 0
+        self._tick_at = 0.0
+        self._count_downloaded_bytes()
+
+    def _count_downloaded_bytes(self):
+        """Count bytes of the download in flight (the app shows "85 / 198 MB, 1.4 MB/s").
+
+        Wraps the updater's fetcher *instance* so injected test fetchers keep their own attributes."""
+        fetcher = getattr(self.updater, '_fetcher', None)
+        original = getattr(fetcher, 'fetch', None)
+        if original is None:
+            return
+        client = self
+
+        def counting(url):
+            for chunk in original(url):
+                client._received += len(chunk)
+                client._tick()
+                yield chunk
+        fetcher.fetch = counting
+
+    def _tick(self, *, force=False):
+        callback = self._progress
+        now = time.monotonic()
+        if callback is not None and (force or now - self._tick_at >= .5):
+            self._tick_at = now
+            try:
+                callback(self._received, self._total, now - self._started)
+            except Exception:
+                pass  # Progress is cosmetic; it must never fail a download.
 
     def check(self, targets):
         from tuf.api.exceptions import RepositoryError, DownloadError
@@ -219,7 +251,7 @@ class ReleaseClient:
             os.fsync(stream.fileno())
         os.replace(path, self.status_path)
 
-    def prepare(self, target, destination):
+    def prepare(self, target, destination, progress=None):
         if not self.checked:
             raise PackageError('A fresh successful metadata check is required')
         # Re-resolve inside this trusted refresh; caller cannot inject TargetFile.
@@ -230,7 +262,15 @@ class ReleaseClient:
         seen = json.loads(self.status_path.read_text())['seen'][current.custom['component']]
         if current.custom['sequence'] != seen['sequence'] or current.hashes != seen['hashes']:
             raise PackageError('Selected package is older than the last verified release')
-        path = self.updater.find_cached_target(current) or self.updater.download_target(current)
+        self._progress, self._received, self._total = progress, 0, current.length
+        self._started, self._tick_at = time.monotonic(), 0.0
+        try:
+            path = self.updater.find_cached_target(current)
+            if path is None:
+                path = self.updater.download_target(current)
+                self._tick(force=True)
+        finally:
+            self._progress = None
         from .installation_paths import canonical_path, validate_private_directory
         destination = canonical_path(destination)
         if destination.exists():

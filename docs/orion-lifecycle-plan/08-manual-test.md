@@ -115,6 +115,14 @@ Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez aç
 3. "Şimdi güncelle" isteği beklerken (Hub boşta bekliyor) "Çık" de, sonra masaüstü kısayoluyla aç. Beklenen: kartta **dönen çubuk yok**, "Devam eden işlerin bitmesi bekleniyor" yok; `updates\apply-now.json` `cancelled`. Kısayola ilk tıklamada pencere açılıp **kapanmamalı**.
 4. Router panelinde (`http://127.0.0.1:20128/dashboard`) "Güncellemeleri Denetle": birkaç saniye içinde Türkçe sonuç ("Router güncel…", "Yeni sürüm bulundu…" veya "başka bir güncelleme zaten hazır…"). Önceki başarısız Router denemesi düğmeyi 6 saat engellememeli; Hub kurulumunda bulunan Router sürümü Hub/Client ile **aynı** bekleyen işleme girer.
 
+### 4d. Şimdi güncelle: gerçek bekçi yolu, ilerleme ve yetki düzeyi
+
+1. Temiz kurulum + hazır güncelleme ile "Şimdi güncelle". `updates\watcher.log` içinde `apply-now.stopping` → `apply-now.resume` → `apply-now.finished` görünmeli; `stop.incomplete ... Package is not registered at this path` **olmamalı** (bekçi, bootstrap klasöründen çalıştığı için eskiden ilk `get_env` içe aktarmasında düşüyordu).
+2. Kurulumdan hemen sonra (Orion yeni açılmışken) güncelleme uygulanırken "uncoordinated process" hatasıyla `failed` olmamalı; en kötü ihtimalle "Servislerin kapanmasını bekliyor" kalır ve sonra uygulanır.
+3. Yenile: kart "Güncellemeler denetleniyor…" → birkaç saniyede "Yeni sürüm bulundu, indiriliyor…" → "(1/2) · 85,3 / 198,0 MB · 1,4 MB/sn" ve **tek** çubuk bayta göre ilerler (yaklaşık 2 sn'de bir değişir), bitince "Hazır: Şimdi güncelle".
+4. Güncelleniyor penceresi: adımlar gerçekten ilerler (Servisler kapatılıyor → Veriler yedekleniyor → Yeni sürüm yerleştiriliyor → Yeni sürüm denetleniyor → Orion yeniden başlatılıyor); sonunda sonuç iletisi ("Güncellendi: …" / "Güncelleme uygulanamadı…") pencerede görünür, sonra Orion açılır.
+5. Yönetici/normal karışımı: Orion'u yönetici PowerShell'den başlatmayı dene (`Orion.ps1`): "Orion yönetici olarak başlatılamaz" iletisi, Onarma penceresi **yok**. Yönetici başlatılmış servisler varken normal kısayol: "Orion yönetici olarak çalışıyor… tepsiden Çık, sonra normal açın" iletisi.
+
 ### 5. Hub/Router paneli düğmeleri
 
 Ayarlar'da Hub kartında "Hub yönetimini aç", Router bağlıyken Router kartında "Router yönetimini aç" görünmeli; tıklayınca adres çubuksuz uygulama penceresinde açılır. Telefon oturumunda bu düğmeler görünmez.

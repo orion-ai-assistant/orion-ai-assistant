@@ -439,6 +439,28 @@ bundle with the packages).
   `router-request.json`; on a Hub install the watcher answers it with one explicit hub-scope check that includes
   the Router (`check(manual=True, with_router=True)`, ignoring the 6 h spacing and the switches), and the Router
   status shows the outcome in Turkish (`check_outcome`, `message`), including "başka bir güncelleme hazır".
+* **Watcher-path stop failure (root cause).** `services/shared/environment.py` runs `load_environment()` on import and
+  resolved its repo root from its own file. In the retained watcher that is the *bootstrap bundle* (it has an
+  `orion-release.json` but is not a registered component), so `runtime_layout.component()` raised "Package is not
+  registered at this path" at the first `from services.shared.environment import get_env` inside `stop_hub` and every
+  "Şimdi güncelle" stop failed, while `Orion.ps1 -Stop` (the Hub's own tree) worked. `load_environment` now returns
+  quietly for an unregistered tree (the launcher supplies the registered component's environment).
+  Test: `test_watcher_environment.py` runs the import in a subprocess with a bundle-like tree.
+* **Own processes are not "uncoordinated".** `StoppedInstallation._unmanaged_consumers(wait=...)` retries the scan for
+  up to `update_helper.CONSUMER_WAIT` (20 s) while the product's own processes settle (just started by the installer,
+  or exiting after a stop); `StoppedPackages` then reports "not idle" (transaction stays `waiting_for_idle`) instead of
+  raising `MigrationError`, and the watcher loop survives a process scan that cannot decide. Ownership that cannot be
+  established (access denied) is not retried.
+* **Download progress.** `ReleaseClient.prepare(..., progress=cb)` counts bytes through the updater's fetcher
+  (`fetch` wrapped on the instance); `UpdateHelper.prepare` writes `progress = {done,total,component,bytes,bytes_total,
+  rate}` into the journal about twice a second. The card shows "(2/2) · 85,3 / 198,0 MB · 1,4 MB/sn" and one bar for the
+  whole download (bytes), polls every 2 s while checking/downloading, and says "Yeni sürüm bulundu" as soon as the
+  check knows (`check_outcome: update_found` while `checking`). The updating window also shows the recorded result
+  (`last-result.json`) before it closes.
+* **Integrity levels.** `launcher.is_elevated()`: Orion is never started from an elevated token
+  (`ORION-ELEVATED-SELF`); an access-denied lifecycle error (services owned by an elevated Orion) is printed as
+  `ORION-ELEVATED:` and `launcher_entry.ps1` shows a Turkish message ("Orion yönetici olarak çalışıyor; kapatmak için
+  tepsiden Çık, sonra normal açın") instead of the Repair dialog. `ORION_ALLOW_ELEVATED=1` is for sandboxes only.
 * **One transaction, one restart.** For a Hub install the hub-scope check stages Hub, Client **and** the local Router
   (when the Router's switch is on, which follows the single "Otomatik güncellemeler" switch) in one
   `UpdateHelper.prepare`, so the user restarts once. Only components with a newer signed sequence join;

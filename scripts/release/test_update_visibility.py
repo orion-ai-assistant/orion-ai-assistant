@@ -111,7 +111,11 @@ def test_download_progress_is_in_the_journal(automatic):
         return original(tx, phase, **fields)
     service.helper._phase = spy
     service.check()
-    assert seen == [{'done': 0, 'total': 1, 'component': 'hub'}]
+    first, *rest = seen
+    assert first['done'] == 0 and first['total'] == 1 and first['component'] == 'hub' and first['bytes'] == 0
+    assert first['bytes_total'] > 0
+    assert rest and rest[-1]['bytes'] == first['bytes_total']  # Byte progress reached the end of the download.
+    assert all(a['bytes'] <= b['bytes'] for a, b in zip(seen, seen[1:]))
 
 
 def test_failed_check_says_why_in_turkish(automatic):

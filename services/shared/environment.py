@@ -17,13 +17,21 @@ def load_environment():
     repo_root = this_file.parents[2]
     services_dir = repo_root / "services"
     from .runtime_layout import data_root, component
-    data_services = data_root(repo_root) / 'services'
+    try:
+        data_services = data_root(repo_root) / 'services'
+        packaged = component(repo_root)
+    except RuntimeError:
+        # This tree carries an orion-release.json but is not a registered component: the retained
+        # bootstrap that runs the update watcher. It has no environment of its own; the caller (the
+        # launcher) supplies the registered component's environment. Raising here broke every stop
+        # started by the watcher ("Package is not registered at this path").
+        return
 
     env_files = [
         services_dir / ".env.global",
         data_services / ".env.global.local",
     ]
-    if component(repo_root):
+    if packaged:
         # Packaged standalone entrypoints do not rely on the source launcher's
         # pre-merged environment. Data overrides must win over package defaults;
         # explicitly supplied process values still have the highest priority.

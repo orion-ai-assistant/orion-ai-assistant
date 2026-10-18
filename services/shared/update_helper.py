@@ -21,6 +21,7 @@ from .release_packages import (PackageError, compatible, record_prepared_package
                                verify_package_record, sha256)
 from .update_gate import TERMINAL
 
+CONSUMER_WAIT = 20  # seconds the product's own processes get to exit/settle before "not idle"
 PHASES = ('checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle',
           'draining', 'backing_up', 'switching', 'health_check', 'completed',
           'failed', 'rollback_pending', 'rolled_back', 'repair_required')
@@ -163,12 +164,21 @@ class UpdateHelper:
                     raise UpdateError('Proposed Hub needs lifecycle.update-quarantine.v1; update Hub with Client')
                 if 'router' in manifests and 'lifecycle.update-quarantine.v1' not in manifests['router'].get('capabilities', []):
                     raise UpdateError('Proposed Router needs lifecycle.update-quarantine.v1')
+                overall_total = sum(t.length for t in targets.values())
+                completed_bytes = 0
                 for number, target in enumerate(targets.values(), 1):
                     kind = target.custom['component']
                     item = next(c for c in proposed['components'] if c['kind'] == kind)
                     tree = canonical_path(Path(item['code_path']).parent / target.custom['package_id'])
                     # The app card shows "indiriliyor (1/3)": which component of how many is being fetched.
-                    self._phase(tx, 'downloading', progress={'done': number - 1, 'total': len(targets), 'component': kind})
+                    def report(received, total, seconds, *, number=number, kind=kind, before=completed_bytes):
+                        self._phase(tx, 'downloading', progress={
+                            'done': number - 1, 'total': len(targets), 'component': kind,
+                            'bytes': before + received, 'bytes_total': overall_total,
+                            'rate': int(received / seconds) if seconds > 0 else None})
+                    self._phase(tx, 'downloading', progress={
+                        'done': number - 1, 'total': len(targets), 'component': kind,
+                        'bytes': completed_bytes, 'bytes_total': overall_total, 'rate': None})
                     if tree.exists():
                         validate_private_directory(tree)
                         # A previous interrupted/rolled-back attempt may have
@@ -183,7 +193,8 @@ class UpdateHelper:
                             if inventory(tree) != inventory(fresh):
                                 raise UpdateError('Existing staged release differs; explicit repair required')
                     else:
-                        client.prepare(target, tree)
+                        client.prepare(target, tree, progress=report)
+                    completed_bytes += target.length
                     self._phase(tx, 'verifying')
                     # The inventory is versioned with the transaction, not yet
                     # published as the active component's installed receipt.
@@ -416,7 +427,7 @@ class NativeHost:
                     from .migration_host import StoppedInstallation
                     check = StoppedInstallation.__new__(StoppedInstallation)
                     check.record = {**record, 'components': [item]}
-                    check._unmanaged_consumers()
+                    check._unmanaged_consumers(wait=10)
                     continue
                 stop = (lambda: stop_hub(item['code_path'], update_operation=operation)) if item['kind'] == 'hub' else (
                     lambda: stop_router(str(Path(item['code_path']) / 'cli.py')))
@@ -483,6 +494,7 @@ class StoppedPackages:
 
     def __enter__(self):
         from .process_lifecycle import InstanceLock, Runtime, child_tree_alive, LifecycleError
+        from .content_migration import MigrationError
         try:
             for item in sorted(self.record['components'], key=lambda c: c['component_id']):
                 if item['kind'] == 'client':
@@ -512,7 +524,13 @@ class StoppedPackages:
             from .migration_host import StoppedInstallation
             check = StoppedInstallation.__new__(StoppedInstallation)
             check.record = self.record
-            check._unmanaged_consumers()
+            try:
+                check._unmanaged_consumers(wait=CONSUMER_WAIT)
+            except MigrationError:
+                # Still in use after the grace period: not idle yet. The transaction stays
+                # waiting_for_idle and is retried; it is not failed for a process that is about to exit.
+                self.stack.close()
+                return False
             return True
         except LifecycleError:
             self.stack.close()

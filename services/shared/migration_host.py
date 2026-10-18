@@ -6,6 +6,7 @@ prevents a concurrent native start until copy, verification and switch finish.
 from contextlib import ExitStack
 from pathlib import Path
 import os
+import time
 
 from .installation_registry import operation_lock
 from .installation_paths import canonical_path
@@ -90,7 +91,19 @@ class StoppedInstallation:
                     return False
         return True
 
-    def _unmanaged_consumers(self):
+    def _unmanaged_consumers(self, wait=0, sleep=time.sleep):
+        """Refuse while an uncoordinated process uses the installation, but give the product's own
+        processes (just started by the installer, or still exiting after a stop) time to settle first."""
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                return self._scan_consumers()
+            except MigrationError as error:
+                if 'uncoordinated' not in str(error) or time.monotonic() >= deadline:
+                    raise
+                sleep(1)
+
+    def _scan_consumers(self):
         import psutil
         ignored = {os.getpid(), *(process.pid for process in psutil.Process().parents())}
         user = psutil.Process().username()
