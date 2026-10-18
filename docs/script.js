@@ -65,7 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Copy to Clipboard ---
     const commandMap = {
-        'win': 'powershell -c "iex(irm raw.github.com/orion-ai-assistant/orion-ai-assistant/main/install.ps1)"',
+        'win': 'powershell -c "iex(irm raw.github.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1)"',
         'mac': 'curl -sSL raw.github.com/orion-ai-assistant/orion-ai-assistant/main/install.sh | bash'
     };
 

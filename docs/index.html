@@ -72,10 +72,7 @@
         <h1 class="reveal delay-1" id="hero-headline" data-i18n="hero_title">
             Modüler Yapay Zeka<br /><span class="text-gradient">Asistanınız</span>
         </h1>
-        <p class="hero-desc reveal delay-2" id="hero-description" data-i18n="hero_desc">
-            LLM, TTS, STT, Embedding ve daha fazlasını tek bir çatı altında toplayan, Docker ile saniyeler içinde
-            kurulan açık kaynak AI platformu.
-        </p>
+        <p class="hero-desc reveal delay-2" id="hero-description" data-i18n="hero_desc">LLM, TTS, STT, Embedding ve daha fazlasını tek bir çatı altında toplayan, tek komutla kurulan açık kaynak AI platformu.</p>
 
         <!-- Terminal Installation Panel -->
         <div class="glass-panel terminal-panel reveal delay-3" id="orion-terminal-panel">
@@ -101,7 +98,7 @@
                         <span class="cmd-keyword">powershell</span>
                         <span class="cmd-flag">-c</span>
                         <span class="cmd-string">"iex(irm
-                            raw.github.com/orion-ai-assistant/orion-ai-assistant/main/install.ps1)"</span>
+                            raw.github.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1)"</span>
                     </span>
                 </div>
 
@@ -121,13 +118,11 @@
                 <div class="terminal-info-lines" id="terminal-info-lines">
                     <div class="terminal-info-row">
                         <span class="info-dot info-dot--cyan"></span>
-                        <span class="info-label" data-i18n="term_info_repo">Installer açılır — hangi servisleri kurmak
-                            istediğinizi siz seçersiniz</span>
+                        <span class="info-label" data-i18n="term_info_repo">İmzalı kurulum paketi indirilir ve doğrulanır</span>
                     </div>
                     <div class="terminal-info-row">
                         <span class="info-dot info-dot--violet"></span>
-                        <span class="info-label" data-i18n="term_info_cmd">Seçilen servisler Docker üzerinde otomatik
-                            olarak kurulur</span>
+                        <span class="info-label" data-i18n="term_info_cmd">Hub, web arayüzü ve Router kurulur; güncellemeler otomatik gelir</span>
                     </div>
                     <div class="terminal-info-row">
                         <span class="info-dot info-dot--green"></span>
@@ -222,9 +217,8 @@
                             d="M21 7.5l-2.25-1.313M21 7.5v2.25m0-2.25l-2.25 1.313M3 7.5l2.25-1.313M3 7.5l2.25 1.313M3 7.5v2.25m9 3l2.25-1.313M12 12.75l-2.25-1.313M12 12.75V15m0 6.75l2.25-1.313M12 21.75V19.5m0 2.25l-2.25-1.313m0-16.875L12 2.25l2.25 1.313M21 14.25v2.25l-2.25 1.313m-13.5 0L3 16.5v-2.25" />
                     </svg>
                 </div>
-                <h3 data-i18n="feat_docker_title">Docker ile Kolay Kurulum</h3>
-                <p data-i18n="feat_docker_desc">Tek bir komut ile tüm servisleri Docker üzerinde çalıştırın. Karmaşık
-                    yapılandırma yok.</p>
+                <h3 data-i18n="feat_docker_title">Tek Komutla Kurulum</h3>
+                <p data-i18n="feat_docker_desc">Tek bir komutla Hub, web arayüzü ve Router kurulur. Docker veya Python gerekmez; güncellemeler imzalı ve otomatik.</p>
             </div>
         </div>
     </section>
@@ -234,7 +228,7 @@
         <div class="section-heading text-center reveal" id="arch-header">
             <span class="section-tag" data-i18n="arch_tag">Mimari</span>
             <h2 data-i18n="arch_title">Modüler Servis Mimarisi</h2>
-            <p data-i18n="arch_subtitle">Her servis bağımsız çalışır, Docker Compose ile orkestre edilir.</p>
+            <p data-i18n="arch_subtitle">Her servis bağımsız çalışır; Hub, Router ve web arayüzü ayrı ayrı güncellenir.</p>
         </div>
 
         <div class="glass-panel arch-diagram reveal delay-2" id="arch-diagram">
@@ -274,22 +268,22 @@
             <div class="glass-panel req-card" id="req-windows">
                 <div class="req-icon">🪟</div>
                 <div class="req-info">
-                    <h4 data-i18n="req_os_title">Windows 10/11</h4>
-                    <p data-i18n="req_os_desc">Şu an sadece Windows üzerinden kurulum desteklenmektedir.</p>
+                    <h4 data-i18n="req_os_title">Windows 10/11 (64-bit)</h4>
+                    <p data-i18n="req_os_desc">Windows 10 1903 veya sonrası. Şu an yalnızca Windows destekleniyor.</p>
                 </div>
             </div>
             <div class="glass-panel req-card" id="req-docker">
                 <div class="req-icon">🐳</div>
                 <div class="req-info">
-                    <h4 data-i18n="req_docker_title">Docker</h4>
-                    <p data-i18n="req_docker_desc">Docker kurulu ve çalışıyor olmalıdır.</p>
+                    <h4 data-i18n="req_docker_title">Yönetici gerekmez</h4>
+                    <p data-i18n="req_docker_desc">Kullanıcı klasörüne (%LOCALAPPDATA%\Orion) kurulur. Güvenlik duvarı izni bir kez sorulur.</p>
                 </div>
             </div>
             <div class="glass-panel req-card" id="req-ps">
                 <div class="req-icon">🐍</div>
                 <div class="req-info">
-                    <h4 data-i18n="req_ps_title">Python 3.11+</h4>
-                    <p data-i18n="req_ps_desc">Python 3.11 veya daha yeni bir sürüm kurulu olmalıdır.</p>
+                    <h4 data-i18n="req_ps_title">İnternet bağlantısı</h4>
+                    <p data-i18n="req_ps_desc">Kurulum yaklaşık 350 MB indirir. Python veya Docker kurmanız gerekmez.</p>
                 </div>
             </div>
         </div>
