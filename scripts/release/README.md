@@ -643,8 +643,31 @@ bundle with the packages).
   is read by the Hub (`last_result`) and the reopened app window shows it once (`UpdateResultGate`;
   `POST /api/v1/updates/result/seen`, PC session only). `ORION_UPDATE_UI=off` (set by `scripts/release/conftest.py`)
   keeps sandboxes from opening windows. The card shows "Güncellemeler denetleniyor…" (`checking`: the check process
-  records its pid; Hub adds a 20 s grace after the press) -> "Yeni sürüm bulundu, indiriliyor… (1/3)" (journal
-  `progress`) -> "Hazır: Şimdi güncelle", or why nothing happened (`check_outcome`, `error_message`).
+  records its pid; Hub adds a 20 s grace after the press) -> the newer components ("Yeni sürüm var", İndir) ->
+  "Yeni sürüm bulundu, indiriliyor… (1/3)" (journal `progress`) -> "Güncelleme hazır" + "Şimdi kur", or why nothing
+  happened (`check_outcome`, `error_message`).
+* **Check, download, install are three steps** (settings card + app prompt):
+  * Refresh (`PUT /api/v1/updates {"check_now": true}`) runs `update_automatic.py check --only-check`: one Hub-scope
+    round (Hub, Client and the local Router, `with_router`) that reads signed metadata only. It records
+    `automatic.json` `newer` (per component: package id, version, sequence, bytes still to download; a newer signed
+    retained updater as `bootstrap`, found with `bootstrap_update.newer` and NOT adopted). `GET /api/v1/updates`
+    reports `newer` without what is installed meanwhile (`staged` = already in the waiting update, `download`,
+    `bytes`) and `activity: available`. A refresh never moves the background schedule (`last_round`).
+  * "İndir" (`POST /api/v1/updates/download`, PC session only; 409 while downloading/applying) runs
+    `check --download`: the same round as the user's own action (preference/pause ignored; signatures, locks and
+    supersede rules unchanged), adopts a newer updater first and then re-runs `check --download` through it, and
+    stages one transaction with `requested_by: user` in its journal.
+  * "Şimdi kur" / the app prompt's "Kur" is the existing apply-now (`POST /api/v1/updates/apply`: waits until chat,
+    voice, tool, transfer and remote work is idle). `GET` reports `ready` (staged, not being applied; `later`) and the
+    app (`UpdateReadyPrompt`, normal screen only, never in settings or on a phone) asks "Güncelleme hazır, şimdi
+    yüklemek ister misiniz?" once per update. "Sonra" = `POST /api/v1/updates/ready/later`
+    (`updates/ready-prompt.json`): not asked again; applied at the next safe start.
+  * Startup apply (`AutomaticUpdates.may_activate`): a `requested_by: user` update is applied at the next safe start
+    even with automatic updates off (24-hour deferral still respected); a background download only while automatic
+    updates are on, as before.
+  * Automatic updates on: the watcher checks every 6 h, downloads silently and the app then asks "kur?". Off: nothing
+    is checked or downloaded in the background; only the buttons do it.
+  * A bootstrap older than these arguments exits 2 -> `BootstrapIncompatible` on the card (no silent download).
 * **Product identity (`Orion.exe`)**: the desktop link and the Windows Startup entry used to target
   `powershell.exe`, so Task Manager's Startup apps and the desktop showed PowerShell's name and icon.
   `scripts/release/launcher/Orion.cs` (+ `orion.ico`, made from `installer/app/ui/favicon.png` by

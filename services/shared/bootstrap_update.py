@@ -137,8 +137,9 @@ def _active(automatic):
     return bool(tx and tx['phase'] not in TERMINAL) or blocked(automatic.registry.path)
 
 
-def adopt(automatic, source, *, probe=default_probe):
-    """Adopt a newer signed bootstrap. Returns the new root, or None when there is nothing to do."""
+def newer(automatic, source):
+    """The newest signed bootstrap that is newer than the active one: (client, target, installed sequence,
+    self-update record), else None. Downloads nothing but signed metadata."""
     registry = automatic.registry
     current = pointer_root(registry)
     if current is None:
@@ -146,8 +147,6 @@ def adopt(automatic, source, *, probe=default_probe):
     previous = _read(state_path(registry), {})
     if previous.get('state') == 'trial' and trial(registry):
         return None  # Never stack a second adoption on an unconfirmed one.
-    if _active(automatic):
-        return None  # Not in the middle of a staged/running update or recovery.
     # Every feed may carry a bootstrap (the Router feed ships a Router-only one); the newest signed
     # sequence wins and an unreachable feed never hides the others.
     from .automatic_updates import normalize_sources
@@ -169,6 +168,22 @@ def adopt(automatic, source, *, probe=default_probe):
     installed = bundle_sequence(current)
     if release['sequence'] <= installed or release['sequence'] <= previous.get('failed_sequence', 0):
         return None
+    return client, target, installed, previous
+
+
+def adopt(automatic, source, *, probe=default_probe):
+    """Adopt a newer signed bootstrap. Returns the new root, or None when there is nothing to do."""
+    registry = automatic.registry
+    if pointer_root(registry) is None:
+        return None
+    if _active(automatic):
+        return None  # Not in the middle of a staged/running update or recovery.
+    found = newer(automatic, source)
+    if found is None:
+        return None
+    client, target, installed, previous = found
+    current = pointer_root(registry)
+    release = target.custom
     try:
         with operation_lock(registry.path, timeout=0):
             if _active(automatic):

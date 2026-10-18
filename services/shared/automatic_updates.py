@@ -305,6 +305,16 @@ class AutomaticUpdates:
         return (enabled
                 and (policy['deferred_until'] <= self.clock() if activate else not policy['paused']))
 
+    @staticmethod
+    def may_activate(registry, helper, tx):
+        """A staged update may be applied at a safe launch: one the user downloaded ("İndir") unless deferred,
+        one prepared in the background only while automatic updates are on and not deferred."""
+        scope = 'router' if tx['changes'] == ['router'] else 'hub'
+        automatic = AutomaticUpdates(registry, helper=helper, scope=scope)
+        if tx.get('requested_by') == 'user':
+            return automatic.policy()['deferred_until'] <= automatic.clock()
+        return automatic.allowed(activate=True)
+
     def status(self):
         record = self.registry.read()
         try:
@@ -341,7 +351,7 @@ class AutomaticUpdates:
         pending = None
         if tx and tx['phase'] not in TERMINAL:
             pending = {'phase': tx['phase'], 'operation_id': tx['operation_id'],
-                       'progress': tx.get('progress'),
+                       'progress': tx.get('progress'), 'requested_by': tx.get('requested_by'),
                        'packages': {c['kind']: c.get('package', {}).get('id')
                                     for c in (tx.get('proposed') or {}).get('components', [])
                                     if c['kind'] in tx['changes']}}
@@ -370,7 +380,44 @@ class AutomaticUpdates:
                 'checking': self._checking(state), 'check_outcome': state.get('outcome'), 'feed_errors': state.get('feed_errors'),
                 'check_outcome_at': state.get('outcome_at'),
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
+                'newer': self._newer(state, record, pending),
                 'activation': 'next_safe_launch', 'router_independent': True}
+
+    def _newer(self, state, record, pending):
+        """Newer signed releases the last check found that are not installed yet (an applied update or a
+        renewed updater drops out). `staged` = already downloaded in the waiting update; `bytes` = what
+        "İndir" still has to download; `download` = there is something left to download."""
+        found = state.get('newer')
+        if not isinstance(found, dict) or not isinstance(found.get('components'), dict):
+            return None
+        installed = {}
+        for item in record['components']:
+            try:
+                installed[item['kind']] = read_json(Path(item['code_path']) / 'orion-release.json', {}).get('sequence', 0)
+            except (OSError, ValueError, AttributeError):
+                installed[item['kind']] = 0
+        try:
+            from . import bootstrap_update
+            root = bootstrap_update.pointer_root(self.registry)
+            if root is not None:
+                installed['bootstrap'] = bootstrap_update.bundle_sequence(root)
+        except (OSError, ValueError):
+            pass
+        pending = pending or {}
+        waiting = (pending.get('packages') or {}) if pending.get('phase') in WAITING else {}
+        components = {}
+        for kind, offer in found['components'].items():
+            if not isinstance(offer, dict) or type(offer.get('sequence')) is not int:
+                continue
+            if kind not in installed or offer['sequence'] <= installed[kind]:
+                continue
+            components[kind] = {**{k: offer.get(k) for k in ('package_id', 'version', 'sequence', 'bytes')},
+                                'staged': waiting.get(kind) == offer.get('package_id')}
+        if not components:
+            return None
+        left = [c for c in components.values() if not c['staged']]
+        return {'components': components, 'checked_at': found.get('checked_at'), 'download': bool(left),
+                'bytes': sum(c['bytes'] for c in left if isinstance(c['bytes'], int))}
 
     def running(self):
         """A check of this scope is running now; never raises (the status card only shows it)."""
@@ -443,8 +490,11 @@ class AutomaticUpdates:
             _logged_skips[key] = outcome
             update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
 
-    def check(self, *, manual=False, now=False, with_router=False):
-        """`now` skips only the 6-hour spacing (user pressed refresh); policy still applies."""
+    def check(self, *, manual=False, now=False, with_router=False, download=True):
+        """`now` skips only the 6-hour spacing; policy still applies. `manual` is the user's own action and
+        ignores the automatic-update preference. `download=False` (the card's refresh button) only checks:
+        it records which components have a newer signed release (`newer`: version and bytes to download,
+        the retained updater included) and downloads, stages and adopts nothing."""
         explicit = manual or now
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
@@ -460,20 +510,24 @@ class AutomaticUpdates:
                 state = read_json(self.state_path, {'schema': 1})
             except ValueError:
                 state = {'schema': 1}  # An unreadable state file must never stop update checks.
-            if not manual and not now and self.clock() - state.get('last_attempt', 0) < INTERVAL:
+            # The background schedule counts only checks that may download: a refresh that just looked
+            # never postpones the next automatic download round.
+            if not manual and not now and self.clock() - state.get('last_round', state.get('last_attempt', 0)) < INTERVAL:
                 return
             pending = self.helper.status()
             if pending and pending['phase'] not in TERMINAL and pending['phase'] not in WAITING:
                 return self._skip('pending', explicit)  # Downloading or being applied: never race it.
+            # Keep the schedule an older check started (it only knew `last_attempt`) before a refresh moves it.
+            state['last_round'] = self.clock() if download else state.get('last_round', state.get('last_attempt', 0))
             state.update(last_attempt=self.clock(), error=None, bootstrap_error=None, outcome=None,
                          running_pid=os.getpid())
             write_json(self.state_path, state)
             _logged_skips.pop((str(self.base), self.scope), None)
-            update_log.log(self.base, 'check.start', scope=self.scope, manual=manual, now=now)
+            update_log.log(self.base, 'check.start', scope=self.scope, manual=manual, now=now, download=download)
             try:
-                if self.scope == 'hub' and self._adopt_bootstrap(sources, state):
+                if download and self.scope == 'hub' and self._adopt_bootstrap(sources, state):
                     # The new bootstrap's watcher takes over and checks components at once.
-                    state['last_attempt'] = 0
+                    state['last_attempt'] = state['last_round'] = 0
                     state['outcome'] = 'bootstrap_updated'
                     return
                 record = self.registry.read()
@@ -515,12 +569,20 @@ class AutomaticUpdates:
                 else:
                     state.pop('feed_errors', None)
                 targets = found
+                newer = {targets[n].custom['component']: self._offer(targets[n], clients[n]) for n in names}
+                if not download and self.scope == 'hub':
+                    newer.update(self._bootstrap_offer(sources, state))
+                state['newer'] = {'components': newer, 'checked_at': self.clock()}
                 state['last_success'] = self.clock()
-                state['outcome'] = 'update_found' if names else 'up_to_date'
+                state['outcome'] = 'update_found' if newer else 'up_to_date'
                 write_json(self.state_path, state)
                 if self.bootstrap_root is not None:
                     from . import bootstrap_update
                     bootstrap_update.confirm(self.registry, self.bootstrap_root)
+                if not download:
+                    if names:
+                        update_log.log(self.base, 'check.update-found', scope=self.scope, count=len(names), download=False)
+                    return  # Only checked: the user downloads with "İndir".
                 if names and pending and pending['phase'] in WAITING:
                     if not self._supersedes(pending, {targets[n].custom['component']: targets[n] for n in names}):
                         state['outcome'] = 'pending'  # What is waiting is already the newest: keep it.
@@ -542,7 +604,9 @@ class AutomaticUpdates:
                         def download_length(self, target):
                             owner = clients[target.path]
                             return owner.download_length(target) if hasattr(owner, 'download_length') else target.length
-                    self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
+                    # A download the user asked for is applied at the next safe start even with automatic updates off.
+                    self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope,
+                                        **({'requested_by': 'user'} if manual else {}))
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.
@@ -553,6 +617,32 @@ class AutomaticUpdates:
                 state.pop('running_pid', None)
                 state['outcome_at'] = self.clock()
                 write_json(self.state_path, state)
+
+    @staticmethod
+    def _offer(target, client):
+        """What the card lists for one newer component: version and the bytes a download still needs."""
+        size = getattr(target, 'length', None)
+        try:
+            if hasattr(client, 'download_length'):
+                size = client.download_length(target)
+        except Exception:
+            pass  # Only the size shown on the card: the signed length is a fine estimate.
+        return {'package_id': target.custom.get('package_id'), 'version': target.custom.get('version'),
+                'sequence': target.custom['sequence'], 'bytes': size if type(size) is int else None}
+
+    def _bootstrap_offer(self, sources, state):
+        """A newer signed retained updater, found without downloading it (adopted only by a download)."""
+        from . import bootstrap_update
+        try:
+            found = bootstrap_update.newer(self, sources)
+        except Exception as error:
+            state['bootstrap_error'] = getattr(error, 'code', type(error).__name__)
+            return {}
+        if found is None:
+            return {}
+        _, target, _, _ = found
+        return {'bootstrap': {'package_id': target.custom['package_id'], 'version': target.custom.get('version'),
+                              'sequence': target.custom['sequence'], 'bytes': target.length}}
 
     @staticmethod
     def _supersedes(pending, newest):
@@ -639,8 +729,7 @@ class AutomaticUpdates:
     def _apply_at_launch(self, tx):
         """Apply the staged update at a safe launch. The user sees an "Orion is updating" window, and the
         outcome is recorded for the app window that the launcher opens right after."""
-        scope = 'router' if tx['changes'] == ['router'] else 'hub'
-        if not AutomaticUpdates(self.registry, helper=self.helper, scope=scope).allowed(activate=True):
+        if not AutomaticUpdates.may_activate(self.registry, self.helper, tx):
             return tx
         from . import update_ui
         base = self.base
