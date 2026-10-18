@@ -51,6 +51,7 @@ function Show-Result($result) {
     if ($null -eq $result) { return (T 'Kaldırma tamamlanamadı. Orion kayıtları oldukları gibi korundu. Ayrıntı: AppData/Local/Orion-uninstall.log dosyasında.') }
     if ($result.status -eq 'refused') { return $result.message }
     $lines = @((T 'Orion kaldırıldı.'))
+    if ($result.scheduled) { $lines += (T 'Kalan birka\u00e7 dosya (kald\u0131rma arac\u0131n\u0131n kendisi) birka\u00e7 saniye i\u00e7inde, en ge\u00e7 bu pencere kapan\u0131nca kendili\u011finden silinir.') }
     if ($result.data -eq 'kept') { $lines += (T 'Verileriniz ve modelleriniz korundu; Orion''u yeniden kurarsanız kaldığınız yerden devam eder.') }
     if ($result.firewall -eq 'declined') { $lines += (T 'Güvenlik duvarı kuralı için izin verilmedi; kural kaldı. Ayarlar > Güvenlik Duvarı üzerinden elle silebilirsiniz.') }
     if ($result.firewall -eq 'failed') { $lines += (T 'Güvenlik duvarı kuralı değiştirilemedi.') }

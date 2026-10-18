@@ -235,13 +235,14 @@ def test_everything_with_data_deleted_leaves_no_orion_folder_after_the_deferred_
     scheduled, run_once = [], []
     real = U.schedule_removal
     monkeypatch.setattr(U, 'schedule_removal', lambda paths, root: scheduled.append(
-        real(paths, root=root, wait=[], folder=world.root.parent / 'temp', spawn=False, run_once=run_once.append))
+        real(paths, root=root, wait=[], later=[], folder=world.root.parent / 'temp', spawn=False, run_once=run_once.append))
         or scheduled[-1])
     try:
         result = world.run('all', keep_data=False, keep_models=False)
     finally:
         held.close()
     assert result['leftovers'] == ['Bootstrap-Installer-s9-467062f2'] and result['scheduled'] is True
+    assert result['notes'] == []    # The removed releases go with their folders: no purge, no scary note.
     assert run_once and 'orion-cleanup-' in run_once[0]     # Next sign-in repeats it if the run below is killed.
     assert sorted(p.name for p in root.iterdir()) == ['Bootstrap-Installer-s9-467062f2', 'hub-installation.json',
                                                       'lifecycle-tests', 'router-installation.json']
@@ -283,3 +284,26 @@ def test_a_fresh_install_over_the_leftovers_of_a_removed_install_succeeds(world)
     with pytest.raises(ValueError):
         world.fresh(['router'])
     assert (root / 'Router/notes.txt').read_text() == 'mine' and any((root / 'Router/releases').iterdir())
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='PowerShell')
+def test_the_cleanup_starts_when_the_uninstaller_exits_not_when_the_result_window_closes(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    spawned = []
+    monkeypatch.setattr(U.subprocess, 'Popen', lambda arguments, **kw: spawned.append(arguments))
+    root = tmp_path / 'Orion'
+    (root / 'Bootstrap-Installer-s10-abc/runtime').mkdir(parents=True)
+    script = U.schedule_removal([root / 'Bootstrap-Installer-s10-abc'], root=root, folder=tmp_path, run_once=lambda c: None)
+    monkeypatch.undo()
+    arguments = spawned[0]
+    assert arguments[arguments.index('-Pids') + 1] == str(os.getpid())
+    assert arguments[arguments.index('-Later') + 1] == str(os.getppid())
+    uninstaller = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1)'])
+    dialog = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])
+    try:
+        subprocess.run([U._powershell(), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+                        str(script), '-Pids', str(uninstaller.pid), '-Later', str(dialog.pid)], check=True, timeout=60)
+        assert not root.exists() and dialog.poll() is None   # Removed while the result window is still open.
+    finally:
+        dialog.kill()
