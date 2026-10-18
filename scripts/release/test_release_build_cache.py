@@ -333,3 +333,44 @@ def test_prune_dry_run_deletes_nothing_and_all_prefixes_applies_the_rule_to_ever
     sandbox_prune.prune(base, keep=1, all_prefixes=True, say=lambda *a: None)
     assert [p.exists() for p in old] == [True, False, False, False]
     assert [p.exists() for p in product] == [True, False, False, False]
+
+
+def test_same_inputs_give_byte_identical_package_zips(tmp_path):
+    """Two builds of one commit (an LF and a CRLF checkout, different folders and timestamps, runtime
+    layers whose uv launchers embed each build's random path) produce the same ZIP sha256."""
+    origin = tmp_path / 'origin'
+    (origin / 'core').mkdir(parents=True)
+    (origin / 'core/a.py').write_bytes(b'a = 1\nb = 2\n')  # committed as LF
+    (origin / 'core/data.bin').write_bytes(b'\x00\r\n\x01')  # binary: kept byte for byte
+    git(origin, '-c', 'core.autocrlf=false', 'init', '-q')
+    git(origin, '-c', 'core.autocrlf=false', 'add', '-A')
+    git(origin, 'commit', '-qm', 'one')
+    digests = []
+    for build, crlf in (('lf', False), ('crlf', True)):
+        repo = tmp_path / build / 'checkout'
+        subprocess.run(['git', 'clone', '-q', '-c', f'core.autocrlf={"true" if crlf else "false"}', str(origin), str(repo)],
+                       check=True, capture_output=True)
+        assert (b'\r\n' in (repo / 'core/a.py').read_bytes()) == crlf
+        stage = tmp_path / build / 'stage'
+        build_package.tracked(repo, ['core'], stage)
+        runtime = tmp_path / build / f'.layer-{os.urandom(4).hex()}' / 'tree'
+        site = runtime / 'runtime/python/site-packages'
+        write(site / 'pkg/__init__.py', 'x = 1\n')
+        (site / 'bin').mkdir(parents=True)
+        (site / 'bin/pkg.exe').write_bytes(b'launcher #!' + str(runtime).encode() + b'\python.exe')
+        (site / 'pkg-1.0.dist-info').mkdir()
+        (site / 'pkg-1.0.dist-info/RECORD').write_bytes(
+            b'pkg/__init__.py,sha256=abc,6\nbin/pkg.exe,sha256=' + os.urandom(4).hex().encode() + b',40\n')
+        build_package.drop_entry_point_launchers(site)
+        assert not (site / 'bin').exists()
+        assert b'bin/' not in (site / 'pkg-1.0.dist-info/RECORD').read_bytes()
+        for path in [*stage.rglob('*'), *runtime.rglob('*')]:
+            os.utime(path, (time.time() - len(digests) * 3600,) * 2)
+        zip_layers.write_layer(runtime, tmp_path / build / 'layer.zip')
+        archive = tmp_path / build / 'package.zip'
+        zip_layers.assemble(archive, build_cache.tree_files(stage), [tmp_path / build / 'layer.zip'])
+        digests.append(build_cache.file_digest(archive))
+        with zipfile.ZipFile(archive) as package:
+            assert package.read('core/a.py') == b'a = 1\nb = 2\n'
+            assert package.read('core/data.bin') == b'\x00\r\n\x01'
+    assert digests[0] == digests[1]
