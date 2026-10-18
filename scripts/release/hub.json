@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "component": "hub",
-  "package_id": "orion-hub-1.1.0-windows-x86_64-cpu",
-  "version": "1.1.0",
+  "package_id": "orion-hub-0.2.0-windows-x86_64-cpu",
+  "version": "0.2.0",
   "sequence": 20,
   "platform": "windows",
   "arch": "x86_64",
