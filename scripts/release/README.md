@@ -294,7 +294,12 @@ it does not interrupt active work. For the Stage 05 baseline, explicitly stop th
 installation when convenient, then resume. Automatic live drain/scheduling is not
 enabled. A proposed Hub must declare `lifecycle.update-quarantine.v1`, including
 for Client-only updates. This prevents starting an older Hub that lacks admission
-quarantine during health checks.
+quarantine during health checks. A component whose manifest also declares
+`lifecycle.update-admission-in-place.v1` (the Hub, with the Client it serves) keeps
+running after a passing health check: the final verify and the result record happen
+while admission is still closed, then `completed` opens admission where it runs and
+the launcher only attaches (window, tray). Others (today's Router, which checks the
+gate only at its start) end health stopped and are started normally.
 
 The schema-1 journal and pointer live in `<registry-parent>/updates/<UUID>/journal.json`
 and `updates/active.json`. Completed release inventories and the registry are

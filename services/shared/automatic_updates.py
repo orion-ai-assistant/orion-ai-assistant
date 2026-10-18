@@ -589,14 +589,16 @@ class AutomaticUpdates:
             return tx
         with update_ui.updating_window(self.registry):
             update_log.log(self.base, 'startup.recover', operation=tx['operation_id'], phase=tx['phase'])
+            recorded = []
             try:
-                result = self.helper.resume(automatic=True)
+                result = self.helper.resume(automatic=True, before_admission=self._record_completed(recorded))
             except LifecycleError:
                 return tx  # Someone else started working on it after all.
         phase = (result or {}).get('phase')
         if phase in {'completed', 'rolled_back', 'failed', 'repair_required'}:
             reason = (result or {}).get('reason') if phase != 'completed' else None
-            update_ui.write_result(self.registry, result, phase, reason or (phase if phase != 'completed' else None))
+            if not (recorded and phase == 'completed'):
+                update_ui.write_result(self.registry, result, phase, reason or (phase if phase != 'completed' else None))
             update_log.log(self.base, 'startup.recovered', outcome=phase, reason=reason)
         return result
 
@@ -618,8 +620,10 @@ class AutomaticUpdates:
             return tx
         with update_ui.updating_window(self.registry):
             update_log.log(base, 'startup.apply', operation=tx['operation_id'])
+            recorded = []
             try:
-                result = self.helper.resume(automatic=True)
+                # A healthy new version keeps running (admitted in place); the launcher then only attaches to it.
+                result = self.helper.resume(automatic=True, before_admission=self._record_completed(recorded))
             except LifecycleError:
                 result = None  # Another operation won the lock between the probe and now.
             if result is None:
@@ -627,9 +631,17 @@ class AutomaticUpdates:
         phase = (result or {}).get('phase')
         if phase in {'completed', 'rolled_back', 'failed', 'repair_required'}:
             reason = (result or {}).get('reason') if phase != 'completed' else None
-            update_ui.write_result(self.registry, result or tx, phase, reason or (phase if phase != 'completed' else None))
+            if not (recorded and phase == 'completed'):
+                update_ui.write_result(self.registry, result or tx, phase, reason or (phase if phase != 'completed' else None))
             update_log.log(base, 'startup.applied', outcome=phase, reason=reason)
         return result
+
+    def _record_completed(self, recorded):
+        """The helper's last step before admission opens: the result the app window shows is on disk first."""
+        from . import update_ui
+        def record(tx):
+            recorded.append(update_ui.write_result(self.registry, tx, 'completed', None))
+        return record
 
 
 def _usable_root(value):

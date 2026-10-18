@@ -18,6 +18,7 @@ Scenarios (--scenarios, default all):
   backing_up    killed after the Hub data backup, before the other components' backups / the switch
   switching     killed right after the registry points at the new version, before its health check
   health_check  killed while the new version is being health-checked (its services are starting)
+  admitting     killed after a passing health check, the new version still running but not yet admitted
 
 Between scenarios the sandbox returns to the same staged state by copying back a snapshot (immutable package
 folders are not copied). Example:
@@ -55,6 +56,8 @@ SCENARIOS = {
     'backing_up': {'action': 'resume', 'pause': 'after:backup:hub', 'expect': {'completed', 'rolled_back'}},
     'switching': {'action': 'resume', 'pause': 'after:registry', 'expect': {'completed', 'rolled_back'}},
     'health_check': {'action': 'resume', 'phase': 'health_check', 'delay': 6, 'expect': {'completed', 'rolled_back'}},
+    # Health passed, the new version keeps running, admission still closed: the last moment before it opens.
+    'admitting': {'action': 'resume', 'pause': 'before:journal:completed', 'expect': {'completed', 'rolled_back'}},
 }
 PAUSE_TIMEOUT = 600
 QUIT_BUDGET = 15  # seconds; a normal quit is expected to take a few

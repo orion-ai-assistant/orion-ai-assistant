@@ -1,4 +1,5 @@
 """Fixed health probe for the candidate Hub, worker, DB, web client and Router."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -27,10 +28,15 @@ def probe(registry, record):
     root = Path(hub['code_path'])
     with launch_environment(registry):
         os.environ['ORION_UPDATE_OPERATION'] = operation
-        for item in record['components']:
-            if item['kind'] == 'router':
-                start_router(str(Path(item['code_path']) / 'cli.py'))
-        start_hub(root, update_operation=operation)
+        routers = [str(Path(c['code_path']) / 'cli.py') for c in record['components'] if c['kind'] == 'router']
+        # Independent trees, databases and ports, and nothing in the Hub's start needs the Router (its Router
+        # work waits for admission): both start at once. The environment is complete before either reads it.
+        # The Hub stays in this thread; each start keeps its own ownership/readiness checks.
+        with ThreadPoolExecutor(max(1, len(routers))) as pool:
+            routers = [pool.submit(start_router, script) for script in routers]
+            start_hub(root, update_operation=operation)
+            for started in routers:
+                started.result()
         # Always use the candidate's own runtime/configuration/schema checker.
         result = subprocess.run([str(root / 'runtime/python/python.exe'), '-B', '-m',
                                  'services.shared.update_health'], cwd=root, env=os.environ.copy(),

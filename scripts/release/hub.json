@@ -24,7 +24,8 @@
   },
   "capabilities": [
     "router.account-access.v1",
-    "lifecycle.update-quarantine.v1"
+    "lifecycle.update-quarantine.v1",
+    "lifecycle.update-admission-in-place.v1"
   ],
   "data_schema": 1,
   "rollback": "same-schema-only",

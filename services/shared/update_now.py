@@ -6,7 +6,8 @@ Two owners, one small state file (`updates/apply-now.json`):
   is idle, closes admission for new work, and hands the request over (`requested`);
 * the retained bootstrap's watcher, which lives outside the Hub-owned Job, stops the services,
   runs the normal helper transaction (backup, switch, health, automatic rollback), restarts
-  everything and records the outcome. The Hub is down during that time.
+  everything and records the outcome. The Hub is down during that time (a healthy new Hub that was started
+  for its health check keeps running and is admitted in place; the restart then only attaches to it).
 
 HTTP never supplies a command, path or package: only the fixed request below is honoured and it
 only applies to the transaction that is staged at that moment.
@@ -216,6 +217,7 @@ def process_request(automatic, *, stop=default_stop, start=default_start, clock=
         return None  # Cancelled in the meantime.
     update_log.log(base, 'apply-now.claimed', operation=state['operation_id'])
     outcome = error = tx = None
+    recorded = []
     with window(registry):
         try:
             tx = helper.status()
@@ -237,8 +239,11 @@ def process_request(automatic, *, stop=default_stop, start=default_start, clock=
                     stop(registry)
                     update(registry, clock=clock, phase='applying')
                     update_log.log(base, 'apply-now.resume')
-                    # Explicit user action: the automatic-update preference/deferral does not apply.
-                    result = helper.resume(automatic=False)
+                    # Explicit user action: the automatic-update preference/deferral does not apply. The result
+                    # is recorded before admission opens; a healthy new version keeps running and `start` only
+                    # attaches to it (window, tray).
+                    result = helper.resume(automatic=False, before_admission=lambda done: recorded.append(
+                        update_ui.write_result(registry, done, 'completed', None, clock=clock)))
                     outcome = result['phase'] if result else None
                     tx = helper.status() or tx
                     if outcome != 'completed':
@@ -252,7 +257,8 @@ def process_request(automatic, *, stop=default_stop, start=default_start, clock=
             error = str(exception) if type(exception) is UpdateError else type(exception).__name__
             update_log.log_exception(base, 'apply-now', exception)
         update(registry, clock=clock, phase='restarting', outcome=outcome)
-        update_ui.write_result(registry, tx, outcome, error, clock=clock)
+        if not (recorded and outcome == 'completed' and error is None):
+            update_ui.write_result(registry, tx, outcome, error, clock=clock)
         try:
             if outcome != 'repair_required':
                 start(registry)  # Also after a rollback or failure: never leave the PC without Orion.
