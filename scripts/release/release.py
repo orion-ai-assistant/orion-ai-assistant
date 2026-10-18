@@ -3,9 +3,9 @@
     .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish]
 
 1. `build_release.py` (build cache, parallel builds, full acceptance; reuses an identical earlier pass).
-2. `publish_release.py` with the candidate directory and the acceptance result of step 1.
-   The bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the
-   newest staged bundle (its contents only differ because it bundles shared scripts); bump
+2. `publish_release.py --feed router` and then `--feed hub` (two feeds, same key) with the candidate directory
+   and the acceptance result of step 1. Each feed's bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the
+   newest staged bundle of that feed (its contents only differ because it bundles shared scripts); bump
    bootstrap.json to ship a new one.
 The release key passphrase is asked once, by the publish step. Nothing is published when a step fails.
 """
@@ -45,10 +45,10 @@ def run_build(extra):
     return candidates, result
 
 
-def staged_bootstrap():
-    """Newest staged bootstrap bundle, with the sequence it was built for."""
-    versions = sorted((p for p in (ROOT / '.tmp/release').glob('v*') if p.name[1:].isdigit()),
-                      key=lambda p: int(p.name[1:]), reverse=True)
+def staged_bootstrap(feed):
+    """Newest staged bootstrap bundle of one feed, with the sequence it was built for."""
+    versions = sorted((p for p in (ROOT / '.tmp/release').glob(f'{feed}-v*') if p.name.rsplit('v', 1)[1].isdigit()),
+                      key=lambda p: int(p.name.rsplit('v', 1)[1]), reverse=True)
     for directory in versions:
         bundle = directory / 'artifacts' / BOOTSTRAP
         target = bundle.with_suffix('.target.json')
@@ -57,28 +57,43 @@ def staged_bootstrap():
     return None, None
 
 
+def publish(feed, candidates, result, dry_run):
+    command = [sys.executable, str(HERE / 'publish_release.py'), '--feed', feed, '--artifacts', str(candidates),
+               '--accepted-result', str(result), '--inputs', str(ROOT / '.tmp/inputs')]
+    bundle, sequence = staged_bootstrap(feed)
+    wanted = json.loads((HERE / 'bootstrap.json').read_text(encoding='utf-8-sig'))['sequence']
+    if bundle is not None and sequence == wanted:
+        print(f'[{feed}] bootstrap unchanged (sequence {wanted}): reusing {bundle}', flush=True)
+        command += ['--reuse-bootstrap', str(bundle)]
+    else:
+        print(f'[{feed}] new bootstrap (sequence {wanted}) will be built and published.', flush=True)
+    if dry_run:
+        command.append('--dry-run')
+    code = subprocess.run(command, cwd=ROOT).returncode
+    if code:
+        raise SystemExit(f'Publishing the {feed} feed failed (exit {code}).')
+
+
+def changed_feeds(candidates):
+    """Feeds that have a package which is not online yet is decided by publish_release (it skips online assets),
+    so every feed is offered; `--feeds` narrows it."""
+    return ['router', 'hub']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--no-publish', action='store_true', help='build and accept only')
     parser.add_argument('--dry-run', action='store_true', help='stage and sign everything, upload nothing')
     parser.add_argument('--force-accept', action='store_true', help='run the full acceptance again')
+    parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
+                        help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
     candidates, result = run_build(['--force-accept'] if args.force_accept else [])
     print(f'\nBuilt and accepted: {candidates.name}\nAcceptance: {result}', flush=True)
     if args.no_publish:
         return
-    command = [sys.executable, str(HERE / 'publish_release.py'), '--artifacts', str(candidates),
-               '--accepted-result', str(result), '--inputs', str(ROOT / '.tmp/inputs')]
-    bundle, sequence = staged_bootstrap()
-    wanted = json.loads((HERE / 'bootstrap.json').read_text(encoding='utf-8-sig'))['sequence']
-    if bundle is not None and sequence == wanted:
-        print(f'Bootstrap unchanged (sequence {wanted}): reusing {bundle}', flush=True)
-        command += ['--reuse-bootstrap', str(bundle)]
-    else:
-        print(f'New bootstrap (sequence {wanted}) will be built and published.', flush=True)
-    if args.dry_run:
-        command.append('--dry-run')
-    raise SystemExit(subprocess.run(command, cwd=ROOT).returncode)
+    for feed in args.feeds:  # The Router feed first: the Hub feed no longer lists a Router target.
+        publish(feed, candidates, result, args.dry_run)
 
 
 if __name__ == '__main__':
