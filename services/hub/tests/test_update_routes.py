@@ -138,6 +138,16 @@ class CheckNowTests(unittest.TestCase):
             self.assertFalse(api.read_status()['checking'])  # The check already ran and finished.
             api._requested['at'] = 0.0
 
+    def test_activity_follows_journal_and_state_whichever_process_checks(self):
+        pick = api.activity
+        self.assertEqual(pick({'checking': True, 'pending': None}), 'checking')
+        self.assertEqual(pick({'checking': True, 'check_outcome': 'update_found', 'pending': None}), 'found')
+        # A manual check that failed does not hide the watcher's download.
+        self.assertEqual(pick({'checking': False, 'error': 'CheckProcessFailed',
+                               'pending': {'phase': 'downloading'}}), 'downloading')
+        self.assertEqual(pick({'checking': True, 'pending': {'phase': 'staged'}}), 'ready')
+        self.assertEqual(pick({'checking': False, 'pending': None}), 'idle')
+
     def test_check_now_without_retained_runtime_is_refused(self):
         with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=None), \
                 patch.object(api.subprocess, 'Popen') as popen:

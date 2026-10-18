@@ -151,6 +151,18 @@ class UpdateHelper:
             raise UpdateError('Invalid operation identity')
         return canonical_path(self.base / identity, must_exist=True)
 
+    @staticmethod
+    def _read_journal(path):
+        # The journal is replaced many times a second while a download reports progress; on Windows a reader
+        # can hit the replace for a moment. Only a read that keeps failing is a damaged journal.
+        for attempt in range(5):
+            try:
+                return json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+
     def status(self):
         pointer = canonical_path(self.base / 'active.json')
         if not pointer.exists():
@@ -161,7 +173,7 @@ class UpdateHelper:
             if active['schema'] != 1 or str(uuid.UUID(identity)) != identity:
                 raise ValueError()
             path = canonical_path(self.base / identity / 'journal.json', must_exist=True)
-            tx = json.loads(path.read_text(encoding='utf-8'))
+            tx = self._read_journal(path)
             if (tx['schema'] != 1 or tx['operation_id'] != identity or tx['phase'] not in PHASES
                     or tx['installation_id'] != self.registry.read()['installation_id']):
                 raise ValueError()
@@ -171,6 +183,18 @@ class UpdateHelper:
             return tx
         except (ValueError, OSError, KeyError, TypeError) as error:
             raise UpdateError('Update journal invalid; explicit repair required') from error
+
+    def idle_now(self, tx):
+        """Cheap "would applying work right now" decision (no hashing, no waiting, nothing stopped):
+        no other update operation is running and no service or leftover process holds the installation."""
+        from .process_lifecycle import LifecycleError
+        try:
+            with operation_lock(self.registry.path, timeout=0):
+                pass
+        except LifecycleError:
+            return False
+        quiet = getattr(self.host, 'quiet_now', None)
+        return True if quiet is None else bool(quiet(tx['previous']))
 
     def prepare(self, client, names, *, automatic=False, automatic_scope='hub'):
         with operation_lock(self.registry.path, timeout=0):
@@ -560,6 +584,18 @@ class NativeHost:
             return StoppedInstallation(self.registry, operation_locked=True)
         return StoppedPackages(record)
 
+    def quiet_now(self, record):
+        """Immediate and side-effect free: could the installation be locked and stopped right now?
+        Never waits: a Hub that is running, or a tree that is still exiting, is simply "not now"."""
+        if any(c['distribution'] == 'legacy-source' for c in record['components']):
+            return True  # Legacy installations are gated by their own, unchanged check.
+        gate = StoppedPackages(record, wait=0)
+        try:
+            return bool(gate.__enter__())
+        finally:
+            gate.__exit__(None, None, None)
+            self.refused = gate.refused
+
     def stop(self, record):
         from .launcher import launch_environment
         from .native_services import stop_hub, stop_router
@@ -640,8 +676,9 @@ def stop_and_wait(state, stop):
 
 
 class StoppedPackages:
-    def __init__(self, record):
-        self.record, self.stack = record, ExitStack()
+    def __init__(self, record, wait=CONSUMER_WAIT):
+        self.record, self.stack, self.wait = record, ExitStack(), wait
+        self.refused = None  # "name:pid" of the process that kept the installation busy, for the log
 
     def __enter__(self):
         from .process_lifecycle import InstanceLock, Runtime, child_tree_alive, LifecycleError
@@ -676,8 +713,9 @@ class StoppedPackages:
             check = StoppedInstallation.__new__(StoppedInstallation)
             check.record = self.record
             try:
-                check._unmanaged_consumers(wait=CONSUMER_WAIT)
-            except MigrationError:
+                check._unmanaged_consumers(wait=self.wait)
+            except MigrationError as error:
+                self.refused = getattr(error, 'offender', None)
                 # Still in use after the grace period: not idle yet. The transaction stays
                 # waiting_for_idle and is retried; it is not failed for a process that is about to exit.
                 self.stack.close()

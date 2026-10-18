@@ -63,7 +63,27 @@ def read_status():
     if (not data.get('checking') and _requested['at'] and time.time() - _requested['at'] < _REQUEST_GRACE
             and attempt < _requested['at']):
         data['checking'] = True  # Started but not yet running: still "denetleniyor".
+    data['activity'] = activity(data)
     return data
+
+
+PREPARING = {'checking', 'downloading', 'verifying'}
+
+
+def activity(data):
+    """What the PC is doing about updates, from its own files whichever process started the check:
+    `downloading` (a release was found and is being fetched), `ready` (staged, "Şimdi güncelle"),
+    `checking`, or `idle`. The journal phases checking/downloading/verifying only exist once a newer
+    signed release was found, so they are never "just checking"."""
+    pending = data.get('pending') or {}
+    phase = pending.get('phase')
+    if phase in PREPARING:
+        return 'downloading'
+    if phase in {'staged', 'waiting_for_idle'}:
+        return 'ready'
+    if data.get('checking'):
+        return 'found' if data.get('check_outcome') == 'update_found' else 'checking'
+    return 'idle'
 
 
 @router.get('')

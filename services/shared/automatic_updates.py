@@ -18,9 +18,11 @@ from .installation_paths import canonical_path, validate_private_directory
 from .update_helper import UpdateHelper, UpdateError
 from .process_lifecycle import LifecycleError
 from .update_gate import TERMINAL
+from .release_packages import PackageError
 from . import update_log
 
 INTERVAL = 6 * 60 * 60
+RETRY_PAUSE = 3  # seconds before the single retry of a feed that failed while the bootstrap replaced itself
 
 
 def read_json(path, default):
@@ -359,8 +361,7 @@ class AutomaticUpdates:
                         continue
                     polled += 1
                     try:
-                        client = self.new_client(feed)
-                        result, targets = client.check(list(selected.values()))
+                        client, result, targets = self._poll_feed(feed, selected)
                     except Exception as error:
                         # One feed that cannot even start (bad cache, bad URL) must not block the others.
                         failures.append(type(error).__name__)
@@ -415,6 +416,22 @@ class AutomaticUpdates:
                 state['outcome_at'] = self.clock()
                 write_json(self.state_path, state)
 
+    def _poll_feed(self, feed, selected):
+        """One signed check of one feed. A PackageError is retried once: the retained bootstrap replacing
+        itself (trust root, cache) at that very moment makes the first read fail, the second one succeeds."""
+        for attempt in (1, 2):
+            try:
+                client = self.new_client(feed)
+                result, targets = client.check(list(selected.values()))
+                if targets is None and attempt == 1 and result.get('reason') == 'PackageError':
+                    raise PackageError('transient')
+                return client, result, targets
+            except PackageError as error:
+                if attempt == 2:
+                    raise
+                update_log.log(self.base, 'check.retry', reason=type(error).__name__)
+                time.sleep(RETRY_PAUSE)
+
     def _adopt_bootstrap(self, source, state):
         """Newer signed bootstrap -> prepared beside the running one and made active."""
         from . import bootstrap_update
@@ -444,9 +461,22 @@ class AutomaticUpdates:
             return tx
         from . import update_ui
         base = self.base
+        # Decide cheaply and first: the window, the 300 MB re-hash and the stop attempt only happen when the
+        # update can really be applied now. A running Hub, a tree that is still exiting or another update
+        # operation means "not now": launch normally, the staged update stays for the next opportunity or
+        # for "Şimdi güncelle".
+        if not self.helper.idle_now(tx):
+            update_log.log(base, 'startup.apply-skipped', operation=tx['operation_id'],
+                           busy=getattr(self.helper.host, 'refused', None) or 'running')
+            return tx
         with update_ui.updating_window(self.registry):
             update_log.log(base, 'startup.apply', operation=tx['operation_id'])
-            result = self.helper.resume(automatic=True)
+            try:
+                result = self.helper.resume(automatic=True)
+            except LifecycleError:
+                result = None  # Another operation won the lock between the probe and now.
+            if result is None:
+                return tx
         phase = (result or {}).get('phase')
         if phase in {'completed', 'rolled_back', 'failed', 'repair_required'}:
             reason = (result or {}).get('reason') if phase != 'completed' else None

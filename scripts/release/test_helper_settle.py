@@ -72,3 +72,15 @@ def test_helper_gate_reports_not_idle_instead_of_raising(tmp_path, monkeypatch):
     monkeypatch.setattr(StoppedInstallation, '_scan_consumers', scan_ok)
     with update_helper.StoppedPackages(record(tmp_path)) as idle:
         assert idle is True
+
+
+def test_launch_probe_never_waits_and_names_the_leftover_process(tmp_path, monkeypatch):
+    def scan(self):
+        error = MigrationError('An uncoordinated process uses this installation; migration refused')
+        error.offender = 'python.exe:4242'
+        raise error
+    monkeypatch.setattr(StoppedInstallation, '_scan_consumers', scan)
+    monkeypatch.setattr(migration_host.time, 'sleep', lambda s: pytest.fail('the launch probe must not wait'))
+    host = update_helper.NativeHost.__new__(update_helper.NativeHost)
+    assert host.quiet_now(record(tmp_path)) is False
+    assert host.refused == 'python.exe:4242'
