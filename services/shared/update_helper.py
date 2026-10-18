@@ -341,6 +341,14 @@ class UpdateHelper:
                 verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
             self._verified.add((item['kind'], suffix))
 
+    def _settle(self, tx, record):
+        """Services are stopped: finish a crashed PostgreSQL's recovery (power loss, killed tree) before
+        anything starts it, also for component versions whose own start cannot (see postgres_recovery)."""
+        settle = getattr(self.host, 'settle', None)
+        if settle is not None:
+            with self._timed(tx, 'settle.databases'):
+                settle(record)
+
     def _guard_entry(self):
         """This helper's own Orion.ps1: the guard (and the recovery of an apply cut off by power loss) also works
         when the installed Hub predates it. Every Hub launch rewrites the entry with the Hub's copy, so it is
@@ -475,6 +483,7 @@ class UpdateHelper:
                     try:
                         if not idle:
                             return self._phase(tx, 'waiting_for_idle')
+                        self._settle(tx, tx['previous'])
                         self._guard_entry()
                         self._phase(tx, 'draining', progress=self._shape('draining', 0, 1))
                         self._phase(tx, 'backing_up', progress=self._shape('backing_up', 0, 1, unit='files'))
@@ -494,6 +503,7 @@ class UpdateHelper:
                     with self.host.stopped(current) as idle:
                         if not idle:
                             raise UpdateError('Candidate processes could not be reconciled')
+                        self._settle(tx, current)
                         self._verify_backups(tx)  # Recovery after a restart: full proof of the backup.
                         self._publish(tx, tx['proposed'], True)
                 if tx['attempts'] >= 2:
@@ -525,6 +535,7 @@ class UpdateHelper:
                 finally:
                     stopped.__exit__(None, None, None)
             except Exception as error:
+                update_log.log_exception(self.base, 'update.resume', error)
                 if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
                     # Nothing has switched. In particular, a corrupt download
                     # must never cause rollback to stop a still-busy old Hub.
@@ -542,6 +553,7 @@ class UpdateHelper:
             with self.host.stopped(current) as idle:
                 if not idle:
                     raise UpdateError('Rollback consumers still running')
+                self._settle(tx, current)
                 # Same-schema only. Keep all data, including candidate startup
                 # writes. Backups require explicit repair, never silent restore.
                 self._publish(tx, tx['previous'], False)
@@ -559,6 +571,7 @@ class UpdateHelper:
                     unprotect_sources(self, tx)
                 return self._phase(tx, 'rolled_back')
         except Exception as error:
+            update_log.log_exception(self.base, 'update.rollback', error)
             return self._phase(tx, 'repair_required', reason=type(error).__name__)
 
     def rollback(self):
@@ -625,6 +638,12 @@ class NativeHost:
                 stop = (lambda: stop_hub(item['code_path'], update_operation=operation)) if item['kind'] == 'hub' else (
                     lambda: stop_router(str(Path(item['code_path']) / 'cli.py')))
                 stop_and_wait(state, stop)
+
+    def settle(self, record):
+        from .postgres_recovery import recover
+        recovered = recover(record, log_dir=self.registry.path.parent / 'updates')
+        if recovered:
+            update_log.log(self.registry.path.parent / 'updates', 'update.database-recovered', count=len(recovered))
 
     def health(self, record):
         # Implemented in a dedicated module to keep the transaction core free

@@ -33,7 +33,9 @@ class Postgres:
             if canonical(lines[1]) != canonical(self.data):
                 raise LifecycleError('PostgreSQL data identity mismatch')
             process = psutil.Process(pid)
-            if abs(process.create_time() - started) > 2 or canonical(process.exe()) != canonical(self.executable):
+            if abs(process.create_time() - started) > 2:
+                return None  # Stale lock file of a crashed postmaster; its PID now belongs to another process.
+            if canonical(process.exe()) != canonical(self.executable):
                 raise LifecycleError('PostgreSQL PID ownership mismatch; record retained')
             command = process.cmdline()
             if not any(canonical(arg) == canonical(self.data) for arg in command[1:] if not arg.startswith('-')):
@@ -81,7 +83,9 @@ class Postgres:
             assert_port_free(self.port)
             if not (self.data / 'PG_VERSION').is_file() or not self.ctl.is_file():
                 raise LifecycleError('PostgreSQL requires setup before start')
-            command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(self.data / 'server.log'),
+            # The log lives beside the data directory: crash recovery fsyncs every file inside it, and on Windows
+            # the log that pg_ctl holds open made that walk retry for 30 s (a failed first start after power loss).
+            command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(self.data.parent / 'server.log'),
                        '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on', '-w', '-t', '30']
             # Windows pg_ctl may hand inherited pipe handles to its daemon.
             # A logfile + DEVNULL avoids communicate() waiting on that daemon.
