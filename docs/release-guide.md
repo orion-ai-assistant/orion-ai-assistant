@@ -81,7 +81,25 @@ Parola kuralları:
 
 ### Metadata ömrü
 
-Tek anahtarlı metadata bir yıl geçerlidir. Kod değişmese de yılda en az bir kez yayın yapılmalıdır.
+Tek anahtarlı metadata (targets, snapshot, timestamp) ve kök kaydı 100 yıl geçerlidir; yayın yapılmasa da kurulu Orion'lar
+güncelleme görmeye devam eder. Ne kadar süre kapalı kalmış olursa olsun her PC açıldığında feed'deki güncel imzalı dosyaları
+okur ve günceller.
+
+Bunun bir bedeli var, bilerek kabul edildi: bir PC'nin ağını kontrol eden biri ona daha eski bir imzalı yayını göstermeye
+devam edebilir. Ama o PC elindekinden eski bir şeyi asla kurmaz; sürüm ve sequence kontrolleri bunu engeller.
+
+Kök kaydını yenilemek (aynı anahtar, yeni bir 100 yıl):
+
+```powershell
+.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py renew-root
+```
+
+1. Komut `scripts/release/trusted-root.json`'u bir sonraki sürüme yükseltir.
+2. Dosyayı commit et.
+3. `bootstrap.json`'u yükselt; yeni kök kaydı bootstrap'a girdiği için bu gerekli.
+4. `release.cmd` çalıştır. Yayın, yeni `N.root.json`'u iki feed'e de yükler.
+
+Eski PC'ler kök kaydı zincirini (1 → 2 → …) kendileri takip eder. `N.root.json` dosyaları feed'den asla silinmez.
 
 ## 3. Yayından önce: sürüm numaralarını yükselt
 

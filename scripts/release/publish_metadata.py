@@ -20,8 +20,11 @@ from services.shared.release_packages import (RUNTIME_REFERENCE, sha256, validat
 
 
 DEFAULT_EXPIRY_DAYS = {'targets': 30, 'snapshot': 7, 'timestamp': 1}
-# One manually signed key cannot refresh a one-day timestamp; republish yearly.
-SINGLE_KEY_EXPIRY_DAYS = {'targets': 365, 'snapshot': 365, 'timestamp': 365}
+# One manually signed key cannot refresh a short-lived timestamp, and a project that pauses releases must never
+# lock its installations out of updates: single-key metadata stays valid for 100 years. Trade-off, accepted: someone
+# who controls a PC's network could keep showing it an older signed release (it still never installs anything older
+# than it has: the version and sequence checks stay).
+SINGLE_KEY_EXPIRY_DAYS = {'targets': 36500, 'snapshot': 36500, 'timestamp': 36500}
 
 
 def publish(artifacts, output, root_path, signers, *, version, now=None, expiry_days=None, carry=None):

@@ -348,12 +348,17 @@ def test_check_command_stops_after_handing_over(feed, monkeypatch):
     assert 'check.handed-over' in (feed.helper.base / 'watcher.log').read_text(encoding='utf-8')
 
 
-def test_pending_update_is_logged_once_not_every_poll(feed):
+def test_a_waiting_update_is_checked_once_per_interval_not_every_poll(feed):
+    # A downloaded update waiting to be applied no longer blocks checks (a newer release replaces it), but the
+    # watcher's 5 s polls still do nothing between two scheduled checks, and nothing is logged for them.
     service = feed.service(feed.current())
     feed.helper.prepare(feed.client.fresh(), [feed.hub_name])
+    waiting = feed.helper.status()['operation_id']
     service.state_path.write_text(json.dumps({'schema': 1, 'last_attempt': 0}))
     for _ in range(3):
         service.check()
-    service.check(now=True)  # An explicit refresh always says why.
+    service.check(now=True)  # An explicit refresh checks again.
     log = (feed.helper.base / 'watcher.log').read_text(encoding='utf-8')
-    assert log.count('check.skipped scope=hub outcome=pending') == 2
+    assert log.count('check.start scope=hub') == 2 and 'outcome=pending' not in log
+    assert json.loads(service.state_path.read_text())['outcome'] == 'pending'   # Still the newest: kept.
+    assert feed.helper.status()['operation_id'] == waiting

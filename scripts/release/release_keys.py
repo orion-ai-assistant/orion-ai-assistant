@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from securesystemslib.signer import CryptoSigner, SSlibKey
 from tuf.api.metadata import Metadata, Root
 
-ROOT_VALID_DAYS = 365 * 5
+ROOT_VALID_DAYS = 36500  # 100 years: an installation must never be locked out by an expired root.
 PASSPHRASE_ENV = 'ORION_RELEASE_KEY_PASSPHRASE'
 
 
@@ -72,15 +72,41 @@ def single_key_root(root):
         and len({next(iter(ids)) for ids in keyids.values()}) == 1
 
 
+def renew_root(key_path, public_root, passphrase=None, *, now=None):
+    """Next root version: same key and roles, valid ROOT_VALID_DAYS from now, signed by the release key (which
+    satisfies both the old and the new root, as TUF requires). The next release publishes it as N.root.json;
+    installed clients walk 1 -> 2 -> ... from the root they ship with, so nothing else changes for them."""
+    public_root = Path(public_root)
+    root = Metadata.from_file(str(public_root))
+    if not isinstance(root.signed, Root) or not single_key_root(root):
+        raise ValueError('renew-root handles the one-key root created by init only')
+    signer = load_signer(key_path, passphrase)
+    if signer.public_key.keyid not in root.signed.roles['root'].keyids:
+        raise ValueError('This release key does not sign the current root')
+    root.signed.version += 1
+    root.signed.expires = (now or datetime.now(timezone.utc)) + timedelta(days=ROOT_VALID_DAYS)
+    root.signatures.clear()
+    root.sign(signer)
+    root.verify_delegate('root', root)
+    public_root.write_bytes(root.to_bytes())
+    return root.signed.version, root.signed.expires
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['init', 'check'])
+    parser.add_argument('action', choices=['init', 'check', 'renew-root'],
+                        help='renew-root: next root version valid for 100 years (commit trusted-root.json, then release)')
     parser.add_argument('--key-dir', type=Path, default=Path.home() / '.orion-release')
     parser.add_argument('--public-root', type=Path, default=Path(__file__).with_name('trusted-root.json'))
     args = parser.parse_args()
     if args.action == 'check':
         load_signer(args.key_dir / 'release-key.pem')
         print('Passphrase is correct; the release key unlocks.')
+        sys.exit(0)
+    if args.action == 'renew-root':
+        version, expires = renew_root(args.key_dir / 'release-key.pem', args.public_root)
+        print(f'Root version {version}, valid until {expires:%Y-%m-%d}: {args.public_root}\n'
+              'Commit it; the next release.cmd publishes it to both feeds.')
         sys.exit(0)
     key, public = init(args.key_dir, args.public_root)
     print(f'Private key (keep secret, back it up): {key}\nPublic root (commit this): {public}')
