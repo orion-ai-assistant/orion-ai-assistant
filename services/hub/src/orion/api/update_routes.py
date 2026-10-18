@@ -86,13 +86,30 @@ def activity(data):
     return 'idle'
 
 
+_last = {'data': None}
+
+
+def read_status_or_last():
+    """Never an HTTP error for the card: while an update operation (a launch-time apply, a check) holds
+    files or locks for a while, answer with the last known state flagged `busy`. The real exception, with
+    its location, goes to the update log (never to the response)."""
+    try:
+        data = read_status()
+        _last['data'] = data
+        return data
+    except Exception as error:
+        try:
+            from services.shared import update_log
+            update_log.log_exception(Registry().path.parent / 'updates', 'status.read', error)
+        except Exception:
+            pass  # Diagnostics only.
+        return {**(_last['data'] or {}), 'busy': True, 'busy_message': 'Güncelleme işlemi sürüyor.'}
+
+
 @router.get('')
 async def status(request: Request, user: str = Depends(get_current_user)):
-    try:
-        result = await asyncio.to_thread(read_status)
-        return {**result, 'can_manage': local_control(request)}
-    except (OSError, ValueError, RuntimeError) as error:
-        raise HTTPException(503, 'Güncelleme bilgileri okunamadı; yerel onarma kaydını kontrol edin.') from error
+    result = await asyncio.to_thread(read_status_or_last)
+    return {**result, 'can_manage': local_control(request)}
 
 
 class Preferences(BaseModel):
