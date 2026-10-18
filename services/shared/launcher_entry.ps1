@@ -34,8 +34,18 @@ function Get-OrionUpdatePhase([string]$pending) {
     }
     return $journal.phase
 }
+function Test-OrionApplyNow([string]$pending) {
+    # "Update now" runs in the retained watcher (stop -> switch -> restart); the journal alone stays 'staged' for a while.
+    try {
+        $path = Join-Path (Split-Path -Parent $pending) 'apply-now.json'
+        if (-not (Test-Path -LiteralPath $path)) { return $false }
+        $state = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $fresh = ([DateTime]::Now - (Get-Item -LiteralPath $path).LastWriteTime).TotalMinutes -lt 10
+        return $fresh -and (@('stopping', 'applying', 'restarting') -contains $state.phase)
+    } catch { return $false }
+}
 function Test-OrionUpdating([string]$pending) {
-    try { return $applying -contains (Get-OrionUpdatePhase $pending) } catch { return $true }
+    try { return ($applying -contains (Get-OrionUpdatePhase $pending)) -or (Test-OrionApplyNow $pending) } catch { return $true }
 }
 function Wait-OrionUpdate([string]$pending) {
     $deadline = [DateTime]::Now.AddMinutes(30)
@@ -69,7 +79,7 @@ try {
     $pending = Join-Path (Split-Path -Parent $PSScriptRoot) 'updates/active.json'
     if (-not $Stop -and (Test-Path -LiteralPath $pending)) {
         $phase = Get-OrionUpdatePhase $pending
-        if ($applying -contains $phase) {
+        if (($applying -contains $phase) -or (Test-OrionApplyNow $pending)) {
             # Another start is switching versions right now: wait calmly, do not show the Repair dialog.
             Wait-OrionUpdate $pending
             $phase = Get-OrionUpdatePhase $pending

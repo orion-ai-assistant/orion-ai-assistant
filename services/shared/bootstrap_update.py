@@ -39,7 +39,8 @@ REQUIRED_FILES = (
     'scripts/release/install_new.py', 'scripts/release/manage_installation.py',
     'services/shared/automatic_updates.py', 'services/shared/bootstrap_update.py',
     'services/shared/update_helper.py', 'services/shared/release_packages.py',
-    'services/shared/launcher_entry.ps1', 'services/shared/tray.ps1',
+    'services/shared/launcher_entry.ps1', 'services/shared/tray.ps1', 'services/shared/updating.ps1',
+    'services/shared/update_now.py', 'services/shared/update_log.py', 'services/shared/update_ui.py',
 )
 
 

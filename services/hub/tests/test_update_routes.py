@@ -111,6 +111,33 @@ class CheckNowTests(unittest.TestCase):
             api._report_failure(process, 'registry')
             record.assert_not_called()
 
+    def test_check_process_that_cannot_start_is_recorded_for_the_card(self):
+        with patch.object(api, 'Registry'),                 patch.object(api, 'runtime_command', return_value=['py']),                 patch.object(api.subprocess, 'Popen', side_effect=OSError('no such file')),                 patch.object(api, 'record_check_failure') as record,                 patch.object(api, 'read_status', return_value={'ok': True}):
+            self.assertEqual(CHANGE_PREFERENCES(api.Preferences(check_now=True)), {'ok': True})
+            record.assert_called_once()
+            self.assertEqual(record.call_args.args[-1], 'CheckProcessNotStarted')
+            self.assertEqual(api._requested['at'], 0.0)
+
+    def test_status_reports_checking_during_the_start_grace_period_and_the_last_result(self):
+        import time as clock
+        registry = unittest.mock.Mock()
+        registry.read.return_value = {'preferences': {'start_with_windows': False, 'show_client': True}}
+        automatic = unittest.mock.Mock()
+        attempt = [100.0]
+        automatic.status.side_effect = lambda: {'checking': False, 'last_attempt': attempt[0]}
+        automatic.policy.return_value = {'enabled': False}
+        with patch.object(api, 'Registry', return_value=registry),                 patch.object(api, 'AutomaticUpdates', return_value=automatic),                 patch.object(api, 'runtime_command', return_value=['x']),                 patch.object(api, 'router_managed', return_value=False),                 patch.object(api.update_now, 'view', return_value=None),                 patch.object(api.update_ui, 'read_result', return_value={'status': 'completed', 'message': 'Güncellendi: hub 1.', 'at': 1, 'seen': False}):
+            api._requested['at'] = clock.time()
+            status = api.read_status()
+            self.assertTrue(status['checking'])  # Pressed, process not yet running.
+            self.assertEqual(status['last_result']['message'], 'Güncellendi: hub 1.')
+            api._requested['at'] = clock.time() - api._REQUEST_GRACE - 1
+            self.assertFalse(api.read_status()['checking'])
+            api._requested['at'] = clock.time()
+            attempt[0] = clock.time() + 1
+            self.assertFalse(api.read_status()['checking'])  # The check already ran and finished.
+            api._requested['at'] = 0.0
+
     def test_check_now_without_retained_runtime_is_refused(self):
         with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=None), \
                 patch.object(api.subprocess, 'Popen') as popen:

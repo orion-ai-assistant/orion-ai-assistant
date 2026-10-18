@@ -10,9 +10,31 @@ from services.shared import bootstrap_update
 from services.shared.installation_registry import Registry
 from services.shared.update_gate import blocked
 from services.shared.process_lifecycle import LifecycleError
+from services.shared import update_log
 
 
 def main():
+    # No console exists for these processes: whatever goes wrong must land in updates/watcher.log.
+    registry = None
+    try:
+        registry = _registry_argument()
+        return run()
+    except SystemExit:
+        raise
+    except BaseException as error:
+        if registry is not None:
+            update_log.log_exception(registry.parent / 'updates', 'update_automatic', error)
+        raise
+
+
+def _registry_argument():
+    for index, value in enumerate(sys.argv):
+        if value == '--registry' and index + 1 < len(sys.argv):
+            return Path(sys.argv[index + 1])
+    return None
+
+
+def run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('action', choices=['check', 'startup', 'watch'])

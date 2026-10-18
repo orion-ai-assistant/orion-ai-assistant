@@ -163,11 +163,12 @@ class UpdateHelper:
                     raise UpdateError('Proposed Hub needs lifecycle.update-quarantine.v1; update Hub with Client')
                 if 'router' in manifests and 'lifecycle.update-quarantine.v1' not in manifests['router'].get('capabilities', []):
                     raise UpdateError('Proposed Router needs lifecycle.update-quarantine.v1')
-                for target in targets.values():
+                for number, target in enumerate(targets.values(), 1):
                     kind = target.custom['component']
                     item = next(c for c in proposed['components'] if c['kind'] == kind)
                     tree = canonical_path(Path(item['code_path']).parent / target.custom['package_id'])
-                    self._phase(tx, 'downloading')
+                    # The app card shows "indiriliyor (1/3)": which component of how many is being fetched.
+                    self._phase(tx, 'downloading', progress={'done': number - 1, 'total': len(targets), 'component': kind})
                     if tree.exists():
                         validate_private_directory(tree)
                         # A previous interrupted/rolled-back attempt may have
@@ -202,7 +203,7 @@ class UpdateHelper:
                     tx['changes'].append(kind)
                     tx['verification'][kind] = {'sha256': receipt['sha256'], 'length': receipt['length'], 'verified': True}
                 tx['proposed'] = proposed
-                return self._phase(tx, 'staged')
+                return self._phase(tx, 'staged', progress={'done': len(targets), 'total': len(targets), 'component': None})
             except Exception as error:
                 self._phase(tx, 'failed', reason=type(error).__name__)
                 raise

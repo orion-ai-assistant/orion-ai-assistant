@@ -3,6 +3,7 @@ import asyncio
 from contextlib import suppress
 import subprocess
 import threading
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, StrictBool
@@ -11,7 +12,7 @@ from typing import Literal
 from orion.api.auth_routes import get_current_user
 from orion.api.access_boundary import is_desktop_peer, local_flutter_origin
 from services.shared.installation_registry import Registry
-from services.shared import update_now
+from services.shared import update_now, update_ui
 from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command
 from services.shared.process_lifecycle import LifecycleError
 from services.shared.installation_registry import operation_lock
@@ -39,6 +40,12 @@ def router_managed(registry, record=None):
                         and c['management'] == 'local' for c in record['components']))
 
 
+# When the refresh button last started a check process in this Hub. The check writes its own pid only after
+# it started, so the card would otherwise flicker from "pressed" to "idle" before "checking" appears.
+_requested = {'at': 0.0}
+_REQUEST_GRACE = 20
+
+
 def read_status():
     registry = Registry()
     if registry.read() is None:
@@ -51,6 +58,11 @@ def read_status():
     data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
     data['router_configured'] = router_managed(registry, record)
     data['apply_now'] = update_now.view(registry)
+    data['last_result'] = update_ui.read_result(registry)
+    attempt = max(data.get('last_attempt') or 0, data.get('check_outcome_at') or 0)
+    if (not data.get('checking') and _requested['at'] and time.time() - _requested['at'] < _REQUEST_GRACE
+            and attempt < _requested['at']):
+        data['checking'] = True  # Started but not yet running: still "denetleniyor".
     return data
 
 
@@ -79,10 +91,16 @@ def check_now(registry):
     command = runtime_command(registry)
     if command is None:
         raise ValueError('Retained update runtime unavailable')
+    _requested['at'] = time.time()
     # A concurrent check holds the per-installation lock and the extra process exits at once.
-    process = subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                               close_fds=True)
+    try:
+        process = subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                                   close_fds=True)
+    except OSError:
+        _requested['at'] = 0.0
+        record_check_failure(registry, 1, 'CheckProcessNotStarted')
+        return
     # A bootstrap too old for these arguments exits at once (argparse code 2). Make that
     # visible in automatic.json for the card instead of silently doing nothing.
     threading.Thread(target=_report_failure, args=(process, registry), daemon=True).start()
@@ -91,6 +109,7 @@ def check_now(registry):
 def _report_failure(process, registry):
     try:
         code = process.wait()
+        _requested['at'] = 0.0
         if isinstance(code, int) and code:
             record_check_failure(registry, code)
     except Exception:
@@ -135,16 +154,12 @@ async def preferences(payload: Preferences, request: Request, user: str = Depend
     try:
         return await asyncio.to_thread(change_preferences, payload)
     except (OSError, ValueError, RuntimeError) as error:
+        if payload.check_now:
+            raise HTTPException(409, 'Güncelleme denetimi başlatılamadı: güncelleme yardımcısı bu kurulumda hazır değil. Orion’u yeniden başlatıp tekrar deneyin.') from error
         raise HTTPException(409, 'Tercih kaydedilemedi. Güncelleme kaynağını ve bekleyen işlemi kontrol edip yeniden deneyin.') from error
 
 
-def watcher_alive(registry):
-    """The retained watcher holds this lock for as long as it runs (outside the Hub's Job)."""
-    try:
-        with operation_lock(registry.path.parent / 'updates/watcher.json', timeout=0):
-            return False
-    except LifecycleError:
-        return True
+watcher_alive = update_now.watcher_alive
 
 
 def begin_apply(registry):
@@ -208,6 +223,17 @@ async def apply_now(request: Request, user: str = Depends(get_current_user)):
     tasks.add(task)
     task.add_done_callback(tasks.discard)
     return await asyncio.to_thread(read_status)
+
+
+@router.post('/result/seen')
+async def result_seen(request: Request, user: str = Depends(get_current_user)):
+    """The app showed the outcome of the last update once; do not show it again."""
+    if not local_control(request):
+        raise HTTPException(403, 'Güncelleme sonucu yalnızca bu bilgisayardan işaretlenebilir.')
+    try:
+        return {'last_result': await asyncio.to_thread(update_ui.mark_seen, Registry())}
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(409, 'Güncelleme sonucu işaretlenemedi.') from error
 
 
 @router.post('/apply/cancel')

@@ -5,6 +5,7 @@ the feed and retained bootstrap runtime. API callers cannot choose URLs or code.
 """
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -15,6 +16,7 @@ from .installation_paths import canonical_path, validate_private_directory
 from .update_helper import UpdateHelper, UpdateError
 from .process_lifecycle import LifecycleError
 from .update_gate import TERMINAL
+from . import update_log
 
 INTERVAL = 6 * 60 * 60
 
@@ -136,16 +138,33 @@ class AutomaticUpdates:
         pending = None
         if tx and tx['phase'] not in TERMINAL:
             pending = {'phase': tx['phase'], 'operation_id': tx['operation_id'],
+                       'progress': tx.get('progress'),
                        'packages': {c['kind']: c.get('package', {}).get('id')
                                     for c in (tx.get('proposed') or {}).get('components', [])
                                     if c['kind'] in tx['changes']}}
+        error = state.get('error') or (tx['phase'] if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None)
+        if error is None and tx and tx['phase'] == 'failed':
+            error = tx.get('reason')
         return {'schema': 1, 'automatic_updates': self.policy().get('enabled', record['preferences']['automatic_updates']),
                 'configured': self.source() is not None, 'channel': 'stable', 'versions': versions,
                 'policy': self.policy(), 'last_attempt': state.get('last_attempt'),
-                'last_success': state.get('last_success'), 'bootstrap': self._bootstrap_summary(state), 'error': state.get('error') or
-                (tx['phase'] if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None),
+                'last_success': state.get('last_success'), 'bootstrap': self._bootstrap_summary(state), 'error': error,
+                'error_message': update_log.describe(state.get('error') or (tx.get('reason') if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None) or error),
+                'checking': self._checking(state), 'check_outcome': state.get('outcome'),
+                'check_outcome_at': state.get('outcome_at'),
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
                 'activation': 'next_safe_launch', 'router_independent': True}
+
+    def _checking(self, state):
+        """A check process of this installation is running right now (its pid is recorded while it works)."""
+        pid = state.get('running_pid')
+        if type(pid) is not int or self.clock() - state.get('last_attempt', 0) > 30 * 60:
+            return False
+        try:
+            import psutil
+            return psutil.pid_exists(pid)
+        except Exception:
+            return False
 
     def _bootstrap_summary(self, state):
         from . import bootstrap_update
@@ -158,13 +177,43 @@ class AutomaticUpdates:
     def state_path(self):
         return self.base / ('router-automatic.json' if self.scope == 'router' else 'automatic.json')
 
+    def _kinds(self, record):
+        """Components this scheduler may stage. One transaction covers every component with a newer signed
+        sequence (Hub, Client and the local Router together), so the user gets a single restart."""
+        if self.scope == 'router':
+            return {'router'}
+        kinds = {'hub', 'client'}
+        if any(c['kind'] == 'hub' for c in record['components']):
+            try:
+                if AutomaticUpdates(self.registry, helper=self.helper, scope='router').policy()['enabled']:
+                    kinds.add('router')
+            except UpdateError:
+                pass  # A broken Router policy file must not hold back Hub/Client.
+        return kinds
+
+    def _skip(self, outcome, explicit):
+        """An explicit refresh that did nothing must say why (no silent no-op)."""
+        if explicit:
+            try:
+                state = read_json(self.state_path, {'schema': 1})
+            except ValueError:
+                state = {'schema': 1}
+            state.update(outcome=outcome, outcome_at=self.clock(), error=None)
+            write_json(self.state_path, state)
+        update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
+
     def check(self, *, manual=False, now=False):
         """`now` skips only the 6-hour spacing (user pressed refresh); policy still applies."""
+        explicit = manual or now
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
             source = self.source()
-            if source is None or (not manual and not self.allowed()):
-                return
+            if source is None:
+                return self._skip('no_source', explicit)
+            if not manual and not self.allowed():
+                enabled = (self.policy()['enabled'] if self.scope == 'router'
+                           else self.registry.read()['preferences']['automatic_updates'])
+                return self._skip('paused' if enabled else 'disabled', explicit)
             try:
                 state = read_json(self.state_path, {'schema': 1})
             except ValueError:
@@ -173,20 +222,24 @@ class AutomaticUpdates:
                 return
             pending = self.helper.status()
             if pending and pending['phase'] not in TERMINAL:
-                return
-            state.update(last_attempt=self.clock(), error=None, bootstrap_error=None)
+                return self._skip('pending', explicit)
+            state.update(last_attempt=self.clock(), error=None, bootstrap_error=None, outcome=None,
+                         running_pid=os.getpid())
             write_json(self.state_path, state)
+            update_log.log(self.base, 'check.start', scope=self.scope, manual=manual, now=now)
             try:
                 if self.scope == 'hub' and self._adopt_bootstrap(source, state):
                     # The new bootstrap's watcher takes over and checks components at once.
                     state['last_attempt'] = 0
+                    state['outcome'] = 'bootstrap_updated'
                     return
                 client = self.new_client(source)
                 record = self.registry.read()
+                kinds = self._kinds(record)
                 selected = {k: v for k, v in source['targets'].items()
-                            if (k == 'router') == (self.scope == 'router')
-                            and any(c['kind'] == k for c in record['components'])}
+                            if k in kinds and any(c['kind'] == k for c in record['components'])}
                 if not selected:
+                    state['outcome'] = 'up_to_date'
                     return
                 checked, targets = client.check(list(selected.values()))
                 if targets is None:
@@ -201,11 +254,13 @@ class AutomaticUpdates:
                     if target.custom['sequence'] > current['sequence']:
                         names.append(name)
                 state['last_success'] = self.clock()
+                state['outcome'] = 'update_found' if names else 'up_to_date'
                 write_json(self.state_path, state)
                 if self.bootstrap_root is not None:
                     from . import bootstrap_update
                     bootstrap_update.confirm(self.registry, self.bootstrap_root)
                 if names:
+                    update_log.log(self.base, 'check.update-found', scope=self.scope, count=len(names))
                     # Recheck under the helper's operation lock, including user disabling it.
                     class Selection:
                         def check(self, requested):
@@ -214,10 +269,15 @@ class AutomaticUpdates:
                         def prepare(self, target, destination):
                             return client.prepare(target, destination)
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope)
+                    update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.
                 state['error'] = type(error).__name__
+                state['outcome'] = None
+                update_log.log_exception(self.base, 'check', error)
             finally:
+                state.pop('running_pid', None)
+                state['outcome_at'] = self.clock()
                 write_json(self.state_path, state)
 
     def _adopt_bootstrap(self, source, state):
@@ -237,9 +297,27 @@ class AutomaticUpdates:
             # A running download owns the operation lock. Never race it.
             return self.helper.resume(automatic=True)
         if tx and tx['phase'] in {'staged', 'waiting_for_idle'}:
-            return self.helper.resume(automatic=True)
+            return self._apply_at_launch(tx)
         # Critical recovery remains explicitly accessible even when preference is off.
         return tx
+
+    def _apply_at_launch(self, tx):
+        """Apply the staged update at a safe launch. The user sees an "Orion is updating" window, and the
+        outcome is recorded for the app window that the launcher opens right after."""
+        scope = 'router' if tx['changes'] == ['router'] else 'hub'
+        if not AutomaticUpdates(self.registry, helper=self.helper, scope=scope).allowed(activate=True):
+            return tx
+        from . import update_ui
+        base = self.base
+        with update_ui.updating_window(self.registry):
+            update_log.log(base, 'startup.apply', operation=tx['operation_id'])
+            result = self.helper.resume(automatic=True)
+        phase = (result or {}).get('phase')
+        if phase in {'completed', 'rolled_back', 'failed', 'repair_required'}:
+            reason = (result or {}).get('reason') if phase != 'completed' else None
+            update_ui.write_result(self.registry, result or tx, phase, reason or (phase if phase != 'completed' else None))
+            update_log.log(base, 'startup.applied', outcome=phase, reason=reason)
+        return result
 
 
 def _usable_root(value):
@@ -287,7 +365,7 @@ def spawn_watcher(registry):
                          creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
 
-def record_check_failure(registry, returncode):
+def record_check_failure(registry, returncode, code=None):
     """A Hub-triggered check process that exits non-zero must not fail silently.
 
     Exit 2 is argparse refusing the arguments: the retained bootstrap predates them.
@@ -300,7 +378,9 @@ def record_check_failure(registry, returncode):
                 state = read_json(automatic.state_path, {'schema': 1})
             except ValueError:
                 state = {'schema': 1}
-            state['error'] = 'BootstrapIncompatible' if returncode == 2 else 'CheckProcessFailed'
+            state['error'] = code or ('BootstrapIncompatible' if returncode == 2 else 'CheckProcessFailed')
+            state['outcome'] = None
+            state.pop('running_pid', None)
             write_json(automatic.state_path, state)
     except (LifecycleError, OSError):
         pass  # A running check owns the state file and records its own outcome.
@@ -310,22 +390,35 @@ def watch(automatic):
     # Launched by the outer launcher, never by a Hub-owned Job descendant.
     # A user may close Hub while a download is in flight; preparation finishes
     # here and never turns into activation. The next poll exits when stopped.
+    base = automatic.base
     with operation_lock(automatic.base / 'watcher.json', timeout=0):
+        update_log.log(base, 'watcher.start')
         if automatic.bootstrap_root is not None:
             from . import bootstrap_update
             bootstrap_update.note_started(automatic.registry, automatic.bootstrap_root)
         while automatic.source() is not None:
             if automatic.bootstrap_root is not None and bootstrap_update.handover_due(
                     automatic.registry, automatic.bootstrap_root):
+                update_log.log(base, 'watcher.handover')
                 return 'handover'  # Lock is released on return; the caller starts the new watcher.
             with automatic.helper.host.stopped(automatic.registry.read()) as stopped:
                 if stopped:
+                    update_log.log(base, 'watcher.stop', reason='installation stopped')
                     return
             from . import update_now
-            # Explicit "update now" runs here, outside the Hub-owned Job that its own stop ends.
-            update_now.process_request(automatic)
+            # One failing step (a busy lock, a bad state file, a failed check) must never end the watcher:
+            # a manual check from the Hub holds the check lock for minutes, and the old loop died on it.
+            try:
+                # Explicit "update now" runs here, outside the Hub-owned Job that its own stop ends.
+                update_now.process_request(automatic)
+            except Exception as error:
+                update_log.log_exception(base, 'watch.apply-now', error)
             try:
                 automatic.check()
+            except Exception as error:
+                if type(error) is not LifecycleError:  # Busy: another check is running; that is normal.
+                    update_log.log_exception(base, 'watch.check', error)
+            try:
                 router = AutomaticUpdates(automatic.registry, helper=automatic.helper, scope='router')
                 request = canonical_path(automatic.base / 'router-request.json')
                 if request.exists():
@@ -334,8 +427,10 @@ def watch(automatic):
                         request.unlink()
                         router.check(manual=True)
                     else:
+                        request.unlink()
                         raise UpdateError('Invalid Router update request')
                 router.check()
-            except (UpdateError, OSError, ValueError):
-                pass  # A bad state/request file must not silently kill the watcher; retry next poll.
+            except Exception as error:
+                if type(error) is not LifecycleError:
+                    update_log.log_exception(base, 'watch.router', error)
             time.sleep(5)

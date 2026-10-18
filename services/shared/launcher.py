@@ -143,16 +143,22 @@ def close_window(registry):
     return len(victims)
 
 
-def wait_for_update(registry, *, timeout=1800, interval=2, sleep=None, clock=time.monotonic):
+def wait_for_update(registry, *, timeout=1800, interval=2, sleep=None, clock=time.monotonic, apply_owner=False):
     """A second start while an update is being applied waits for it instead of failing.
+
+    Covers both the helper's switch (journal phases) and the whole "update now" run of the watcher
+    (stop -> switch -> restart): nothing may start services in between, or the apply fails because
+    the install is busy. `apply_owner` is the watcher's own restart, which must not wait for itself.
 
     Returns True when it had to wait. After `timeout` (or a repair-required journal, which is not
     progress) the normal blocked-start error is raised by the caller's own checks."""
     from .update_gate import progress
+    from . import update_now
     sleep = sleep or time.sleep
     deadline = clock() + timeout
     waited = False
-    while progress(registry.path) is not None and clock() < deadline:
+    while (progress(registry.path) is not None
+           or (not apply_owner and update_now.in_progress(registry))) and clock() < deadline:
         waited = True
         sleep(interval)
     return waited
@@ -217,12 +223,14 @@ def stop_tray(registry, *, timeout=6):
     return len(victims)
 
 
-def launch(registry, *, startup=False, background=False, stop=False, keep_window=False):
+def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop:
-        wait_for_update(registry)
+        wait_for_update(registry, apply_owner=apply_owner)
         record = registry.read()
-        if record and (not startup or record['preferences']['start_with_windows']):
+        # The watcher's own restart never re-applies: a failed/rolled-back attempt is not retried behind the
+        # user's back (the next explicit launch or "Şimdi güncelle" decides).
+        if record and not apply_owner and (not startup or record['preferences']['start_with_windows']):
             from .automatic_updates import run_startup
             run_startup(registry)
     with operation_lock(registry.path, timeout=180):

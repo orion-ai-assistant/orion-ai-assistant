@@ -96,6 +96,17 @@ Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez aç
 2. İş yokken bas: "Güncelleniyor, birkaç dakika sürebilir" → sayfa bağlantı kaybı sırasında bu mesajı korumalı → Hub dönünce sayfa kendiliğinden yenilenmeli ve yeni sürümü göstermeli. Pencere açık kalır, tepsi simgesi geri gelir.
 3. Telefondan aynı kartı aç: düğme **görünmemeli** (yalnız PC).
 4. Başarısızlık denemesi (isteğe bağlı): `updates\<op>\health.log` ve kartta "Önceki sürümle devam ediliyor" mesajı; Orion önceki sürümle yeniden açılmış olmalı.
+5. **Güncelleme ekranları (bu aşamada eklendi):** "Şimdi güncelle"ye basınca Orion penceresi **kapanmalı**, küçük bir "Orion güncelleniyor, lütfen bekleyin (birkaç dakika sürebilir)." penceresi çıkmalı (adım metni: Servisler kapatılıyor… → Veriler yedekleniyor… → Yeni sürüm yerleştiriliyor… → Yeni sürüm denetleniyor… → Orion yeniden başlatılıyor…, geçen süre sayacı). Bitince bu pencere kapanıp Orion penceresi **kendiliğinden** açılmalı ve bir iletişim kutusu göstermeli: "Güncellendi: hub 0.1.8, router 0.1.5, client 1.0.5." (başarısızsa "Güncelleme uygulanamadı, önceki sürümle devam ediliyor." + kısa neden). İleti bir kez gösterilir; pencereyi yeniden açınca tekrar çıkmaz.
+6. **Kilit yarışı (asıl hata):** güncelleme sürerken (küçük pencere açıkken) tepsi simgesine tıkla ve masaüstü kısayoluna çift tıkla. Beklenen: güncelleme **yine de tamamlanır**; ikinci açılışlar bekler (aynı "güncelleniyor" durumu), araya girip servisleri geri başlatmaz. `updates\apply-now.json` sonunda `phase: completed`, `error: null`. Başarısız olursa `updates\watcher.log` son satırlarında `apply-now` hatası ve `file.py:satır` konumu olmalı (URL/yol/anahtar **yok**).
+
+### 4b. Yenile düğmesi: açık durumlar ve tek işlemde üç bileşen
+
+Önkoşul: akışta Hub, Router ve Client için daha yeni imzalı sürüm var (ör. kurulu Hub 0.1.7 / Router 0.1.4 / Client 1.0.4 iken yayında 0.1.8 / 0.1.5 / 1.0.5).
+
+1. Ayarlar > Orion güncellemeleri > yenile. Sırayla: "Güncellemeler denetleniyor…" (ilerleme çubuğu) → "Yeni sürüm bulundu, indiriliyor… (1/3)" (çubuk dolar) → "Hazır: Şimdi güncelle". Hiçbir adımda kart sessizce eski halinde kalmamalı.
+2. "Bekleyen güncelleme" altında **üç** paket (hub, client, router) birlikte görünmeli (tek işlem). "Şimdi güncelle" → tek yeniden başlatma; sonra üçü de yeni sürümde. Eskiden Hub/Client ayrı, Router ayrı turdaydı.
+3. Güncel durumda yenile: "Güncel: yeni sürüm yok." Otomatik güncellemeler kapalıyken yenile: "Otomatik güncellemeler kapalı olduğu için denetlenmedi…". Ağı kes ve yenile: kırmızı Türkçe neden ("Güncelleme sunucusuna ulaşılamadı…"), ayrıntı `updates\watcher.log`.
+4. Yenile sırasında bekçinin ölmediğini doğrula: `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | ? CommandLine -like '*update_automatic.py*watch*'` yenile bittikten sonra da bir satır döndürmeli (eskiden elle denetim sırasında bekçi sessizce çıkıyordu).
 
 ### 5. Hub/Router paneli düğmeleri
 

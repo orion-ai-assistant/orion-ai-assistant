@@ -401,6 +401,44 @@ bundle with the packages).
   polls through the outage and reloads the page when the state is `completed`. Unclaimed (90 s), abandoned or
   stalled requests become an explicit `failed` with a fixed error code. Needs a running watcher
   (`GET /api/v1/updates` `apply_now`); without one the request is refused and the next launch applies the update.
+  **Who owns the operation lock (fixed in this stage).** `process_request` takes `operation_lock(registry)` *before*
+  it stops anything and keeps it through stop -> `helper.resume` -> outcome record; services restart only after
+  the lock is released, with `launch(apply_owner=True)` (opens the app window, never re-applies). Before this, the
+  lock was free between the launcher's stop and `resume`; any other launcher in that window (tray "Open", a second
+  start, Windows startup: `launch()` -> `run_startup` -> `startup` -> `resume(automatic=True)` holds the lock for the
+  whole apply) made `resume` raise `LifecycleError: Lifecycle busy` (a `RuntimeError`, hence `error=RuntimeError`),
+  leaving the journal `waiting_for_idle`, the Hub stopped and the watcher restarting Orion. Now: a busy lock is waited
+  for (300 s) *before* anything is stopped (`OperationBusy`, services untouched); `launcher.wait_for_update` waits while
+  `update_now.in_progress()` (watcher alive, phase stopping/applying/restarting, not stale >10 min) as well as for
+  journal apply phases; another launcher that already applied exactly this transaction is reported as `completed`.
+  Test: `test_update_now_apply.py` (a rival thread takes the lock in a loop; it never gets it between stop and the end
+  of the transaction, for success and for rollback).
+* **Watcher robustness + log.** The watch loop used to die silently when a manual check (Hub refresh button) held
+  `automatic.json` while the watcher's own 5 s poll tried the same lock (`LifecycleError`, treated as "another
+  watcher exists"). Each loop step now handles its own errors. `services/shared/update_log.py` writes
+  `<install>\updates\watcher.log` (256 KiB, 2 rotated backups) for the watcher, the check process, the Hub-triggered
+  check and the launch-time apply: events (`watcher.start`, `check.start/staged`, `apply-now.*`, `startup.apply`) and
+  errors as `type`, sanitized detail and `file.py:line function` frames. URLs, Windows/Unix paths and long tokens are
+  replaced; no process output is stored. `update_log.describe(code)` gives the short Turkish reasons shown in the
+  card (`error_message`, `apply_now.message`).
+* **One transaction, one restart.** For a Hub install the hub-scope check stages Hub, Client **and** the local Router
+  (when the Router's switch is on, which follows the single "Otomatik güncellemeler" switch) in one
+  `UpdateHelper.prepare`, so the user restarts once. Only components with a newer signed sequence join;
+  compatibility is still checked over the whole set; a standalone Router keeps its own scheduler
+  (`scope='router'`). If one of the packages fails to download or verify the whole transaction fails and nothing is
+  switched (the next check retries); that is the price of a single restart, and the intended one.
+* **Update screens.** While an update is applied (apply-now *and* the launch-time automatic apply) the app window is
+  closed (`launcher.close_window`, only Orion's own profile), `services/shared/updating.ps1` (installed as
+  `bootstrap/Orion-Updating.ps1`, WinForms, no dependencies, read-only) shows "Orion güncelleniyor, lütfen bekleyin
+  (birkaç dakika sürebilir)." with the current step from the journal (`stopping`, `backing_up`, `switching`,
+  `health_check`, `rollback_pending`, `restarting`), elapsed time and a "taking longer than expected" hint after 10
+  idle minutes. `update_ui.updating_window()` wraps the whole apply and always closes it. Afterwards
+  `updates/last-result.json` (`completed` / `rolled_back` / `failed` / `repair_required`, Turkish message, `seen`)
+  is read by the Hub (`last_result`) and the reopened app window shows it once (`UpdateResultGate`;
+  `POST /api/v1/updates/result/seen`, PC session only). `ORION_UPDATE_UI=off` (set by `scripts/release/conftest.py`)
+  keeps sandboxes from opening windows. The card shows "Güncellemeler denetleniyor…" (`checking`: the check process
+  records its pid; Hub adds a 20 s grace after the press) -> "Yeni sürüm bulundu, indiriliyor… (1/3)" (journal
+  `progress`) -> "Hazır: Şimdi güncelle", or why nothing happened (`check_outcome`, `error_message`).
 * **Product identity (`Orion.exe`)**: the desktop link and the Windows Startup entry used to target
   `powershell.exe`, so Task Manager's Startup apps and the desktop showed PowerShell's name and icon.
   `scripts/release/launcher/Orion.cs` (+ `orion.ico`, made from `installer/app/ui/favicon.png` by
