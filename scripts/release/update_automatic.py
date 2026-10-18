@@ -91,7 +91,7 @@ def _user_check(automatic, *, download):
     user's own action, so the automatic-update preference does not apply; signatures, locks and the
     no-interruption rules do."""
     try:
-        automatic.check(manual=True, with_router=True, download=download)
+        automatic.check(manual=True, with_router=True, download=download, consent=download)
     except LifecycleError:
         return 0  # Another check or download is running; it records its own outcome for the card.
     if download and automatic.replaced():

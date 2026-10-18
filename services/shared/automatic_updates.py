@@ -490,11 +490,13 @@ class AutomaticUpdates:
             _logged_skips[key] = outcome
             update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
 
-    def check(self, *, manual=False, now=False, with_router=False, download=True):
+    def check(self, *, manual=False, now=False, with_router=False, download=True, consent=False):
         """`now` skips only the 6-hour spacing; policy still applies. `manual` is the user's own action and
         ignores the automatic-update preference. `download=False` (the card's refresh button) only checks:
         it records which components have a newer signed release (`newer`: version and bytes to download,
-        the retained updater included) and downloads, stages and adopts nothing."""
+        the retained updater included) and downloads, stages and adopts nothing. `consent` (the card's "İndir")
+        marks the staged update as wanted by the user: it is applied at the next safe start even with automatic
+        updates off. Any other explicit check (the Router panel) still needs the preference for that."""
         explicit = manual or now
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
         with operation_lock(self.base / 'automatic.json', timeout=0):
@@ -606,7 +608,7 @@ class AutomaticUpdates:
                             return owner.download_length(target) if hasattr(owner, 'download_length') else target.length
                     # A download the user asked for is applied at the next safe start even with automatic updates off.
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope,
-                                        **({'requested_by': 'user'} if manual else {}))
+                                        **({'requested_by': 'user'} if manual and consent else {}))
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.

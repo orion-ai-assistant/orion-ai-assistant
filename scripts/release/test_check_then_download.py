@@ -56,7 +56,7 @@ def test_download_stages_one_transaction_that_starts_with_automatic_updates_off(
     service, now, data, host = automatic
     service.preferences(enabled=False)
     service.check(manual=True, with_router=True, download=False)
-    service.check(manual=True, with_router=True, download=True)
+    service.check(manual=True, with_router=True, download=True, consent=True)
     tx = service.helper.status()
     assert tx['phase'] == 'staged' and tx['requested_by'] == 'user'
     status = service.status()
@@ -71,10 +71,18 @@ def test_download_stages_one_transaction_that_starts_with_automatic_updates_off(
 def test_user_download_still_respects_the_24_hour_deferral(automatic):
     service, now, data, host = automatic
     service.preferences(enabled=False, defer_hours=24)
-    service.check(manual=True, download=True)
+    service.check(manual=True, download=True, consent=True)
     assert service.startup()['phase'] == 'staged'
     now[0] += 86401
     assert service.startup()['phase'] == 'completed'
+
+
+def test_router_panel_check_is_not_consent_to_install(automatic):
+    service, now, data, host = automatic
+    service.preferences(enabled=False)
+    service.check(manual=True, with_router=True)  # The Router panel's explicit check: downloads, never installs.
+    assert service.helper.status().get('requested_by') is None
+    assert service.startup()['phase'] == 'staged'
 
 
 def test_background_download_with_automatic_updates_off_is_not_applied_at_start(automatic):
@@ -124,7 +132,7 @@ def test_refresh_reports_a_newer_updater_without_adopting_it(feed):
     assert offer['version'] == '0.1.2' and offer['sequence'] == 2 and offer['bytes'] > 0
     assert feed.helper.status() is None
     # "İndir" renews the updater first (its new watcher or the re-run downloads the components).
-    service.check(manual=True, with_router=True, download=True)
+    service.check(manual=True, with_router=True, download=True, consent=True)
     assert feed.pointer() != old
     assert 'bootstrap' not in ((service.status()['newer'] or {}).get('components') or {})
 
@@ -148,7 +156,8 @@ def test_card_buttons_run_one_user_round_with_fixed_arguments(feed, monkeypatch)
         calls.clear()
         monkeypatch.setattr(sys, 'argv', ['update_automatic.py', '--registry', str(feed.registry.path), 'check', flag])
         assert update_automatic.run() == 0
-        assert calls == [('hub', {'manual': True, 'with_router': True, 'download': download})]  # No Router-only round.
+        # One round, no Router-only one; only "İndir" is consent to install at the next start.
+        assert calls == [('hub', {'manual': True, 'with_router': True, 'download': download, 'consent': download})]
     monkeypatch.setattr(sys, 'argv', ['update_automatic.py', '--registry', str(feed.registry.path), 'check',
                                       '--only-check', '--download'])
     with pytest.raises(SystemExit):

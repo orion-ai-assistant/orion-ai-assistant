@@ -656,7 +656,8 @@ bundle with the packages).
   * "İndir" (`POST /api/v1/updates/download`, PC session only; 409 while downloading/applying) runs
     `check --download`: the same round as the user's own action (preference/pause ignored; signatures, locks and
     supersede rules unchanged), adopts a newer updater first and then re-runs `check --download` through it, and
-    stages one transaction with `requested_by: user` in its journal.
+    stages one transaction with `requested_by: user` in its journal (only this button is consent to install at the
+    next start; the Router panel's explicit check still needs the automatic-update preference for that).
   * "Şimdi kur" / the app prompt's "Kur" is the existing apply-now (`POST /api/v1/updates/apply`: waits until chat,
     voice, tool, transfer and remote work is idle). `GET` reports `ready` (staged, not being applied; `later`) and the
     app (`UpdateReadyPrompt`, normal screen only, never in settings or on a phone) asks "Güncelleme hazır, şimdi
