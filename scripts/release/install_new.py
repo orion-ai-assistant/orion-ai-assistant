@@ -74,6 +74,8 @@ def install(client, names, root, registry, *, settings=None, release_source=None
             raise ValueError('Choose one package per component')
         if 'client' in {r['component'] for r in releases} and 'hub' not in {r['component'] for r in releases}:
             raise ValueError('A new Client installation requires a Hub; later independent updates are supported by metadata')
+        # No registry: code/state/installers of an earlier removed or failed install are Orion's own; kept data stays.
+        component_setup.clear_leftovers(root, running=ROOT)
         for release in releases:
             component_setup.check_destination(root / KIND_DIRS[release['component']])
         components = [materialize(client, target, root, settings) for target in targets.values()]
