@@ -2,6 +2,8 @@
 
 Durum: 15 Ekim 2026 için tasarım notudur. Güncelleme sistemi bu çalışmada uygulanmadı. Yönetim girişindeki geri bağlantısı/varsayılan şifre ipucu ayrı, tamamlanmış bir arayüz değişikliğidir.
 
+16 Ekim 2026: Kurulum konumu, mevcut Router'ı koruma, bağımsız bileşenler, sessiz otomatik güncelleme ve aşamalı test/kabul kararları [uygulama planında](orion-installation-lifecycle-implementation-plan.md) somutlaştırılmıştır. Uygulamaya o belgedeki aşamalarla başlanacaktır.
+
 ## Ana karar
 
 Kullanıcı tek ürün olarak Orion'u görmeli. Flutter ana ekranında tek bir **Güncellemeler** alanı ve **Güncelle ve yeniden başlat** işlemi olmalı. Hub, Flutter ve Router depoları ayrı kalabilir; son kullanıcıya bağımsız ve uyumsuz güncellemeleri elle eşleştirme sorumluluğu verilmemeli.
