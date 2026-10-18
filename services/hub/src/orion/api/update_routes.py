@@ -35,7 +35,11 @@ def local_control(request):
 def router_managed(registry, record=None):
     """True when this installation owns a local Router that the update feed also covers."""
     record = record or registry.read()
-    return bool(AutomaticUpdates(registry).has_target('router')
+    try:
+        has_router_feed = AutomaticUpdates(registry).has_target('router')
+    except UpdateError:
+        return False  # Unrecognized source: the card says so (source_error); never a failed status.
+    return bool(has_router_feed
                 and any(c['kind'] == 'router' and c['ownership'] == 'owned'
                         and c['management'] == 'local' for c in record['components']))
 
@@ -55,7 +59,10 @@ def read_status():
     data['available'] = runtime_command(registry) is not None
     record = registry.read()
     data['launcher_preferences'] = {k: record['preferences'][k] for k in ('start_with_windows', 'show_client')}
-    data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
+    try:
+        data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
+    except UpdateError:
+        data['router_automatic_updates'] = False
     data['router_configured'] = router_managed(registry, record)
     data['apply_now'] = update_now.view(registry)
     data['last_result'] = update_ui.read_result(registry)
@@ -103,7 +110,13 @@ def read_status_or_last():
             update_log.log_exception(Registry().path.parent / 'updates', 'status.read', error)
         except Exception:
             pass  # Diagnostics only.
-        return {**(_last['data'] or {}), 'busy': True, 'busy_message': 'Güncelleme işlemi sürüyor.'}
+        if isinstance(error, LifecycleError):  # A lock held by a running update operation: wait for it.
+            return {**(_last['data'] or {}), 'busy': True, 'busy_message': 'Güncelleme işlemi sürüyor.'}
+        # Anything else is not "busy" (that would spin forever): show the last state with the reason.
+        from services.shared import update_log
+        code = type(error).__name__
+        return {**(_last['data'] or {'available': False, 'configured': False, 'automatic_updates': False}),
+                'error': code, 'error_message': update_log.describe(code)}
 
 
 @router.get('')

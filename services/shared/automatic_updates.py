@@ -17,7 +17,7 @@ from .installation_registry import Registry, RegistryError, operation_lock, _ato
 from .installation_paths import canonical_path, validate_private_directory
 from .update_helper import UpdateHelper, UpdateError
 from .process_lifecycle import LifecycleError
-from .update_gate import TERMINAL
+from .update_gate import APPLYING, TERMINAL
 from .release_packages import PackageError
 from . import update_log
 
@@ -138,6 +138,72 @@ def merge_sources(existing, incoming):
     return source_value(merged)
 
 
+# Files in `<Orion>/bootstrap/` are shared by every component version on the PC: the retained bootstrap may be
+# newer than the installed Hub (it updates itself first) or older (after a bootstrap rollback). A newer writer
+# must never turn a shared file into a format an older reader refuses. So the feed list lives in two files:
+#   release-source.json   schema 1, one feed - the only form Hub <= 0.1.11 and bootstraps <= 0.1.3 accept;
+#   release-sources.json  every feed (schema 1 or 2) - read first by this code.
+# Both are always written together (full list first). Readers merge whatever is valid in either, so a schema 2
+# release-source.json written by bootstrap 0.1.4 still counts, and one broken file never hides the other.
+SOURCE_FILE = 'release-source.json'
+SOURCES_FILE = 'release-sources.json'
+
+
+def legacy_source(value):
+    """Schema 1 projection of a source value: the feed old code already used (TUF cache `release-cache`),
+    else the Hub feed, else the first one."""
+    feeds = normalize_sources(value)
+    feed = (next((f for f in feeds if f['cache'] == LEGACY_CACHE), None)
+            or next((f for f in feeds if 'hub' in f['targets']), None) or feeds[0])
+    return validate_source({'schema': 1, 'channel': 'stable', 'metadata_url': feed['metadata_url'],
+                            'targets_url': feed['targets_url'], 'targets': dict(feed['targets'])})
+
+
+def read_sources(folder):
+    """The installation's source value from `folder` (`<Orion>/bootstrap`), None when not configured.
+    Raises UpdateError only when a file exists and none is usable."""
+    folder = Path(folder)
+    found, broken = [], False
+    for name in (SOURCE_FILE, SOURCES_FILE):
+        try:
+            value = read_json(folder / name, None)
+            if value is not None:
+                found.append(validate_source(value))
+        except (UpdateError, ValueError, OSError):
+            broken = True
+    if not found:
+        if broken:
+            raise UpdateError('Invalid stable release source')
+        return None
+    return found[0] if len(found) == 1 else merge_sources(found[0], found[1])
+
+
+def write_sources(folder, value):
+    """Store a source value in both files; returns True when anything changed on disk."""
+    folder = Path(folder)
+    value = validate_source(value)
+    wanted = ((SOURCES_FILE, value), (SOURCE_FILE, legacy_source(value)))
+    changed = False
+    for name, content in wanted:  # Full list first: a crash in between leaves new readers complete.
+        try:
+            current = read_json(folder / name, None)
+        except (ValueError, OSError):
+            current = None
+        if current != content:
+            write_json(folder / name, content)
+            changed = True
+    return changed
+
+
+def add_sources(folder, incoming):
+    """Merge `incoming` feeds into the installation's source (incoming wins, see merge_sources)."""
+    try:
+        current = read_sources(folder)
+    except UpdateError:
+        current = None  # Unreadable files are replaced by the trusted bundle's feeds.
+    return write_sources(folder, merge_sources(current, incoming) if current is not None else incoming)
+
+
 class AutomaticUpdates:
     def __init__(self, registry, *, helper=None, client_factory=None, clock=None, scope='hub',
                  bootstrap_root=None, bootstrap_probe=None):
@@ -182,8 +248,7 @@ class AutomaticUpdates:
         return value
 
     def source(self):
-        value = read_json(self.registry.path.parent / 'bootstrap/release-source.json', None)
-        return validate_source(value) if value is not None else None
+        return read_sources(self.registry.path.parent / 'bootstrap')
 
     def sources(self):
         """Every configured feed (Hub/Client feed, Router feed) as a normalized list."""
@@ -226,8 +291,17 @@ class AutomaticUpdates:
 
     def status(self):
         record = self.registry.read()
-        tx = self.helper.status()
-        state = read_json(self.state_path, {'schema': 1})
+        try:
+            tx = self.helper.status()
+        except UpdateError:
+            # Unreadable active journal: show "onarım gerekli" with the history instead of no card at all.
+            tx = {'phase': 'repair_required', 'operation_id': None, 'changes': [], 'reason': 'repair_required'}
+        try:
+            state = read_json(self.state_path, {'schema': 1})
+        except (ValueError, OSError):
+            state = {'schema': 1}  # Rewritten by the next check; never a reason to hide the card.
+        if not isinstance(state, dict):
+            state = {'schema': 1}
         versions = {}
         for item in record['components']:
             versions[item['kind']] = {'package_id': item.get('package', {}).get('id'),
@@ -235,8 +309,11 @@ class AutomaticUpdates:
         history = []
         # Journal is the durable source, including operations finished while UI was closed.
         for path in sorted(self.base.glob('*/journal.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:10]:
-            value = read_json(path, {})
-            if value.get('installation_id') == record['installation_id']:
+            try:
+                value = read_json(path, {})
+            except (ValueError, OSError):
+                continue  # One damaged old journal never hides the others.
+            if isinstance(value, dict) and value.get('installation_id') == record['installation_id']:
                 history.append({k: value.get(k) for k in ('operation_id', 'phase', 'changes', 'updated_at')})
         pending = None
         if tx and tx['phase'] not in TERMINAL:
@@ -248,9 +325,23 @@ class AutomaticUpdates:
         error = state.get('error') or (tx['phase'] if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None)
         if error is None and tx and tx['phase'] == 'failed':
             error = tx.get('reason')
-        return {'schema': 1, 'automatic_updates': self.policy().get('enabled', record['preferences']['automatic_updates']),
-                'configured': self.source() is not None, 'channel': 'stable', 'versions': versions,
-                'policy': self.policy(), 'last_attempt': state.get('last_attempt'),
+        # A shared file this version does not understand (written by a newer or broken component) degrades
+        # the card - "kaynak tanınmadı" - instead of failing the whole status: history and pending stay visible.
+        try:
+            configured, source_error = self.source() is not None, None
+        except (UpdateError, ValueError, OSError):
+            configured, source_error = True, 'SourceUnrecognized'
+        try:
+            policy = self.policy()
+        except (UpdateError, ValueError, OSError):
+            policy = {'schema': 1, 'paused': False, 'deferred_until': 0,
+                      **({'enabled': False} if self.scope == 'router' else {})}
+            source_error = source_error or 'PolicyUnrecognized'
+        if error is None:
+            error = source_error
+        return {'schema': 1, 'automatic_updates': policy.get('enabled', record['preferences']['automatic_updates']),
+                'configured': configured, 'source_error': source_error, 'channel': 'stable', 'versions': versions,
+                'policy': policy, 'last_attempt': state.get('last_attempt'),
                 'last_success': state.get('last_success'), 'bootstrap': self._bootstrap_summary(state), 'error': error,
                 'error_message': update_log.describe(state.get('error') or (tx.get('reason') if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None) or error),
                 'checking': self._checking(state), 'check_outcome': state.get('outcome'), 'feed_errors': state.get('feed_errors'),
@@ -450,8 +541,31 @@ class AutomaticUpdates:
             return self.helper.resume(automatic=True)
         if tx and tx['phase'] in {'staged', 'waiting_for_idle'}:
             return self._apply_at_launch(tx)
+        if tx and tx['phase'] in APPLYING:
+            return self._recover_at_launch(tx)
         # Critical recovery remains explicitly accessible even when preference is off.
         return tx
+
+    def _recover_at_launch(self, tx):
+        """An apply that was cut off (power loss, Task Manager, a closed window) and that no process is
+        working on: finish it (switch/health again) or roll it back, before Orion starts. Never depends on
+        the automatic-update preference - the installation is mid-switch and cannot start as it is."""
+        from . import update_ui
+        from .update_gate import interrupted
+        if not interrupted(self.registry.path):
+            return tx
+        with update_ui.updating_window(self.registry):
+            update_log.log(self.base, 'startup.recover', operation=tx['operation_id'], phase=tx['phase'])
+            try:
+                result = self.helper.resume(automatic=True)
+            except LifecycleError:
+                return tx  # Someone else started working on it after all.
+        phase = (result or {}).get('phase')
+        if phase in {'completed', 'rolled_back', 'failed', 'repair_required'}:
+            reason = (result or {}).get('reason') if phase != 'completed' else None
+            update_ui.write_result(self.registry, result, phase, reason or (phase if phase != 'completed' else None))
+            update_log.log(self.base, 'startup.recovered', outcome=phase, reason=reason)
+        return result
 
     def _apply_at_launch(self, tx):
         """Apply the staged update at a safe launch. The user sees an "Orion is updating" window, and the

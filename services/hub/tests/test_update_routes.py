@@ -62,7 +62,8 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
         async with self.client() as client:
             response = await client.get('/api/v1/updates')
             self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.json()['busy'])
+            self.assertEqual(response.json()['error'], 'ValueError')  # Not "busy": that would spin forever.
+            self.assertNotIn('busy', response.json())
             self.assertNotIn('private-path-secret', response.text)
 
     async def test_authentication_is_still_required(self):

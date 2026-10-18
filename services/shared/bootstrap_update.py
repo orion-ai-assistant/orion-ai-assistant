@@ -199,19 +199,14 @@ def sync_source(registry, own_root):
     """The running bootstrap defines which feeds exist: merge its bundled release-source.json into the
     installation's source (union by feed URL; its components win). Lets a feed split (Router feed)
     reach installs whose source was written by an older bootstrap. Never changes the trust root."""
-    from .automatic_updates import merge_sources, validate_source, read_json, write_json
+    from .automatic_updates import add_sources, validate_source
     bundled = Path(own_root) / 'release-source.json'
     if not bundled.is_file():
         return False
     incoming = validate_source(json.loads(bundled.read_text(encoding='utf-8')))
-    path = _folder(registry) / 'release-source.json'
     with operation_lock(registry.path, timeout=15):
-        current = read_json(path, None)
-        merged = merge_sources(current, incoming) if current is not None else incoming
-        if merged == current:
-            return False
-        write_json(path, merged)
-        return True
+        # Also rewrites a release-source.json that an older bootstrap left in a form old Hubs refuse.
+        return add_sources(_folder(registry), incoming)
 
 
 def handover_due(registry, own_root):

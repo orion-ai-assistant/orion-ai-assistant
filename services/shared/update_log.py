@@ -112,6 +112,8 @@ REASONS = {
     'rolled_back': 'Yeni sürüm çalışmadı; önceki sürüme dönüldü.',
     'repair_required': 'Güncelleme yarıda kaldı; yerel onarma gerekli.',
     'failed': 'Güncelleme başarısız oldu; önceki sürümle devam ediliyor.',
+    'SourceUnrecognized': 'Güncelleme kaynağı tanınmadı (kaynak dosyası bu sürümün okuyamadığı biçimde). Güncelleme yardımcısı dosyayı düzeltecek; Orion’u yeniden başlatın.',
+    'PolicyUnrecognized': 'Güncelleme ayarları dosyası tanınmadı; varsayılan ayarlar gösteriliyor.',
 }
 
 
