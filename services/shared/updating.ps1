@@ -52,7 +52,13 @@ function Get-Step {
         'restarting' { $text = T 'Orion yeniden ba\u015flat\u0131l\u0131yor...' }
         default { $text = T 'G\u00fcncelleme s\u00fcr\u00fcyor...' }
     }
-    return @($text, $stamp)
+    # Real progress: the helper writes percent (0-100 of the whole apply) into the journal while it works.
+    # Before the helper starts and after it ends only the apply-now phase is known.
+    $percent = $null
+    if ($journal -and $phase -eq $journal.phase -and $journal.progress -and $null -ne $journal.progress.percent) { $percent = [int]$journal.progress.percent }
+    elseif ($phase -eq 'stopping') { $percent = 3 }
+    elseif ($phase -eq 'restarting') { $percent = 97 }
+    return @($text, $stamp, $percent)
 }
 
 $form = New-Object Windows.Forms.Form
@@ -93,6 +99,10 @@ $timer.Add_Tick({
     if ($script:shown) { return }
     $info = Get-Step
     $step.Text = $info[0]
+    if ($null -ne $info[2]) {
+        if ($bar.Style -ne 'Continuous') { $bar.Style = 'Continuous' }
+        $bar.Value = [math]::Max($bar.Value, [math]::Min(100, [int]$info[2]))  # Never moves backwards.
+    }
     $span = [DateTime]::Now - $started
     $elapsed.Text = (T 'Ge\u00e7en s\u00fcre: ') + ('{0:00}:{1:00}' -f [int][math]::Floor($span.TotalMinutes), $span.Seconds)
     if (([DateTime]::Now - $info[1]).TotalMinutes -gt 10) {
