@@ -216,3 +216,70 @@ def test_entry_is_written_to_and_removed_from_the_registry_under_a_disposable_ke
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
         except OSError:
             pass
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows file locking and PowerShell')
+def test_everything_with_data_deleted_leaves_no_orion_folder_after_the_deferred_cleanup(world, monkeypatch):
+    import stat
+    import subprocess
+    full(world)
+    root = world.root
+    # The real-PC layout: the retained installer running the uninstall, read-only release files, state markers.
+    running = root / 'Bootstrap-Installer-s9-467062f2'
+    (running / 'runtime').mkdir(parents=True)
+    (root / 'release-cache-router').mkdir()
+    readonly = next(p for p in (root / 'Hub/releases').rglob('*') if p.is_file())
+    readonly.chmod(stat.S_IREAD)
+    (root / 'Hub/state/cancel-1.marker').write_text('x')
+    held = open(running / 'runtime/python.exe', 'w')  # Python's open() does not share delete: the folder is held.
+    scheduled, run_once = [], []
+    real = U.schedule_removal
+    monkeypatch.setattr(U, 'schedule_removal', lambda paths, root: scheduled.append(
+        real(paths, root=root, wait=[], folder=world.root.parent / 'temp', spawn=False, run_once=run_once.append))
+        or scheduled[-1])
+    try:
+        result = world.run('all', keep_data=False, keep_models=False)
+    finally:
+        held.close()
+    assert result['leftovers'] == ['Bootstrap-Installer-s9-467062f2'] and result['scheduled'] is True
+    assert run_once and 'orion-cleanup-' in run_once[0]     # Next sign-in repeats it if the run below is killed.
+    assert sorted(p.name for p in root.iterdir()) == ['Bootstrap-Installer-s9-467062f2', 'hub-installation.json',
+                                                      'lifecycle-tests', 'router-installation.json']
+    subprocess.run([U._powershell(), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+                    str(scheduled[0])], check=True, timeout=60)
+    assert sorted(p.name for p in root.iterdir()) == ['hub-installation.json', 'lifecycle-tests', 'router-installation.json']
+    dev_files_intact(root)
+    assert not scheduled[0].exists() and not scheduled[0].with_suffix('.json').exists()
+
+
+def test_a_fresh_install_over_the_leftovers_of_a_removed_install_succeeds(world):
+    record = full(world)
+    root = world.root
+    old_package = Path(items(record)['hub']['code_path']).name
+    # What the user's PC kept after an uninstall without registry: code, state, old installer, caches, no data.
+    world.registry.path.unlink()
+    if world.registry.backup_path.exists():
+        world.registry.backup_path.unlink()
+    import shutil
+    for kind in ('Hub', 'Router', 'Client'):
+        shutil.rmtree(root / kind / 'data')
+    (root / 'Bootstrap-Installer-s9-467062f2/runtime').mkdir(parents=True)
+    (root / 'Bootstrap-Installer').mkdir()
+    (root / 'release-cache-router').mkdir()
+    (root / 'Hub/state/child-1.json').write_text('{}')
+    record = world.fresh(['hub', 'client', 'router'])
+    assert set(items(record)) == {'hub', 'client', 'router'}
+    assert [p.name for p in (root / 'Hub/releases').iterdir()] == [old_package]
+    assert not (root / 'Hub/state/child-1.json').exists()
+    assert not any(p.name.startswith('Bootstrap-Installer') for p in root.iterdir())
+    assert (root / 'release-cache-router').is_dir()                 # TUF cache: reused.
+    dev_files_intact(root)
+    # Something Orion does not own in a component folder is still refused, nothing deleted.
+    world.registry.path.unlink()
+    if world.registry.backup_path.exists():
+        world.registry.backup_path.unlink()
+    shutil.rmtree(root / 'Router/data')
+    (root / 'Router/notes.txt').write_text('mine')
+    with pytest.raises(ValueError):
+        world.fresh(['router'])
+    assert (root / 'Router/notes.txt').read_text() == 'mine' and any((root / 'Router/releases').iterdir())

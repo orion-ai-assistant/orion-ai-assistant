@@ -14,7 +14,9 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import stat
 import subprocess
+import sys
 import time
 import uuid
 
@@ -35,6 +37,69 @@ def kept_data_dir(directory):
         return {p.name for p in directory.iterdir()} == {'data'} and (directory / 'data' / KEPT_MARKER).is_file()
     except OSError:
         return False
+
+
+def remove_tree(path):
+    """Delete a file or tree, read-only files included. True when it is gone; a locked file leaves it in place."""
+    path = Path(path)
+
+    def retry(function, name, _error):
+        try:
+            os.chmod(name, stat.S_IWRITE)
+            function(name)
+        except OSError:
+            pass
+    if path.is_symlink() or path.is_file():
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            path.unlink()
+        except OSError:
+            pass
+    elif path.is_dir():
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=retry)
+        else:
+            shutil.rmtree(path, onerror=retry)
+    return not os.path.lexists(path)
+
+
+# Orion-owned names a removed or failed installation can leave in the root next to no install.json.
+LEFTOVER_FOLDERS = ('bootstrap', 'updates', 'maintenance', 'flutter-ui-profile')
+COMPONENT_LEFTOVERS = ('releases', 'state')
+
+
+def clear_leftovers(root, *, running=None):
+    """No registered installation: what an earlier removed or failed Orion install left behind (component code and
+    state, background folders, old retained installers) is Orion's own and goes, so a fresh install proceeds without
+    the user deleting folders by hand. Kept user data (component `data`, Models, Downloads, backups), the TUF caches
+    (reused), the developer registrations and anything unrecognised stay: `check_destination` still refuses a
+    component folder holding something foreign. `running` (the installer's own folder) is never touched.
+    Returns the names that could not be removed (locked)."""
+    root = Path(root)
+    running = canonical_path(running) if running else None
+    if not root.is_dir():
+        return []
+    candidates = [root / name for name in LEFTOVER_FOLDERS] + list(root.glob('Bootstrap-Installer*'))
+    for name in KIND_DIRS.values():
+        directory = root / name
+        try:
+            children = {p.name for p in directory.iterdir()} if directory.is_dir() else set()
+        except OSError:
+            continue
+        releases = directory / 'releases'
+        ours = children <= {*COMPONENT_LEFTOVERS, 'data'} and (
+            not releases.is_dir() or all(p.name.startswith('orion-') for p in releases.iterdir()))
+        if ours:
+            candidates += [directory / child for child in COMPONENT_LEFTOVERS]
+    failed = []
+    for path in candidates:
+        if not os.path.lexists(path):
+            continue
+        if running and (canonical_path(path) == running or running.is_relative_to(canonical_path(path))):
+            continue
+        if not remove_tree(path):
+            failed.append(path.name)
+    return failed
 
 
 def check_destination(directory):

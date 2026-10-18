@@ -14,12 +14,12 @@ and never fails the uninstall.
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import time
+import uuid
 
-from .component_setup import KIND_DIRS, KEPT_MARKER
+from .component_setup import KIND_DIRS, KEPT_MARKER, remove_tree
 from .installation_registry import Registry, RegistryError
 from .installation_paths import canonical_path
 
@@ -129,8 +129,7 @@ def _remove_tree(path, root, leftovers):
     if not _inside(path, root) or path == Path(root) or path.name in NEVER_TOUCH:
         leftovers.append(path.name)
         return
-    shutil.rmtree(path, ignore_errors=True)
-    if path.exists():
+    if not remove_tree(path):
         leftovers.append(str(path))
 
 
@@ -182,30 +181,88 @@ def stop_background(registry, roots):
     return len(victims)
 
 
-def schedule_removal(paths, *, root):
-    """Delete what this very process (running from the retained bootstrap) still holds, after it exited."""
-    safe = [str(p) for p in paths if _inside(p, root) and Path(p) != Path(root) and Path(p).name not in NEVER_TOUCH]
-    script = (
-        '$r = $env:ORION_REMOVE_REQUEST | ConvertFrom-Json\n'
-        'Start-Sleep -Seconds 3\n'
-        'for ($i = 0; $i -lt 10; $i++) {\n'
-        '  $left = 0\n'
-        '  foreach ($p in $r.paths) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force '
-        '-ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $p) { $left++ } } }\n'
-        '  if ($left -eq 0) { break }\n'
-        '  Start-Sleep -Seconds 2\n'
-        '}\n'
-        'try { if (-not (Get-ChildItem -LiteralPath $r.root -Force -ErrorAction Stop)) { Remove-Item -LiteralPath $r.root -Force } } catch {}\n')
-    if not safe:
+CLEANUP_VALUE = 'OrionUninstallCleanup'
+RUN_ONCE = r'Software\Microsoft\Windows\CurrentVersion\RunOnce'
+# Runs hidden after the uninstaller (this Python and the dialog that started it) exited, and once more at the next
+# sign-in when something was still held. It stops as soon as a new installation appears (install.json, or a
+# Bootstrap-Installer folder it was not asked to remove), so it never deletes a reinstall in progress.
+CLEANUP_SCRIPT = r"""param([string]$Pids = '')
+$request = Get-Content -LiteralPath ([IO.Path]::ChangeExtension($PSCommandPath, '.json')) -Raw | ConvertFrom-Json
+$deadline = (Get-Date).AddMinutes(30)
+foreach ($id in @($Pids -split ',' | Where-Object { $_ })) { while ((Get-Process -Id $id -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 } }
+$names = @($request.paths | ForEach-Object { Split-Path -Leaf $_ })
+function Superseded {
+  if (Test-Path -LiteralPath (Join-Path $request.root 'install.json')) { return $true }
+  return [bool](Get-ChildItem -LiteralPath $request.root -Filter 'Bootstrap-Installer*' -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $names -notcontains $_.Name })
+}
+$left = 1
+for ($i = 0; $i -lt 60 -and $left -gt 0; $i++) {
+  if (Superseded) { break }
+  $left = 0
+  foreach ($p in $request.paths) {
+    if (Test-Path -LiteralPath $p) {
+      Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+      Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+      if (Test-Path -LiteralPath $p) { $left++ }
+    }
+  }
+  if ($left -gt 0) { Start-Sleep -Seconds 2 }
+}
+if ($left -eq 0 -or (Superseded)) {
+  try { if (-not (Get-ChildItem -LiteralPath $request.root -Force -ErrorAction Stop)) { Remove-Item -LiteralPath $request.root -Force } } catch {}
+  Remove-ItemProperty -Path ('HKCU:' + $request.run_once) -Name $request.value -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($PSCommandPath, '.json')), $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+"""
+
+
+def _run_once(command, *, remove=False):
+    if os.name != 'nt':
         return False
     try:
-        subprocess.Popen([_powershell(), '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-                         env=dict(os.environ, ORION_REMOVE_REQUEST=json.dumps({'paths': safe, 'root': str(root)})),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_ONCE, 0, winreg.KEY_SET_VALUE) as handle:
+            if remove:
+                winreg.DeleteValue(handle, CLEANUP_VALUE)
+            else:
+                winreg.SetValueEx(handle, CLEANUP_VALUE, 0, winreg.REG_SZ, command)
         return True
     except OSError:
         return False
+
+
+def schedule_removal(paths, *, root, wait=None, folder=None, spawn=True, run_once=_run_once):
+    """Delete what is still held (the running bootstrap runtime, files a closing process keeps open) once this
+    uninstaller and the dialog that started it exited: a hidden detached PowerShell waits for those PIDs, retries,
+    removes the then-empty root and, if something is still locked, a HKCU RunOnce entry repeats it at the next
+    sign-in. Returns the cleanup script path, or None when there was nothing (safe) to schedule."""
+    safe = [str(p) for p in paths if _inside(p, root) and Path(p) != Path(root) and Path(p).name not in NEVER_TOUCH]
+    if not safe:
+        return None
+    wait = [os.getpid(), os.getppid()] if wait is None else list(wait)
+    folder = Path(folder or os.environ.get('TEMP') or Path.home())
+    script = folder / ('orion-cleanup-' + uuid.uuid4().hex[:12] + '.ps1')
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        script.with_suffix('.json').write_text(json.dumps({'paths': safe, 'root': str(root), 'run_once': RUN_ONCE,
+                                                           'value': CLEANUP_VALUE}), encoding='utf-8')
+        script.write_text(CLEANUP_SCRIPT, encoding='utf-8')
+    except OSError:
+        return None
+    command = [_powershell(), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+               '-File', str(script)]
+    run_once(subprocess.list2cmdline(command))  # Last resort, also when this process is killed before the spawn.
+    if spawn:
+        flags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
+        arguments = command + (['-Pids', ','.join(str(p) for p in wait)] if wait else [])
+        for extra in (getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0), 0):  # Outlive a job that kills on close.
+            try:
+                subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, creationflags=flags | extra, close_fds=True)
+                break
+            except OSError:
+                continue
+    return script
 
 
 def remove_links(registry, installation_id):
@@ -298,10 +355,6 @@ def uninstall_orion(registry, scope, *, keep_data=True, keep_models=True, firewa
                 _remove_tree(target, root, result['leftovers'])
             elif target:
                 result['notes'].append('Kurulum klasörü dışındaki ' + name + ' klasörü silinmedi.')
-    if everything and not keep_data:
-        for name in ('runtime', 'backups'):
-            if locations.get(name) and _inside(locations[name], root):
-                _remove_tree(locations[name], root, result['leftovers'])
     after = registry.read()
     # Firewall: one UAC prompt at most; declined/failed never fails the uninstall.
     if firewall:
@@ -334,28 +387,47 @@ def uninstall_orion(registry, scope, *, keep_data=True, keep_models=True, firewa
     roots += list(registry.path.parent.glob('Bootstrap-Installer*'))
     if background:
         stop_background(registry, roots)
-    owned = [registry.path.parent / name for name in ROOT_OWNED] + list(registry.path.parent.glob('release-cache*')) \
-        + list(registry.path.parent.glob('Bootstrap-Installer*')) + [registry.path.parent / 'install.json.bak']
     held = []
-    for path in dict.fromkeys(owned):
-        if path.name in NEVER_TOUCH or not path.exists():
-            continue
-        if path.is_file():
-            try:
-                path.unlink()
-            except OSError:
-                held.append(path)
-            continue
-        _remove_tree(path, root, [])
-        if path.exists():
-            held.append(path)  # The running installer lives there: removed right after it exits.
+    for path in leftovers(root, locations, keep_data=keep_data, keep_models=keep_models):
+        if not remove_tree(path):
+            held.append(path)  # The running installer lives there, or a closing process still holds it.
+    # What is still there after the sweep (earlier attempts may have failed only because a process was closing).
+    result['leftovers'] = [str(p.relative_to(root)) for p in held]
     if held:
-        result['scheduled'] = schedule_removal(held, root=root)
+        result['scheduled'] = schedule_removal(held, root=root) is not None
     try:
         root.rmdir() if not any(root.iterdir()) else None
     except OSError:
         pass
     return result
+
+
+def leftovers(root, locations, *, keep_data, keep_models):
+    """Everything Orion owns in the root once every component is gone, minus what the user keeps: Hub/Router data
+    (keep_data), backups (keep_data), Models and Downloads (keep_models). The developer registrations,
+    `lifecycle-tests` and anything Orion does not recognise are never listed."""
+    root = Path(root)
+    kept = set()
+    if keep_models:
+        kept |= {locations.get('models'), locations.get('downloads')}
+    if keep_data:
+        kept.add(locations.get('backups'))
+    kept = {canonical_path(p) for p in kept if p and _inside(p, root)}
+    owned = {*ROOT_OWNED, *KIND_DIRS.values(), *(Path(p).name for p in locations.values() if p and _inside(p, root))}
+    found = []
+    for path in sorted(root.iterdir()) if root.is_dir() else []:
+        name = path.name
+        if name in NEVER_TOUCH or canonical_path(path) in kept:
+            continue
+        if not (name in owned or name.startswith(('Bootstrap-Installer', 'release-cache', 'install.json'))):
+            continue
+        if keep_data and name in (KIND_DIRS['hub'], KIND_DIRS['router']) and path.is_dir():
+            found += [child for child in path.iterdir() if child.name != 'data']
+            if not (path / 'data').exists():
+                found.append(path)
+            continue
+        found.append(path)
+    return found
 
 
 def main(argv=None):
