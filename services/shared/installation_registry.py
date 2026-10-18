@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import tomllib
 import uuid
 
@@ -270,6 +271,24 @@ def _decode(data):
         raise RegistryError('Installation registry is invalid; repair required') from exc
 
 
+REPLACE_WAIT = 10  # seconds
+
+
+def _replace(source, target, *, wait=REPLACE_WAIT, sleep=time.sleep, clock=time.monotonic):
+    """os.replace that outlasts a reader. On Windows a replace fails with PermissionError (WinError 5) while
+    ANY other process has the target open without delete sharing: the "Orion güncelleniyor" window and the
+    entry script poll the update journal, antivirus scans new files. A launch-time apply rolled back on the
+    user's PC because the health_check journal write met such a read right after the switch."""
+    deadline = clock() + wait
+    while True:
+        try:
+            return os.replace(source, target)
+        except PermissionError:
+            if clock() >= deadline:
+                raise
+            sleep(.02)
+
+
 def _atomic_write(path, data):
     """Flush a same-directory temporary before replace; keep target on failure."""
     temporary = None
@@ -279,7 +298,7 @@ def _atomic_write(path, data):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace(temporary, path)
         if os.name != 'nt':
             descriptor = os.open(path.parent, os.O_RDONLY)
             try:

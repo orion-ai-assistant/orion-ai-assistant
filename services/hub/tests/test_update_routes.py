@@ -23,6 +23,9 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch('orion.api.discovery.lan_addresses', return_value=['192.168.1.10']))
         self.read = self.enterContext(patch.object(api, 'read_status', return_value={'available': True, 'pending': None}))
         self.change = self.enterContext(patch.object(api, 'change_preferences', return_value={'saved': True}))
+        # Error paths log to <registry>/updates: never to the developer's real installation.
+        self.log = self.enterContext(patch('services.shared.update_log.log_exception'))
+        self.enterContext(patch.object(api, 'Registry'))
 
     def client(self, peer='127.0.0.1', host='127.0.0.1', **kwargs):
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=(peer, 1234)),

@@ -13,6 +13,7 @@ a newer set in a local test-only TUF repository and then, per scenario:
      normal quit takes a few seconds.
 
 Scenarios (--scenarios, default all):
+  clean         not interrupted: the plain apply must complete (baseline)
   download      killed while the new packages are downloaded (prepare)
   backing_up    killed after the Hub data backup, before the other components' backups / the switch
   switching     killed right after the registry points at the new version, before its health check
@@ -47,6 +48,7 @@ from services.shared.installation_registry import Registry
 from timing import Timings
 
 SCENARIOS = {
+    'clean': {'action': 'resume', 'expect': {'completed'}},  # No interruption: the baseline apply.
     # pause: helper fault label (`#n` = its n-th occurrence) where the helper freezes and is then killed;
     # phase/delay: kill `delay` seconds after the journal reaches `phase` (long phases).
     'download': {'action': 'prepare', 'pause': 'after:journal:downloading#2', 'expect': {'failed'}},
@@ -153,6 +155,34 @@ def robocopy(source, destination, excluded, excluded_files=()):
         raise RuntimeError(f'robocopy failed ({code}): {source} -> {destination}')
 
 
+class JournalReader:
+    """Reads the journal every 50 ms like the "Orion güncelleniyor" window and the entry script do on a real
+    PC (the sandbox runs without that window). Without it the drill missed a PermissionError rollback."""
+    def __init__(self, registry):
+        import threading
+        self.registry, self.stop = Path(registry), threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def run(self):
+        while not self.stop.wait(.05):
+            base = self.registry.parent / 'updates'
+            try:
+                identity = json.loads((base / 'active.json').read_text(encoding='utf-8'))['operation_id']
+                with (base / identity / 'journal.json').open('rb') as stream:
+                    stream.read()
+                    time.sleep(.01)
+            except (OSError, ValueError, KeyError):
+                pass
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop.set()
+        self.thread.join(5)
+
+
 def drill(update_artifacts, scenarios, timings, report):
     def callback(scratch, signers, trusted_root, installer, env):
         env = {**env, 'ORION_UPDATE_UI': 'off'}
@@ -193,6 +223,13 @@ def drill(update_artifacts, scenarios, timings, report):
             Path(config['paused']).unlink(missing_ok=True)
             Path(config['result']).unlink(missing_ok=True)
             pause = spec.get('pause', '')
+            if not pause and not spec.get('phase'):
+                code, _ = call([installer / 'runtime/python/python.exe', '-B', scratch / 'drill_fixture.py',
+                                scratch / 'drill.json', spec['action']], installer)
+                outcome = Path(config['result']).read_text(encoding='utf-8') if Path(config['result']).exists() else 'no result'
+                if code or json.loads(outcome)['phase'] not in spec['expect']:
+                    raise RuntimeError('Uninterrupted apply did not complete: ' + outcome)
+                return 'not interrupted', 0
             process = subprocess.Popen(
                 [str(installer / 'runtime/python/python.exe'), '-B', str(scratch / 'drill_fixture.py'),
                  str(scratch / 'drill.json'), spec['action']], cwd=installer,
@@ -285,7 +322,8 @@ def drill(update_artifacts, scenarios, timings, report):
                                 robocopy(snapshot, scratch, immutable(), ['*.zip', 'drill.log', 'product.log'])
                     write_row(row)
                     started = time.monotonic()
-                    reached, killed = interrupted_run(spec)
+                    with JournalReader(registry_path):
+                        reached, killed = interrupted_run(spec)
                     result = verify_and_quit(name, spec, row)
                     result.update(scenario=name, interrupted=reached, killed_processes=killed,
                                   seconds=round(time.monotonic() - started, 1))
