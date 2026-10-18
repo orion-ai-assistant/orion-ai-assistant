@@ -226,12 +226,22 @@ def test_the_entry_script_shows_stop_failures_and_survives_native_stderr():
 
 def test_hub_and_router_stop_at_the_same_time_and_the_window_closes_first(fakes):
     registry, calls, stop_hub, stop_router = fakes
-    stop_hub.side_effect = lambda root: (calls.append('hub'), time.sleep(.6))
+    threads = []
+    from services.shared.installation_registry import operation_lock
+    def hub(root):
+        # Like the real packaged stop_hub: it takes the installation operation lock (that this stop holds).
+        with operation_lock(registry.path, timeout=0):
+            calls.append('hub')
+            threads.append(threading.current_thread())
+            time.sleep(.6)
+    stop_hub.side_effect = hub
     stop_router.side_effect = lambda script: (calls.append('router'), time.sleep(.6))
     started = time.monotonic()
     assert launcher.launch(registry, stop=True) == {'status': 'stopped'}
     assert time.monotonic() - started < 1.1  # Not 0.6 + 0.6.
     assert calls.index('window') < min(calls.index('hub'), calls.index('router'))
+    # The Hub stop re-enters the operation lock this stop holds: a Windows mutex is per thread.
+    assert threads == [threading.current_thread()]
     assert not (registry.path.parent / launcher.QUITTING).exists()  # The quit marker is gone afterwards.
 
 

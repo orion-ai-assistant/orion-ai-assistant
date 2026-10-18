@@ -324,8 +324,18 @@ def _stop_all(components, stop_hub, stop_router):
         else:
             _stop_component(stop_router, str(Path(root) / 'cli.py'))
     failed = {}
-    with ThreadPoolExecutor(max(1, len(components))) as pool:
-        futures = {item['kind']: pool.submit(one, item) for item in components}
+    # The Hub stop runs in THIS thread: it takes the installation operation lock that this stop already holds,
+    # a Windows mutex that only the owning thread may re-enter (in a worker thread it waited 180 s for itself).
+    # The Router stop is a separate process and runs alongside.
+    hubs = [item for item in components if item['kind'] == 'hub']
+    others = [item for item in components if item['kind'] != 'hub']
+    with ThreadPoolExecutor(max(1, len(others))) as pool:
+        futures = {item['kind']: pool.submit(one, item) for item in others}
+        for item in hubs:
+            try:
+                one(item)
+            except Exception as error:
+                failed[item['kind']] = type(error).__name__ + ': ' + str(error)
     for kind, future in futures.items():
         error = future.exception()
         if error is not None:
