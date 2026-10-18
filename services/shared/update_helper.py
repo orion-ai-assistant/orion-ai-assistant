@@ -235,10 +235,7 @@ class UpdateHelper:
                             (Path(item['state_path']) / 'installed-package.json').read_bytes(), 'previous:' + item['kind'])
             self._phase(tx, 'checking')
             self._json(self.base / 'active.json', {'schema': 1, 'operation_id': identity}, 'active')
-            # Guard also works when the currently installed Hub predates Stage 06.
-            entry = self.registry.path.parent / 'bootstrap/Orion.ps1'
-            entry.parent.mkdir(exist_ok=True)
-            self._write(entry, Path(__file__).with_name('launcher_entry.ps1').read_bytes(), 'launcher-guard')
+            self._guard_entry()
             try:
                 status, targets = client.check(names)
                 if targets is None:
@@ -343,6 +340,14 @@ class UpdateHelper:
             else:
                 verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
             self._verified.add((item['kind'], suffix))
+
+    def _guard_entry(self):
+        """This helper's own Orion.ps1: the guard (and the recovery of an apply cut off by power loss) also works
+        when the installed Hub predates it. Every Hub launch rewrites the entry with the Hub's copy, so it is
+        written again right before the switch starts."""
+        entry = self.registry.path.parent / 'bootstrap/Orion.ps1'
+        entry.parent.mkdir(exist_ok=True)
+        self._write(entry, Path(__file__).with_name('launcher_entry.ps1').read_bytes(), 'launcher-guard')
 
     def _fresh(self):
         """Forget earlier verifications: something ran, or may have run, since they were made."""
@@ -470,6 +475,7 @@ class UpdateHelper:
                     try:
                         if not idle:
                             return self._phase(tx, 'waiting_for_idle')
+                        self._guard_entry()
                         self._phase(tx, 'draining', progress=self._shape('draining', 0, 1))
                         self._phase(tx, 'backing_up', progress=self._shape('backing_up', 0, 1, unit='files'))
                         self._backup(tx)

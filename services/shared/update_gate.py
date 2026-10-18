@@ -59,6 +59,33 @@ def progress(registry=None):
         return None
 
 
+def applier_running(registry):
+    """Someone holds the installation's operation lock right now. The helper holds it for the whole
+    apply/rollback, so an APPLYING journal whose lock is free was interrupted (power loss, killed process
+    tree, closed window): nobody is coming to finish it except the next launch's recovery."""
+    from .installation_registry import operation_lock
+    from .process_lifecycle import LifecycleError
+    try:
+        with operation_lock(Path(registry), timeout=0):
+            return False
+    except LifecycleError:
+        return True
+    except OSError:
+        return True  # Cannot tell: behave as before (wait).
+
+
+def interrupted(registry=None, *, settle=.5, sleep=None):
+    """An APPLYING phase that no live process is working on (checked twice, `settle` seconds apart)."""
+    import time
+    registry = registry or os.getenv('ORION_INSTALLATION_REGISTRY')
+    for attempt in (1, 2):
+        if progress(registry) is None or applier_running(registry):
+            return False
+        if attempt == 1:
+            (sleep or time.sleep)(settle)
+    return True
+
+
 async def wait_for_admission():
     while blocked():
         await asyncio.sleep(.2)

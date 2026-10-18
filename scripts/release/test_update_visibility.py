@@ -165,6 +165,38 @@ def test_launch_time_apply_opens_the_window_and_writes_the_result(automatic):
     assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: hub 9.0.1')
 
 
+class PowerCut(BaseException):
+    """Not an Exception: nothing in the helper may catch it, exactly like a killed process."""
+
+
+@pytest.mark.parametrize('cut', ['after:journal:backing_up', 'after:journal:switching', 'after:registry',
+                                 'after:journal:health_check'])
+def test_an_apply_cut_off_mid_way_is_finished_by_the_next_launch_not_waited_for(automatic, cut):
+    """Power loss / Task Manager during the switch: the next launch must neither wait 30 minutes for an
+    applier that is gone nor refuse to start; it resumes (or rolls back) at once, even with updates off."""
+    from services.shared import launcher
+    service, now, data, host = automatic
+    service.check()
+    def fault(label):
+        if label == cut:
+            raise PowerCut(label)
+    service.helper.fault = fault
+    entry = service.registry.path.parent / 'bootstrap/Orion.ps1'
+    entry.write_text('# an older Hub launch rewrote the entry with its own copy', encoding='utf-8')
+    with pytest.raises(PowerCut):
+        service.helper.resume()
+    service.helper.fault = lambda label: None
+    # The entry that the next launch runs is the helper's own, with the recovery step (any Hub version).
+    assert 'Invoke-OrionRecovery' in entry.read_text(encoding='utf-8')
+    assert service.helper.status()['phase'] not in {'completed', 'rolled_back', 'failed'}
+    service.preferences(enabled=False)
+    sleeps = []
+    assert launcher.wait_for_update(service.registry, sleep=sleeps.append) is False and sum(sleeps) < 2
+    result = service.startup()
+    assert result['phase'] in {'completed', 'rolled_back'}, result.get('reason')
+    assert update_ui.read_result(service.registry)['status'] == result['phase']
+
+
 def test_launch_time_apply_that_rolls_back_says_so(automatic):
     service, now, data, host = automatic
     service.check()
