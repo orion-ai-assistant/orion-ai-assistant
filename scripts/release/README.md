@@ -612,3 +612,10 @@ bundle with the packages).
 * **No service worker in the client:** built with `--pwa-strategy=none`; `build_package.verify_no_service_worker`
   rejects anything else, and `serve_web.py` answers `/flutter_service_worker.js` with a self-removing worker so an
   already-registered old worker is retired on the next load. "Update now" reloads through `/__orion_refresh__`.
+
+## One command: `release.cmd`
+
+`release.cmd` (repo root) = `scripts/release/release.py`: build what changed (cache, parallel), full acceptance
+(an identical earlier pass is reused), then sign and publish. The newest staged bootstrap bundle is reused while
+`bootstrap.json` keeps its sequence. The key passphrase is asked once. `--no-publish` stops after acceptance,
+`--dry-run` stages and signs without uploading, `--force-accept` repeats the acceptance.
