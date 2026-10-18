@@ -406,3 +406,12 @@ def test_package_builds_from_autocrlf_and_lf_checkouts_with_identical_bytes(tmp_
         with zipfile.ZipFile(archive) as package:
             assert package.read('services/shared/a.py') == b'a = 1' + bytes([10]) + b'b = 2' + bytes([10])
     assert digests[0] == digests[1]
+
+
+def test_acceptance_overlaps_the_flutter_build_only_on_an_idle_machine():
+    def decide(accept='full', mode='auto', busy=5.0):
+        return build_release.overlap_acceptance(Namespace(accept=accept, overlap_acceptance=mode), lambda: busy)
+    assert decide(busy=5.0) is True
+    assert decide(busy=build_release.OVERLAP_IDLE_CPU + 1) is False  # busy PC: dart2js first
+    assert decide(mode='on', busy=90.0) is True and decide(mode='off', busy=0.0) is False
+    assert decide(accept='none', mode='on') is False and decide(accept='fast') is False

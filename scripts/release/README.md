@@ -96,7 +96,11 @@ busy one they no longer stretch dart2js (seen: 130-260 s next to Next.js, packag
 session's acceptance). Flutter's own defaults are already the fast release ones (`-O4`, minified, no
 source maps, `pub get` skipped when the lock matches); `-O1` measured 6 s faster and 4 % larger, not used.
 
-When Flutter is still compiling once Hub and Router are packaged, the full acceptance starts right away
+`--overlap-acceptance auto|on|off` (default `auto`): `auto` samples total CPU for 1 s before the round
+and overlaps only below 35 % busy (a few idle sessions: 10-22 %; another build or acceptance: ~80 %). Measured on the owner's PC with a full dart2js compile: idle, overlap
+92.5 s vs 126.9 s acceptance-after-Flutter; next to other sessions' builds/acceptance runs the overlap
+stretched Flutter from ~60-80 s to 134-297 s (a ~6 min round), so a busy PC runs dart2js first.
+When the overlap is used and Flutter is still compiling once Hub and Router are packaged, the full acceptance starts right away
 (`accept_packages.py --client-wait <marker>`): fresh install of Hub+Router, standalone Router cycle, then
 it waits; when the Client package exists it is added through the product's add path (TUF metadata v2 of
 the same test repository, real verification + safe extraction) and the Hub/Client steps run. It is still

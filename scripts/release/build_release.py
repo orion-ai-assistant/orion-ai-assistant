@@ -163,6 +163,29 @@ def release_ids():
     return ids
 
 
+OVERLAP_IDLE_CPU = 35  # % of all cores busy before the round starts; above it the overlap is not used
+
+
+def overlap_acceptance(args, cpu_percent=None):
+    """Whether the full acceptance may start while Flutter still compiles (decided once, before any step).
+
+    Measured on a 6-core PC: idle, the overlap shortened a Flutter round from 127 s to 92 s; next to other
+    sessions' builds and acceptance runs it stretched dart2js from ~60-80 s to 134-297 s, a slower round.
+    `auto` therefore overlaps only on an idle machine."""
+    if args.accept != 'full' or args.overlap_acceptance == 'off':
+        return False
+    if args.overlap_acceptance == 'on':
+        return True
+    if cpu_percent is None:
+        import psutil
+        cpu_percent = lambda: psutil.cpu_percent(interval=1.0)
+    busy = cpu_percent()
+    print(f'CPU {busy:.0f}% busy before the round: acceptance '
+          + ('may overlap the Flutter build' if busy < OVERLAP_IDLE_CPU else 'waits for the Client package'),
+          flush=True)
+    return busy < OVERLAP_IDLE_CPU
+
+
 def finalize(work, output, kinds=tuple(COMPONENTS)):
     """Move the finished (zip, target.json) pairs of `kinds` into the candidate directory."""
     output.mkdir(parents=True, exist_ok=True)
@@ -190,6 +213,10 @@ def main(argv=None):
     parser.add_argument('--no-cache', action='store_true', help='ignore every cache: rebuild everything')
     parser.add_argument('--force-accept', action='store_true', help='run the full acceptance even if this set already passed')
     parser.add_argument('--no-prune', action='store_true', help='do not prune old acceptance sandboxes')
+    parser.add_argument('--overlap-acceptance', choices=['auto', 'on', 'off'], default='auto',
+                        help='start the full acceptance with Hub+Router while Flutter still compiles. auto (default): '
+                             'only when the PC is idle at the start of the round (overlap saved 34 s idle, but '
+                             'stretched dart2js to 134-297 s next to other sessions\' builds and acceptance runs)')
     parser.add_argument('--scratch-base', type=Path,
                         default=Path.home() / '.orion-lifecycle-tests')  # never inside a real %LOCALAPPDATA%/Orion
     args = parser.parse_args(argv)
@@ -227,6 +254,7 @@ def main(argv=None):
         if summary.strip():
             print('    ' + summary.strip().replace('\n', '\n    '), flush=True)
 
+    overlap = overlap_acceptance(args)
     early = None  # an acceptance started with Hub+Router while the Client package is still being built
     stack = ExitStack()
     marker = work / 'client-ready'
@@ -243,7 +271,7 @@ def main(argv=None):
             dashboard.result()
             show(hub)
             show(router)
-            if args.accept == 'full' and not client.done():
+            if overlap and not client.done():
                 # Flutter (~1 min) is still compiling: install and exercise Hub+Router now, add the Client
                 # when its package exists. Still one full, publishable result for the exact three hashes.
                 finalize(work, output, ('hub', 'router'))
