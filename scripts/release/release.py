@@ -7,10 +7,11 @@
    and the acceptance result of step 1. Each feed's bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the
    newest staged bundle of that feed (its contents only differ because it bundles shared scripts); bump
    bootstrap.json to ship a new one.
-The release key passphrase is asked once, by the publish step. Nothing is published when a step fails.
+The release key passphrase is asked once, first (a wrong one fails before the build). Nothing is published when a step fails.
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -88,6 +89,14 @@ def main():
     parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
                         help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
+    if not args.no_publish:
+        # Ask first, once: a wrong passphrase must not cost a 4 minute build, and every publish step below
+        # (Router feed, Hub feed) gets it through its environment instead of asking again.
+        sys.path.insert(0, str(HERE))
+        import release_keys
+        passphrase = release_keys._passphrase(enforce_length=False)
+        release_keys.load_signer(Path.home() / '.orion-release/release-key.pem', passphrase)
+        os.environ[release_keys.PASSPHRASE_ENV] = passphrase.decode('utf-8')
     candidates, result = run_build(['--force-accept'] if args.force_accept else [])
     print(f'\nBuilt and accepted: {candidates.name}\nAcceptance: {result}', flush=True)
     if args.no_publish:

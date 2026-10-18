@@ -160,6 +160,8 @@ if ($p.remove) {
     $link.WorkingDirectory = [IO.Path]::GetDirectoryName($p.path)
     $link.WindowStyle = 7
     $link.Save()
+    # A link rewritten after Orion.exe changed can keep a blank icon until Explorer rebuilds its icon cache.
+    try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 }
 """
     try:
