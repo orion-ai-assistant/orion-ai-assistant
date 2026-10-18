@@ -16,6 +16,7 @@ from services.shared.installation_registry import Registry, component_record, ne
 from services.shared.release_packages import record_prepared_package, sha256, verify_package_record
 from services.shared.update_helper import UpdateHelper, UpdateError
 from services.shared.update_gate import blocked, UpdateAdmission
+from services.shared import update_log
 
 
 class Crash(BaseException):
@@ -176,14 +177,18 @@ def test_failures_preserve_old_registry_and_data(installed, failure, monkeypatch
     if failure == 'disk':
         monkeypatch.setattr('services.shared.update_helper.shutil.disk_usage', lambda p: type('Disk', (), {'free': 0})())
     elif failure == 'locked-file':
-        monkeypatch.setattr('services.shared.update_helper.shutil.copytree', lambda *a, **kw: (_ for _ in ()).throw(PermissionError()))
+        monkeypatch.setattr('services.shared.update_helper._copy_file', lambda *a, **kw: (_ for _ in ()).throw(PermissionError()))
     elif failure == 'corrupt-backup':
-        original = helper._verify_backups
-        def corrupt(tx):
-            folder = Path(tx['backups']['hub']['path'])
-            (folder / 'identity.manual').write_bytes(b'corruption')
-            original(tx)
-        helper._verify_backups = corrupt
+        # A restarted helper re-proves the backup in full before it switches anything.
+        def die(point):
+            if point == 'after:journal:switching':
+                raise Crash(point)
+        helper.fault = die
+        with pytest.raises(Crash):
+            helper.resume()
+        folder = next(helper.base.glob('*/backup-hub-*'))
+        (folder / 'identity.manual').write_bytes(b'corruption')
+        helper = UpdateHelper(helper.registry, host=Host())
     else:
         (Path(staged['proposed']['components'][0]['code_path']) / 'orion-release.json').write_bytes(b'broken')
     assert helper.resume()['phase'] in {'failed', 'rolled_back'}
@@ -485,3 +490,51 @@ def test_health_probe_uses_the_launcher_default_flutter_port(monkeypatch):
     assert update_health.flutter_port() == 8090
     monkeypatch.setenv('ORION_FLUTTER_PORT', '18090')
     assert update_health.flutter_port() == 18090
+
+
+def test_success_records_timings_and_determinate_progress(installed):
+    helper, client, name, old, data, host = installed
+    helper.prepare(client, [name])
+    seen = []
+    original = helper._json
+    def spy(path, value, label):
+        if path.name == 'journal.json' and value['phase'] in {'draining', 'backing_up', 'switching', 'health_check'}:
+            seen.append(value['progress']['percent'])
+        return original(path, value, label)
+    helper._json = spy
+    result = helper.resume()
+    assert result['phase'] == 'completed'
+    assert {'verify.start', 'backup.copy.hub', 'backup.hash-source.hub', 'switch', 'health.probe',
+            'verify.final'} <= set(result['timings'])
+    assert seen == sorted(seen) and seen[0] >= 8 and seen[-1] <= 95
+    assert 'update.timing' in chr(10).join(update_log.read_tail(helper.base, 100))
+
+
+def test_backup_covers_only_changed_components_unless_hub_changes():
+    def tx(changes):
+        return {'changes': changes, 'previous': {'components': [{'kind': k} for k in ('hub', 'client', 'router')]}}
+    assert UpdateHelper.backup_kinds(tx(['client', 'router'])) == ['client', 'router']
+    assert UpdateHelper.backup_kinds(tx(['router'])) == ['router']
+    assert UpdateHelper.backup_kinds(tx(['hub'])) == ['hub', 'client', 'router']
+    assert UpdateHelper.backup_kinds(tx([])) == ['hub', 'client', 'router']
+    assert UpdateHelper.backup_kinds({**tx(['router']), 'conversion': True}) == ['hub', 'client', 'router']
+
+
+def test_progress_percent_is_monotonic_across_phases():
+    from services.shared.update_helper import percent
+    values = [percent('draining', 0, 1), percent('backing_up', 0, 9), percent('backing_up', 9, 9),
+              percent('switching', 1, 2), percent('health_check', 0, 3), percent('health_check', 3, 3)]
+    assert values == sorted(values) and values[-1] == 95
+
+
+def test_unchanged_component_is_not_fully_rehashed(installed, monkeypatch):
+    helper, client, name, old, data, host = installed
+    tx = helper.prepare(client, [name])
+    calls = []
+    import services.shared.update_helper as module
+    real = module.verify_package_record
+    monkeypatch.setattr(module, 'verify_package_record', lambda item, **kw: calls.append(kw) or real(item, **kw))
+    helper._fresh()
+    helper._verify(tx, tx['proposed'], True, quick=True)
+    helper._verify(tx, tx['proposed'], True, quick=True)  # Memoized: no second hash in the same window.
+    assert len(calls) == 1

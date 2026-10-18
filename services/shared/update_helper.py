@@ -5,7 +5,8 @@ installation stays in waiting_for_idle; the helper never interrupts user work.
 Hub/Client and independently selected Router packages use the same transaction.
 Schema changes and bootstrap replacement fail closed, never restore a stale DB.
 """
-from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 import json
 import os
@@ -20,6 +21,7 @@ from .installation_paths import canonical_path, validate_private_directory
 from .release_packages import (PackageError, compatible, record_prepared_package,
                                verify_package_record, sha256)
 from .update_gate import TERMINAL
+from . import update_log
 
 CONSUMER_WAIT = 20  # seconds the product's own processes get to exit/settle before "not idle"
 PHASES = ('checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle',
@@ -27,17 +29,64 @@ PHASES = ('checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle',
           'failed', 'rollback_pending', 'rolled_back', 'repair_required')
 
 
+WORKERS = 8  # Per-file cost on Windows is mostly latency (Defender, open/close); threads overlap it.
+# Share of the whole "update now" bar that each journal phase covers (the window reads `percent`).
+SPANS = {'draining': (8, 10), 'backing_up': (10, 45), 'switching': (45, 55), 'health_check': (55, 95)}
+
+
 class UpdateError(ValueError):
     pass
 
 
-def inventory(tree):
-    result = {}
+def walk(tree):
+    """(directories, files) relative to `tree`; links, junctions and missing disks are rejected."""
     tree = canonical_path(tree, must_exist=True)
+    directories, files = [], []
     for path in tree.rglob('*'):
-        canonical_path(path, must_exist=True)  # Reject links, junctions and missing disks.
+        canonical_path(path, must_exist=True)
+        relative = path.relative_to(tree).as_posix()
         if path.is_file():
-            result[path.relative_to(tree).as_posix()] = sha256(path)
+            files.append(relative)
+        elif path.is_dir():
+            directories.append(relative)
+    return directories, files
+
+
+def hash_files(tree, files, tick=None):
+    tree = Path(tree)
+    digests = {}
+    with ThreadPoolExecutor(WORKERS) as pool:
+        for name, digest in zip(files, pool.map(lambda name: sha256(tree / name), files)):
+            digests[name] = digest
+            if tick:
+                tick()
+    return digests
+
+
+def inventory(tree):
+    tree = canonical_path(tree, must_exist=True)
+    return hash_files(tree, walk(tree)[1])
+
+
+def percent(phase, done, total):
+    low, high = SPANS[phase]
+    return round(low + (high - low) * min(max(done, 0), total) / total) if total else low
+
+
+def _copy_file(source, destination):
+    # One open per file: copy, flush and fsync before close (no second pass over the backup).
+    with open(source, 'rb') as reader, open(destination, 'wb') as writer:
+        shutil.copyfileobj(reader, writer, 1024 * 1024)
+        writer.flush()
+        os.fsync(writer.fileno())
+    shutil.copystat(source, destination)
+
+
+def _signature(root, files):
+    result = {}
+    for name in files:
+        info = (Path(root) / name).stat()
+        result[name] = (info.st_size, info.st_mtime_ns)
     return result
 
 
@@ -50,6 +99,7 @@ class UpdateHelper:
         self.base.mkdir(exist_ok=True)
         self.host = host or NativeHost(self.registry)
         self.fault = fault or (lambda label: None)
+        self._verified = set()  # (kind, inventory) already hashed in this stopped, locked window
 
     def _write(self, path, data, label):
         canonical_path(path)
@@ -66,6 +116,34 @@ class UpdateHelper:
         tx.update(fields, phase=phase, updated_at=time.time())
         self._json(self._directory(tx) / 'journal.json', tx, 'journal:' + phase)
         return tx
+
+    @contextmanager
+    def _timed(self, tx, label):
+        """Wall-clock per step into watcher.log and the journal (`timings`); diagnostics only."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            seconds = round(time.monotonic() - started, 2)
+            tx.setdefault('timings', {})[label] = seconds
+            update_log.log(self.base, 'update.timing', step=label, seconds=seconds)
+
+    def _progress(self, tx, done, total, *, component=None, force=False, unit='steps'):
+        """Real progress for the updating window. Throttled; never fails the transaction."""
+        now = time.monotonic()
+        if not force and now - getattr(self, '_progress_at', 0) < 0.4:
+            return
+        self._progress_at = now
+        tx['progress'] = self._shape(tx['phase'], done, total, component=component, unit=unit)
+        try:
+            self._json(self._directory(tx) / 'journal.json', tx, 'progress')
+        except OSError:
+            pass
+
+    @staticmethod
+    def _shape(phase, done, total, *, component=None, unit='steps'):
+        return {'done': done, 'total': total, 'component': component, 'unit': unit,
+                'percent': percent(phase, done, total)}
 
     def _directory(self, tx):
         identity = tx['operation_id']
@@ -219,7 +297,11 @@ class UpdateHelper:
                 self._phase(tx, 'failed', reason=type(error).__name__)
                 raise
 
-    def _verify(self, tx, record, candidate):
+    def _verify(self, tx, record, candidate, *, quick=False):
+        # `quick` applies only to components this update does not touch: their active release was fully
+        # hashed by the launcher, so size+mtime against that cache is enough (falls back to a full hash
+        # when no cache exists). Changed components are always fully hashed. A (kind, inventory) pair
+        # hashed since the last `_fresh()` is not hashed again.
         directory = self._directory(tx)
         for item in record['components']:
             if item['distribution'] == 'legacy-source' and tx.get('conversion'):
@@ -228,8 +310,19 @@ class UpdateHelper:
                 if files != tx['legacy_inventories'][item['kind']]:
                     raise UpdateError('Legacy source/data changed; explicit repair required')
                 continue
-            suffix = 'candidate' if candidate and item['kind'] in tx['changes'] else 'previous'
-            verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
+            changed = item['kind'] in tx['changes']
+            suffix = 'candidate' if candidate and changed else 'previous'
+            if (item['kind'], suffix) in self._verified:
+                continue
+            if quick and not changed and not tx.get('conversion'):
+                verify_package_record(item, quick=True)
+            else:
+                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
+            self._verified.add((item['kind'], suffix))
+
+    def _fresh(self):
+        """Forget earlier verifications: something ran, or may have run, since they were made."""
+        self._verified.clear()
 
     def _publish(self, tx, record, candidate):
         self._verify(tx, record, candidate)
@@ -251,34 +344,70 @@ class UpdateHelper:
         self.registry.write(record)
         self.fault('after:registry')
 
+    @staticmethod
+    def backup_kinds(tx):
+        """Components whose data is backed up before the switch.
+
+        Everything when the Hub changes (it owns identity, keys and the database) and for a legacy
+        conversion; otherwise only the changed components. Data schemas cannot change here (prepare
+        refuses it), so an untouched component's data is neither written by the switch nor needed
+        by a rollback (rollback never restores data)."""
+        kinds = [c['kind'] for c in tx['previous']['components']]
+        if tx.get('conversion') or not tx['changes'] or 'hub' in tx['changes']:
+            return kinds
+        return [kind for kind in kinds if kind in tx['changes']]
+
     def _backup(self, tx):
         # Offline physical backup only: host's gate has verified supervisor,
         # descendants and PostgreSQL ownership and holds their lifecycle locks.
         directory = self._directory(tx)
         snapshots = {}
-        for item in tx['previous']['components']:
-            source = Path(item['data_path'])
-            files = inventory(source)
-            size = sum((source / name).stat().st_size for name in files)
+        with self._timed(tx, 'backup.scan'):
+            plans = []
+            for item in tx['previous']['components']:
+                if item['kind'] in self.backup_kinds(tx):
+                    source = canonical_path(item['data_path'], must_exist=True)
+                    plans.append((item['kind'], source, *walk(source)))
+        total = 3 * sum(len(files) for *_, files in plans)  # hash source, copy, hash copy
+        done = 0
+
+        def tick():
+            nonlocal done
+            done += 1
+            self._progress(tx, done, total, unit='files')
+        self._progress(tx, 0, total, unit='files', force=True)
+        for kind, source, directories, files in plans:
+            with self._timed(tx, 'backup.hash-source.' + kind):
+                digests = hash_files(source, files, tick)
+            signature = _signature(source, files)
+            size = sum(value[0] for value in signature.values())
             if shutil.disk_usage(directory).free < size + 64 * 1024**2:
                 raise UpdateError('Insufficient backup disk space')
             # An interrupted copy is retained as evidence; never reused as a
             # complete backup. No active data or previous release is deleted.
-            dest = directory / ('backup-' + item['kind'] + '-' + str(uuid.uuid4()))
-            shutil.copytree(source, dest)
-            if inventory(dest) != files or inventory(source) != files:
+            dest = directory / ('backup-' + kind + '-' + str(uuid.uuid4()))
+            with self._timed(tx, 'backup.copy.' + kind):
+                dest.mkdir()
+                for name in directories:
+                    (dest / name).mkdir(parents=True, exist_ok=True)
+                with ThreadPoolExecutor(WORKERS) as pool:
+                    for _ in pool.map(lambda name: _copy_file(source / name, dest / name), files):
+                        tick()
+            with self._timed(tx, 'backup.hash-copy.' + kind):
+                copied = hash_files(dest, files, tick)
+            # The copy is proven byte-identical to the hashes taken before it. Services are stopped and
+            # their locks held, so the source cannot legitimately change; a stat comparison (size and
+            # mtime, not a third and fourth hash) still detects a straggler writing during the copy.
+            if copied != digests or set(walk(dest)[1]) != set(files) or _signature(source, files) != signature:
                 raise UpdateError('Offline backup changed during copy')
-            for path in dest.rglob('*'):
-                if path.is_file():
-                    with path.open('r+b') as stream:
-                        os.fsync(stream.fileno())
-            snapshots[item['kind']] = {'path': str(dest), 'files': files}
-            self.fault('after:backup:' + item['kind'])
+            snapshots[kind] = {'path': str(dest), 'files': digests}
+            self.fault('after:backup:' + kind)
         tx['backups'] = snapshots
         self._json(directory / 'backups.json', snapshots, 'backups')
 
     def _verify_backups(self, tx):
-        if set(tx['backups']) != {c['kind'] for c in tx['previous']['components']}:
+        """Full proof of the backup; used when a transaction is resumed after an interruption."""
+        if set(tx['backups']) != set(self.backup_kinds(tx)):
             raise UpdateError('Complete offline backup required')
         for snapshot in tx['backups'].values():
             path = canonical_path(snapshot['path'], must_exist=True)
@@ -304,20 +433,30 @@ class UpdateHelper:
                 return self._phase(tx, 'repair_required', reason='Registry changed outside this transaction')
             if tx['phase'] == 'rollback_pending':
                 return self._rollback(tx)
+            self._fresh()
             try:
-                self._verify(tx, tx['proposed'], True)
+                with self._timed(tx, 'verify.start'):
+                    self._verify(tx, tx['proposed'], True, quick=True)
+                    if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
+                        self._verify(tx, tx['previous'], False, quick=True)
                 if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
-                    self._verify(tx, tx['previous'], False)
-                if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
-                    with self.host.stopped(tx['previous']) as idle:
+                    with self._timed(tx, 'stopped.enter'):
+                        stopped = self.host.stopped(tx['previous'])
+                        idle = stopped.__enter__()
+                    try:
                         if not idle:
                             return self._phase(tx, 'waiting_for_idle')
-                        self._phase(tx, 'draining')
-                        self._phase(tx, 'backing_up')
+                        self._phase(tx, 'draining', progress=self._shape('draining', 0, 1))
+                        self._phase(tx, 'backing_up', progress=self._shape('backing_up', 0, 1, unit='files'))
                         self._backup(tx)
-                        self._phase(tx, 'switching')
-                        self._verify_backups(tx)
-                        self._publish(tx, tx['proposed'], True)
+                        self._phase(tx, 'switching', progress=self._shape('switching', 0, 2))
+                        with self._timed(tx, 'switch'):
+                            # Straight-through: `_backup` just hashed the copy against the source hashes,
+                            # so no further backup pass here (a resumed run re-proves it in full).
+                            self._progress(tx, 1, 2, force=True)
+                            self._publish(tx, tx['proposed'], True)
+                    finally:
+                        stopped.__exit__(None, None, None)
                 else:
                     # A process may have survived its helper. Quarantine stays
                     # closed until it is stopped with verified ownership.
@@ -325,12 +464,14 @@ class UpdateHelper:
                     with self.host.stopped(current) as idle:
                         if not idle:
                             raise UpdateError('Candidate processes could not be reconciled')
-                        self._verify_backups(tx)
+                        self._verify_backups(tx)  # Recovery after a restart: full proof of the backup.
                         self._publish(tx, tx['proposed'], True)
                 if tx['attempts'] >= 2:
                     raise UpdateError('Health retry limit reached')
-                self._phase(tx, 'health_check', attempts=tx['attempts'] + 1)
-                result = self.host.health(tx['proposed'])
+                self._phase(tx, 'health_check', attempts=tx['attempts'] + 1, progress=self._shape('health_check', 0, 3))
+                with self._timed(tx, 'health.probe'):
+                    result = self.host.health(tx['proposed'])
+                self._progress(tx, 1, 3, force=True)
                 required = ({'hub_api', 'worker', 'database', 'client_api', 'router_identity'}
                             if any(c['kind'] == 'hub' for c in tx['proposed']['components'])
                             else {'database', 'router_identity'})
@@ -338,12 +479,21 @@ class UpdateHelper:
                     raise UpdateError('Candidate health failed')
                 # End health in a stopped state. No user job has been admitted,
                 # and no unfinished external tool is retried by the helper.
-                self.host.stop(tx['proposed'])
-                with self.host.stopped(tx['proposed']) as idle:
+                with self._timed(tx, 'health.stop'):
+                    self.host.stop(tx['proposed'])
+                    stopped = self.host.stopped(tx['proposed'])
+                    idle = stopped.__enter__()
+                try:
                     if not idle:
                         raise UpdateError('Health shutdown unverified')
-                    self._verify(tx, tx['proposed'], True)
+                    self._progress(tx, 2, 3, force=True)
+                    # The candidate ran: nothing hashed before may be reused.
+                    self._fresh()
+                    with self._timed(tx, 'verify.final'):
+                        self._verify(tx, tx['proposed'], True, quick=True)
                     return self._phase(tx, 'completed', health=result)
+                finally:
+                    stopped.__exit__(None, None, None)
             except Exception as error:
                 if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
                     # Nothing has switched. In particular, a corrupt download
@@ -353,6 +503,7 @@ class UpdateHelper:
                 return self._rollback(tx)
 
     def _rollback(self, tx):
+        self._fresh()
         try:
             current = self.registry.read()
             if not any(same_installation(current, value) for value in (tx['previous'], tx['proposed'])):

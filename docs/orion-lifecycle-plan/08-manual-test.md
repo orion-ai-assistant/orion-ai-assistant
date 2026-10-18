@@ -123,6 +123,15 @@ Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez aç
 4. Güncelleniyor penceresi: adımlar gerçekten ilerler (Servisler kapatılıyor → Veriler yedekleniyor → Yeni sürüm yerleştiriliyor → Yeni sürüm denetleniyor → Orion yeniden başlatılıyor); sonunda sonuç iletisi ("Güncellendi: …" / "Güncelleme uygulanamadı…") pencerede görünür, sonra Orion açılır.
 5. Yönetici/normal karışımı: Orion'u yönetici PowerShell'den veya "Yönetici olarak çalıştır" ile başlat (`Orion.exe` / `Orion.ps1`). Beklenen: ileti **yok**; Orion kendini normal haklarla yeniden açar (Görev Yöneticisi > Ayrıntılar > Yükseltilmiş sütunu: python/powershell süreçleri "Hayır"). UAC kapalıysa (her şey yükseltilmiş) 60 sn içinde ikinci denemede "Orion yönetici olarak başlatılamaz" iletisi, döngü yok. Yönetici başlatılmış eski servisler varken normal kısayol: "Orion yönetici olarak çalışıyor… tepsiden Çık, sonra normal açın" iletisi, Onarma penceresi yok.
 
+### 4e. Şimdi güncelle: hız ve gerçek ilerleme çubuğu
+
+Değişiklik: yedek yalnız **değişen** bileşenlerin verisini alır (Hub değişiyorsa hepsi, yani eski davranış); dosyalar paralel kopyalanır/özetlenir (kopya başına tek açma + fsync); değişmeyen bileşenin kodu tam yeniden özetlenmez (boyut+zaman damgası önbelleği; önbellek yoksa tam özet); güncelleme penceresindeki çubuk artık belirlidir.
+
+1. Yalnız Client+Router güncellemesi ile "Şimdi güncelle". Toplam süre eskiden ~2:20 idi; beklenen: belirgin kısa (yedek ~1 dk yerine ~10 sn). Hub verisi için `updates\<işlem>ackup-hub-*` klasörü **oluşmamalı**; `backup-client-*` / `backup-router-*` olmalı. Hub de değişiyorsa `backup-hub-*` da olmalı.
+2. Güncelleme penceresi: çubuk dönmez, soldan sağa **ilerler** (Servisler kapatılıyor ~%3 → Veriler yedekleniyor %10-45 dosya sayısıyla → yerleştirme ~%50 → denetleme %55-95 → yeniden başlatma %97) ve geri gitmez.
+3. `updates\watcher.log` içinde `update.timing step=... seconds=...` satırları (`verify.start`, `stopped.enter`, `backup.hash-source.*`, `backup.copy.*`, `backup.hash-copy.*`, `switch`, `health.probe`, `health.stop`, `verify.final`); aynı süreler `journal.json` içindeki `timings` alanında. Yavaşlık bildirirken bu satırları ekle.
+4. Gevşetilen değişmezler: (a) yedek kopyası kopyadan hemen sonra tam özetle kanıtlanır, kesintisiz akışta `switching` öncesi ayrı bir yedek doğrulaması yoktur (kaynak 1, kopya 1 özet; karşılaştırılır); yalnız kesintiden (çökme/yeniden başlatma) sonra devam edilirse yedek tam özetle yeniden kanıtlanır. (b) Kaynak veri için kopya sonrası ikinci/üçüncü özet yerine boyut+mtime karşılaştırması (servisler durmuş ve kilitli). (c) Değişmeyen bileşenin kodu `quick` doğrulanır; değişen bileşenler ve geri alma her zaman tam özetlenir. Geri alma veriyi zaten yedekten geri yüklemez.
+
 ### 5. Hub/Router paneli düğmeleri
 
 Ayarlar'da Hub kartında "Hub yönetimini aç", Router bağlıyken Router kartında "Router yönetimini aç" görünmeli; tıklayınca adres çubuksuz uygulama penceresinde açılır. Telefon oturumunda bu düğmeler görünmez.
