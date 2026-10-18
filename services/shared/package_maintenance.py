@@ -41,13 +41,9 @@ def removal_plan(registry, kinds):
 
 
 def remove_links(registry, installation_id):
-    from .launcher import DESKTOP_LINK, LEGACY_STARTUP_LINK, STARTUP_LINK
-    from .windows_autostart import known_folder, shortcut
-    entry = registry.path.parent / 'bootstrap/Orion.ps1'
-    for kind, name in (('startup', STARTUP_LINK), ('startup', LEGACY_STARTUP_LINK), ('desktop', DESKTOP_LINK)):
-        path = known_folder(kind) / name
-        if path.exists():
-            shortcut(path, entry, installation_id, startup=kind == 'startup', remove=True)
+    """Desktop/Startup links of every product identity (if ours) and stale Startup-apps state."""
+    from .uninstall import remove_links as remove_all
+    return remove_all(registry, installation_id)
 
 
 def uninstall(registry, kinds, *, expected_revision, helper=None, links=remove_links):

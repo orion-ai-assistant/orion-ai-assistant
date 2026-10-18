@@ -1,4 +1,4 @@
-# One-command Orion installer: downloads the signed installer bundle from this
+﻿# One-command Orion installer: downloads the signed installer bundle from this
 # project's GitHub Release feed, then installs Hub, the web client and (from the Router's own feed) the Router.
 #   PowerShell: irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex
 # The bundle carries the public trust root; every package is signature-verified

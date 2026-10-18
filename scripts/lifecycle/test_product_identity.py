@@ -46,6 +46,9 @@ class ProductIdentityTests(unittest.TestCase):
         self.approved = patch('services.shared.windows_autostart.clean_startup_approved', return_value=[])
         self.cleaned = self.approved.start()
         self.addCleanup(self.approved.stop)
+        self.arp = patch('services.shared.uninstall.register_entry', return_value=True)
+        self.arp.start()
+        self.addCleanup(self.arp.stop)
 
     def retained(self, exe=EXE, recorded=None, router_exe=None):
         """A fake retained bootstrap that the registry's pointer selects."""

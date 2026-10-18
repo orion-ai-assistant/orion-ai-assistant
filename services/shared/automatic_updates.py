@@ -251,7 +251,7 @@ class AutomaticUpdates:
                 'policy': self.policy(), 'last_attempt': state.get('last_attempt'),
                 'last_success': state.get('last_success'), 'bootstrap': self._bootstrap_summary(state), 'error': error,
                 'error_message': update_log.describe(state.get('error') or (tx.get('reason') if tx and tx['phase'] in {'failed', 'rolled_back', 'repair_required'} else None) or error),
-                'checking': self._checking(state), 'check_outcome': state.get('outcome'),
+                'checking': self._checking(state), 'check_outcome': state.get('outcome'), 'feed_errors': state.get('feed_errors'),
                 'check_outcome_at': state.get('outcome_at'),
                 'pending': pending, 'history': history, 'observed_at': self.clock(),
                 'activation': 'next_safe_launch', 'router_independent': True}

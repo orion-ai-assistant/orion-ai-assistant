@@ -40,6 +40,8 @@ REQUIRED_FILES = (
     'services/shared/automatic_updates.py', 'services/shared/bootstrap_update.py',
     'services/shared/update_helper.py', 'services/shared/release_packages.py',
     'services/shared/launcher_entry.ps1', 'services/shared/tray.ps1', 'services/shared/updating.ps1',
+    'services/shared/uninstall.ps1', 'services/shared/uninstall.py', 'services/shared/component_setup.py',
+    'services/shared/windows_autostart.py',
     'services/shared/update_now.py', 'services/shared/update_log.py', 'services/shared/update_ui.py',
 )
 

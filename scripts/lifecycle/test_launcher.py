@@ -31,6 +31,7 @@ class LauncherTests(unittest.TestCase):
         self.tray = self.enterContext(patch('services.shared.launcher.spawn_tray'))
         self.tray_stop = self.enterContext(patch('services.shared.launcher.stop_tray'))
         self.enterContext(patch('services.shared.windows_autostart.clean_startup_approved', return_value=[]))
+        self.enterContext(patch('services.shared.uninstall.register_entry', return_value=True))
 
     def test_disabled_stale_startup_link_does_not_start_anything(self):
         self.assertEqual({'status': 'disabled'}, launcher.launch(self.store, startup=True))

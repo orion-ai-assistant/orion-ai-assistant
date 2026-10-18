@@ -548,7 +548,13 @@ def _startup_links(directory, entry, installation_id, enabled, record=None):
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
 
-LINKS_REVISION = 2  # 2: identity per installation (Orion Router) + stale StartupApproved cleanup
+LINKS_REVISION = 3  # 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+
+
+def register_uninstall_entry(registry):
+    """The Settings > Apps entry (HKCU Uninstall) and its script; cosmetic, never raises."""
+    from .uninstall import register_entry
+    return register_entry(registry)
 
 
 def refresh_links(registry):
@@ -576,6 +582,7 @@ def refresh_links(registry):
     sync_desktop_link(record, entry, create=False)
     _startup_links(known_folder('startup'), entry, record['installation_id'],
                    record['preferences']['start_with_windows'], record)
+    register_uninstall_entry(registry)
     _atomic_write(marker, json.dumps(wanted).encode())
     return True
 

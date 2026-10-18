@@ -2,6 +2,7 @@
 # Started and supervised by services.shared.launcher; never started by the Hub itself.
 #   left click / "Orion'u ac" : open the Orion window (starts services if they are not running)
 #   "Cik"                     : stop Hub, Router and every service through the normal launcher stop
+#   "Orion'u kaldir"          : the uninstall dialog (bootstrap/Orion-Uninstall.ps1; asks what to remove / keep)
 # Closing the Orion window never touches this icon or the services.
 param([Parameter(Mandatory = $true)][string]$Registry)
 $ErrorActionPreference = 'Stop'
@@ -45,10 +46,19 @@ try {
 $script:icon.Text = 'Orion'
 $menu = New-Object Windows.Forms.ContextMenuStrip
 $open = $menu.Items.Add("Orion'u a" + [char]0x00E7)
+$remove = $menu.Items.Add("Orion'u kald" + [char]0x0131 + 'r')
 $quit = $menu.Items.Add([string][char]0x00C7 + [char]0x0131 + 'k')
 $script:icon.ContextMenuStrip = $menu
 $open.Add_Click({ Open-Orion })
 $script:icon.Add_MouseClick({ if ($_.Button -eq [Windows.Forms.MouseButtons]::Left) { Open-Orion } })
+$remove.Add_Click({
+    # The dialog stops Orion itself after the user confirmed; this icon ends when the registry is gone.
+    $script = Join-Path $bootstrap 'Orion-Uninstall.ps1'
+    if (Test-Path -LiteralPath $script) {
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-WindowStyle', 'Hidden', '-File', ('"' + $script + '"'), '-Registry', ('"' + $Registry + '"')) | Out-Null
+    }
+})
 $quit.Add_Click({
     # The launcher stop is the single shutdown path. Do not wait for it: this icon is already gone.
     $script:icon.Visible = $false

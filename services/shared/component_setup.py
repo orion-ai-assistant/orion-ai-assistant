@@ -25,6 +25,24 @@ from .release_packages import compatible, record_prepared_package
 KIND_DIRS = {'hub': 'Hub', 'router': 'Router', 'client': 'Client'}
 KIND_TITLES = {'hub': 'Hub', 'router': 'Router', 'client': 'Web istemcisi'}
 TERMINAL_JOURNAL = {'completed', 'rolled_back'}
+KEPT_MARKER = '.orion-kept-by-uninstall.json'  # written into data/ by an uninstall that kept the user's data
+
+
+def kept_data_dir(directory):
+    """True for a component folder that only holds data kept by an earlier uninstall (adoptable by install)."""
+    directory = Path(directory)
+    try:
+        return {p.name for p in directory.iterdir()} == {'data'} and (directory / 'data' / KEPT_MARKER).is_file()
+    except OSError:
+        return False
+
+
+def check_destination(directory):
+    """A component folder must be empty/new, or hold only data kept by an earlier uninstall."""
+    if kept_data_dir(directory):
+        validate_private_directory(canonical_path(directory))
+        return
+    validate_destination(directory, private=True)
 
 
 class AddError(ValueError):
@@ -41,9 +59,12 @@ def materialize(client, target, root, settings):
     directory = root / KIND_DIRS[release['component']]
     tree = client.prepare(target, directory / 'releases' / release['package_id'])
     data, state = directory / 'data', directory / 'state'
-    data.mkdir()
+    adopted = (data / KEPT_MARKER).is_file()  # Data an earlier uninstall kept: reused as it is, secrets included.
+    data.mkdir(exist_ok=adopted)
     state.mkdir()
-    if release['component'] == 'hub':
+    if adopted:
+        (data / KEPT_MARKER).unlink()
+    elif release['component'] == 'hub':
         (data / 'services').mkdir()
         # Generated secrets remain in data; static package defaults are
         # not copied from any development or existing user installation.
@@ -52,7 +73,7 @@ def materialize(client, target, root, settings):
                        'JWT_SECRET_KEY=' + secrets.token_urlsafe(48) + '\n', encoding='utf-8')
         with env.open('a', encoding='utf-8') as stream:
             stream.write(''.join(f'{k}={v}\n' for k, v in settings.get('hub', {}).items()))
-    elif release['component'] == 'router':
+    elif release['component'] == 'router' and not adopted:
         # Preserve defaults as data on first install, never rewrite them
         # on package preparation or any later component change.
         (data / '.env').write_text(''.join(f'{k}={v}\n' for k, v in settings.get('router', {}).items()), encoding='utf-8')
@@ -221,7 +242,7 @@ def add_components(client, names, root, registry, *, settings=None, skip_existin
         for kind in kinds:
             directory = root / KIND_DIRS[kind]
             try:
-                validate_destination(directory, private=True)
+                check_destination(directory)
             except ValueError as error:
                 raise AddError(f'{directory.name} klasörü zaten var veya kullanılamıyor; hiçbir şey eklenmedi.') from error
         journal = {'schema': 1, 'phase': 'preparing', 'installation_id': old['installation_id'], 'root': str(root),

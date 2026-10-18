@@ -75,7 +75,7 @@ def install(client, names, root, registry, *, settings=None, release_source=None
         if 'client' in {r['component'] for r in releases} and 'hub' not in {r['component'] for r in releases}:
             raise ValueError('A new Client installation requires a Hub; later independent updates are supported by metadata')
         for release in releases:
-            validate_destination(root / KIND_DIRS[release['component']], private=True)
+            component_setup.check_destination(root / KIND_DIRS[release['component']])
         components = [materialize(client, target, root, settings) for target in targets.values()]
         record = new_registry(root, components, preferences={'automatic_updates': False, 'start_with_windows': False})
         record['locations'] = {key: str(canonical_path(root / name)) for key, name in
@@ -106,9 +106,10 @@ def install(client, names, root, registry, *, settings=None, release_source=None
 
 def finish(registry, args, *, added=False):
     """Everything after the registry is final: links, preferences, updates, firewall, optional start."""
-    from services.shared.launcher import install_entry, preferences, launch
+    from services.shared.launcher import install_entry, preferences, launch, register_uninstall_entry
     record = registry.read()
     install_entry(registry, desktop=True)
+    register_uninstall_entry(registry)  # Settings > Apps > Orion AI Assistant > Uninstall
     if added:
         # Hub joined a Router-only install (or a Router a Hub one): the links change identity, the user's
         # Startup / window choices stay exactly as they were.
