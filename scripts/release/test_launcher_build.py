@@ -26,6 +26,13 @@ def test_launcher_has_product_identity_and_is_reproducible(tmp_path):
     assert info(first, 'FileVersion') == '0.1.1.0'
 
 
+def test_router_launcher_names_itself_orion_router(tmp_path):
+    exe = build_launcher(tmp_path / 'OrionRouter.exe', '0.1.1', 'Orion Router')
+    assert info(exe, 'FileDescription') == 'Orion Router'
+    assert info(exe, 'ProductName') == 'Orion Router'
+    assert exe.read_bytes() != build_launcher(tmp_path / 'Orion.exe', '0.1.1').read_bytes()
+
+
 def test_launcher_forwards_only_known_switches_without_waiting(tmp_path):
     exe = build_launcher(tmp_path / 'Orion.exe', '0.1.1')
     (tmp_path / 'Orion.ps1').write_text(

@@ -75,6 +75,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         # Product identity: Orion.exe (name + icon in Startup apps/desktop) compiled from source with the
         # .NET Framework csc.exe that ships with Windows. install_entry copies it from here, never downloads it.
         launcher = build_launcher(tree / 'Orion.exe', release['version'])
+        # Router-only installations carry their own product name in the exe's version resource.
+        router_launcher = build_launcher(tree / 'OrionRouter.exe', release['version'], 'Orion Router')
         shutil.copyfile(trusted_root, tree / 'trusted-root.json')
         if release_source is not None:
             from services.shared.automatic_updates import validate_source
@@ -83,7 +85,8 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root), 'sequence': release['sequence'],
             'package_id': release['package_id'], 'version': release['version'],
-            'launcher_sha256': sha256(launcher)}))
+            'launcher_sha256': sha256(launcher),
+            'router_launcher_sha256': sha256(router_launcher)}))
         (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
             'param([Parameter(Mandatory=$true)][string]$MetadataUrl, '

@@ -60,16 +60,20 @@ def make_reproducible(path, seed):
     raise ValueError('Orion.exe has no module id')
 
 
-def build_launcher(output, version):
-    """`version` is the bootstrap version (x.y.z); it becomes the exe's file/product version."""
+def build_launcher(output, version, product='Orion AI Assistant'):
+    """`version` is the bootstrap version (x.y.z); it becomes the exe's file/product version.
+
+    `product` is the exe's file description, which Task Manager > Startup shows ("Orion Router" for a Router-only install)."""
+    if product not in {'Orion AI Assistant', 'Orion Router'}:
+        raise ValueError('Unknown launcher product')
     if not re.fullmatch(r'\d{1,4}\.\d{1,4}\.\d{1,4}', version):
         raise ValueError('Launcher version must be x.y.z')
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     info = (f'using System.Reflection;\n'
-            f'[assembly: AssemblyTitle("Orion AI Assistant")]\n'
-            f'[assembly: AssemblyDescription("Orion AI Assistant")]\n'
-            f'[assembly: AssemblyProduct("Orion AI Assistant")]\n'
+            f'[assembly: AssemblyTitle("{product}")]\n'
+            f'[assembly: AssemblyDescription("{product}")]\n'
+            f'[assembly: AssemblyProduct("{product}")]\n'
             f'[assembly: AssemblyCompany("Orion")]\n'
             f'[assembly: AssemblyCopyright("Orion")]\n'
             f'[assembly: AssemblyVersion("{version}.0")]\n'
@@ -81,5 +85,5 @@ def build_launcher(output, version):
                         f'/out:{output}', f'/win32icon:{SOURCE / "orion.ico"}',
                         str(SOURCE / 'Orion.cs'), str(info_file)],
                        check=True, capture_output=True, timeout=120, creationflags=0x08000000)
-    make_reproducible(output, b'orion-launcher' + (SOURCE / 'Orion.cs').read_bytes() + (SOURCE / 'orion.ico').read_bytes() + version.encode())
+    make_reproducible(output, b'orion-launcher' + product.encode() + (SOURCE / 'Orion.cs').read_bytes() + (SOURCE / 'orion.ico').read_bytes() + version.encode())
     return output
