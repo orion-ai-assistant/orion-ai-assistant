@@ -339,19 +339,22 @@ class FeedSet:
         return client.prepare(target, destination, progress=progress)
 
 
-def record_prepared_package(tree, state, target):
+def record_prepared_package(tree, state, target, *, cache=None):
     """Local installed-package provenance, made only after TUF prepare succeeds.
 
     The private registry pins this inventory. It is not a vendor signature and
     never authorizes an arbitrary unregistered package folder by itself.
+    `cache` is the release's own state folder, which also gets the verified cache.
     """
     tree, state = Path(tree), Path(state)
+    signature = _scan(tree)  # before hashing: a change during the hash then misses the cache
     files = {p.relative_to(tree).as_posix(): sha256(p) for p in sorted(tree.rglob('*')) if p.is_file()}
     inventory = state / 'installed-package.json'
     inventory.write_text(json.dumps({'schema': 1, 'manifest': target.custom, 'files': files}, sort_keys=True), encoding='utf-8')
     provenance = {'id': target.custom['package_id'], 'sha256': target.hashes['sha256'],
                   'length': target.length, 'inventory_sha256': sha256(inventory)}
-    _write_verified_cache(state, provenance['inventory_sha256'], _scan(tree))
+    for folder in filter(None, (state, cache)):
+        _write_verified_cache(folder, provenance['inventory_sha256'], signature)
     return provenance
 
 
@@ -410,20 +413,20 @@ def verify_registered_package(root):
     if len(selected) != 1:
         raise PackageError('Signed package must be installed through the trusted package installer')
     item = selected[0]
-    # Launch, preference and identity checks use the quick path; updates and
-    # recovery call verify_package_record() directly and always hash everything.
+    # Launch, preference and identity checks use the quick path; an update trusts it only
+    # right after staging (see UpdateHelper.resume), recovery always hashes everything.
     return verify_package_record(item, quick=True)
 
 
 def verify_package_record(item, *, inventory=None, quick=False):
     """Verify an explicit registry snapshot, including a pending/previous release.
 
-    `quick` trusts unchanged size+mtime recorded by the last full verification of
-    the active release; a pending/previous inventory is never quick-verified."""
+    `quick` trusts unchanged size+mtime recorded in the release's own state folder by
+    the last full hash of exactly this inventory (the installer, the launcher or the
+    staging of an update); any mismatch falls back to hashing every file."""
     from .installation_paths import canonical_path
     root = canonical_path(item['code_path'], must_exist=True)
     state = Path(item['state_path'])
-    active = inventory is None or Path(inventory) == state / 'installed-package.json'
     inventory = canonical_path(inventory or state / 'installed-package.json', must_exist=True)
     if sha256(inventory) != item['package']['inventory_sha256']:
         raise PackageError('Installed package inventory changed')
@@ -434,19 +437,11 @@ def verify_package_record(item, *, inventory=None, quick=False):
     signature = _scan(root)
     if set(signature) != set(value['files']):
         raise PackageError('Installed package file set changed')
-    if quick and active and _cache_matches(state, item['package']['inventory_sha256'], signature):
+    if quick and _cache_matches(state, item['package']['inventory_sha256'], signature):
         return manifest
     for name, digest in value['files'].items():
         path = canonical_path(root.joinpath(*archive_name(name).parts), must_exist=True)
         if not path.is_relative_to(root) or sha256(path) != digest:
             raise PackageError('Installed package file hash mismatch')
-    if active:
-        _write_verified_cache(state, item['package']['inventory_sha256'], signature)
-    return manifest
-    for name, digest in value['files'].items():
-        path = canonical_path(root.joinpath(*archive_name(name).parts), must_exist=True)
-        if not path.is_relative_to(root) or sha256(path) != digest:
-            raise PackageError('Installed package file hash mismatch')
-    if active:
-        _write_verified_cache(root, state, item['package']['inventory_sha256'], value['files'])
+    _write_verified_cache(state, item['package']['inventory_sha256'], signature)
     return manifest

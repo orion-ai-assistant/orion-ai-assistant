@@ -270,7 +270,14 @@ class UpdateHelper:
                     item = next(c for c in proposed['components'] if c['kind'] == kind)
                     tree = canonical_path(Path(item['code_path']).parent / target.custom['package_id'])
                     # The app card shows "indiriliyor (1/3)": which component of how many is being fetched.
-                    def report(received, total, seconds, *, number=number, kind=kind, before=completed_bytes):
+                    # After the bytes: "doğrulanıyor / hazırlanıyor (1/3)" (hash check, extraction, inventory).
+                    verifying = {'done': number - 1, 'total': len(targets), 'component': kind}
+
+                    def report(received, total, seconds, *, number=number, kind=kind, before=completed_bytes,
+                               verifying=verifying):
+                        if received >= total:
+                            self._phase(tx, 'verifying', progress=verifying)
+                            return
                         self._phase(tx, 'downloading', progress={
                             'done': number - 1, 'total': len(targets), 'component': kind,
                             'bytes': before + received, 'bytes_total': overall_total,
@@ -294,22 +301,24 @@ class UpdateHelper:
                     else:
                         client.prepare(target, tree, progress=report)
                     completed_bytes += target.length
-                    self._phase(tx, 'verifying')
+                    self._phase(tx, 'verifying', progress=verifying)
                     # The inventory is versioned with the transaction, not yet
                     # published as the active component's installed receipt.
-                    receipt_dir = directory / kind
-                    receipt_dir.mkdir()
-                    receipt = record_prepared_package(tree, receipt_dir, target)
-                    receipt_path = receipt_dir / 'installed-package.json'
-                    self._write(directory / (kind + '-candidate.json'), receipt_path.read_bytes(), 'candidate:' + kind)
                     # Process ownership records embed the immutable code root.
                     # Give each release its own external lifecycle state; never
                     # rewrite/adopt the old release's supervisor/Job identity.
                     new_state = canonical_path(tree.parent.parent / 'state/releases' / target.custom['package_id'])
                     validate_private_directory(new_state)
                     new_state.mkdir(parents=True, exist_ok=True)
+                    receipt_dir = directory / kind
+                    receipt_dir.mkdir()
+                    # The full hash of the tree; its size/mtime cache lands in the release's state folder.
+                    receipt = record_prepared_package(tree, receipt_dir, target, cache=new_state)
+                    receipt_path = receipt_dir / 'installed-package.json'
+                    self._write(directory / (kind + '-candidate.json'), receipt_path.read_bytes(), 'candidate:' + kind)
                     item.update(code_path=str(tree), state_path=str(new_state), package=receipt)
-                    verify_package_record(item, inventory=directory / (kind + '-candidate.json'))
+                    # Pins the receipt to the registry record; the bytes were hashed just above.
+                    verify_package_record(item, inventory=directory / (kind + '-candidate.json'), quick=True)
                     tx['changes'].append(kind)
                     tx['verification'][kind] = {'sha256': receipt['sha256'], 'length': receipt['length'], 'verified': True}
                 tx['proposed'] = proposed
@@ -318,11 +327,13 @@ class UpdateHelper:
                 self._phase(tx, 'failed', reason=type(error).__name__)
                 raise
 
-    def _verify(self, tx, record, candidate, *, quick=False):
-        # `quick` applies only to components this update does not touch: their active release was fully
+    def _verify(self, tx, record, candidate, *, quick=False, staged=False):
+        # `quick` applies to components this update does not touch: their active release was fully
         # hashed by the launcher, so size+mtime against that cache is enough (falls back to a full hash
-        # when no cache exists). Changed components are always fully hashed. A (kind, inventory) pair
-        # hashed since the last `_fresh()` is not hashed again.
+        # when no cache exists). `staged` extends it to the changed components, whose new and previous
+        # trees were fully hashed at staging/launch; only a straight run from `staged` passes it, a
+        # resume after an interruption hashes every changed file. A (kind, inventory) pair verified
+        # since the last `_fresh()` is not verified again.
         directory = self._directory(tx)
         for item in record['components']:
             if item['distribution'] == 'legacy-source' and tx.get('conversion'):
@@ -337,6 +348,8 @@ class UpdateHelper:
                 continue
             if quick and not changed and not tx.get('conversion'):
                 verify_package_record(item, quick=True)
+            elif staged and changed and not tx.get('conversion'):
+                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'), quick=True)
             else:
                 verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
             self._verified.add((item['kind'], suffix))
@@ -471,11 +484,14 @@ class UpdateHelper:
             if tx['phase'] == 'rollback_pending':
                 return self._rollback(tx)
             self._fresh()
+            # Straight from staging (nothing switched or interrupted yet): the staged and previous trees keep
+            # the size/mtime cache of their last full hash, so unchanged files are not hashed a second time.
+            straight = tx['phase'] in {'staged', 'waiting_for_idle'}
             try:
                 with self._timed(tx, 'verify.start'):
-                    self._verify(tx, tx['proposed'], True, quick=True)
+                    self._verify(tx, tx['proposed'], True, quick=True, staged=straight)
                     if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
-                        self._verify(tx, tx['previous'], False, quick=True)
+                        self._verify(tx, tx['previous'], False, quick=True, staged=straight)
                 if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
                     with self._timed(tx, 'stopped.enter'):
                         stopped = self.host.stopped(tx['previous'])
@@ -527,10 +543,11 @@ class UpdateHelper:
                     if not idle:
                         raise UpdateError('Health shutdown unverified')
                     self._progress(tx, 2, 3, force=True)
-                    # The candidate ran: nothing hashed before may be reused.
+                    # The candidate ran: check every file again (size, mtime and file set against the
+                    # cache, the same check every launch makes; a resumed run hashes everything).
                     self._fresh()
                     with self._timed(tx, 'verify.final'):
-                        self._verify(tx, tx['proposed'], True, quick=True)
+                        self._verify(tx, tx['proposed'], True, quick=True, staged=straight)
                     return self._phase(tx, 'completed', health=result)
                 finally:
                     stopped.__exit__(None, None, None)

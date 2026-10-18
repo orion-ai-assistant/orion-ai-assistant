@@ -71,7 +71,9 @@ def runtime_probe():
     items = {c['kind']: c for c in record['components']}
     hub = items['hub']
     root = Path(hub['code_path'])
-    manifests = [verify_package_record(c) for c in record['components']]
+    # The helper verified these trees right before the switch and checks them again after this probe;
+    # size/mtime against the cache of that verification is enough here (a mismatch hashes everything).
+    manifests = [verify_package_record(c, quick=True) for c in record['components']]
     compatible(manifests, mobile_api=1)
     state = Runtime(root, 'hub').read()
     if component_status(root, 'hub') != 'ready':
