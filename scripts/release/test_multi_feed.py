@@ -114,7 +114,7 @@ class Feeds(FetcherInterface):
 @pytest.fixture
 def feeds(request):
     """Two signed repositories (Hub feed: hub+client, Router feed: router), versions 1 and 2, one root."""
-    base = Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'Orion/lifecycle-tests'
+    base = Path.home() / '.orion-lifecycle-tests'  # never inside a real %LOCALAPPDATA%/Orion
     base.mkdir(parents=True, exist_ok=True)
     owned = tempfile.TemporaryDirectory(prefix='multi-feed-', dir=base)
     request.addfinalizer(owned.cleanup)

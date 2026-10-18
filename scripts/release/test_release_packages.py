@@ -54,7 +54,7 @@ def repo(tmp_path, request):
     if os.name == 'nt':
         # Windows TEMP may grant group writes. Executable package staging must
         # use a private Orion area, just like the real installer.
-        base = Path(os.environ['LOCALAPPDATA']) / 'Orion/lifecycle-tests'
+        base = Path.home() / '.orion-lifecycle-tests'  # private, and never inside a real Orion install
         base.mkdir(parents=True, exist_ok=True)
         owned = tempfile.TemporaryDirectory(prefix='stage05-tuf-', dir=base)
         request.addfinalizer(owned.cleanup)

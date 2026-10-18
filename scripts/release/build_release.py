@@ -144,7 +144,7 @@ def main(argv=None):
     parser.add_argument('--force-accept', action='store_true', help='run the full acceptance even if this set already passed')
     parser.add_argument('--no-prune', action='store_true', help='do not prune old acceptance sandboxes')
     parser.add_argument('--scratch-base', type=Path,
-                        default=Path(os.environ.get('LOCALAPPDATA', '.')) / 'Orion/lifecycle-tests')
+                        default=Path.home() / '.orion-lifecycle-tests')  # never inside a real %LOCALAPPDATA%/Orion
     args = parser.parse_args(argv)
     args.use_cache = not args.no_cache
     args.inputs, args.cache = args.inputs.resolve(), args.cache.resolve()
