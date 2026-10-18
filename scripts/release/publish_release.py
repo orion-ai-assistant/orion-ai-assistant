@@ -277,9 +277,11 @@ def main():
     existing = set(subprocess.run(['gh', 'release', 'view', args.tag, '--repo', args.repo, '--json', 'assets',
                                    '--jq', '.assets[].name'], capture_output=True, text=True, check=True).stdout.split())
     for path in assets:
-        # Hash-prefixed packages and versioned metadata never change under the same name:
-        # skip what is already online (e.g. an unchanged Client) instead of re-uploading 30-170 MB.
-        if path.name in existing and path.name != BOOTSTRAP_ASSET:
+        # Hash-prefixed packages never change under the same name: skip what is already online (e.g. an
+        # unchanged Client) instead of re-uploading 30-170 MB. This version's own metadata is always uploaded:
+        # an earlier run that stopped before its timestamp may have left a differently signed copy under the
+        # same name, and keeping that one breaks every client's hash check against the new timestamp.
+        if path.name in existing and path.name != BOOTSTRAP_ASSET and not path.name.startswith(f'{version}.'):
             print('Already published, skipping:', path.name, flush=True)
             continue
         gh('release', 'upload', args.tag, str(path), '--repo', args.repo, '--clobber')
