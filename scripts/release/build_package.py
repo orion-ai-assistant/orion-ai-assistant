@@ -52,11 +52,39 @@ def release_names(root, prefixes):
     return selected
 
 
+def lf_in_git(root):
+    """Tracked names whose committed form is LF text (`git ls-files --eol`: i/lf)."""
+    listing = subprocess.check_output(['git', '-C', str(root), 'ls-files', '--eol', '-z']).decode('utf-8')
+    return {entry.split('\t', 1)[1] for entry in filter(None, listing.split('\0'))
+            if entry.split()[0] == 'i/lf'}
+
+
+def copy_source(source, target, lf):
+    """A source file as git stores it: the checkout's line endings (core.autocrlf, editors) never reach
+    the package, so the same commit gives the same bytes on every PC."""
+    data = Path(source).read_bytes()
+    Path(target).write_bytes(data.replace(b'\r\n', b'\n') if lf else data)
+
+
 def tracked(root, prefixes, stage):
+    lf = lf_in_git(root)
     for name in release_names(root, prefixes):
         target = stage / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(root / name, target)
+        copy_source(root / name, target, name in lf)
+
+
+def drop_entry_point_launchers(site_packages):
+    """uv writes console-script launchers (bin/*.exe) that embed the absolute build path, a random
+    temporary folder included: machine-specific, never used (Orion runs `python -m`), and the reason two
+    builds of the same inputs differed. Removed, and their lines dropped from each RECORD."""
+    site_packages = Path(site_packages)
+    shutil.rmtree(site_packages / 'bin', ignore_errors=True)
+    for record in sorted(site_packages.glob('*.dist-info/RECORD')):
+        lines = record.read_bytes().split(b'\n')
+        kept = [line for line in lines if not line.startswith((b'bin/', b'../../bin/'))]
+        if kept != lines:
+            record.write_bytes(b'\n'.join(kept))
 
 
 def verify_no_service_worker(web):
@@ -119,6 +147,7 @@ def build_runtime(kind, args, destination):
     subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
         '--target', str(python / 'site-packages'), '--no-compile-bytecode', '--link-mode=copy',
         '--only-binary', ':all:', '--require-hashes', '-r', str(lock_file(kind, args.requirements))], check=True)
+    drop_entry_point_launchers(python / 'site-packages')
     install_site_hook(python)
     pg = destination / ('.local_db/postgres' if kind == 'hub' else 'tools/pgsql')
     provision_runtime(args.postgres, pg)
@@ -252,7 +281,8 @@ def build(args, timings=None):
             if kind == 'client':
                 shutil.copytree(web, stage / 'build/web')
                 (stage / 'tool').mkdir()
-                shutil.copyfile(root / 'main_app/app/tool/serve_web.py', stage / 'tool/serve_web.py')
+                copy_source(root / 'main_app/app/tool/serve_web.py', stage / 'tool/serve_web.py',
+                            'main_app/app/tool/serve_web.py' in lf_in_git(root))
             else:
                 # New sources are intentionally required to be tracked by CI. Local
                 # builds must use a source commit (or explicitly stage task files).

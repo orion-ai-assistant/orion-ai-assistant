@@ -79,6 +79,13 @@ if the bytes match), `--no-prune`. Bump `version`/`sequence` in the release json
   tooling or runtime recipe rebuilds the layer. Text inputs of that key are hashed with CRLF read as
   LF, so a `core.autocrlf` checkout (e.g. a git worktree) and an LF checkout share one layer; the 3 most
   recently used layers per kind are kept, so branches with different locks do not evict each other.
+* *Byte-reproducible*: the same commit and inputs give the same ZIP sha256 on any PC. Members have a
+  fixed date, mode and order (`zip_layers.py`); sources are staged as git stores them (CRLF->LF for
+  files committed as LF, so `core.autocrlf` and editor line endings never reach a package); uv's
+  console-script launchers (`site-packages/bin/*.exe`, which embed the absolute build path including a
+  random temporary folder, and are never used: Orion runs `python -m`) are removed with their RECORD
+  lines. Test: `test_same_inputs_give_byte_identical_package_zips`. This changed the runtime layer, so
+  the first Hub and Router built with it differ from earlier builds: release them under a new sequence.
 
 Steps run concurrently (Flutter, dashboard and Hub packaging together; Client and Router as soon as
 their web output exists) with at most `--jobs` (default 3) at a time; each package builds in its own
