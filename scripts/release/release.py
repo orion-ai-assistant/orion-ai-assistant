@@ -25,10 +25,10 @@ BOOTSTRAP = 'orion-bootstrap-windows-x64.zip'
 SCRATCH = Path.home() / '.orion-lifecycle-tests'
 
 
-def run_build(extra):
+def run_build(extra, accept='full'):
     # Child output may hold characters the console code page (e.g. cp1254) cannot show: never crash on them.
     sys.stdout.reconfigure(errors='replace')
-    command = [sys.executable, '-u', str(HERE / 'build_release.py'), '--accept', 'full',
+    command = [sys.executable, '-u', str(HERE / 'build_release.py'), '--accept', accept,
                '--scratch-base', str(SCRATCH), *extra]
     candidates = result = None
     process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -43,7 +43,7 @@ def run_build(extra):
             result = Path(found.group(1))
     if process.wait():
         raise SystemExit('Build or acceptance failed: nothing was published.')
-    if candidates is None or result is None:
+    if candidates is None or (result is None and accept != 'none'):
         raise SystemExit('Build finished but the candidate directory or the acceptance result was not reported.')
     return candidates, result
 
@@ -62,7 +62,8 @@ def staged_bootstrap(feed):
 
 def publish(feed, candidates, result, dry_run, deferred=None):
     command = [sys.executable, str(HERE / 'publish_release.py'), '--feed', feed, '--artifacts', str(candidates),
-               '--accepted-result', str(result), '--inputs', str(ROOT / '.tmp/inputs')]
+               '--inputs', str(ROOT / '.tmp/inputs')]
+    command += ['--accepted-result', str(result)] if result else ['--skip-acceptance']
     if deferred is not None:
         command += ['--defer-timestamp', str(deferred)]
     bundle, sequence = staged_bootstrap(feed)
@@ -90,6 +91,9 @@ def main():
     parser.add_argument('--no-publish', action='store_true', help='build and accept only')
     parser.add_argument('--dry-run', action='store_true', help='stage and sign everything, upload nothing')
     parser.add_argument('--force-accept', action='store_true', help='run the full acceptance again')
+    parser.add_argument('--no-accept', action='store_true',
+                        help='skip the automated package acceptance (fast developer iterations; nothing proves the '
+                             'packages install and start - use the default for anything users depend on)')
     parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
                         help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
@@ -101,8 +105,12 @@ def main():
         passphrase = release_keys._passphrase(enforce_length=False)
         release_keys.load_signer(Path.home() / '.orion-release/release-key.pem', passphrase)
         os.environ[release_keys.PASSPHRASE_ENV] = passphrase.decode('utf-8')
-    candidates, result = run_build(['--force-accept'] if args.force_accept else [])
-    print(f'\nBuilt and accepted: {candidates.name}\nAcceptance: {result}', flush=True)
+    if args.no_accept:
+        print('WARNING: --no-accept: the packages are published without the automated install/start acceptance.',
+              flush=True)
+    candidates, result = run_build(['--force-accept'] if args.force_accept else [],
+                                   accept='none' if args.no_accept else 'full')
+    print(f'\nBuilt: {candidates.name}\nAcceptance: {result or "SKIPPED (--no-accept)"}', flush=True)
     if args.no_publish:
         return
     # Every feed's packages and metadata go up first; the timestamps that make them visible follow back to back,

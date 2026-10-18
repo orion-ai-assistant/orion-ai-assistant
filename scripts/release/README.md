@@ -691,3 +691,7 @@ feed's bootstrap asset (`orion-bootstrap-windows-x64.zip` in the Router repo's `
   `StartupApproved\StartupFolder` value per link *name* and never deletes it; a stale `Orion.lnk` value from older
   installs lingered and listed "Orion.exe". Install/update (`refresh_links`) and uninstall now delete Orion's
   orphaned values (`windows_autostart.clean_startup_approved`), foreign values stay.
+
+`release.cmd --no-accept` skips the automated package acceptance for fast developer iterations: the exact package
+set is still signed and bound (`acceptance.json` with `acceptance_skipped: true`), but nothing proved that it installs
+and starts. Use the default (with acceptance) for releases users depend on.

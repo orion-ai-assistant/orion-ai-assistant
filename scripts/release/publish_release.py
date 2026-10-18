@@ -73,6 +73,17 @@ def stage_stable_names(artifacts, staging, components=None):
     return names
 
 
+def write_unaccepted(staging, out):
+    """Explicit developer choice (release.cmd --no-accept): bind the exact package set, with no acceptance run."""
+    packages = {}
+    for path in Path(staging).glob('*.target.json'):
+        target = json.loads(path.read_text(encoding='utf-8'))
+        packages[target['custom']['package_id']] = sha256(Path(staging) / target['path'])
+    print('WARNING: publishing WITHOUT the automated package acceptance (--skip-acceptance).', flush=True)
+    Path(out).write_text(json.dumps({'schema': 1, 'channel': 'preview', 'test_only': False, 'packages': packages,
+                                     'checks': {}, 'acceptance_skipped': True}), encoding='utf-8')
+
+
 def write_acceptance(staging, accepted_result, out):
     """Bind the automated isolated acceptance run to this exact package set."""
     result = json.loads(Path(accepted_result).read_text(encoding='utf-8'))
@@ -171,7 +182,9 @@ def gh(*argv, check=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifacts', type=Path, required=True)
-    parser.add_argument('--accepted-result', type=Path, required=True, help='result.json of accept_packages.py')
+    parser.add_argument('--accepted-result', type=Path, help='result.json of accept_packages.py')
+    parser.add_argument('--skip-acceptance', action='store_true',
+                        help='publish without the automated package acceptance (developer iterations only)')
     parser.add_argument('--inputs', type=Path, required=True)
     parser.add_argument('--key', type=Path, default=Path.home() / '.orion-release/release-key.pem')
     parser.add_argument('--public-root', type=Path, default=HERE / 'trusted-root.json')
@@ -193,6 +206,8 @@ def main():
                         help='upload everything except timestamp.json and record it in this JSON file instead; '
                              'release.py publishes the timestamps of all feeds back to back at the end')
     args = parser.parse_args()
+    if bool(args.accepted_result) == bool(args.skip_acceptance):
+        parser.error('Pass exactly one of --accepted-result <result.json> or --skip-acceptance')
     args.repo = args.repo or FEEDS[args.feed]['repo']
     args.tag = args.tag or FEEDS[args.feed]['tag']
     base = feed_url(args.repo, args.tag)
@@ -231,7 +246,10 @@ def main():
     online = published_targets(base, current_feed_version(base))
     bootstrap_gate(online, description['custom'], description['hashes']['sha256'])
     package_gate(online, work / 'artifacts', names)
-    write_acceptance(work / 'artifacts', args.accepted_result, work / 'acceptance.json')
+    if args.skip_acceptance:
+        write_unaccepted(work / 'artifacts', work / 'acceptance.json')
+    else:
+        write_acceptance(work / 'artifacts', args.accepted_result, work / 'acceptance.json')
     subprocess.run([sys.executable, str(HERE / 'publish_metadata.py'), '--artifacts', str(work / 'artifacts'),
                     '--output', str(work / 'repository'), '--root', str(args.public_root), '--single-key', str(args.key),
                     '--version', str(version), '--channel', 'preview', '--acceptance', str(work / 'acceptance.json')],
