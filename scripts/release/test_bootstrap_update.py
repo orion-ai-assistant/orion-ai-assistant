@@ -3,6 +3,7 @@
 The bundle's interpreter is never started here; `bootstrap_probe` stands in for it
 (default_probe is covered separately against a real interpreter).
 """
+import contextlib
 import json
 from pathlib import Path
 import shutil
@@ -313,3 +314,46 @@ def test_acceptance_binds_the_bootstrap_without_requiring_it_in_the_package_run(
     pr.write_acceptance(staging, result, tmp_path / 'acceptance.json')
     from services.shared.release_acceptance import verify_acceptance
     verify_acceptance(staging, tmp_path / 'acceptance.json', 'preview')
+
+
+def test_watcher_that_adopted_a_bootstrap_hands_over_without_a_router_round(feed, monkeypatch):
+    # Real PC, 2026-10-18: the old process went on with the Router feed and staged a Router-only update.
+    old = feed.current()
+    feed.publish(1)
+    service = feed.service(old)
+    scopes, check = [], AutomaticUpdates.check
+    monkeypatch.setattr(feed.helper.host, 'stopped', lambda record: contextlib.nullcontext(False))  # Orion running.
+    monkeypatch.setattr(AutomaticUpdates, 'check', lambda self, **kw: (scopes.append(self.scope), check(self, **kw))[1])
+    assert watch(service) == 'handover'
+    assert scopes == ['hub'] and service.replaced() and feed.helper.status() is None
+
+
+def test_check_command_stops_after_handing_over(feed, monkeypatch):
+    import update_automatic
+    scopes = []
+
+    class Fake:
+        def __init__(self, registry, *, helper=None, scope='hub', **kw):
+            self.scope, self.base, self.helper = scope, feed.helper.base, helper
+            self.state_path = feed.helper.base / 'automatic.json'
+
+        def check(self, **kw):
+            scopes.append(self.scope)
+
+        def replaced(self):
+            return True
+    monkeypatch.setattr(update_automatic, 'AutomaticUpdates', Fake)
+    monkeypatch.setattr(sys, 'argv', ['update_automatic.py', '--registry', str(feed.registry.path), 'check', '--now'])
+    assert update_automatic.run() == 0 and scopes == ['hub']
+    assert 'check.handed-over' in (feed.helper.base / 'watcher.log').read_text(encoding='utf-8')
+
+
+def test_pending_update_is_logged_once_not_every_poll(feed):
+    service = feed.service(feed.current())
+    feed.helper.prepare(feed.client.fresh(), [feed.hub_name])
+    service.state_path.write_text(json.dumps({'schema': 1, 'last_attempt': 0}))
+    for _ in range(3):
+        service.check()
+    service.check(now=True)  # An explicit refresh always says why.
+    log = (feed.helper.base / 'watcher.log').read_text(encoding='utf-8')
+    assert log.count('check.skipped scope=hub outcome=pending') == 2
