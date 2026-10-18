@@ -128,6 +128,24 @@ Hepsi Hub deposunun kökünden:
 
 Seçenekler birleşebilir, ör. `.\release.cmd --feeds router --no-accept`.
 
+**Feed temizliği:** Yayının en sonunda, yeni sürüm görünür olduktan sonra `prune_feed.py` çalışır. Feed'de yalnızca
+şunlar kalır:
+- `N.root.json` dosyalarının hepsi ve `timestamp.json`.
+- Canlı sürümün `snapshot` ve `targets` dosyaları.
+- Canlı sürümün listelediği paketler, runtime katmanları ve bootstrap. Eski bootstrap'lar için tutulan son tek
+  parça Hub/Router paketi de bu listede olduğu için kalır.
+- Düz `orion-bootstrap-windows-x64.zip`.
+
+Gerisi silinir. O sırada silinen bir paketi indiren istemci "dosya bulunamadı, bir sonraki denetimde yeni sürüm
+indirilecek" mesajı alır; kurulu sürüm değişmez. Yarıda kalmış bir yayının dosyaları ve son bir saatte
+yüklenenler silinmez.
+
+Elle çalıştırmak için:
+- Neyin silineceğini listelemek (hiçbir şey silmez): `prune_feed.py --feed router`
+- Silmek: `prune_feed.py --feed router --apply`
+
+Temizliği kapatmak için `release.cmd --no-prune-feed`.
+
 `release.cmd` şunu çalıştırır: `.tmp\stage05-tools\Scripts\python.exe scripts\release\release.py`.
 
 Adım adım ne olur:

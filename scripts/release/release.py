@@ -94,6 +94,8 @@ def main():
     parser.add_argument('--no-accept', action='store_true',
                         help='skip the automated package acceptance (fast developer iterations; nothing proves the '
                              'packages install and start - use the default for anything users depend on)')
+    parser.add_argument('--no-prune-feed', action='store_true',
+                        help='keep every old package and metadata file on the feeds (default: prune_feed.py after publishing)')
     parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
                         help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
@@ -128,6 +130,13 @@ def main():
                        check=True)
     if deferred:
         print('Published: ' + ', '.join(d['repo'] for d in deferred) + ' (timestamps uploaded back to back).')
+    if deferred and not args.no_prune_feed:
+        # Only now that the new versions are live: drop what the live version does not list. A client that was
+        # downloading a dropped package retries at its next check and gets the new one. Never fails a release.
+        for feed in args.feeds:
+            if subprocess.run([sys.executable, str(HERE / 'prune_feed.py'), '--feed', feed, '--apply'], cwd=ROOT).returncode:
+                print(f'WARNING: pruning the {feed} feed failed; the release itself is published. '
+                      f'Retry: prune_feed.py --feed {feed} --apply', flush=True)
 
 
 if __name__ == '__main__':

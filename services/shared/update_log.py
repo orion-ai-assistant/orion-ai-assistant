@@ -95,6 +95,10 @@ REASONS = {
     'TimeoutError': 'Güncelleme sunucusu zamanında yanıt vermedi.',
     'ConnectionError': 'Güncelleme sunucusuna ulaşılamadı. İnternet bağlantısını kontrol edin.',
     'RepositoryError': 'İmzalı güncelleme bilgisi doğrulanamadı.',
+    # A package removed from the feed (a newer release replaced it) or a dropped connection mid-download.
+    'DownloadError': 'Güncelleme dosyası indirilemedi. Kurulu sürüm değişmedi; bir sonraki denetimde yeniden denenecek.',
+    'DownloadHTTPError': 'Güncelleme dosyası sunucuda bulunamadı (yerine daha yeni bir sürüm gelmiş olabilir). Kurulu sürüm değişmedi; bir sonraki denetimde yeni sürüm indirilecek.',
+    'DownloadLengthMismatchError': 'Güncelleme dosyası eksik indi. Kurulu sürüm değişmedi; bir sonraki denetimde yeniden denenecek.',
     'PackageError': 'İndirilen paket doğrulanamadı; güncelleme uygulanmadı.',
     'UpdateError': 'Güncelleme hazırlanamadı (imza, uyumluluk veya bekleyen işlem denetimi). Ayrıntı updates/watcher.log dosyasında.',
     'CheckUnavailable': 'Güncelleme bilgisi şu an alınamıyor.',
