@@ -37,6 +37,13 @@ try {
 $source = Get-Content -LiteralPath (Join-Path $target 'release-source.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $names = @($source.targets.hub, $source.targets.router, $source.targets.client) | Where-Object { $_ }
 $arguments = @{ MetadataUrl = $source.metadata_url; TargetsUrl = $source.targets_url; Targets = $names; Root = $orion }
+# A first start from an administrator window would run Hub/Router with an elevated token that the normal
+# desktop shortcut can no longer manage ("Process job access denied"). Install elevated, start de-elevated.
+$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($elevated -and -not $NoStart) {
+    Write-Host 'Administrator window detected: Orion will be started through the desktop shortcut with normal rights.'
+    $arguments.NoStart = $true
+}
 if ($NoStart) { $arguments.NoStart = $true }
 if ($NoStartWithWindows) { $arguments.NoStartWithWindows = $true }
 if ($NoAutoUpdate) { $arguments.NoAutoUpdate = $true }
@@ -44,3 +51,9 @@ if ($NoFirewall) { $arguments.NoFirewall = $true }
 Write-Host 'Installing (about 320 MB download; this takes a few minutes)...'
 & (Join-Path $target 'Install-Orion.ps1') @arguments
 if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
+if ($elevated -and -not $NoStart) {
+    # explorer.exe always runs with the user's normal token, so the shortcut starts Orion de-elevated.
+    $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Orion.lnk'
+    if (Test-Path -LiteralPath $shortcut) { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $shortcut + '"') }
+    else { Write-Host 'Open Orion from the Start menu or the desktop shortcut (not from an administrator window).' }
+}
