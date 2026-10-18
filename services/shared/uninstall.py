@@ -133,6 +133,14 @@ def _remove_tree(path, root, leftovers):
         leftovers.append(str(path))
 
 
+def describe(error):
+    """Class, message and where it was raised, for the uninstall log (never just the class)."""
+    import traceback
+    frames = traceback.extract_tb(error.__traceback__)
+    where = f' ({Path(frames[-1].filename).name}:{frames[-1].lineno})' if frames else ''
+    return f'{type(error).__name__}: {error}{where}'
+
+
 def keep_data_marker(directory, kind):
     marker = Path(directory) / KEPT_MARKER
     marker.write_text(json.dumps({'schema': 1, 'kind': kind, 'kept_at': time.time()}), encoding='utf-8')
@@ -186,31 +194,40 @@ RUN_ONCE = r'Software\Microsoft\Windows\CurrentVersion\RunOnce'
 # Runs hidden after the uninstaller (this Python and the dialog that started it) exited, and once more at the next
 # sign-in when something was still held. It stops as soon as a new installation appears (install.json, or a
 # Bootstrap-Installer folder it was not asked to remove), so it never deletes a reinstall in progress.
-CLEANUP_SCRIPT = r"""param([string]$Pids = '')
+CLEANUP_SCRIPT = r"""param([string]$Pids = '', [string]$Later = '')
 $request = Get-Content -LiteralPath ([IO.Path]::ChangeExtension($PSCommandPath, '.json')) -Raw | ConvertFrom-Json
-$deadline = (Get-Date).AddMinutes(30)
-foreach ($id in @($Pids -split ',' | Where-Object { $_ })) { while ((Get-Process -Id $id -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 } }
+function Wait-Exit([string]$ids) {
+  $deadline = (Get-Date).AddMinutes(30)
+  foreach ($id in @($ids -split ',' | Where-Object { $_ })) { while ((Get-Process -Id $id -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 } }
+}
 $names = @($request.paths | ForEach-Object { Split-Path -Leaf $_ })
 function Superseded {
   if (Test-Path -LiteralPath (Join-Path $request.root 'install.json')) { return $true }
   return [bool](Get-ChildItem -LiteralPath $request.root -Filter 'Bootstrap-Installer*' -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $names -notcontains $_.Name })
 }
-$left = 1
-for ($i = 0; $i -lt 60 -and $left -gt 0; $i++) {
-  if (Superseded) { break }
-  $left = 0
-  foreach ($p in $request.paths) {
-    if (Test-Path -LiteralPath $p) {
-      Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
-      Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
-      if (Test-Path -LiteralPath $p) { $left++ }
+function Sweep([int]$tries) {
+  $left = 1
+  for ($i = 0; $i -lt $tries -and $left -gt 0; $i++) {
+    if (Superseded) { return 0 }
+    $left = 0
+    foreach ($p in $request.paths) {
+      if (Test-Path -LiteralPath $p) {
+        Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+        Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $p) { $left++ }
+      }
     }
+    if ($left -gt 0) { Start-Sleep -Seconds 2 }
   }
-  if ($left -gt 0) { Start-Sleep -Seconds 2 }
+  return $left
 }
-if ($left -eq 0 -or (Superseded)) {
+# The uninstaller (whose runtime lives in what is removed) first; the result window only if something stays held.
+Wait-Exit $Pids
+$left = Sweep 15
+if ($left -gt 0 -and $Later) { Wait-Exit $Later; $left = Sweep 60 }
+if ($left -eq 0) {
   try { if (-not (Get-ChildItem -LiteralPath $request.root -Force -ErrorAction Stop)) { Remove-Item -LiteralPath $request.root -Force } } catch {}
-  Remove-ItemProperty -Path ('HKCU:' + $request.run_once) -Name $request.value -ErrorAction SilentlyContinue
+  Remove-ItemProperty -Path ('HKCU:\' + $request.run_once) -Name $request.value -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath ([IO.Path]::ChangeExtension($PSCommandPath, '.json')), $PSCommandPath -Force -ErrorAction SilentlyContinue
 }
 """
@@ -231,15 +248,16 @@ def _run_once(command, *, remove=False):
         return False
 
 
-def schedule_removal(paths, *, root, wait=None, folder=None, spawn=True, run_once=_run_once):
+def schedule_removal(paths, *, root, wait=None, later=None, folder=None, spawn=True, run_once=_run_once):
     """Delete what is still held (the running bootstrap runtime, files a closing process keeps open) once this
-    uninstaller and the dialog that started it exited: a hidden detached PowerShell waits for those PIDs, retries,
-    removes the then-empty root and, if something is still locked, a HKCU RunOnce entry repeats it at the next
-    sign-in. Returns the cleanup script path, or None when there was nothing (safe) to schedule."""
+    uninstaller exited: a hidden detached PowerShell waits for that PID (`wait`), retries, waits for the result
+    dialog (`later`) only if something is still held, removes the then-empty root and, if something is still
+    locked, a HKCU RunOnce entry repeats it at the next sign-in. Returns the cleanup script path, or None when there was nothing (safe) to schedule."""
     safe = [str(p) for p in paths if _inside(p, root) and Path(p) != Path(root) and Path(p).name not in NEVER_TOUCH]
     if not safe:
         return None
-    wait = [os.getpid(), os.getppid()] if wait is None else list(wait)
+    wait = [os.getpid()] if wait is None else list(wait)
+    later = [os.getppid()] if later is None else list(later)
     folder = Path(folder or os.environ.get('TEMP') or Path.home())
     script = folder / ('orion-cleanup-' + uuid.uuid4().hex[:12] + '.ps1')
     try:
@@ -254,7 +272,7 @@ def schedule_removal(paths, *, root, wait=None, folder=None, spawn=True, run_onc
     run_once(subprocess.list2cmdline(command))  # Last resort, also when this process is killed before the spawn.
     if spawn:
         flags = (getattr(subprocess, 'CREATE_NO_WINDOW', 0) | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
-        arguments = command + (['-Pids', ','.join(str(p) for p in wait)] if wait else [])
+        arguments = command + (['-Pids', ','.join(map(str, wait))] if wait else [])             + (['-Later', ','.join(map(str, later))] if later else [])
         for extra in (getattr(subprocess, 'CREATE_BREAKAWAY_FROM_JOB', 0), 0):  # Outlive a job that kills on close.
             try:
                 subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -323,15 +341,19 @@ def uninstall_orion(registry, scope, *, keep_data=True, keep_models=True, firewa
     except ValueError as error:
         raise UninstallError('Kaldırma yapılamadı (' + type(error).__name__ + '): ' + str(error)) from error
     result['operation_id'] = outcome['operation_id']
-    # Code of what was removed (bounded: only these components' immutable releases).
+    # Old releases of what was removed (bounded: only these components' immutable releases). A release inside a
+    # removed component's own releases folder goes with that folder below; purging it first only fails on it.
+    going = [root / KIND_DIRS[kind] / 'releases' for kind in removed]
     for item in maintenance.cleanup_plan(registry)['components']:
-        if item['kind'] in removed:
-            try:
-                maintenance.purge_old_code(registry, item['package']['id'],
-                                           expected_revision=revision(registry.read()))
-            except Exception as error:
-                result['leftovers'].append(item['package']['id'])
-                result['notes'].append('Eski sürüm kodu silinemedi: ' + type(error).__name__)
+        if item['kind'] not in removed or any(_inside(item['code_path'], folder) for folder in going):
+            continue
+        try:
+            maintenance.purge_old_code(registry, item['package']['id'],
+                                       expected_revision=revision(registry.read()))
+        except Exception as error:
+            result['leftovers'].append(item['package']['id'])
+            result['notes'].append('Eski sürüm kodu silinemedi: ' + describe(error))
+            print('purge ' + item['package']['id'] + ': ' + describe(error), file=sys.stderr, flush=True)
     # State (process records, package inventories) always goes with the code; user data only on request.
     for item in plan['components']:
         directory = root / KIND_DIRS[item['kind']]
