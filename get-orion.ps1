@@ -1,4 +1,4 @@
-﻿# One-command Orion installer: downloads the signed installer bundle from this
+# One-command Orion installer: downloads the signed installer bundle from this
 # project's GitHub Release feed, then installs Hub, the web client and (from the Router's own feed) the Router.
 #   PowerShell: irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex
 # The bundle carries the public trust root; every package is signature-verified
@@ -60,16 +60,16 @@ try {
     if ($NoStartWithWindows) { $arguments.NoStartWithWindows = $true }
     if ($NoAutoUpdate) { $arguments.NoAutoUpdate = $true }
     if ($NoFirewall) { $arguments.NoFirewall = $true }
-    if ($existing) { Write-Host 'Mevcut Orion kurulumu bulundu: yalnızca eksik bileşenler eklenecek, kurulu olanlara dokunulmaz.' }
+    if ($existing) { Write-Host 'Mevcut Orion kurulumu bulundu: yalnizca eksik bilesenler eklenecek, kurulu olanlara dokunulmaz.' }
     else { Write-Host 'Installing (about 320 MB download; this takes a few minutes)...' }
     & (Join-Path $target 'Install-Orion.ps1') @arguments
-    if ($LASTEXITCODE -eq 3) { Write-Host 'Hiçbir şey değiştirilmedi.'; return }
+    if ($LASTEXITCODE -eq 3) { Write-Host 'Hicbir sey degistirilmedi.'; return }
     if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
 } finally {
     if ($existing) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
 }
 if ($existing) {
-    Write-Host 'Eklendi. Orion''u masaüstü kısayolundan açın.'
+    Write-Host 'Eklendi. Orion''u masaustu kisayolundan acin.'
 } elseif ($elevated -and -not $NoStart) {
     # explorer.exe always runs with the user's normal token, so the shortcut starts Orion de-elevated.
     $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Orion.lnk'
