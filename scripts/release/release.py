@@ -26,6 +26,8 @@ SCRATCH = Path.home() / '.orion-lifecycle-tests'
 
 
 def run_build(extra):
+    # Child output may hold characters the console code page (e.g. cp1254) cannot show: never crash on them.
+    sys.stdout.reconfigure(errors='replace')
     command = [sys.executable, '-u', str(HERE / 'build_release.py'), '--accept', 'full',
                '--scratch-base', str(SCRATCH), *extra]
     candidates = result = None
