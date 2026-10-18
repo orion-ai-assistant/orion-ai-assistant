@@ -147,7 +147,10 @@ def main():
     version = args.version or current_feed_version(base) + 1
     work = args.work / f'v{version}'
     if work.exists():
-        raise ValueError(f'{work} exists; remove it or choose another --version')
+        # Staging of a version that is not online yet (the timestamp goes up last) is disposable: a run that
+        # failed anywhere before that just starts over; uploads already done are skipped below.
+        print(f'Discarding the unfinished staging of version {version}: {work}')
+        shutil.rmtree(work)
     names = stage_stable_names(args.artifacts, work / 'artifacts')
     source = {'schema': 1, 'channel': 'stable', 'metadata_url': base, 'targets_url': base, 'targets': names}
     (work / 'release-source.json').write_text(json.dumps(source), encoding='utf-8')
