@@ -190,7 +190,16 @@ Kurulu bir PC'de:
 
 ## 6. Kurulum (sıfırdan)
 
-Hub + web istemcisi + Router (normal kurulum). **cmd**:
+Hub + web istemcisi + Router (normal kurulum). **Tek satır, hem cmd'de hem PowerShell'de çalışır:**
+
+```bat
+powershell -c "iex(irm raw.github.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1)"
+```
+
+Yalnızca Router: `powershell -c "iex(irm raw.github.com/orion-ai-assistant/orion-router/main/get-orion-router.ps1)"`.
+Not: Depo kökündeki eski `install.ps1` Docker dönemi geliştirici kurucusudur; paketli kurulum için kullanılmaz.
+
+Seçenek vermek gerekirse (ör. `-NoStartWithWindows`) indirilen `.cmd` ile kur. **cmd**:
 
 ```bat
 curl -L -o get-orion.cmd https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.cmd && get-orion.cmd
