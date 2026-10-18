@@ -30,6 +30,12 @@ def file_digest(path):
     return digest.hexdigest()
 
 
+def text_digest(path):
+    """sha256 of a text input with CRLF read as LF: a checkout with core.autocrlf (CRLF) and one without
+    (LF) hold the same git content, and neither line ending changes what a lock file or recipe builds."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+
+
 def hash_files(files, *, workers=8):
     """Order-independent digest of {relative name: absolute path} contents.
 

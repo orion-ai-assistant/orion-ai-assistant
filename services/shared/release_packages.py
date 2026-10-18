@@ -30,6 +30,18 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def sha256_many(paths):
+    """sha256 of many files, in order. Threads overlap per-file open latency: a real-time virus
+    scanner inspects every freshly extracted file on its first open, which made one sequential
+    pass over a ~5000 file package take 30-40 s instead of ~5 s (the hashing itself is <1 s)."""
+    paths = list(paths)
+    if len(paths) < 64:
+        return [sha256(p) for p in paths]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(min(16, 2 * (os.cpu_count() or 4))) as pool:
+        return list(pool.map(sha256, paths))
+
+
 def archive_name(name):
     """One Windows-safe relative POSIX file name, identical on all build hosts."""
     parts = name.split('/')
@@ -89,14 +101,25 @@ def extract_zip(archive, destination, *, max_bytes=8 * 1024**3, max_files=100000
         with tempfile.TemporaryDirectory(prefix='.orion-package-', dir=destination.parent) as temporary:
             tree = Path(temporary) / 'tree'
             tree.mkdir()
+            files = []
             for item, name in entries:
                 output = tree.joinpath(*name.parts)
                 if item.is_dir():
                     output.mkdir(parents=True, exist_ok=True)
                 else:
                     output.parent.mkdir(parents=True, exist_ok=True)
-                    with source.open(item) as src, output.open('xb') as dst:
-                        shutil.copyfileobj(src, dst)
+                    files.append((item, output))
+
+            def write(member):
+                # Reading each member to its end makes zipfile verify its CRC.
+                with source.open(member[0]) as src, member[1].open('xb') as dst:
+                    shutil.copyfileobj(src, dst)
+            # Threads overlap the per-file close latency of a real-time virus scanner (see sha256_many);
+            # ZipFile allows concurrent member reads, and every name was validated above.
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(min(8, len(files)) or 1) as pool:
+                for _ in pool.map(write, files):
+                    pass
             # rename (not replace): on Windows a concurrently created target fails.
             if destination.exists():
                 raise PackageError('Package destination appeared during preparation')
@@ -348,7 +371,8 @@ def record_prepared_package(tree, state, target, *, cache=None):
     """
     tree, state = Path(tree), Path(state)
     signature = _scan(tree)  # before hashing: a change during the hash then misses the cache
-    files = {p.relative_to(tree).as_posix(): sha256(p) for p in sorted(tree.rglob('*')) if p.is_file()}
+    paths = [p for p in sorted(tree.rglob('*')) if p.is_file()]
+    files = {p.relative_to(tree).as_posix(): digest for p, digest in zip(paths, sha256_many(paths))}
     inventory = state / 'installed-package.json'
     inventory.write_text(json.dumps({'schema': 1, 'manifest': target.custom, 'files': files}, sort_keys=True), encoding='utf-8')
     provenance = {'id': target.custom['package_id'], 'sha256': target.hashes['sha256'],
@@ -439,9 +463,13 @@ def verify_package_record(item, *, inventory=None, quick=False):
         raise PackageError('Installed package file set changed')
     if quick and _cache_matches(state, item['package']['inventory_sha256'], signature):
         return manifest
-    for name, digest in value['files'].items():
+    paths = []
+    for name in value['files']:
         path = canonical_path(root.joinpath(*archive_name(name).parts), must_exist=True)
-        if not path.is_relative_to(root) or sha256(path) != digest:
+        if not path.is_relative_to(root):
             raise PackageError('Installed package file hash mismatch')
+        paths.append(path)
+    if sha256_many(paths) != list(value['files'].values()):
+        raise PackageError('Installed package file hash mismatch')
     _write_verified_cache(state, item['package']['inventory_sha256'], signature)
     return manifest

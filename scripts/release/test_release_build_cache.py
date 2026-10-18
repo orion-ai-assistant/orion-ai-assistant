@@ -111,10 +111,19 @@ def test_package_key_covers_tooling_and_runtime_inputs(router_repo, monkeypatch)
     assert key(router_repo) != base  # a changed runtime recipe must not reuse an old layer's ZIP
     monkeypatch.undo()
     assert key(router_repo) == base
-    original = build_cache.file_digest
-    monkeypatch.setattr(build_cache, 'file_digest', lambda path: 'changed' if Path(path).name == 'router-requirements.txt'
+    original = build_cache.text_digest
+    monkeypatch.setattr(build_cache, 'text_digest', lambda path: 'changed' if Path(path).name == 'router-requirements.txt'
                         else original(path))
     assert key(router_repo) != base  # a changed dependency lock rebuilds the runtime and the package
+
+
+def test_runtime_key_ignores_checkout_line_endings(tmp_path):
+    # A core.autocrlf checkout (CRLF) and an LF one share runtime layers; any content change still counts.
+    crlf, lf, other = tmp_path / 'a.txt', tmp_path / 'b.txt', tmp_path / 'c.txt'
+    crlf.write_bytes(b'x==1\r\ny==2\r\n')
+    lf.write_bytes(b'x==1\ny==2\n')
+    other.write_bytes(b'x==1\ny==3\n')
+    assert build_cache.text_digest(crlf) == build_cache.text_digest(lf) != build_cache.text_digest(other)
 
 
 def test_cache_reuses_exactly_the_stored_bytes_and_never_for_another_key(tmp_path):
