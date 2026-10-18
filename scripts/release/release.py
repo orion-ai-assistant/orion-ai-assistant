@@ -1,18 +1,25 @@
 """One command for a release round: build (what changed), accept, sign and publish.
 
-    .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish]
+    .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish] [--no-bump]
 
-1. `build_release.py` (build cache, parallel builds, full acceptance; reuses an identical earlier pass).
-2. `publish_release.py --feed router` and then `--feed hub` (two feeds, same key) with the candidate directory
-   and the acceptance result of step 1. Each feed's bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the
-   newest staged bundle of that feed (its contents only differ because it bundles shared scripts); bump
-   bootstrap.json to ship a new one.
+1. Version bump (bump_versions.py): build without acceptance, compare every package and each feed's bootstrap
+   with what the live feeds list (sha256) and, for what changed, raise sequence/version/package_id in its release
+   json and commit that in its repository (never pushed). `--no-bump` uses the release jsons as they are.
+   `--version 0.3.1` gives every component published in this round (and a rebuilt bootstrap) that version, each
+   with sequence = published + 1, changed or not; it must be above every published version.
+2. `build_release.py` (build cache, parallel builds, full acceptance; reuses an identical earlier pass). After a
+   bump only the bumped packages are built again.
+3. `publish_release.py --feed router` and then `--feed hub` (two feeds, same key) with the candidate directory
+   and the acceptance result of step 2, and the bootstrap bundles of step 1. With `--no-bump` each feed's
+   bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the newest staged
+   bundle of that feed; bump bootstrap.json to ship a new one.
 The release key passphrase is asked once, first (a wrong one fails before the build). Nothing is published when a step fails.
 """
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +30,8 @@ BOOTSTRAP = 'orion-bootstrap-windows-x64.zip'
 # Outside %LOCALAPPDATA%\Orion: an installed Orion must not be touched by acceptance runs, and a packaged
 # desktop host would redirect that folder into a private store.
 SCRATCH = Path.home() / '.orion-lifecycle-tests'
+BUMP_CHECK = ROOT / '.tmp/candidates/bump-check'  # step 1's build: compared with the feeds, then discarded
+BOOTSTRAP_CHECK = ROOT / '.tmp/release/bootstrap-check'
 
 
 def run_build(extra, accept='full'):
@@ -60,7 +69,7 @@ def staged_bootstrap(feed):
     return None, None
 
 
-def publish(feed, candidates, result, dry_run, deferred=None):
+def publish(feed, candidates, result, dry_run, deferred=None, bootstrap=None):
     command = [sys.executable, str(HERE / 'publish_release.py'), '--feed', feed, '--artifacts', str(candidates),
                '--inputs', str(ROOT / '.tmp/inputs')]
     command += ['--accepted-result', str(result)] if result else ['--skip-acceptance']
@@ -68,7 +77,11 @@ def publish(feed, candidates, result, dry_run, deferred=None):
         command += ['--defer-timestamp', str(deferred)]
     bundle, sequence = staged_bootstrap(feed)
     wanted = json.loads((HERE / 'bootstrap.json').read_text(encoding='utf-8-sig'))['sequence']
-    if bundle is not None and sequence == wanted:
+    if bootstrap is not None:
+        # Built and compared with the feed by the version bump: identical bytes are skipped by the upload.
+        print(f'[{feed}] bootstrap sequence {wanted}: {bootstrap}', flush=True)
+        command += ['--reuse-bootstrap', str(bootstrap)]
+    elif bundle is not None and sequence == wanted:
         print(f'[{feed}] bootstrap unchanged (sequence {wanted}): reusing {bundle}', flush=True)
         command += ['--reuse-bootstrap', str(bundle)]
     else:
@@ -96,13 +109,32 @@ def main():
                              'packages install and start - use the default for anything users depend on)')
     parser.add_argument('--no-prune-feed', action='store_true',
                         help='keep every old package and metadata file on the feeds (default: prune_feed.py after publishing)')
+    parser.add_argument('--no-bump', action='store_true',
+                        help='use version/sequence/package_id of the release jsons as they are (default: raise them for '
+                             'every package whose bytes differ from the live feed, and commit that)')
+    parser.add_argument('--version', metavar='X.Y.Z',
+                        help='give every component published in this round (and the bootstrap when it is rebuilt) '
+                             'this version, each with sequence = its published sequence + 1, changed or not; must be '
+                             'above every published version')
     parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
                         help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
+    sys.path.insert(0, str(HERE))
+    if args.version is not None and args.no_bump:
+        parser.error('--version and --no-bump exclude each other')
+    live = None
+    if not args.no_bump:
+        import bump_versions
+        if args.version is not None:
+            try:
+                args.version = bump_versions.parse_version(args.version)
+            except ValueError as error:
+                parser.error(str(error))
+        # Before the passphrase and the build: an unreachable feed or a too low --version stops here.
+        live = bump_versions.read_live(version=args.version)
     if not args.no_publish:
         # Ask first, once: a wrong passphrase must not cost a 4 minute build, and every publish step below
         # (Router feed, Hub feed) gets it through its environment instead of asking again.
-        sys.path.insert(0, str(HERE))
         import release_keys
         passphrase = release_keys._passphrase(enforce_length=False)
         release_keys.load_signer(Path.home() / '.orion-release/release-key.pem', passphrase)
@@ -110,6 +142,12 @@ def main():
     if args.no_accept:
         print('WARNING: --no-accept: the packages are published without the automated install/start acceptance.',
               flush=True)
+    bootstraps = {}
+    if live is not None:
+        shutil.rmtree(BUMP_CHECK, ignore_errors=True)
+        check, _ = run_build(['--output', str(BUMP_CHECK)], accept='none')
+        _, bootstraps = bump_versions.bump_round(check, BOOTSTRAP_CHECK, live, args.version, args.feeds)
+        shutil.rmtree(BUMP_CHECK, ignore_errors=True)
     candidates, result = run_build(['--force-accept'] if args.force_accept else [],
                                    accept='none' if args.no_accept else 'full')
     print(f'\nBuilt: {candidates.name}\nAcceptance: {result or "SKIPPED (--no-accept)"}', flush=True)
@@ -121,7 +159,7 @@ def main():
     for feed in args.feeds:  # The Router feed first: the Hub feed no longer lists a Router target.
         marker = ROOT / '.tmp/release' / f'{feed}-timestamp.json'
         marker.unlink(missing_ok=True)
-        publish(feed, candidates, result, args.dry_run, None if args.dry_run else marker)
+        publish(feed, candidates, result, args.dry_run, None if args.dry_run else marker, bootstraps.get(feed))
         if marker.exists():
             deferred.append(json.loads(marker.read_text(encoding='utf-8')))
             marker.unlink()

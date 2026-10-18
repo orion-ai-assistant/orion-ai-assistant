@@ -20,6 +20,7 @@ from tuf.api.metadata import Metadata, Root
 from services.shared.release_packages import archive_name, extract_zip, sha256, validate_release
 from python_runtime import install_site_hook
 from build_launcher import build_launcher
+from build_package import drop_entry_point_launchers
 
 
 def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False, release=None):
@@ -55,6 +56,9 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
             '--target', str(python / 'site-packages'), '--no-compile-bytecode', '--require-hashes', '--only-binary', ':all:',
             '-r', str(Path(__file__).with_name('requirements.txt'))], check=True)
+        # Console-script launchers embed this temporary folder's path: without this, two builds of the same
+        # inputs differ and release.cmd could never recognise an unchanged bootstrap.
+        drop_entry_point_launchers(python / 'site-packages')
         install_site_hook(python)
         # Recovery runs from this independently retained bootstrap, even if the
         # candidate Hub cannot import or its release tree is unavailable. Never

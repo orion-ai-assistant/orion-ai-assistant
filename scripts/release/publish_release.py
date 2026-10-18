@@ -2,12 +2,11 @@
 
 Flow: stable target names -> acceptance binding -> single-key TUF metadata ->
 installer bootstrap -> upload (targets first, timestamp.json last). Clients learn
-"is there a newer version" from the signed `sequence`, so bump `sequence` and
-`version` in each component's release json before building. The bootstrap is a
-signed target too (scripts/release/bootstrap.json): bump its `sequence`/`version`/
-`package_id` whenever its contents (services/shared, scripts/release) changed and
-installed bootstraps should adopt it; otherwise reuse the published bundle with
-`--reuse-bootstrap`. `--dry-run` stages
+"is there a newer version" from the signed `sequence`, so each changed component's
+release json needs a higher `sequence`/`version`/`package_id`: release.cmd raises
+them by itself (bump_versions.py) unless it runs with --no-bump. The bootstrap is a
+signed target too (scripts/release/bootstrap.json), bumped the same way when its
+bytes differ from the feed's; an unchanged bundle is passed with `--reuse-bootstrap`. `--dry-run` stages
 everything locally and uploads nothing.
 """
 import argparse
@@ -92,6 +91,25 @@ def stage_stable_names(artifacts, staging, components=None):
     if not names:
         raise ValueError('No candidate packages')
     return names
+
+
+def candidate_names(artifacts, components):
+    """component -> (stable target name, target description) of the code packages of `components` in a candidate
+    directory, without staging anything: what stage_stable_names would publish under which name."""
+    found = {}
+    for description in sorted(Path(artifacts).glob('*.target.json')):
+        value = json.loads(description.read_text(encoding='utf-8'))
+        if is_layer_description(value) or value['custom']['component'] not in components:
+            continue
+        found[value['custom']['component']] = (stable_name(value['custom'], split='runtime' in value), value)
+    return found
+
+
+def default_source(feed, names):
+    """release-source.json of a feed's bootstrap with the default repositories (what release.cmd publishes)."""
+    router = stable_name({'component': 'router', 'platform': 'windows', 'arch': 'x86_64', 'profile': 'cpu'}, split=True)
+    return build_source(feed, names, repo=FEEDS[feed]['repo'], tag=FEEDS[feed]['tag'], router_repo=ROUTER_REPO,
+                        router_tag='feed', router_target=router)
 
 
 def staged_descriptions(staging):
@@ -195,7 +213,7 @@ def package_gate(previous_targets, staging, names):
             raise ValueError(f'{component} sequence {sequence} is below the published {published_sequence}')
         if sequence == published_sequence and previous['hashes']['sha256'] != staged['hashes']['sha256']:
             raise ValueError(f'{component} contents changed but sequence {sequence} was already published: bump '
-                             f'sequence/version/package_id in its release/package.json')
+                             f'sequence/version/package_id in its release json (release.cmd does this unless --no-bump)')
 
 
 def carried_targets(previous_targets, names, components):

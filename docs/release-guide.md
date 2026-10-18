@@ -101,24 +101,47 @@ Kök kaydını yenilemek (aynı anahtar, yeni bir 100 yıl):
 
 Eski PC'ler kök kaydı zincirini (1 → 2 → …) kendileri takip eder. `N.root.json` dosyaları feed'den asla silinmez.
 
-## 3. Yayından önce: sürüm numaralarını yükselt
+## 3. Sürüm numaraları: `release.cmd` kendisi yükseltir
 
-Değişen her bileşenin sürüm dosyasında `version`, `sequence` ve `package_id` alanlarını birlikte yükselt:
+Sürüm dosyalarını (`scripts/release/hub.json`, `scripts/release/bootstrap.json`,
+`orion-router/release/package.json`, `orion-ai-assistant-flutter/release/package.json`) elle düzenlemen
+gerekmez. `release.cmd` derlemeden sonra, kabul testinden önce şunu yapar (`scripts/release/bump_versions.py`):
 
-```json
-"package_id": "orion-router-0.2.5-windows-x86_64-cpu",
-"version": "0.2.5",
-"sequence": 21,
+1. Paketleri kabul testi olmadan derler (`.tmp/candidates/bump-check`).
+2. Her paketin sha256'sını canlı feed'in listelediğiyle karşılaştırır: Hub ve Client → Hub feed'i, Router →
+   Router feed'i. Bootstrap her feed için ayrı derlenir (her biri kendi `release-source.json`'unu taşır) ve iki
+   feed'dekiyle de karşılaştırılır (`.tmp/release/bootstrap-check/<feed>`).
+3. **Baytları değişen** her bileşen için: `sequence` = yayınlanan + 1, `version` yayınlananın bir sonraki
+   yaması (0.2.6 → 0.2.7), `package_id` buna göre. Dosya yazılır ve kendi deposunda commit edilir
+   (`-c commit.gpgsign=false`, yalnızca o json; **push edilmez**). Bootstrap'ın `sequence`'ı iki feed için
+   tektir.
+4. **Değişmeyen** bileşenin dosyasına dokunulmaz.
+5. Derleme yeniden çalışır; önbellek yalnızca yükseltilen paketleri yeniden derler (`orion-release.json`, yani
+   `package_id` de paketin içindedir). Kabul testi ve yayın bu setle devam eder.
+
+Çıktıda bir özet görünür, ör.:
+
+```
+Versions: hub 0.2.6 → 0.2.7 (seq 23), router unchanged, client unchanged, bootstrap unchanged
 ```
 
 Kurallar:
-- **`sequence` sadece artar.** Aynı `sequence` ile **farklı baytlar** asla yayınlanamaz: `package_gate`
-  reddeder. Kodu değişen bir bileşenin numarası mutlaka yükseltilmelidir.
-- **Değişmeyen bileşenin numarasına dokunma.** Paketler bayt bayt tekrarlanabilir (aynı commit + aynı girdiler
-  = aynı sha256), bu yüzden değişmeyen bileşen için hiçbir şey yüklenmez.
-- **Bootstrap:** `scripts/release/bootstrap.json`. Yalnızca kurucu/güncelleyici kodu (`services/shared`,
-  `installer`, `scripts/release` içindeki paylaşılan betikler) davranış olarak değiştiyse yükselt.
-  `sequence` aynı kalırsa en son hazırlanan bootstrap aynen yeniden kullanılır ve yüklenmez.
+- **Elle daha yüksek sürüm:** Yayınlanandan yüksek bir `version` (ör. `0.3.0`) yazarsan korunur; gerekirse
+  yalnızca `sequence` düzeltilir. `version` ve `sequence` ikisi de yayınlananın üstündeyse dosyaya hiç
+  dokunulmaz (özette "as set by hand"). Elle yaptığın değişikliği kendin commit et.
+- **`sequence` sadece artar.** Aynı `sequence` ile farklı baytlar asla yayınlanamaz: `package_gate` /
+  `bootstrap_gate` reddeder. Otomatik yükseltme bunu zaten önler.
+- **Paketler bayt bayt tekrarlanabilir** (aynı commit + aynı girdiler = aynı sha256). Bu karşılaştırmanın
+  temelidir; değişmeyen bileşen için hiçbir şey yüklenmez.
+- **Hepsini aynı sürüme getirmek: `--version 0.3.1`.** Bu turda yayınlanan her bileşen (`--feeds` ile seçilen
+  feed'lerinkiler) içeriği değişmese de `0.3.1` olur, `package_id` buna göre, `sequence` = yayınlanan + 1.
+  Bootstrap yalnızca yeniden derleniyorsa (baytları değiştiyse) `0.3.1` alır. Sürüm, yayınlanmış **her**
+  bileşenin güncel sürümünden yüksek olmalı; değilse `release.cmd` parola sormadan ve derlemeden önce durur.
+  `--version` olmadan yalnızca değişen bileşenler bir yama yükseltilir.
+- **`--no-bump`:** Eski davranış. Sürüm dosyaları olduğu gibi kullanılır, feed ile karşılaştırma yapılmaz;
+  bootstrap, `bootstrap.json`'un `sequence`'ı en son hazırlanan bundle'ınkiyle aynıysa yeniden kullanılır.
+  Unutulan bir yükseltmede yayın "contents changed but sequence N was already published" ile durur.
+- **Feed'e ulaşılamazsa** yükseltme adımı durur; tekrar dene ya da `--no-bump` kullan.
 - **Sürüm biçimi:** `0.x.y` kalabilir. Paketli kurulumlarda büyük sürüm (major) kuralı yoktur; uyumluluğu
   manifest'teki `api` ve `requires` alanları belirler.
 - **Test işareti (isteğe bağlı):** Güncellemenin gerçekten geldiğini gözle görmek için harfi değiştir:
@@ -127,8 +150,8 @@ Kurallar:
 
   Not: Router panelini değiştirmek Next.js derlemesini tetikler (~1,5-2 dk).
 
-Sürüm yükseltmelerini kendi depolarında commit et. Derleme, commit edilmiş/izlenen dosyalardan yapılır;
-yeni bir kaynak dosyası en azından `git add` ile izlenmeli.
+Derleme, commit edilmiş/izlenen dosyalardan yapılır; yeni bir kaynak dosyası en azından `git add` ile
+izlenmeli.
 
 ## 4. Yayın komutları
 
@@ -142,6 +165,8 @@ Hepsi Hub deposunun kökünden:
 | `.\release.cmd --feeds hub` | Sadece Hub/Client feed'ini yayınlar | Hub/Client-only güncelleme |
 | `.\release.cmd --no-publish` | Derle + kabul testi, hiçbir şey yüklemez, parola sormaz | Yayından önce doğrulama |
 | `.\release.cmd --dry-run` | Her şeyi hazırlar ve imzalar ama yüklemez | İmza/hazırlık denemesi |
+| `.\release.cmd --version 0.3.1` | Bu turda yayınlanan her bileşeni (değişmese de) `0.3.1` yapar (bkz. bölüm 3) | Sürümleri hizalamak |
+| `.\release.cmd --no-bump` | Sürüm dosyalarını olduğu gibi kullanır, otomatik yükseltme yok (bkz. bölüm 3) | Elle sürüm yönetimi |
 | `.\release.cmd --force-accept` | Aynı paket seti daha önce geçmiş olsa da kabul testini yeniden çalıştırır | Şüphe varsa |
 
 Seçenekler birleşebilir, ör. `.\release.cmd --feeds router --no-accept`.
@@ -168,6 +193,7 @@ Temizliği kapatmak için `release.cmd --no-prune-feed`.
 
 Adım adım ne olur:
 1. **Parola** sorulur ve anahtar açılır.
+   Ardından **sürüm yükseltme** (bölüm 3; `--no-bump` ile atlanır).
 2. **`build_release.py`:** Önbellekli ve paralel derleme. Flutter web, Router paneli ve üç paket
    (`.tmp/candidates/<set>`). Kaynağı değişmeyen adım atlanır ("skipped").
 3. **`accept_packages.py --mode full`:** Paketleri izole bir klasörde
