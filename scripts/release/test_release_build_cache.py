@@ -388,6 +388,7 @@ def test_package_builds_from_autocrlf_and_lf_checkouts_with_identical_bytes(tmp_
     runtime = tmp_path / 'runtime'
     write(runtime / 'tree/runtime/python/site-packages/pkg/__init__.py', 'x = 1')
     zip_layers.write_layer(runtime / 'tree', runtime / 'layer.zip')
+    (runtime / 'complete').write_text('0' * 64)  # a prepared runtime records its input key
     monkeypatch.setattr(build_package, 'prepare_runtime', lambda *a, **k: runtime)
     original_run = build_package.subprocess.run
     monkeypatch.setattr(build_package.subprocess, 'run', lambda argv, *a, **k: None
