@@ -131,11 +131,17 @@ def test_cache_reuses_exactly_the_stored_bytes_and_never_for_another_key(tmp_pat
     # Tampering with the stored ZIP (size or timestamp) turns the hit into a miss.
     zip_path.write_bytes(b'zip bytes!')
     assert cache.lookup_package('router', 'k1') is None
-    # The newest two entries are kept (reverting a change hits the cache); the cache cannot grow without bound.
-    cache.store_package('router', 'k2', archive, target)
-    cache.store_package('router', 'k3', archive, target)
+    # A bounded number of entries is kept (a revert or a parallel worktree still hits); never unbounded growth.
+    keys = ['k%d' % i for i in range(2, 2 + build_cache.KEEP_PACKAGES)]
+    for key in keys:
+        cache.store_package('router', key, archive, target)
     assert not cache.package_dir('router', 'k1').exists()
-    assert cache.lookup_package('router', 'k2') and cache.lookup_package('router', 'k3')
+    assert all(cache.lookup_package('router', key) for key in keys)
+    # Write-once: storing other bytes under a key that is already cached keeps the first bytes.
+    other = tmp_path / 'other.zip'
+    other.write_bytes(b'different bytes')
+    cache.store_package('router', keys[-1], other, target)
+    assert cache.lookup_package('router', keys[-1])[0].read_bytes() != b'different bytes'
 
 
 # --- layered ZIPs ----------------------------------------------------------------------------

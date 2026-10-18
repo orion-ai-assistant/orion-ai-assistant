@@ -115,6 +115,9 @@ class Cache:
 
     def store_package(self, kind, key, archive, target):
         directory = self.package_dir(kind, key)
+        if self.lookup_package(kind, key) is not None:
+            # Write-once: the bytes of a key never change (they may already be published under that version).
+            return
         if directory.exists():
             shutil.rmtree(directory)
         directory.mkdir(parents=True)
@@ -131,7 +134,7 @@ class Cache:
         parent = directory.parent
         entries = sorted((p for p in parent.iterdir() if p.is_dir() and p != directory),
                          key=lambda p: p.stat().st_mtime, reverse=True)
-        for old in entries[1:]:
+        for old in entries[KEEP_PACKAGES - 1:]:
             shutil.rmtree(old, ignore_errors=True)
 
     # --- small json records --------------------------------------------------------------
@@ -147,6 +150,11 @@ class Cache:
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(value, indent=2), encoding='utf-8')
         os.replace(temporary, path)
+
+
+# Entries kept per component besides the newest: enough that parallel worktrees or a revert do not evict the
+# entry of a version that is already published (its rebuilt ZIP would not be byte-identical).
+KEEP_PACKAGES = 8
 
 
 def link_or_copy(source, destination):

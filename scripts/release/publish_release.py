@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import subprocess
 import sys
 import urllib.error
@@ -223,6 +224,12 @@ def main():
         # Staging of a version that is not online yet (the timestamp goes up last) is disposable: a run that
         # failed anywhere before that just starts over; uploads already done are skipped below.
         print(f'Discarding the unfinished staging of version {version}: {work}')
+        if args.reuse_bootstrap and Path(args.reuse_bootstrap).resolve().is_relative_to(work.resolve()):
+            # The bundle to reuse lives in exactly this unfinished staging: keep a copy before it is discarded.
+            keep = Path(tempfile.mkdtemp(prefix='orion-bootstrap-reuse-'))
+            for path in (Path(args.reuse_bootstrap), Path(args.reuse_bootstrap).with_suffix('.target.json')):
+                shutil.copyfile(path, keep / path.name)
+            args.reuse_bootstrap = keep / Path(args.reuse_bootstrap).name
         shutil.rmtree(work)
     names = stage_stable_names(args.artifacts, work / 'artifacts', FEEDS[args.feed]['components'])
     if not (set(names) - {'bootstrap'}):
