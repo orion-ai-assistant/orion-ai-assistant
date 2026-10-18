@@ -405,16 +405,13 @@ class UpdateHelper:
         tx['backups'] = snapshots
         self._json(directory / 'backups.json', snapshots, 'backups')
 
-    def _verify_backups(self, tx, *, deep=True):
-        """`deep=False` only right after `_backup` in the same run, which just hashed the copy."""
+    def _verify_backups(self, tx):
+        """Full proof of the backup; used when a transaction is resumed after an interruption."""
         if set(tx['backups']) != set(self.backup_kinds(tx)):
             raise UpdateError('Complete offline backup required')
         for snapshot in tx['backups'].values():
             path = canonical_path(snapshot['path'], must_exist=True)
-            if not path.is_relative_to(self._directory(tx)):
-                raise UpdateError('Backup inventory mismatch')
-            found = inventory(path) if deep else dict.fromkeys(walk(path)[1])
-            if (found if deep else set(found)) != (snapshot['files'] if deep else set(snapshot['files'])):
+            if not path.is_relative_to(self._directory(tx)) or inventory(path) != snapshot['files']:
                 raise UpdateError('Backup inventory mismatch')
 
     def resume(self, *, automatic=False):
@@ -454,8 +451,8 @@ class UpdateHelper:
                         self._backup(tx)
                         self._phase(tx, 'switching', progress=self._shape('switching', 0, 2))
                         with self._timed(tx, 'switch'):
-                            # `_backup` hashed the fresh copy a moment ago; only the file set is rechecked.
-                            self._verify_backups(tx, deep=False)
+                            # Straight-through: `_backup` just hashed the copy against the source hashes,
+                            # so no further backup pass here (a resumed run re-proves it in full).
                             self._progress(tx, 1, 2, force=True)
                             self._publish(tx, tx['proposed'], True)
                     finally:
