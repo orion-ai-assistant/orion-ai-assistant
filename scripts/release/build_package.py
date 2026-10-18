@@ -228,10 +228,13 @@ def package_key(kind, release, args, root):
     if kind == 'client':
         web = root / 'main_app/app/build/web'
         parts += [('web', build_cache.hash_tree(web)),
-                  ('serve_web', build_cache.file_digest(root / 'main_app/app/tool/serve_web.py'))]
+                  ('serve_web', (build_cache.text_digest if 'main_app/app/tool/serve_web.py' in lf_in_git(root)
+                                 else build_cache.file_digest)(root / 'main_app/app/tool/serve_web.py'))]
     else:
         names = release_names(root, SOURCE_PREFIXES[kind])
-        parts += [('sources', build_cache.hash_files({n: root / n for n in names})),
+        # The bytes the package gets (see copy_source): an autocrlf (CRLF) and an LF checkout of one commit
+        # have the same key, and the after-staging check below compares like with like.
+        parts += [('sources', build_cache.hash_files({n: root / n for n in names}, text=lf_in_git(root))),
                   ('runtime', runtime_key(kind, args))]
         if kind == 'router':
             parts.append(('dashboard', build_cache.hash_tree(root / 'dashboard/out')))
@@ -292,7 +295,7 @@ def build(args, timings=None):
         if parts is not None and kind != 'client':
             # Hash what was actually copied: catches an edit that raced the key computation.
             names = release_names(root, SOURCE_PREFIXES[kind])
-            if build_cache.hash_files({n: stage / n for n in names}) != parts['sources']:
+            if build_cache.hash_files({n: stage / n for n in names}, text=lf_in_git(root)) != parts['sources']:
                 raise ValueError('Sources changed while the package was being built; retry')
         (stage / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         if kind != 'client':

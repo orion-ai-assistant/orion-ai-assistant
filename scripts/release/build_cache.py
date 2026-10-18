@@ -36,15 +36,17 @@ def text_digest(path):
     return hashlib.sha256(Path(path).read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 
-def hash_files(files, *, workers=8):
+def hash_files(files, *, workers=8, text=()):
     """Order-independent digest of {relative name: absolute path} contents.
 
-    Names and content both count: renames, additions, deletions and edits all change it.
+    Names and content both count: renames, additions, deletions and edits all change it. Names in
+    `text` are hashed with CRLF read as LF (`text_digest`): equal to `file_digest` for an LF file.
     """
     names = sorted(files)
+    text = set(text)
 
     def one(name):
-        return file_digest(files[name])
+        return (text_digest if name in text else file_digest)(files[name])
     with ThreadPoolExecutor(workers) as pool:
         digests = list(pool.map(one, names))
     outer = hashlib.sha256()

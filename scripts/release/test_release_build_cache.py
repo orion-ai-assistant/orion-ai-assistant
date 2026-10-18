@@ -374,3 +374,35 @@ def test_same_inputs_give_byte_identical_package_zips(tmp_path):
             assert package.read('core/a.py') == b'a = 1\nb = 2\n'
             assert package.read('core/data.bin') == b'\x00\r\n\x01'
     assert digests[0] == digests[1]
+
+
+def test_package_builds_from_autocrlf_and_lf_checkouts_with_identical_bytes(tmp_path, monkeypatch):
+    """The real build (cache key, staging, the after-staging source check, ZIP) from a core.autocrlf
+    checkout succeeds and gives the same sha256 as an LF checkout of the same commit."""
+    origin = tmp_path / 'origin'
+    (origin / 'services/shared').mkdir(parents=True)
+    (origin / 'services/shared/a.py').write_bytes(b'a = 1' + bytes([10]) + b'b = 2' + bytes([10]))
+    git(origin, '-c', 'core.autocrlf=false', 'init', '-q')
+    git(origin, '-c', 'core.autocrlf=false', 'add', '-A')
+    git(origin, 'commit', '-qm', 'one')
+    runtime = tmp_path / 'runtime'
+    write(runtime / 'tree/runtime/python/site-packages/pkg/__init__.py', 'x = 1')
+    zip_layers.write_layer(runtime / 'tree', runtime / 'layer.zip')
+    monkeypatch.setattr(build_package, 'prepare_runtime', lambda *a, **k: runtime)
+    original_run = build_package.subprocess.run
+    monkeypatch.setattr(build_package.subprocess, 'run', lambda argv, *a, **k: None
+                        if str(argv[0]).endswith('python.exe') else original_run(argv, *a, **k))
+    digests = []
+    for name, autocrlf in (('lf', 'false'), ('crlf', 'true')):
+        repo = tmp_path / name / 'checkout'
+        subprocess.run(['git', 'clone', '-q', '-c', 'core.autocrlf=' + autocrlf, str(origin), str(repo)],
+                       check=True, capture_output=True)
+        assert (bytes([13, 10]) in (repo / 'services/shared/a.py').read_bytes()) == (autocrlf == 'true')
+        args = Namespace(source=repo, release=Path(build_package.__file__).with_name('hub.json'),
+                         output=tmp_path / name / 'out', cache=tmp_path / name / 'cache', inputs=Path('.'),
+                         postgres=Path('.'), requirements=None)
+        archive = build_package.build(args)
+        digests.append(build_cache.file_digest(archive))
+        with zipfile.ZipFile(archive) as package:
+            assert package.read('services/shared/a.py') == b'a = 1' + bytes([10]) + b'b = 2' + bytes([10])
+    assert digests[0] == digests[1]
