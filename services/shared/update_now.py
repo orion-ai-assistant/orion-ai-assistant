@@ -93,6 +93,21 @@ def handoff(registry, *, clock=time.time):
     return state is not None
 
 
+def abandon(registry, *, clock=time.time):
+    """Cancel a request that only a now-dead Hub task could have honoured (Hub restart, "Çık").
+
+    waiting_for_idle needs the Hub's idle watcher and its admission gate; `requested` was verified idle
+    by a Hub that no longer runs. Neither may be acted on by a later session."""
+    try:
+        with _lock(registry):
+            state = read(registry)
+            if state is None or state['phase'] not in HUB_PHASES:
+                return None
+            return _save(registry, state, clock, phase='cancelled', error=None)
+    except (OSError, ValueError, UpdateError):
+        return None
+
+
 def claim(registry, *, clock=time.time):
     """Watcher: take a handed-over request exactly once."""
     return update(registry, only={'requested'}, clock=clock, phase='stopping', claimed_at=clock())
@@ -168,7 +183,7 @@ def in_progress(registry, *, clock=time.time):
 def default_stop(registry):
     from .launcher import launch
     # The updating window already replaced the app window; the caller holds the operation lock.
-    launch(registry, stop=True, keep_window=True)
+    launch(registry, stop=True, keep_window=True, apply_owner=True)
 
 
 def default_start(registry):
@@ -190,7 +205,9 @@ def process_request(automatic, *, stop=default_stop, start=default_start, clock=
     registry, helper = automatic.registry, automatic.helper
     base = registry.path.parent / 'updates'
     window = window or update_ui.updating_window
-    state = read(registry)
+    # A hand-over the watcher did not pick up in time is stale (the Hub that verified idleness may be gone):
+    # it becomes an explicit failure here instead of stopping a freshly started Hub.
+    state = reconcile(registry, clock=clock)
     if (state is None or state['phase'] != 'requested'
             or state.get('installation_id') != registry.read()['installation_id']):
         return None

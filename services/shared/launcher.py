@@ -223,6 +223,52 @@ def stop_tray(registry, *, timeout=6):
     return len(victims)
 
 
+STOP_RETRIES = 2          # a briefly busy lifecycle lock is retried; a real shutdown timeout is not
+STOP_RETRY_DELAY = 3
+WATCHER_EXIT = 'updates/watcher.exit'
+
+
+def _transient(error):
+    text = str(error).lower()
+    return 'busy' in text or 'mutex' in text
+
+
+def _stop_component(function, argument, *, sleep=time.sleep):
+    """One component's stop. Another process may hold its lock for a moment (start, status scan): retry that."""
+    for attempt in range(STOP_RETRIES + 1):
+        try:
+            return function(argument)
+        except Exception as error:
+            if attempt == STOP_RETRIES or not _transient(error):
+                raise
+            sleep(STOP_RETRY_DELAY)
+
+
+def running_services(components):
+    """Kinds that still have a running supervisor/child after a stop (verified from their own state)."""
+    from .process_lifecycle import Runtime, child_tree_alive, LifecycleError
+    left = []
+    for item in components:
+        modes = ['hub'] if item['kind'] == 'hub' else ['router-prod', 'router-dev']
+        for mode in modes:
+            try:
+                state = Runtime(item['code_path'], mode).read()
+                if state and (state['status'] != 'stopped'
+                              or any(child_tree_alive(c) for c in state['children'].values())):
+                    left.append(item['kind'])
+                    break
+            except (LifecycleError, OSError, KeyError):
+                continue
+    return left
+
+
+def request_watcher_exit(registry):
+    """"Çık" also ends the retained watcher (it would otherwise keep polling, possibly mid-download)."""
+    marker = registry.path.parent / WATCHER_EXIT
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes(b'exit')
+
+
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
     from .native_services import start_hub, start_router, stop_hub, stop_router
     if not stop:
@@ -254,17 +300,49 @@ def launch(registry, *, startup=False, background=False, stop=False, keep_window
             from .release_packages import compatible
             compatible(packages)
         with launch_environment(registry):
+            failed = {}
             for item in (reversed(components) if stop else components):
                 root = item['code_path']
-                if item['kind'] == 'hub':
-                    (stop_hub if stop else start_hub)(root)
-                else:
-                    (stop_router if stop else start_router)(str(Path(root) / 'cli.py'))
+                if not stop:
+                    (start_hub if item['kind'] == 'hub' else start_router)(
+                        root if item['kind'] == 'hub' else str(Path(root) / 'cli.py'))
+                    continue
+                # Stopping must never give up halfway: a Hub that cannot stop in time used to leave the
+                # Router (and tray, window, watcher) untouched. Every component is attempted; failures are
+                # collected and reported at the end.
+                try:
+                    if item['kind'] == 'hub':
+                        _stop_component(stop_hub, root)
+                    else:
+                        _stop_component(stop_router, str(Path(root) / 'cli.py'))
+                except Exception as error:
+                    failed[item['kind']] = type(error).__name__ + ': ' + str(error)
             if stop:
+                from . import update_log
+                updates = registry.path.parent / 'updates'
+                if not apply_owner:
+                    # An explicit stop voids any "update now" request that was waiting for this Hub, and ends
+                    # the updating window; the update flow itself stops services with apply_owner=True.
+                    try:
+                        from . import update_now, update_ui
+                        update_now.abandon(registry)
+                        update_ui.stop_window(registry)
+                    except Exception as error:
+                        update_log.log_exception(updates, 'stop.cleanup', error)
                 stop_tray(registry)
-            if stop and not keep_window:
-                close_window(registry)
+                if not keep_window:
+                    close_window(registry)
+                left = sorted(set(running_services(components)) | set(failed))
+                if left:
+                    update_log.log(updates, 'stop.incomplete', services=','.join(left),
+                                   errors=' | '.join(f'{k}={v}' for k, v in sorted(failed.items())))
+                    raise RegistryError(
+                        'Orion tamamen kapatilamadi; calismaya devam eden: ' + ', '.join(left)
+                        + '. Bir sure sonra Cik/-Stop komutunu yeniden deneyin; ayrinti updates/watcher.log.')
+                if not apply_owner:
+                    request_watcher_exit(registry)
             if not stop:
+                (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
                 from .automatic_updates import spawn_watcher
                 spawn_watcher(registry)
                 if any(c['kind'] == 'hub' for c in components):

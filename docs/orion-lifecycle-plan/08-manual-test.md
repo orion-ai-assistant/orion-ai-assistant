@@ -108,6 +108,13 @@ Bootstrap 0.1.1 (sequence 2) ve sonrası güncellemeden sonra, Orion bir kez aç
 3. Güncel durumda yenile: "Güncel: yeni sürüm yok." Otomatik güncellemeler kapalıyken yenile: "Otomatik güncellemeler kapalı olduğu için denetlenmedi…". Ağı kes ve yenile: kırmızı Türkçe neden ("Güncelleme sunucusuna ulaşılamadı…"), ayrıntı `updates\watcher.log`.
 4. Yenile sırasında bekçinin ölmediğini doğrula: `Get-CimInstance Win32_Process -Filter "Name='python.exe'" | ? CommandLine -like '*update_automatic.py*watch*'` yenile bittikten sonra da bir satır döndürmeli (eskiden elle denetim sırasında bekçi sessizce çıkıyordu).
 
+### 4c. Kapatma güvenilirliği ve eski istek
+
+1. Orion açıkken tepsi > "Çık" (ve ayrıca `powershell -File %LOCALAPPDATA%\Orion\bootstrap\Orion.ps1 -Stop`, `-NonInteractive` **olmadan**). Beklenen: Hub, Router, Redis, Postgres, web istemcisi, tepsi simgesi, Orion penceresi ve (birkaç saniye içinde) `update_automatic.py watch` bekçisi kapanır. Doğrula: `Get-Process python,powershell | ? { $_.Path -like '*Orion*' }` boş. Normal Chrome pencerelerin **kapanmamalı**.
+2. Kapanamayan bir şey olursa sessiz kalmamalı: "Orion tamamen kapatılamadı; bazı servisler çalışmaya devam ediyor olabilir" iletisi ve çalışan servis adları; `updates\watcher.log` içinde `stop.incomplete`.
+3. "Şimdi güncelle" isteği beklerken (Hub boşta bekliyor) "Çık" de, sonra masaüstü kısayoluyla aç. Beklenen: kartta **dönen çubuk yok**, "Devam eden işlerin bitmesi bekleniyor" yok; `updates\apply-now.json` `cancelled`. Kısayola ilk tıklamada pencere açılıp **kapanmamalı**.
+4. Router panelinde (`http://127.0.0.1:20128/dashboard`) "Güncellemeleri Denetle": birkaç saniye içinde Türkçe sonuç ("Router güncel…", "Yeni sürüm bulundu…" veya "başka bir güncelleme zaten hazır…"). Önceki başarısız Router denemesi düğmeyi 6 saat engellememeli; Hub kurulumunda bulunan Router sürümü Hub/Client ile **aynı** bekleyen işleme girer.
+
 ### 5. Hub/Router paneli düğmeleri
 
 Ayarlar'da Hub kartında "Hub yönetimini aç", Router bağlıyken Router kartında "Router yönetimini aç" görünmeli; tıklayınca adres çubuksuz uygulama penceresinde açılır. Telefon oturumunda bu düğmeler görünmez.

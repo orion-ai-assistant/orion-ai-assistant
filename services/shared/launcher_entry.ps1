@@ -20,6 +20,13 @@ function Show-OrionRepair([string]$message) {
     $form.Controls.Add($repairButton)
     [void]$form.ShowDialog()
 }
+function Show-OrionStopFailure([string]$message) {
+    # A stop that could not finish must be visible: services may still be running.
+    if ($NonInteractive) { Write-Output $message; return }
+    Add-Type -AssemblyName System.Windows.Forms
+    $text = (T 'Orion tamamen kapat\u0131lamad\u0131; baz\u0131 servisler \u00e7al\u0131\u015fmaya devam ediyor olabilir. Biraz sonra \u00c7\u0131k komutunu yeniden deneyin.')
+    [void][Windows.Forms.MessageBox]::Show($text + "`r`n`r`n" + $message, 'Orion')
+}
 # Phases in which the helper is switching versions right now (calm wait), and phases that allow a normal start.
 $applying = @('draining','backing_up','switching','health_check','rollback_pending')
 $allowedPhases = @('checking','downloading','verifying','staged','waiting_for_idle','completed','rolled_back','failed')
@@ -116,15 +123,19 @@ try {
     if ($Background) { $arguments += '--background' }
     if ($Stop) { $arguments += 'stop' }
     Push-Location -LiteralPath $root
+    # Native stderr must not become a terminating PowerShell error (that aborted the stop half way, with
+    # the services still running). The launcher's own exit code decides.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         $output = & $python @arguments 2>&1
         $code = $LASTEXITCODE
-    } finally { Pop-Location }
+    } finally { Pop-Location; $ErrorActionPreference = $previousPreference }
     # Keep only the most recent launch result; no secrets/DB settings are written.
     $output | Out-File -LiteralPath (Join-Path $PSScriptRoot 'launcher.log') -Encoding UTF8
     if ($code -ne 0) { throw ($output -join "`r`n") }
 } catch {
     try { $_.Exception.Message | Out-File -LiteralPath (Join-Path $PSScriptRoot 'launcher.log') -Encoding UTF8 } catch {}
-    Show-OrionRepair $_.Exception.Message
+    if ($Stop) { Show-OrionStopFailure $_.Exception.Message } else { Show-OrionRepair $_.Exception.Message }
     exit 1
 }

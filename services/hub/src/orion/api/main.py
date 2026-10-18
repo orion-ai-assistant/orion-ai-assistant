@@ -37,6 +37,12 @@ async def service_lifespan(app: FastAPI):
     with suppress(Exception):
         # A drain flag that outlived the restart it was for must not block new work.
         await app.state.redis.delete(DRAIN_KEY)
+    with suppress(Exception):
+        # An "update now" request waits for the idle watcher of the Hub that made it. After a restart
+        # nobody works on it, and its idle check no longer holds: cancel it instead of showing a spinner.
+        from services.shared import update_now
+        from services.shared.installation_registry import Registry
+        await asyncio.to_thread(update_now.abandon, Registry())
     from orion.api.router_connection import RouterAssociation
     association = RouterAssociation(app.state.redis)
     app.state.router_association = association

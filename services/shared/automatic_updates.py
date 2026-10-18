@@ -177,13 +177,15 @@ class AutomaticUpdates:
     def state_path(self):
         return self.base / ('router-automatic.json' if self.scope == 'router' else 'automatic.json')
 
-    def _kinds(self, record):
+    def _kinds(self, record, with_router=False):
         """Components this scheduler may stage. One transaction covers every component with a newer signed
         sequence (Hub, Client and the local Router together), so the user gets a single restart."""
         if self.scope == 'router':
             return {'router'}
         kinds = {'hub', 'client'}
-        if any(c['kind'] == 'hub' for c in record['components']):
+        if with_router and any(c['kind'] == 'router' for c in record['components']):
+            kinds.add('router')
+        elif any(c['kind'] == 'hub' for c in record['components']):
             try:
                 if AutomaticUpdates(self.registry, helper=self.helper, scope='router').policy()['enabled']:
                     kinds.add('router')
@@ -202,7 +204,7 @@ class AutomaticUpdates:
             write_json(self.state_path, state)
         update_log.log(self.base, 'check.skipped', scope=self.scope, outcome=outcome)
 
-    def check(self, *, manual=False, now=False):
+    def check(self, *, manual=False, now=False, with_router=False):
         """`now` skips only the 6-hour spacing (user pressed refresh); policy still applies."""
         explicit = manual or now
         # Separate OS lock prevents two schedulers sharing TUF metadata/cache.
@@ -235,7 +237,7 @@ class AutomaticUpdates:
                     return
                 client = self.new_client(source)
                 record = self.registry.read()
-                kinds = self._kinds(record)
+                kinds = self._kinds(record, with_router)
                 selected = {k: v for k, v in source['targets'].items()
                             if k in kinds and any(c['kind'] == k for c in record['components'])}
                 if not selected:
@@ -405,6 +407,11 @@ def watch(automatic):
                 if stopped:
                     update_log.log(base, 'watcher.stop', reason='installation stopped')
                     return
+            marker = automatic.base / 'watcher.exit'
+            if marker.exists():  # Written by an explicit stop ("Çık" / -Stop).
+                marker.unlink(missing_ok=True)
+                update_log.log(base, 'watcher.stop', reason='exit requested')
+                return
             from . import update_now
             # One failing step (a busy lock, a bad state file, a failed check) must never end the watcher:
             # a manual check from the Hub holds the check lock for minutes, and the old loop died on it.
@@ -425,7 +432,11 @@ def watch(automatic):
                     value = read_json(request, {})
                     if value == {'schema': 1, 'installation_id': automatic.registry.read()['installation_id'], 'action': 'prepare'}:
                         request.unlink()
-                        router.check(manual=True)
+                        if any(c['kind'] == 'hub' for c in automatic.registry.read()['components']):
+                            # Explicit check from the Router panel: Hub, Client and Router in one transaction.
+                            automatic.check(manual=True, with_router=True)
+                        else:
+                            router.check(manual=True)
                     else:
                         request.unlink()
                         raise UpdateError('Invalid Router update request')

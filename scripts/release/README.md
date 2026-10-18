@@ -421,6 +421,24 @@ bundle with the packages).
   errors as `type`, sanitized detail and `file.py:line function` frames. URLs, Windows/Unix paths and long tokens are
   replaced; no process output is stored. `update_log.describe(code)` gives the short Turkish reasons shown in the
   card (`error_message`, `apply_now.message`).
+* **Stopping is all-or-loud.** `launcher.launch(stop=True)` (tray "Çık", `Orion.ps1 -Stop`) used to stop the Hub first
+  and abort on its first exception, leaving the Router, tray, window and watcher untouched (a Hub shutdown
+  timeout or a busy lock was enough). Now every component is attempted (a transient "busy" lock is retried twice),
+  the tray and Orion's own window are always closed, the verified ownership state of Hub/Router is re-read
+  (`running_services`) and any leftover or error raises `Orion tamamen kapatilamadi; calismaya devam eden: ...`
+  (also in `updates/watcher.log`). `launcher_entry.ps1` shows that as a message box (`Show-OrionStopFailure`, plain
+  text with `-NonInteractive`) instead of the misleading "could not start" repair dialog, and runs the launcher with
+  `$ErrorActionPreference='Continue'` so native stderr can no longer abort the stop half way. A successful
+  explicit stop also cancels a pending "update now" request, ends the updating window and asks the retained watcher
+  to exit (`updates/watcher.exit`; the next launch clears it). The update flow's own stop passes `apply_owner=True`
+  and does none of that.
+* **Stale update requests.** `waiting_for_idle`/`requested` belong to the Hub that created them. A Hub start
+  (`service_lifespan`) and an explicit stop `abandon` them (`cancelled`), and the watcher refuses a hand-over older
+  than 90 s (`reconcile` first) instead of stopping a freshly started Hub; the card also ignores a
+  `waiting_for_idle` request untouched for 60 s. The Router panel's "Güncellemeleri Denetle" writes
+  `router-request.json`; on a Hub install the watcher answers it with one explicit hub-scope check that includes
+  the Router (`check(manual=True, with_router=True)`, ignoring the 6 h spacing and the switches), and the Router
+  status shows the outcome in Turkish (`check_outcome`, `message`), including "başka bir güncelleme hazır".
 * **One transaction, one restart.** For a Hub install the hub-scope check stages Hub, Client **and** the local Router
   (when the Router's switch is on, which follows the single "Otomatik güncellemeler" switch) in one
   `UpdateHelper.prepare`, so the user restarts once. Only components with a newer signed sequence join;
