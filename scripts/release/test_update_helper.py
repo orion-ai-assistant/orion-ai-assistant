@@ -14,7 +14,7 @@ import pytest
 from test_release_packages import repo, publisher
 from services.shared.installation_registry import Registry, component_record, new_registry
 from services.shared.release_packages import record_prepared_package, sha256, verify_package_record
-from services.shared.update_helper import UpdateHelper, UpdateError
+from services.shared.update_helper import IN_PLACE, UpdateHelper, UpdateError
 from services.shared.update_gate import blocked, UpdateAdmission
 from services.shared import update_log
 
@@ -24,18 +24,29 @@ class Crash(BaseException):
 
 
 class Host:
+    """Fake lifecycle. `running` holds the code trees the health check started; like real processes they
+    outlive a crashed helper when the same Host is handed to the next one."""
     idle = True
     healthy = True
     stopped_calls = 0
 
+    def __init__(self):
+        self.running = set()
+
+    @staticmethod
+    def _trees(record):
+        return {c['code_path'] for c in record['components'] if c['kind'] != 'client'}
+
     @contextmanager
     def stopped(self, record):
-        yield self.idle
+        yield self.idle and not self.running & self._trees(record)
 
     def stop(self, record):
         self.stopped_calls += 1
+        self.running -= self._trees(record)
 
     def health(self, record):
+        self.running |= self._trees(record)
         return {k: self.healthy for k in ('hub_api', 'worker', 'database', 'client_api', 'router_identity')}
 
     def recovery_health(self, record):
@@ -61,7 +72,7 @@ def installed(repo, monkeypatch):
     old = store.read()
     release = deepcopy(target.custom)
     release.update(sequence=release['sequence'] + 1, version='9.0.1', package_id='orion-hub-9.0.1-windows-x86_64-cpu')
-    release['capabilities'] = list(set(release['capabilities']) | {'lifecycle.update-quarantine.v1'})
+    release['capabilities'] = list(set(release['capabilities']) | {'lifecycle.update-quarantine.v1', IN_PLACE})
     updated = artifacts / (release['package_id'] + '.zip')
     with zipfile.ZipFile(updated, 'w') as archive:
         archive.writestr('orion-release.json', json.dumps(release))
@@ -130,8 +141,11 @@ def test_restart_at_every_activation_durable_boundary(installed, label):
         helper.resume()
     # A new helper object represents a fresh process; all recovery information
     # must come from disk, never the previous Python object's mutated dictionary.
-    recovered = UpdateHelper(helper.registry, host=Host()).resume()
+    # The same host: a candidate started for health (admission still closed) survives the crash.
+    recovered = UpdateHelper(helper.registry, host=host).resume()
     assert recovered['phase'] == 'completed'
+    assert not blocked(helper.registry.path)
+    assert host.running == {helper.registry.read()['components'][0]['code_path']}  # admitted in place
     verify_package_record(helper.registry.read()['components'][0])
     assert (data / 'identity.manual').read_bytes() == b'encrypted preference sentinel'
 
@@ -569,3 +583,53 @@ def test_straight_apply_trusts_the_staging_hash_resume_and_tampering_do_not(inst
     code = [p for p in hashed if p.is_relative_to(releases)]
     # Straight from staging the trees' size+mtime cache is enough; a resumed run hashes every file.
     assert bool(code) == (case == 'interrupted')
+
+
+@pytest.mark.parametrize('in_place', [True, False])
+def test_healthy_candidate_is_admitted_in_place_after_every_durable_step(installed, monkeypatch, in_place):
+    helper, client, name, old, data, host = installed
+    helper.prepare(client, [name])
+    if not in_place:  # A candidate without the capability ends health stopped, as before.
+        monkeypatch.setattr(UpdateHelper, 'in_place', staticmethod(lambda tx: set()))
+    seen = []
+    def before_admission(tx):
+        seen.append((blocked(helper.registry.path), set(host.running), tx['timings'].get('verify.final') is not None))
+    result = helper.resume(before_admission=before_admission)
+    assert result['phase'] == 'completed' and not blocked(helper.registry.path)
+    tree = result['proposed']['components'][0]['code_path']
+    # Final verify done, admission still closed, candidate running (or verified stopped) when the result is written.
+    assert seen == [(True, {tree} if in_place else set(), True)]
+    assert host.running == ({tree} if in_place else set())
+    assert result['running'] == (['hub'] if in_place else [])
+    assert ('health.stop' in result['timings']) != in_place
+
+
+def test_failure_after_health_stops_the_running_candidate_and_rolls_back(installed, monkeypatch):
+    helper, client, name, old, data, host = installed
+    helper.prepare(client, [name])
+    original = helper._verify
+    def verify(tx, record, candidate, **kw):
+        if host.running:  # verify.final, after a passing health check
+            raise UpdateError('changed while running')
+        return original(tx, record, candidate, **kw)
+    monkeypatch.setattr(helper, '_verify', verify)
+    called = []
+    assert helper.resume(before_admission=called.append)['phase'] == 'rolled_back'
+    assert not called and host.running == set()
+    assert helper.registry.read() == old
+
+
+def test_in_place_needs_the_capability_of_each_kept_component(tmp_path):
+    def item(kind, capable):
+        tree = tmp_path / (kind + str(capable))
+        tree.mkdir(exist_ok=True)
+        (tree / 'orion-release.json').write_text(json.dumps({'capabilities': [IN_PLACE] if capable else []}))
+        return {'kind': kind, 'code_path': str(tree)}
+    def keep(*items, **tx):
+        return UpdateHelper.in_place({'proposed': {'components': list(items)}, **tx})
+    hub, client = item('hub', True), {'kind': 'client', 'code_path': str(tmp_path / 'missing')}
+    assert keep(hub, client, item('router', False)) == {'hub', 'client'}  # Router restarts unquarantined
+    assert keep(hub, client, item('router', True)) == {'hub', 'client', 'router'}
+    assert keep(item('hub', False), client, item('router', True)) == set()
+    assert keep(item('router', True)) == {'router'} and keep(item('router', False)) == set()
+    assert keep(hub, client, conversion=True) == set()

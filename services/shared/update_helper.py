@@ -32,6 +32,9 @@ PHASES = ('checking', 'downloading', 'verifying', 'staged', 'waiting_for_idle',
 WORKERS = 8  # Per-file cost on Windows is mostly latency (Defender, open/close); threads overlap it.
 # Share of the whole "update now" bar that each journal phase covers (the window reads `percent`).
 SPANS = {'draining': (8, 10), 'backing_up': (10, 45), 'switching': (45, 55), 'health_check': (55, 95)}
+# Release capability: the component waits for admission at runtime (requests, background work, discovery), so a
+# candidate started quarantined for its health check may be admitted in place instead of being restarted.
+IN_PLACE = 'lifecycle.update-admission-in-place.v1'
 
 
 class UpdateError(ValueError):
@@ -464,7 +467,42 @@ class UpdateHelper:
             if not path.is_relative_to(self._directory(tx)) or inventory(path) != snapshot['files']:
                 raise UpdateError('Backup inventory mismatch')
 
-    def resume(self, *, automatic=False):
+    @staticmethod
+    def in_place(tx):
+        """Kinds that stay running after a passing health check and are admitted in place.
+
+        Only components whose own (just verified) manifest declares IN_PLACE: they gate every user-facing start
+        on admission at runtime, not once at startup. The Client is served by the Hub's supervisor and follows
+        it. A conversion, or a Hub without it, ends health fully stopped as before."""
+        def capable(item):
+            try:
+                release = json.loads((Path(item['code_path']) / 'orion-release.json').read_text(encoding='utf-8'))
+                return IN_PLACE in release.get('capabilities', [])
+            except (OSError, ValueError, AttributeError):
+                return False
+        items = {c['kind']: c for c in tx['proposed']['components']}
+        if tx.get('conversion') or ('hub' in items and not capable(items['hub'])):
+            return set()
+        keep = {'hub', 'client'} & set(items)
+        if 'router' in items and capable(items['router']):
+            keep.add('router')
+        return keep
+
+    def _admit(self, tx, result, keep, before_admission):
+        """The last step under closed admission: the caller's result record, then `completed` opens admission
+        (for a candidate that kept running, right where it runs). A crash before the journal write resumes
+        from health_check: the running candidate is stopped and checked again, or rolled back."""
+        if before_admission is not None:
+            try:
+                before_admission(tx)
+            except Exception as error:  # A result record is cosmetic; it never fails a healthy update.
+                update_log.log_exception(self.base, 'update.before-admission', error)
+        tx = self._phase(tx, 'completed', health=result, running=sorted(keep))
+        update_log.log(self.base, 'update.admitted', running=','.join(sorted(keep)) or 'none')
+        return tx
+
+    def resume(self, *, automatic=False, before_admission=None):
+        """`before_admission(tx)` runs once the update is certain to complete, while admission is still closed."""
         with operation_lock(self.registry.path, timeout=0):
             tx = self.status()
             if tx is None or tx['phase'] in TERMINAL or tx['phase'] == 'repair_required':
@@ -533,24 +571,24 @@ class UpdateHelper:
                             else {'database', 'router_identity'})
                 if set(result) != required or not all(v is True for v in result.values()):
                     raise UpdateError('Candidate health failed')
-                # End health in a stopped state. No user job has been admitted,
-                # and no unfinished external tool is retried by the helper.
-                with self._timed(tx, 'health.stop'):
-                    self.host.stop(tx['proposed'])
-                    stopped = self.host.stopped(tx['proposed'])
-                    idle = stopped.__enter__()
-                try:
-                    if not idle:
-                        raise UpdateError('Health shutdown unverified')
+                # A healthy candidate that opens admission in place keeps running: the launcher only attaches to
+                # it. The rest ends health stopped. Either way no user job has been admitted yet, and nothing
+                # below opens admission before `completed`; any failure until then stops it and rolls back.
+                keep = self.in_place(tx)
+                halt = dict(tx['proposed'], components=[c for c in tx['proposed']['components'] if c['kind'] not in keep])
+                with ExitStack() as held:
+                    if halt['components']:
+                        with self._timed(tx, 'health.stop'):
+                            self.host.stop(halt)
+                            if not held.enter_context(self.host.stopped(halt)):
+                                raise UpdateError('Health shutdown unverified')
                     self._progress(tx, 2, 3, force=True)
                     # The candidate ran: check every file again (size, mtime and file set against the
                     # cache, the same check every launch makes; a resumed run hashes everything).
                     self._fresh()
                     with self._timed(tx, 'verify.final'):
                         self._verify(tx, tx['proposed'], True, quick=True, staged=straight)
-                    return self._phase(tx, 'completed', health=result)
-                finally:
-                    stopped.__exit__(None, None, None)
+                    return self._admit(tx, result, keep, before_admission)
             except Exception as error:
                 update_log.log_exception(self.base, 'update.resume', error)
                 if tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
