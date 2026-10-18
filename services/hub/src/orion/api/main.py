@@ -40,6 +40,9 @@ async def service_lifespan(app: FastAPI):
     from orion.api.router_connection import RouterAssociation
     association = RouterAssociation(app.state.redis)
     app.state.router_association = association
+    from orion.api.security import ensure_default_owner_password
+    with suppress(Exception):
+        await asyncio.to_thread(ensure_default_owner_password)
     from orion.kernel.router_bootstrap import bootstrap_local_router
     # Optional Router startup never delays the Hub listener. Association/mobile
     # refresh loops retry installations and servers that become available later.

@@ -83,6 +83,23 @@ def migrate_legacy_owner_default():
     return True
 
 
+def ensure_default_owner_password():
+    """First start of a packaged local install.
+
+    The package installer sets no owner credential, so without this no password is
+    accepted and the owner panel is unusable. Create the documented default; the local
+    panel offers to change it on first use (see mobile_security.password_info)."""
+    if os.environ.get('ORION_INSTALL_MODE') != 'local' or owner_password_hash() or get_env('ADMIN_API_KEY', required=False):
+        return False
+    from orion.kernel.local_security import security_dir, identity_lock, atomic_write
+    directory = security_dir()
+    with identity_lock(directory):
+        if owner_password_hash():
+            return False
+        atomic_write(directory / 'owner-password.hash', hash_password('orion').encode('ascii'))
+    return True
+
+
 def admin_credential_fingerprint():
     import hashlib
     # A password change invalidates owner sessions on every Hub process.

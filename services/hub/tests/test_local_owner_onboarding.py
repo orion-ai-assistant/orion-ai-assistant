@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orion.api.access_boundary import local_owner_web_origin
-from orion.api.security import valid_admin_key, migrate_legacy_owner_default, admin_credential_fingerprint
+from orion.api.security import valid_admin_key, migrate_legacy_owner_default, admin_credential_fingerprint, ensure_default_owner_password
 
 
 class LocalOwnerOnboardingTests(unittest.TestCase):
@@ -59,4 +59,23 @@ class LocalOwnerOnboardingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory, patch.dict(os.environ, {'ORION_SECURITY_DIR':directory, 'ADMIN_API_KEY':'custom-owner-key'}):
             self.assertFalse(migrate_legacy_owner_default())
             self.assertTrue(valid_admin_key('custom-owner-key'))
+            self.assertFalse(valid_admin_key('orion'))
+
+
+    def test_package_install_without_any_owner_credential_gets_the_documented_default(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory, patch.dict(
+                os.environ, {'ORION_SECURITY_DIR': directory, 'ADMIN_API_KEY': '', 'ORION_INSTALL_MODE': 'local'}):
+            self.assertFalse(valid_admin_key('orion'))  # the bug: nothing was accepted
+            self.assertTrue(ensure_default_owner_password())
+            self.assertTrue(valid_admin_key('orion'))
+            self.assertFalse(ensure_default_owner_password())  # idempotent
+
+    def test_default_owner_password_never_overrides_or_applies_to_remote_installs(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory, patch.dict(
+                os.environ, {'ORION_SECURITY_DIR': directory, 'ADMIN_API_KEY': 'custom-owner-key', 'ORION_INSTALL_MODE': 'local'}):
+            self.assertFalse(ensure_default_owner_password())
+            self.assertFalse(valid_admin_key('orion'))
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory, patch.dict(
+                os.environ, {'ORION_SECURITY_DIR': directory, 'ADMIN_API_KEY': '', 'ORION_INSTALL_MODE': 'docker'}):
+            self.assertFalse(ensure_default_owner_password())
             self.assertFalse(valid_admin_key('orion'))
