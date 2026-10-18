@@ -213,6 +213,54 @@ def test_every_feed_failing_is_a_failed_check(world):
     assert service.status()['error'] == 'UpdateError'
 
 
+def router_scope(service):
+    return AutomaticUpdates(service.registry, helper=service.helper, client_factory=service.client_factory,
+                            clock=service.clock, scope='router')
+
+
+def test_a_waiting_router_only_update_is_replaced_by_the_whole_newer_set(world):
+    # Seen on the owner's PC: Router 0.2.5 waited for "Şimdi güncelle" while Hub/Client/Router 0.2.6 came out; every
+    # check was skipped as "pending", then the Router arrived alone and Hub/Client one round later.
+    service, fetcher, host = world
+    fetcher.offline.add(HUB)
+    router_scope(service).check(manual=True)
+    waiting = service.helper.status()
+    assert waiting['phase'] == 'staged' and waiting['changes'] == ['router']
+    fetcher.offline.discard(HUB)
+    service.check(now=True, with_router=True)
+    tx = service.helper.status()
+    assert tx['operation_id'] != waiting['operation_id'] and sorted(tx['changes']) == ['hub', 'router']
+    assert tx['phase'] == 'staged'
+    old = json.loads((service.helper.base / waiting['operation_id'] / 'journal.json').read_text(encoding='utf-8'))
+    assert old['phase'] == 'failed' and old['reason'] == 'Superseded'
+    assert service.helper.resume()['phase'] == 'completed'   # One transaction, one restart.
+
+
+def test_a_waiting_update_that_is_already_the_newest_stays(world):
+    service, fetcher, host = world
+    service.check(with_router=True)
+    waiting = service.helper.status()
+    service.check(now=True, with_router=True)
+    assert service.helper.status()['operation_id'] == waiting['operation_id']
+    assert json.loads((service.base / 'automatic.json').read_text())['outcome'] == 'pending'
+
+
+def test_a_router_only_check_never_drops_a_waiting_hub_and_router_set(world):
+    service, fetcher, host = world
+    service.check(with_router=True)
+    waiting = service.helper.status()
+    router_scope(service).check(manual=True)
+    assert service.helper.status()['operation_id'] == waiting['operation_id']
+    assert sorted(service.helper.status()['changes']) == ['hub', 'router']
+
+
+def test_the_hub_check_covers_the_local_router_so_the_watcher_skips_the_router_only_check(world):
+    service, fetcher, host = world
+    assert service.covers_router()
+    router_scope(service).preferences(enabled=False)   # Router updates off: Hub's check leaves it alone.
+    assert not service.covers_router()
+
+
 def test_router_only_scope_updates_from_the_router_feed_only(world):
     service, fetcher, host = world
     fetcher.offline.add(HUB)  # The Hub feed is irrelevant to the Router's own update check.

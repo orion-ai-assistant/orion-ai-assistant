@@ -632,6 +632,15 @@ class UpdateHelper:
             update_log.log_exception(self.base, 'update.rollback', error)
             return self._phase(tx, 'repair_required', reason=type(error).__name__)
 
+    def supersede(self, operation_id):
+        """Drop an update that is downloaded but not applied because a newer release replaces it. Nothing was
+        switched: the active version is unchanged. Refused for anything that already started applying."""
+        with operation_lock(self.registry.path, timeout=0):
+            tx = self.status()
+            if tx is None or tx['operation_id'] != operation_id or tx['phase'] not in {'staged', 'waiting_for_idle'}:
+                raise UpdateError('The waiting update changed; not replacing it')
+            return self._phase(tx, 'failed', reason='Superseded')
+
     def rollback(self):
         """Explicit repair after resolving the recorded local access/lock fault."""
         with operation_lock(self.registry.path, timeout=0):

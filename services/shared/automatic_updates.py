@@ -22,6 +22,8 @@ from .release_packages import PackageError
 from . import update_log
 
 INTERVAL = 6 * 60 * 60
+# Downloaded and verified, waiting to be applied: a check still runs and a newer release replaces it.
+WAITING = {'staged', 'waiting_for_idle'}
 RETRY_PAUSE = 3  # seconds before the single retry of a feed that failed while the bootstrap replaced itself
 # Last unattended skip logged per (updates folder, scope): the watcher polls every 5 s and a staged
 # update would otherwise write the same "check.skipped" line twelve times a minute.
@@ -461,8 +463,8 @@ class AutomaticUpdates:
             if not manual and not now and self.clock() - state.get('last_attempt', 0) < INTERVAL:
                 return
             pending = self.helper.status()
-            if pending and pending['phase'] not in TERMINAL:
-                return self._skip('pending', explicit)
+            if pending and pending['phase'] not in TERMINAL and pending['phase'] not in WAITING:
+                return self._skip('pending', explicit)  # Downloading or being applied: never race it.
             state.update(last_attempt=self.clock(), error=None, bootstrap_error=None, outcome=None,
                          running_pid=os.getpid())
             write_json(self.state_path, state)
@@ -519,6 +521,14 @@ class AutomaticUpdates:
                 if self.bootstrap_root is not None:
                     from . import bootstrap_update
                     bootstrap_update.confirm(self.registry, self.bootstrap_root)
+                if names and pending and pending['phase'] in WAITING:
+                    if not self._supersedes(pending, {targets[n].custom['component']: targets[n] for n in names}):
+                        state['outcome'] = 'pending'  # What is waiting is already the newest: keep it.
+                        return
+                    # A newer release than the one waiting to be applied: drop the waiting one (nothing was
+                    # switched; its download is discarded) and prepare the whole newer set in its place.
+                    self.helper.supersede(pending['operation_id'])
+                    update_log.log(self.base, 'check.superseded', scope=self.scope)
                 if names:
                     update_log.log(self.base, 'check.update-found', scope=self.scope, count=len(names))
                     # Recheck under the helper's operation lock, including user disabling it.
@@ -543,6 +553,26 @@ class AutomaticUpdates:
                 state.pop('running_pid', None)
                 state['outcome_at'] = self.clock()
                 write_json(self.state_path, state)
+
+    @staticmethod
+    def _supersedes(pending, newest):
+        """True when `newest` (kind -> signed target newer than installed) differs from what is waiting and covers
+        every component it would update (a Router-only check never drops a waiting Hub+Router set)."""
+        if not set(pending['changes']) <= set(newest):
+            return False
+        waiting = {c['kind']: c['package'] for c in pending['proposed']['components'] if c['kind'] in pending['changes']}
+        return set(newest) != set(waiting) or any(
+            target.custom['package_id'] != waiting[kind]['id'] or target.hashes.get('sha256') != waiting[kind]['sha256']
+            for kind, target in newest.items())
+
+    def covers_router(self):
+        """This Hub-scope scheduler stages the local Router together with Hub and Client: the watcher's separate
+        Router check would only find a Router-only half of a release first."""
+        if self.scope != 'hub':
+            return False
+        record = self.registry.read()
+        return 'router' in self._kinds(record) and any(c['kind'] == 'router' for c in record['components']) \
+            and self.allowed()
 
     def _poll_feed(self, feed, selected):
         """One signed check of one feed. A PackageError is retried once: the retained bootstrap replacing
@@ -750,13 +780,15 @@ def watch(automatic):
             from . import update_now
             # One failing step (a busy lock, a bad state file, a failed check) must never end the watcher:
             # a manual check from the Hub holds the check lock for minutes, and the old loop died on it.
+            applied = False
             try:
                 # Explicit "update now" runs here, outside the Hub-owned Job that its own stop ends.
-                update_now.process_request(automatic)
+                applied = (update_now.process_request(automatic) or {}).get('phase') == 'completed'
             except Exception as error:
                 update_log.log_exception(base, 'watch.apply-now', error)
             try:
-                automatic.check()
+                # Right after an applied update, look again at once (a newer release may have come out meanwhile).
+                automatic.check(now=applied)
             except Exception as error:
                 if type(error) is not LifecycleError:  # Busy: another check is running; that is normal.
                     update_log.log_exception(base, 'watch.check', error)
@@ -777,7 +809,8 @@ def watch(automatic):
                     else:
                         request.unlink()
                         raise UpdateError('Invalid Router update request')
-                router.check()
+                if not automatic.covers_router():
+                    router.check()  # Router-only install (or Hub updates off): the Router checks on its own.
             except Exception as error:
                 if type(error) is not LifecycleError:
                     update_log.log_exception(base, 'watch.router', error)
