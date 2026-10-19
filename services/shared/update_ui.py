@@ -179,6 +179,25 @@ def mark_seen(registry):
     return read_result(registry)
 
 
+# ---- "Güncelleme hazır, şimdi kurulsun mu?" ----------------------------------------------------
+
+PROMPT = 'updates/ready-prompt.json'
+
+
+def prompt_later(registry, operation_id):
+    """The user answered "Sonra" for this staged update: the app does not ask again for it (it is applied at
+    the next safe start, and the settings card still offers "Şimdi kur")."""
+    write_json(registry.path.parent / PROMPT, {'schema': 1, 'operation_id': operation_id, 'at': time.time()})
+
+
+def prompt_postponed(registry, operation_id):
+    try:
+        value = read_json(registry.path.parent / PROMPT, None)
+    except (OSError, ValueError):
+        return False
+    return isinstance(value, dict) and value.get('schema') == 1 and value.get('operation_id') == operation_id
+
+
 def phase_text(phase):
     """Turkish description of the step in progress; the window shows the same strings."""
     return {

@@ -38,7 +38,12 @@ def run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registry', required=True, type=Path)
     parser.add_argument('action', choices=['check', 'startup', 'watch'])
-    parser.add_argument('--now', action='store_true', help='check: skip the 6-hour spacing (refresh button)')
+    parser.add_argument('--now', action='store_true', help='check: skip the 6-hour spacing')
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument('--only-check', action='store_true',
+                        help='check: find newer signed releases, download nothing (refresh button)')
+    choice.add_argument('--download', action='store_true',
+                        help='check: download and stage every newer signed release (download button)')
     args = parser.parse_args()
     os.environ['ORION_INSTALLATION_REGISTRY'] = str(args.registry)
     # This bundle's own root: lets the watcher notice that a newer bootstrap became active.
@@ -55,6 +60,8 @@ def run():
             # keep this one until it proves it started, otherwise go back to polling here.
             if bootstrap_update.supervise_handover(automatic.registry, lambda: spawn_watcher(automatic.registry)):
                 break
+    elif args.action == 'check' and (args.only_check or args.download):
+        return _user_check(automatic, download=args.download)
     elif args.action == 'check':
         automatic.check(now=args.now)
         if automatic.replaced():
@@ -79,6 +86,22 @@ def run():
     return 0
 
 
+def _user_check(automatic, *, download):
+    """The settings card's buttons: one round for Hub, Client and the local Router (one transaction). The
+    user's own action, so the automatic-update preference does not apply; signatures, locks and the
+    no-interruption rules do."""
+    try:
+        automatic.check(manual=True, with_router=True, download=download, consent=download)
+    except LifecycleError:
+        return 0  # Another check or download is running; it records its own outcome for the card.
+    if download and automatic.replaced():
+        # The download renewed the retained updater first; the new one downloads the components.
+        return _recheck_with_new_bootstrap(automatic, ['check', '--download'])
+    if not download and _outdated_and_failed(automatic):
+        return _recheck_with_new_bootstrap(automatic, ['check', '--only-check'])
+    return 0
+
+
 def _outdated_and_failed(automatic):
     """This check ran from a bootstrap that was replaced meanwhile and ended in an error."""
     try:
@@ -89,7 +112,7 @@ def _outdated_and_failed(automatic):
     return bool(state.get('error')) and bootstrap_update.handover_due(automatic.registry, automatic.bootstrap_root)
 
 
-def _recheck_with_new_bootstrap(automatic):
+def _recheck_with_new_bootstrap(automatic, arguments=('check', '--now')):
     """One more check through the now-active bootstrap instead of leaving the user with an error."""
     import subprocess
     from services.shared.automatic_updates import runtime_command
@@ -97,7 +120,7 @@ def _recheck_with_new_bootstrap(automatic):
     if command is None:
         return 1
     update_log.log(automatic.base, 'check.retry', reason='bootstrap-replaced')
-    return subprocess.run(command + ['check', '--now'], stdin=subprocess.DEVNULL, capture_output=True,
+    return subprocess.run(command + list(arguments), stdin=subprocess.DEVNULL, capture_output=True,
                           timeout=600, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).returncode
 
 

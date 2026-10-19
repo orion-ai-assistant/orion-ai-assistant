@@ -199,7 +199,7 @@ class UpdateHelper:
         quiet = getattr(self.host, 'quiet_now', None)
         return True if quiet is None else bool(quiet(tx['previous']))
 
-    def prepare(self, client, names, *, automatic=False, automatic_scope='hub'):
+    def prepare(self, client, names, *, automatic=False, automatic_scope='hub', requested_by=None):
         with operation_lock(self.registry.path, timeout=0):
             if automatic:
                 from .automatic_updates import AutomaticUpdates
@@ -232,6 +232,9 @@ class UpdateHelper:
             tx = dict(schema=1, operation_id=identity, installation_id=old['installation_id'],
                       previous=old, proposed=None, changes=[], attempts=0, verification={},
                       backups={}, health=None, reason=None)
+            if requested_by == 'user':
+                # The user pressed "İndir": applying it at the next safe start does not need automatic updates on.
+                tx['requested_by'] = 'user'
             # Save previous inventories before any mutable publication.
             for item in old['components']:
                 self._write(directory / (item['kind'] + '-previous.json'),
@@ -514,8 +517,7 @@ class UpdateHelper:
                 return self._phase(tx, 'repair_required', reason='Interrupted legacy copy; original data retained; explicit rollback required')
             if automatic and tx['phase'] in {'staged', 'waiting_for_idle'}:
                 from .automatic_updates import AutomaticUpdates
-                scope = 'router' if tx['changes'] == ['router'] else 'hub'
-                if not AutomaticUpdates(self.registry, helper=self, scope=scope).allowed(activate=True):
+                if not AutomaticUpdates.may_activate(self.registry, self, tx):
                     return tx
             if tx['phase'] in {'checking', 'downloading', 'verifying'}:
                 return self._phase(tx, 'failed', reason='Preparation interrupted; active version unchanged; prepare again')

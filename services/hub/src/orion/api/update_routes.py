@@ -69,6 +69,7 @@ def read_status():
     data['router_configured'] = router_managed(registry, record)
     data['apply_now'] = update_now.view(registry)
     data['last_result'] = update_ui.read_result(registry)
+    data['ready'] = ready(data)
     attempt = max(data.get('last_attempt') or 0, data.get('check_outcome_at') or 0)
     if (not data.get('checking') and _requested['at'] and time.time() - _requested['at'] < _REQUEST_GRACE
             and attempt < _requested['at']):
@@ -86,10 +87,25 @@ def read_status():
 PREPARING = {'checking', 'downloading', 'verifying'}
 
 
+def ready(data):
+    """A downloaded and verified update that nobody asked to apply yet: the app asks "Güncelleme hazır, şimdi
+    kurulsun mu?" (`later` = the user answered "Sonra" for this one; it is applied at the next safe start)."""
+    pending = data.get('pending') or {}
+    apply = data.get('apply_now') or {}
+    if pending.get('phase') != 'staged' or apply.get('phase') in update_now.ACTIVE:
+        return None
+    try:
+        later = update_ui.prompt_postponed(Registry(), pending.get('operation_id'))
+    except Exception:
+        later = False
+    return {'operation_id': pending.get('operation_id'), 'packages': pending.get('packages') or {},
+            'later': later, 'requested_by': pending.get('requested_by')}
+
+
 def activity(data):
     """What the PC is doing about updates, from its own files whichever process started the check:
-    `downloading` (a release was found and is being fetched), `ready` (staged, "Şimdi güncelle"),
-    `checking`, or `idle`. The journal phases checking/downloading/verifying only exist once a newer
+    `downloading` (a release was found and is being fetched), `ready` (staged, "Şimdi kur"),
+    `checking`, `available` (a check found newer releases; "İndir" downloads them) or `idle`. The journal phases checking/downloading/verifying only exist once a newer
     signed release was found, so they are never "just checking"."""
     pending = data.get('pending') or {}
     phase = pending.get('phase')
@@ -99,6 +115,8 @@ def activity(data):
         return 'ready'
     if data.get('checking'):
         return 'found' if data.get('check_outcome') == 'update_found' else 'checking'
+    if (data.get('newer') or {}).get('download'):
+        return 'available'
     return 'idle'
 
 
@@ -146,14 +164,27 @@ class Preferences(BaseModel):
 
 
 def check_now(registry):
-    """Ask the retained update runtime for an immediate check; never takes commands from HTTP."""
+    """Refresh: the retained update runtime looks for newer signed releases now and downloads nothing."""
+    _spawn(registry, ['check', '--only-check'])
+
+
+def download_now(registry):
+    """"İndir": the retained update runtime downloads, verifies and stages every newer release (one transaction)."""
+    pending = AutomaticUpdates(registry).status().get('pending') or {}
+    if pending.get('phase') and pending['phase'] not in {'staged'}:
+        raise UpdateError('DownloadBusy')  # Downloading or applying already: never race it.
+    _spawn(registry, ['check', '--download'])
+
+
+def _spawn(registry, arguments):
+    """Fixed arguments only; never takes commands from HTTP."""
     command = runtime_command(registry)
     if command is None:
         raise ValueError('Retained update runtime unavailable')
     _requested['at'] = time.time()
     # A concurrent check holds the per-installation lock and the extra process exits at once.
     try:
-        process = subprocess.Popen(command + ['check', '--now'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        process = subprocess.Popen(command + arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
                                    close_fds=True)
     except OSError:
@@ -282,6 +313,38 @@ async def apply_now(request: Request, user: str = Depends(get_current_user)):
     tasks.add(task)
     task.add_done_callback(tasks.discard)
     return await asyncio.to_thread(read_status)
+
+
+@router.post('/download')
+async def download(request: Request, user: str = Depends(get_current_user)):
+    """Explicit "İndir": download and verify what the last check found; applying stays a separate step."""
+    if not local_control(request):
+        raise HTTPException(403, 'Güncelleme yalnızca bu bilgisayardan indirilebilir.')
+    try:
+        await asyncio.to_thread(download_now, Registry())
+    except (UpdateError, OSError, ValueError, RuntimeError) as error:
+        if str(error) == 'DownloadBusy':
+            raise HTTPException(409, 'Bir güncelleme zaten indiriliyor veya uygulanıyor.') from error
+        raise HTTPException(409, 'İndirme başlatılamadı: güncelleme yardımcısı bu kurulumda hazır değil. Orion’u yeniden başlatıp tekrar deneyin.') from error
+    return await asyncio.to_thread(read_status_or_last)
+
+
+@router.post('/ready/later')
+async def ready_later(request: Request, user: str = Depends(get_current_user)):
+    """"Sonra": keep the downloaded update for the next safe start and do not ask again for it."""
+    if not local_control(request):
+        raise HTTPException(403, 'Bu seçim yalnızca bu bilgisayardan yapılabilir.')
+    def postpone():
+        registry = Registry()
+        pending = AutomaticUpdates(registry).status().get('pending') or {}
+        if pending.get('phase') != 'staged':
+            raise UpdateError('NothingStaged')
+        update_ui.prompt_later(registry, pending['operation_id'])
+        return read_status()
+    try:
+        return await asyncio.to_thread(postpone)
+    except (UpdateError, OSError, ValueError, RuntimeError) as error:
+        raise _apply_error(error) from error
 
 
 @router.post('/result/seen')

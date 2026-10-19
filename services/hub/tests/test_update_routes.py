@@ -99,7 +99,7 @@ class CheckNowTests(unittest.TestCase):
                 patch.object(api.subprocess, 'Popen') as popen, \
                 patch.object(api, 'read_status', return_value={'ok': True}):
             self.assertEqual(CHANGE_PREFERENCES(api.Preferences(check_now=True)), {'ok': True})
-            self.assertEqual(popen.call_args.args[0][-2:], ['check', '--now'])
+            self.assertEqual(popen.call_args.args[0][-2:], ['check', '--only-check'])  # Refresh downloads nothing.
             for bad in ({'check_now': False}, {'check_now': True, 'paused': False}):
                 with self.assertRaises(ValueError):
                     CHANGE_PREFERENCES(api.Preferences(**bad))
@@ -199,3 +199,74 @@ class SingleSwitchTests(unittest.TestCase):
         with patch.object(api, 'Registry'), patch.object(api, 'runtime_command', return_value=['x']),                 patch.object(api, 'router_managed', return_value=False),                 patch.object(api, 'AutomaticUpdates') as automatic, patch.object(api, 'read_status', return_value={}):
             CHANGE_PREFERENCES(api.Preferences(automatic_updates=False))
         self.assertEqual(automatic.call_count, 1)
+
+
+class DownloadAndReadyTests(unittest.IsolatedAsyncioTestCase):
+    """Refresh checks, "İndir" downloads, "Kur"/"Sonra" for a downloaded update."""
+    def setUp(self):
+        self.app = FastAPI()
+        self.app.state.mobile = False
+        self.app.include_router(api.router)
+        self.app.dependency_overrides[get_current_user] = lambda: 'alice'
+        self.app.add_middleware(AccessBoundary, public=True)
+        self.enterContext(patch('orion.api.discovery.lan_addresses', return_value=['192.168.1.10']))
+        self.enterContext(patch('services.shared.update_log.log_exception'))
+        self.enterContext(patch.object(api, 'Registry'))
+        self.automatic = self.enterContext(patch.object(api, 'AutomaticUpdates')).return_value
+        self.automatic.status.return_value = {'pending': None}
+        self.enterContext(patch.object(api, 'runtime_command', return_value=['py', 'update_automatic.py', '--registry', 'r']))
+        self.popen = self.enterContext(patch.object(api.subprocess, 'Popen'))
+        self.enterContext(patch.object(api, 'read_status', return_value={'activity': 'checking'}))
+        self.enterContext(patch.object(api, 'read_status_or_last', return_value={'activity': 'checking'}))
+
+    def client(self, peer='127.0.0.1', host='127.0.0.1'):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=(peer, 1234)),
+                                 base_url='https://' + host)
+
+    async def test_download_spawns_only_the_fixed_download_round(self):
+        async with self.client() as client:
+            response = await client.post('/api/v1/updates/download', json={'metadata_url': 'https://evil.example/'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.popen.call_args.args[0], ['py', 'update_automatic.py', '--registry', 'r', 'check', '--download'])
+
+    async def test_download_is_refused_while_downloading_or_applying(self):
+        for phase in ('downloading', 'verifying', 'switching'):
+            self.automatic.status.return_value = {'pending': {'phase': phase}}
+            async with self.client() as client:
+                response = await client.post('/api/v1/updates/download')
+            self.assertEqual(response.status_code, 409)
+        self.popen.assert_not_called()
+
+    async def test_phone_cannot_download_or_answer_the_ready_prompt(self):
+        async with self.client('192.168.1.44', '192.168.1.10') as client:
+            self.assertEqual((await client.post('/api/v1/updates/download')).status_code, 403)
+            self.assertEqual((await client.post('/api/v1/updates/ready/later')).status_code, 403)
+        self.popen.assert_not_called()
+
+    async def test_later_remembers_the_staged_update_only(self):
+        with patch.object(api.update_ui, 'prompt_later') as later:
+            self.automatic.status.return_value = {'pending': {'phase': 'staged', 'operation_id': 'op-1'}}
+            async with self.client() as client:
+                self.assertEqual((await client.post('/api/v1/updates/ready/later')).status_code, 200)
+            self.assertEqual(later.call_args.args[1], 'op-1')
+            later.reset_mock()
+            self.automatic.status.return_value = {'pending': None}
+            async with self.client() as client:
+                self.assertEqual((await client.post('/api/v1/updates/ready/later')).status_code, 409)
+            later.assert_not_called()
+
+    def test_ready_is_offered_for_a_staged_update_until_it_is_being_applied(self):
+        staged = {'pending': {'phase': 'staged', 'operation_id': 'op-1', 'packages': {'hub': 'orion-hub-1'},
+                              'requested_by': 'user'}, 'apply_now': None}
+        with patch.object(api.update_ui, 'prompt_postponed', return_value=False):
+            self.assertEqual(api.ready(staged), {'operation_id': 'op-1', 'packages': {'hub': 'orion-hub-1'},
+                                                 'later': False, 'requested_by': 'user'})
+            self.assertIsNone(api.ready({**staged, 'apply_now': {'phase': 'waiting_for_idle'}}))
+            self.assertIsNone(api.ready({'pending': {'phase': 'downloading'}}))
+        with patch.object(api.update_ui, 'prompt_postponed', return_value=True):
+            self.assertTrue(api.ready(staged)['later'])
+
+    def test_activity_says_available_when_a_check_found_something_to_download(self):
+        self.assertEqual(api.activity({'pending': None, 'newer': {'download': True}}), 'available')
+        self.assertEqual(api.activity({'pending': None, 'newer': {'download': False}}), 'idle')
+        self.assertEqual(api.activity({'pending': {'phase': 'staged'}, 'newer': {'download': True}}), 'ready')
