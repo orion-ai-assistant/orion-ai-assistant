@@ -292,7 +292,77 @@ Kaldırma iki yoldan yapılır:
 Seçenekler: Hub'ı, Router'ı ya da hepsini kaldırmak; verileri ve modelleri korumak ya da silmek. Korunan
 veriler bir sonraki kurulumda aynen benimsenir. Kayıt dosyası: `%LOCALAPPDATA%\Orion-uninstall.log`.
 
-## 7. Bilinen durumlar ve çözümleri
+## 7. Nasıl çalışır (geliştirici notları)
+
+### Üç ayrı numara
+
+| Numara | Örnek | Ne sayıyor | Kim yükseltir |
+| --- | --- | --- | --- |
+| Feed sayısı | `27.targets.json`, `27.snapshot.json` | Bu feed'e yapılan yayınlar (her yayında +1, ürün sürümüyle ilgisi yok) | `publish_release.py`, otomatik |
+| Sürüm | `0.2.7` | İnsanlar için etiket | `release.cmd` (değişen bileşenler +1 yama) veya `--version X.Y.Z` |
+| Sequence | `23` | Bileşen başına "daha yeni mi" kararı | `release.cmd`, otomatik |
+
+Feed sayısı ve sequence şu sebeplerle var:
+- **Metadata sürüm değişmeden de değişebilir:** Bir liste birden fazla ürünü taşır; imzalar yenilenebilir.
+- **Eski imzalı listeyi yeniden sunma saldırısını engeller:** İstemci "en son 27'yi gördüm" diyerek daha eskisini
+  reddeder.
+- **Sürüm geri gidebilir:** Bir kez 1.1.0 → 0.2.0 yaşandı ve sorunsuz geçti, çünkü karar `sequence`'a göre veriliyor.
+
+Feed sayısı zamanla 200-300 olur; sorun değil. Temizlik eskileri sildiği için feed'de hep yalnızca güncel dosyalar
+durur.
+
+### Numaralı dosya adları neden şart?
+
+Feed TUF'un "consistent snapshot" düzenini kullanır:
+1. Yeni `N.targets.json` / `N.snapshot.json` ve paketler önce yüklenir. Kimse onları okumaz.
+2. En son `timestamp.json` güncellenir; herkes aynı anda yeni sürüme geçer.
+
+Yayın sırasında denetim yapan bir istemci asla yarısı eski yarısı yeni dosya görmez. Kapatılmamalı.
+
+### İmza kontrolü
+
+Hub, Client, Router ve bootstrap için aynıdır. İmzasız veya değiştirilmiş hiçbir şey kurulmaz:
+- **Anahtar zinciri:** Kurulumla gelen `trusted-root.json`, release anahtarının açık kısmını taşır. `timestamp`,
+  `snapshot` ve `targets` bu anahtarla imzalı olmak zorunda; değilse denetim "İmzalı güncelleme bilgisi
+  doğrulanamadı" der.
+- **Paket:** İndirilen her ZIP'in sha256'sı ve boyutu imzalı listedekiyle birebir aynı olmalı; değilse
+  "İndirilen paket doğrulanamadı" denir ve kurulu sürüme dokunulmaz.
+- **Geri gitme koruması:** Daha düşük bir `sequence` veya aynı `sequence` altında farklı baytlar reddedilir.
+
+GitHub hesabı ele geçirilse bile özel anahtar (`~/.orion-release/release-key.pem`) ve parolası olmadan kurulabilir
+bir güncelleme yayınlanamaz. Anahtarı yedekle.
+
+### Uzun süre kapalı kalan PC
+
+Geçerlilik süresi PC'deki dosyalara değil, feed'deki dosyalara bakar:
+- Açılan PC güncel `timestamp.json`'u indirir, kök zincirini (1 → 2 → …) izler ve doğrudan en yeni sürüme geçer.
+  Aradaki sürümleri tek tek kurmaz.
+- Önce bootstrap kendini günceller (servisleri durdurmaz). Sonra Hub, Client ve Router **tek işlemde** gelir ve tek
+  seferde uygulanır. Hub denetimi yerel Router'ı da kapsar; Hub kurulu bir PC'de Router için ayrı denetim
+  çalışmaz.
+- İmzalar ve kök 100 yıl geçerli olduğundan yayın yapılmasa da hiçbir kurulum kilitlenmez.
+
+### Güncelleme akışı (kullanıcı tarafı)
+
+1. **Yenile:** Kartın yenile düğmesi yalnızca **denetler**; hangi bileşenlerin daha yeni imzalı sürümü olduğunu ve
+   indirme boyutunu listeler.
+2. **İndir:** Hepsini tek işlemde indirir ve doğrular.
+3. **Hazır:** Uygulama içinde "Güncelleme hazır" sorusu çıkar.
+   - **Kur:** Hemen uygular (~25 sn, servisler yeniden başlamadan).
+   - **Sonra:** Bir sonraki güvenli açılışta uygular.
+
+"Otomatik güncellemeler" açıksa arka plan denetimi indirmeyi kendisi yapar ve aynı soruyu sorar. Kapalıysa düğmeye
+basılmadan hiçbir şey inmez.
+
+Bir güncelleme indirilmiş ve beklerken daha yeni bir sürüm yayınlanırsa, sonraki denetim bekleyeni iptal eder
+(log'da `check.superseded`) ve yeni seti indirir. Bekleyen güncelleme o an uygulanıyorsa ona dokunulmaz.
+
+### Dosyası silinen bir indirme
+
+Yayın sonundaki temizlik eski paketleri siler. O an eski bir paketi indiren istemci "dosya sunucuda bulunamadı"
+der; kurulu sürüm değişmez. Bir sonraki denetimde yeni sürümü indirir.
+
+## 8. Bilinen durumlar ve çözümleri
 
 | Belirti | Neden | Çözüm |
 | --- | --- | --- |
@@ -304,7 +374,7 @@ veriler bir sonraki kurulumda aynen benimsenir. Kayıt dosyası: `%LOCALAPPDATA%
 | Kaldırma "Resolve the pending update/conversion before maintenance" | İndirilmiş ama uygulanmamış güncelleme (yeni sürümlerde kaldırma bunu iptal eder) | Eski kurulumda önce "Şimdi güncelle", sonra kaldır |
 | `Lifecycle busy or mutex inaccessible` (log'da) | Başka bir işlem (güncelleme/denetim) kilidi tutuyor | Kendiliğinden geçer; sürekli ise tepsiden Orion'u kapatıp aç |
 
-## 8. Agent'lar için kurallar
+## 9. Agent'lar için kurallar
 
 - **Parola:** İmza parolasını asla girme, isteme veya saklama. Kullanıcı `release.cmd`'yi çalıştırır.
 - **Kullanıcının izni gerekenler:** Push, dal birleştirme ve feed'e elle yükleme. Hepsi dışarıya açık
