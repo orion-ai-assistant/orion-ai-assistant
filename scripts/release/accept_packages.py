@@ -63,6 +63,10 @@ class FixtureFetcher(FetcherInterface):
                 yield block
 
 
+LOOPBACK = {'ORION_PUBLIC_BIND_HOST': '127.0.0.1', 'ORION_MOBILE_BIND_HOST': '127.0.0.1',
+            'ORION_ROUTER_TLS_HOST': '127.0.0.1'}
+
+
 def port():
     with socket.socket() as stream:
         stream.bind(('127.0.0.1', 0))
@@ -196,7 +200,9 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         Path(env[name]).mkdir()
     env.update(ORION_INSTALLATION_REGISTRY=str(registry), ORION_SKIP_GLOBAL_REGISTRATION='1',
                ORION_FLUTTER_OPEN_WINDOW='0', ORION_ROUTER_MDNS='0', ORION_HUB_MDNS='0',
-               PATH=str(Path(os.environ['SystemRoot']) / 'System32'))
+               # Loopback only, as run_product_acceptance does: a LAN listener of each new scratch python.exe
+               # made Windows Firewall ask "allow Python?" twice per release (Hub's and Router's runtime).
+               **LOOPBACK, PATH=str(Path(os.environ['SystemRoot']) / 'System32'))
     log = (scratch / 'product.log').open('wb')
     command_env = env
     try:
@@ -254,9 +260,9 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
             'ORION_MOBILE_PORT': port(), 'ORION_FLUTTER_PORT': port(), 'ORION_BROWSER_BRIDGE_PORT': port(),
             'POSTGRES_PORT': port(), 'REDIS_PORT': port(), 'POSTGRES_HOST': '127.0.0.1',
             'REDIS_HOST': '127.0.0.1', 'POSTGRES_DB': 'orion', 'POSTGRES_USER': 'orion',
-            'POSTGRES_PASSWORD': 'orion', 'ORION_LOCAL_SHORTCUTS': '0'},
+            'POSTGRES_PASSWORD': 'orion', 'ORION_LOCAL_SHORTCUTS': '0', **LOOPBACK},
             'router': {'POSTGRES_PORT': port(), 'POSTGRES_DEV_PORT': port(), 'ORION_ROUTER_TLS_PORT': port(),
-                       'ORION_ROUTER_LOCAL_HTTP_PORT': port(), 'ORION_ROUTER_MDNS': '0'}}
+                       'ORION_ROUTER_LOCAL_HTTP_PORT': port(), 'ORION_ROUTER_MDNS': '0', **LOOPBACK}}
         (scratch / 'ports.json').write_text(json.dumps(settings, indent=2))
         config = {'root': str(scratch / 'Türkçe İıŞşĞğ 中文 Orion'), 'registry': str(registry),
                   'repository': str(repository), 'settings': settings, 'names': names, 'bootstrap': str(installer)}
