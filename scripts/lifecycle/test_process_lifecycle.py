@@ -731,3 +731,15 @@ def test_losing_both_controllers_cannot_strand_grandchild(lab):
         if controller.poll() is None:
             controller.terminate()
             controller.wait(5)
+
+
+def test_postgres_role_without_settings_privilege_is_identified_by_start_time(tmp_path):
+    # Older developer databases: the `orion` role may not read data_directory (pg_read_all_settings).
+    from services.shared.native_postgres import SettingDenied
+    db = Postgres(tmp_path / 'bin/pg_ctl.exe', tmp_path / 'data', 15432, 'fake', 'fake')
+    db.data.mkdir()
+    (db.data / 'postmaster.pid').write_text(f'1\n{db.data}\n1792370309\n5445\n')
+    with patch.object(db, 'sql', side_effect=[SettingDenied('SHOW data_directory'), '1792370309']):
+        assert db.same_cluster()
+    with patch.object(db, 'sql', side_effect=[SettingDenied('SHOW data_directory'), '1792000000']):
+        assert not db.same_cluster()   # another cluster on this port

@@ -11,6 +11,10 @@ from services.shared.process_lifecycle import (
 )
 
 
+class SettingDenied(LifecycleError):
+    """The role may not read this server setting (it lacks pg_read_all_settings)."""
+
+
 class Postgres:
     def __init__(self, ctl, data, port, user, database, password=None):
         self.ctl, self.data = Path(ctl).resolve(), Path(data).resolve()
@@ -55,8 +59,20 @@ class Postgres:
                                 capture_output=True, text=True, encoding='utf-8', env=env, timeout=5,
                                 **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
         if result.returncode:
+            if 'pg_read_all_settings' in result.stderr:
+                raise SettingDenied(query)
             raise LifecycleError('PostgreSQL authenticated readiness failed')
         return result.stdout.strip()
+
+    def same_cluster(self):
+        """The connection reaches the postmaster that owner() verified for this data directory."""
+        try:
+            return canonical(self.sql('SHOW data_directory')) == canonical(self.data)
+        except SettingDenied:
+            # A role without pg_read_all_settings (older developer databases) cannot read data_directory; the
+            # server's start time is readable by every role and must equal the one in this cluster's postmaster.pid.
+            started = int((self.data / 'postmaster.pid').read_text(encoding='utf-8').splitlines()[2])
+            return abs(int(self.sql('SELECT extract(epoch FROM pg_postmaster_start_time())::bigint')) - started) <= 1
 
     def ready(self):
         owner = self.owner()
@@ -67,7 +83,7 @@ class Postgres:
                                     timeout=5, **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
             if status.returncode:
                 return False
-            if canonical(self.sql('SHOW data_directory')) != canonical(self.data):
+            if not self.same_cluster():
                 raise LifecycleError('Connected to another PostgreSQL cluster')
             for setting in ('fsync', 'full_page_writes', 'synchronous_commit'):
                 if self.sql('SHOW ' + setting) != 'on':

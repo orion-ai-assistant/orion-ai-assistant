@@ -65,7 +65,7 @@ export function renderServices(services, previousServiceStates, allServiceModels
 /**
  * Servis kartı iskeletini oluşturur (HTML yapısı).
  */
-export { updateModelSelect, filterVisionModels, renderModelList };
+export { updateModelSelect, filterVisionModels, renderModelList, updateCardDynamicContent };
 
 function isCoreService(service) {
     return service?.id === 'orion-hub' || service?.category === 'core' || service?.category === 'hub' || service?.category === 'router';

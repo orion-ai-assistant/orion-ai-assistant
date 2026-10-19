@@ -213,7 +213,10 @@ def stop_service(service_id: str):
 
 @router.post("/api/services/{service_id}/start-local")
 def start_local_service(service_id: str):
-    ok = services.start_local_service(service_id)
+    try:
+        ok = services.start_local_service(service_id)
+    except RuntimeError as exc:  # LifecycleError: say why (e.g. the database check), not a bare 500
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=500, detail="Servis başlatılamadı. Kurulum tamamlandı mı?")
     return {"status": "success", "message": "Servis başlatılıyor..."}
