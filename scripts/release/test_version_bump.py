@@ -298,3 +298,26 @@ def test_version_option_sets_a_rebuilt_bootstrap_and_leaves_an_unchanged_one(wor
     value = B.read_release(path)
     assert change.state == 'bumped' and (value['version'], value['sequence']) == ('0.3.1', 15)
     assert value['package_id'] == 'orion-bootstrap-0.3.1-windows-x86_64-cpu'
+
+
+@pytest.mark.parametrize('states, publishes', [(['unchanged', 'unchanged'], False), (['unchanged', 'bumped'], True)])
+def test_release_cmd_publishes_nothing_when_nothing_changed(monkeypatch, states, publishes):
+    # Nothing new for anyone: no acceptance, no upload, and the feed version stays where it is.
+    import sys
+    import release as R
+    import release_keys
+    calls = []
+    monkeypatch.setattr(sys, 'argv', ['release.py'])
+    monkeypatch.setattr(B, 'read_live', lambda version=None: {'hub': None, 'router': None})
+    monkeypatch.setattr(B, 'bump_round', lambda *a, **k: ([B.Change(f'c{i}', s, '0.1.0', '0.1.0', 1)
+                                                          for i, s in enumerate(states)], {}))
+    monkeypatch.setattr(release_keys, '_passphrase', lambda **k: b'x')
+    monkeypatch.setattr(release_keys, 'load_signer', lambda *a, **k: None)
+    monkeypatch.setattr(release_keys, 'renew_if_needed', lambda *a, **k: None)
+    monkeypatch.setattr(R, 'run_build', lambda extra, accept='full': (calls.append(accept), (Path('c'), None))[1])
+    monkeypatch.setattr(R, 'publish', lambda *a, **k: calls.append('publish'))
+    monkeypatch.setattr(R.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    monkeypatch.delenv(release_keys.PASSPHRASE_ENV, raising=False)
+    R.main()
+    monkeypatch.delenv(release_keys.PASSPHRASE_ENV, raising=False)
+    assert calls == (['none', 'full', 'publish', 'publish'] if publishes else ['none'])

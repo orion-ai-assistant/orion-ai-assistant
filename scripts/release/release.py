@@ -122,7 +122,7 @@ def main():
     sys.path.insert(0, str(HERE))
     if args.version is not None and args.no_bump:
         parser.error('--version and --no-bump exclude each other')
-    live = None
+    live = renewed = None
     if not args.no_bump:
         import bump_versions
         if args.version is not None:
@@ -158,8 +158,13 @@ def main():
     if live is not None:
         shutil.rmtree(BUMP_CHECK, ignore_errors=True)
         check, _ = run_build(['--output', str(BUMP_CHECK)], accept='none')
-        _, bootstraps = bump_versions.bump_round(check, BOOTSTRAP_CHECK, live, args.version, args.feeds)
+        changes, bootstraps = bump_versions.bump_round(check, BOOTSTRAP_CHECK, live, args.version, args.feeds)
         shutil.rmtree(BUMP_CHECK, ignore_errors=True)
+        if not renewed and all(change.state == 'unchanged' for change in changes):
+            # Publishing would only sign the same package list again (feed version +1, nothing new for anyone):
+            # skip the acceptance and the upload.
+            print('Nothing changed since the live release: nothing to publish (feeds left as they are).', flush=True)
+            return
     candidates, result = run_build(['--force-accept'] if args.force_accept else [],
                                    accept='none' if args.no_accept else 'full')
     print(f'\nBuilt: {candidates.name}\nAcceptance: {result or "SKIPPED (--no-accept)"}', flush=True)

@@ -119,7 +119,9 @@ gerekmez. `release.cmd` derlemeden sonra, kabul testinden önce şunu yapar (`sc
    yaması (0.2.6 → 0.2.7), `package_id` buna göre. Dosya yazılır ve kendi deposunda commit edilir
    (`-c commit.gpgsign=false`, yalnızca o json; **push edilmez**). Bootstrap'ın `sequence`'ı iki feed için
    tektir.
-4. **Değişmeyen** bileşenin dosyasına dokunulmaz.
+4. **Değişmeyen** bileşenin dosyasına dokunulmaz. **Hiçbir şey değişmediyse** (ve kök yenilenmediyse)
+   `release.cmd` burada durur: "Nothing changed since the live release: nothing to publish". Kabul testi
+   çalışmaz, hiçbir şey yüklenmez, feed sayacı (N.snapshot) artmaz. `--version` verilirse bu kontrol devre dışıdır.
 5. Derleme yeniden çalışır; önbellek yalnızca yükseltilen paketleri yeniden derler (`orion-release.json`, yani
    `package_id` de paketin içindedir). Kabul testi ve yayın bu setle devam eder.
 
