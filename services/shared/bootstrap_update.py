@@ -107,6 +107,26 @@ def default_probe(root):
     return cli.returncode == 0 and b'--registry' in cli.stdout
 
 
+def same_trust(installed, candidate):
+    """True when `candidate` (root metadata bytes) is the installed root or a later version of it that the
+    installed root's own root keys signed: release.cmd renews the root (same key, next version), and a later
+    bootstrap ships that renewed root. A root signed by other keys (a real key change) is never accepted here."""
+    if candidate == installed:
+        return True
+    try:
+        from tuf.api.metadata import Metadata, Root
+        old, new = Metadata.from_bytes(installed), Metadata.from_bytes(candidate)
+        if not isinstance(old.signed, Root) or not isinstance(new.signed, Root):
+            return False
+        if new.signed.version <= old.signed.version:
+            return False
+        old.verify_delegate('root', new)   # signed by the root keys the installation already trusts
+        new.verify_delegate('root', new)   # and by its own root keys
+        return True
+    except Exception:
+        return False
+
+
 def validate_bundle(tree, release, *, installed_root, current_root, probe=default_probe):
     """Everything a prepared tree must satisfy before it may become the active bootstrap."""
     tree = Path(tree)
@@ -117,8 +137,9 @@ def validate_bundle(tree, release, *, installed_root, current_root, probe=defaul
     if (not isinstance(info, dict) or info.get('schema') != 1 or type(info.get('test_only')) is not bool
             or info.get('sequence') != release['sequence'] or info.get('package_id') != release['package_id']):
         raise BootstrapUpdateError('BundleMetadataMismatch')
-    # A root change is an explicit, separate rotation, never a side effect of a bootstrap update.
-    if ((tree / 'trusted-root.json').read_bytes() != Path(installed_root).read_bytes()
+    # A key change is an explicit, separate rotation, never a side effect of a bootstrap update; a renewed
+    # root of the same keys (newer version, signed by the installed root) is not a key change.
+    if (not same_trust(Path(installed_root).read_bytes(), (tree / 'trusted-root.json').read_bytes())
             or info.get('root_sha256') != sha256(tree / 'trusted-root.json')):
         raise BootstrapUpdateError('RootMismatch')
     current = _read(Path(current_root) / 'bootstrap.json', {})

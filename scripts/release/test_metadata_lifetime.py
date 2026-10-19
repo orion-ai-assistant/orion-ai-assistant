@@ -112,3 +112,17 @@ def test_renew_root_refuses_a_key_that_does_not_sign_the_root(tmp, monkeypatch):
     with pytest.raises(ValueError, match='does not sign'):
         release_keys.renew_root(other, root)
     assert root.read_bytes() == before
+
+
+def test_a_bootstrap_with_the_renewed_root_is_the_same_trust_but_another_key_is_not(tmp, monkeypatch):
+    # The 0.2.6 bootstraps compared root bytes and refused every bootstrap after the first renewal (RootMismatch).
+    from services.shared.bootstrap_update import same_trust
+    monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'correct horse battery')
+    key, root = release_keys.init(tmp / 'keys', tmp / 'trusted-root.json')
+    shipped = root.read_bytes()
+    release_keys.renew_root(key, root)
+    renewed = root.read_bytes()
+    _, other = release_keys.init(tmp / 'other', tmp / 'other-root.json')
+    assert same_trust(shipped, shipped) and same_trust(shipped, renewed)
+    assert not same_trust(renewed, shipped)                  # never back to an older root
+    assert not same_trust(shipped, other.read_bytes())       # a different key is a real rotation

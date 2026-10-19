@@ -285,7 +285,8 @@ def add_components(client, names, root, registry, *, settings=None, skip_existin
         if blocked(registry.path) or (pending and pending['phase'] not in TERMINAL):
             raise AddError('Bekleyen veya yarım kalmış bir güncelleme var; o bitince yeniden deneyin. Hiçbir şey değiştirilmedi.')
         trusted = registry.path.parent / 'bootstrap/trusted-root.json'
-        if trusted.is_file() and trusted.read_bytes() != client.bootstrap_root:
+        from .bootstrap_update import same_trust
+        if trusted.is_file() and not same_trust(trusted.read_bytes(), client.bootstrap_root):
             raise AddError('Bu kurucunun güven kökü kurulu Orion\'unkiyle aynı değil; hiçbir şey eklenmedi.')
         status, targets = client.check(names)
         if targets is None:
