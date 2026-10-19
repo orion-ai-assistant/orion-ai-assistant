@@ -94,7 +94,7 @@ def launch_environment(registry):
 
 
 def show_window(registry, hub, *, timeout=30):
-    from .flutter_launcher import flutter_url, open_window
+    from .flutter_launcher import flutter_url
     from .process_lifecycle import Runtime, child_running, owns_listener
     url = flutter_url(lambda name, default=None, **kw: os.environ.get(name, default)).replace('localhost', '127.0.0.1')
     port = int(url.rsplit(':', 1)[1])
@@ -107,15 +107,30 @@ def show_window(registry, hub, *, timeout=30):
             try:
                 with opener.open(url + '/__orion_flutter_health__', timeout=1) as response:
                     if response.read(128) == b'orion-flutter-web':
-                        profile = registry.path.parent / 'flutter-ui-profile'
-                        if not open_window(url + '/', allow_tab_fallback=False, profile=profile, reuse_existing=True):
-                            raise RuntimeError('Orion window could not open; install Edge/Chrome or use repair')
+                        _open_one_window(registry, url + '/')
                         return
             except OSError:
                 pass
         if time.monotonic() >= deadline:
             raise RuntimeError('Flutter UI unavailable; services remain running. Check the registered client build and supervisor.log')
         time.sleep(.2)
+
+
+def _open_one_window(registry, url):
+    """Two launches at once (desktop shortcut and Start menu during a slow first start) both waited for the
+    Flutter UI and opened a window each: the second looked for an existing window before the browser had
+    drawn the first one. One launch at a time opens or focuses the window and waits until it is visible."""
+    from .flutter_launcher import open_window
+    from .process_lifecycle import InstanceLock
+    profile = registry.path.parent / 'flutter-ui-profile'
+    with InstanceLock(registry.path.parent / 'bootstrap', 'window', timeout=30):
+        if not open_window(url, allow_tab_fallback=False, profile=profile, reuse_existing=True):
+            raise RuntimeError('Orion window could not open; install Edge/Chrome or use repair')
+        if os.name == 'nt':
+            from .windows_autostart import focus_window
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not focus_window(profile):
+                time.sleep(.25)
 
 
 def close_window(registry):

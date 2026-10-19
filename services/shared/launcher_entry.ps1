@@ -109,9 +109,19 @@ function Invoke-OrionRecovery {
 function Test-OrionUpdating([string]$pending) {
     try { return ($applying -contains (Get-OrionUpdatePhase $pending)) -or (Test-OrionApplyNow $pending) } catch { return $true }
 }
+function Test-OrionUpdatingWindow {
+    # The updater's own "Orion is updating" window (Orion-Updating.ps1) holds this mutex while it is open.
+    try {
+        $id = (Get-Content -LiteralPath $registry -Raw -Encoding UTF8 | ConvertFrom-Json).installation_id
+        $existing = $null
+        if ([System.Threading.Mutex]::TryOpenExisting("Local\Orion-Updating-$id", [ref]$existing)) { $existing.Dispose(); return $true }
+    } catch {}
+    return $false
+}
 function Wait-OrionUpdate([string]$pending) {
     $deadline = [DateTime]::Now.AddMinutes(30)
-    if ($NonInteractive) {
+    # A second launch during an update: the updater already shows its progress window; a second one is confusing.
+    if ($NonInteractive -or (Test-OrionUpdatingWindow)) {
         while ((Test-OrionUpdating $pending) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Seconds 2 }
         return
     }
