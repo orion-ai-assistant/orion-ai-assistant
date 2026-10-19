@@ -687,8 +687,15 @@ def stop_component(root, component, timeout=120):
                     raise LifecycleError('Supervisor changed during stop')
                 if current['status'] == 'stopped' and not any(child_tree_alive(c) for c in current['children'].values()):
                     return True
+                if not living(current['supervisor']):
+                    # Its own stop failed and it exited (before: 120 s of waiting for a status that never came).
+                    record = Runtime(root, component).read()
+                    if record['status'] == 'stopped' and not any(child_tree_alive(c) for c in record['children'].values()):
+                        return True
+                    break
                 time.sleep(.1)
-            raise LifecycleError('Shutdown timeout; state retained and database left running')
+            else:
+                raise LifecycleError('Shutdown timeout; state retained and database left running')
         # Crash recovery must reconcile *all* live children before any database stop.
         with InstanceLock(directory, 'instance', timeout=0):
             for child in sorted(record['children'].values(), key=lambda item: item['control'] is None):

@@ -206,8 +206,11 @@ def _main(runtime):
     database.ensure()
     runtime.database = database
     def before_stop():
+        # Only drops the API's connections to the user's own browsers; the Job ends every Hub child anyway.
+        # A failure here (API already gone, Windows ending the session) must not abort the stop: it left
+        # API, worker, Redis and PostgreSQL running under a dead supervisor.
         if not stop_hub_browsers(hub_dir):
-            raise LifecycleError('Browser shutdown could not be verified')
+            print('[!] Browser shutdown could not be verified; stopping services anyway', flush=True)
     runtime.before_stop = before_stop
     pg_port = get_env('POSTGRES_PORT')
     redis_port = get_env('REDIS_PORT')

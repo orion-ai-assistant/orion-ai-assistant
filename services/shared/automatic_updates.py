@@ -797,6 +797,10 @@ def runtime_command(registry):
 
 
 def run_startup(registry):
+    # Nothing staged, downloading or mid-apply: `startup` would only find no transaction. Skipping it saves a
+    # whole retained-runtime Python start on every launch.
+    if not (registry.path.parent / 'updates/active.json').exists():
+        return
     command = runtime_command(registry)
     if command:
         result = subprocess.run(command + ['startup'], capture_output=True, timeout=600,

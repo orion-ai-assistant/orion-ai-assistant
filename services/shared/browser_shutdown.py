@@ -30,7 +30,8 @@ def stop_hub_browsers(hub_dir):
             stderr=subprocess.PIPE, timeout=30,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
-            logging.error('Orion browser shutdown failed: %s', result.stderr.decode('utf-8', errors='replace'))
+            logging.error('Orion browser shutdown failed (exit %s): %s', result.returncode,
+                          result.stderr.decode('utf-8', errors='replace'))
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         logging.exception('Could not complete Orion browser shutdown')

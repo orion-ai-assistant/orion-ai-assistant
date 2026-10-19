@@ -4,6 +4,7 @@ Closing the browser window leaves services running. Only explicit stop shuts
 down services; connect-only Routers are never started or stopped here.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import json
 import os
@@ -93,7 +94,7 @@ def launch_environment(registry):
         os.environ.update(previous)
 
 
-def show_window(registry, hub, *, timeout=30):
+def show_window(registry, hub, *, timeout=30, abort=None):
     from .flutter_launcher import flutter_url
     from .process_lifecycle import Runtime, child_running, owns_listener
     url = flutter_url(lambda name, default=None, **kw: os.environ.get(name, default)).replace('localhost', '127.0.0.1')
@@ -101,6 +102,8 @@ def show_window(registry, hub, *, timeout=30):
     deadline = time.monotonic() + timeout
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     while True:
+        if abort is not None and abort.is_set():
+            return
         state = Runtime(hub['code_path'], 'hub').read()
         child = state and state['children'].get('flutter')
         if child and child_running(child) and owns_listener(child['process'], port):
@@ -212,6 +215,8 @@ def spawn_tray(registry, *, popen=None):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not destination.exists() or destination.read_bytes() != source:
         _atomic_write(destination, source)
+    from .desktop_ui import install_ui
+    install_ui(destination.parent)
     # Outside any Hub-owned Job: only the launcher process (or the retained watcher) starts it.
     (popen or subprocess.Popen)(
         ['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
@@ -331,7 +336,6 @@ def _stop_component(function, argument, *, sleep=time.sleep):
 def _stop_all(components, stop_hub, stop_router):
     """Stop Hub and Router at the same time (independent trees and databases; one after the other added
     their stop times). Stopping never gives up halfway: every component is attempted, failures are returned."""
-    from concurrent.futures import ThreadPoolExecutor
     def one(item):
         root = item['code_path']
         if item['kind'] == 'hub':
@@ -444,12 +448,16 @@ def watcher_processes(registry):
     return found
 
 
-def request_watcher_exit(registry, *, timeout=WATCHER_WAIT):
-    """"Çık" also ends the retained watcher (it would otherwise keep polling, possibly mid-download), and waits
-    for it (bounded): a launch right after the quit found it still alive and skipped the staged update."""
+def _ask_watcher_exit(registry):
     marker = registry.path.parent / WATCHER_EXIT
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_bytes(b'exit')
+
+
+def request_watcher_exit(registry, *, timeout=WATCHER_WAIT):
+    """"Çık" also ends the retained watcher (it would otherwise keep polling, possibly mid-download), and waits
+    for it (bounded): a launch right after the quit found it still alive and skipped the staged update."""
+    _ask_watcher_exit(registry)
     try:
         import psutil
         psutil.wait_procs(watcher_processes(registry), timeout=timeout)
@@ -457,13 +465,51 @@ def request_watcher_exit(registry, *, timeout=WATCHER_WAIT):
         pass  # Waiting is a courtesy to the next launch; the marker alone ends the watcher.
 
 
+@contextmanager
+def _timed(registry, step):
+    """`launch.timing step=… seconds=…` in updates/watcher.log: where a slow start or quit spent its time."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        from . import update_log
+        update_log.log(registry.path.parent / 'updates', 'launch.timing', step=step,
+                       seconds=round(time.monotonic() - started, 2))
+
+
+def _start_all(registry, components, start_hub, start_router):
+    """Router and Hub start at the same time: the Hub never waits for its Router (it trusts it from the
+    registration files and connects later), and one after the other added the Router's whole start to every
+    launch. The Hub start runs in THIS thread for the same reason as in `_stop_all` (re-entered mutex)."""
+    def router(item):
+        with _timed(registry, 'start.router'):
+            start_router(str(Path(item['code_path']) / 'cli.py'))
+    others = [item for item in components if item['kind'] != 'hub']
+    with ThreadPoolExecutor(max(1, len(others))) as pool:
+        futures = [pool.submit(router, item) for item in others]
+        try:
+            for item in components:
+                if item['kind'] == 'hub':
+                    with _timed(registry, 'start.hub'):
+                        start_hub(item['code_path'])
+        finally:
+            errors = [future.exception() for future in futures]
+    for error in errors:
+        if error is not None:
+            raise error
+
+
+WINDOW_WAIT = 120  # Covers the whole service start: the window now opens while the Hub is still starting.
+
+
 def launch(registry, *, startup=False, background=False, stop=False, keep_window=False, apply_owner=False):
     if stop:
-        with quit_marker(registry):
+        with quit_marker(registry), _timed(registry, 'stop.total'):
             return _launch(registry, startup=startup, background=background, stop=True, keep_window=keep_window,
                            apply_owner=apply_owner)
-    return _launch(registry, startup=startup, background=background, stop=False, keep_window=keep_window,
-                   apply_owner=apply_owner)
+    with _timed(registry, 'start.total'):
+        return _launch(registry, startup=startup, background=background, stop=False, keep_window=keep_window,
+                       apply_owner=apply_owner)
 
 
 def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
@@ -503,57 +549,87 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
             from .release_packages import compatible
             compatible(packages)
         with launch_environment(registry):
-            failed = {}
             if not stop:
-                for item in components:
-                    root = item['code_path']
-                    (start_hub if item['kind'] == 'hub' else start_router)(
-                        root if item['kind'] == 'hub' else str(Path(root) / 'cli.py'))
-            else:
-                if not keep_window:
-                    close_window(registry)  # First: its open connections would hold the servers' shutdown.
+                _start_with_window(registry, components, start_hub, start_router,
+                                   show=not background and (not startup or record['preferences']['show_client']))
+                return {'status': 'ready'}
+            if not apply_owner:
+                # Asked first, so the watcher finishes its step while the services stop (it was waited for
+                # only at the end: up to 15 s more after everything else was down).
+                _ask_watcher_exit(registry)
+            if not keep_window:
+                close_window(registry)  # First: its open connections would hold the servers' shutdown.
+            with _timed(registry, 'stop.services'):
                 failed = _stop_all(components, stop_hub, stop_router)
-            if stop:
-                from . import update_log
-                updates = registry.path.parent / 'updates'
+            from . import update_log
+            updates = registry.path.parent / 'updates'
+            if not apply_owner:
+                # An explicit stop voids any "update now" request that was waiting for this Hub, and ends
+                # the updating window; the update flow itself stops services with apply_owner=True.
+                try:
+                    from . import update_now, update_ui
+                    update_now.abandon(registry)
+                    update_ui.stop_window(registry)
+                except Exception as error:
+                    update_log.log_exception(updates, 'stop.cleanup', error)
+            stop_tray(registry)
+            left = sorted(set(running_services(components)) | set(failed))
+            if any('access denied' in text.lower() for text in failed.values()):
+                raise RegistryError(ELEVATED)
+            if left:
                 if not apply_owner:
-                    # An explicit stop voids any "update now" request that was waiting for this Hub, and ends
-                    # the updating window; the update flow itself stops services with apply_owner=True.
+                    # Services remain: so does the update watcher (asked to exit above; keep or restart it).
+                    (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
                     try:
-                        from . import update_now, update_ui
-                        update_now.abandon(registry)
-                        update_ui.stop_window(registry)
+                        if not watcher_processes(registry):
+                            from .automatic_updates import spawn_watcher
+                            spawn_watcher(registry)
                     except Exception as error:
-                        update_log.log_exception(updates, 'stop.cleanup', error)
-                stop_tray(registry)
-                left = sorted(set(running_services(components)) | set(failed))
-                if any('access denied' in text.lower() for text in failed.values()):
-                    raise RegistryError(ELEVATED)
-                if left:
-                    update_log.log(updates, 'stop.incomplete', services=','.join(left),
-                                   errors=' | '.join(f'{k}={v}' for k, v in sorted(failed.items())))
-                    raise RegistryError(
-                        'Orion tamamen kapatilamadi; calismaya devam eden: ' + ', '.join(left)
-                        + '. Bir sure sonra Cik/-Stop komutunu yeniden deneyin; ayrinti updates/watcher.log.')
-                if not apply_owner:
+                        update_log.log_exception(updates, 'stop.watcher-restart', error)
+                update_log.log(updates, 'stop.incomplete', services=','.join(left),
+                               errors=' | '.join(f'{k}={v}' for k, v in sorted(failed.items())))
+                raise RegistryError(
+                    'Orion tamamen kapatilamadi; calismaya devam eden: ' + ', '.join(left)
+                    + '. Bir sure sonra Cik/-Stop komutunu yeniden deneyin; ayrinti updates/watcher.log.')
+            if not apply_owner:
+                with _timed(registry, 'stop.watcher'):
                     request_watcher_exit(registry)
-            if not stop:
-                (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
-                from .automatic_updates import spawn_watcher
-                spawn_watcher(registry)
-                if any(c['kind'] == 'hub' for c in components):
-                    try:
-                        spawn_tray(registry)
-                    except OSError:
-                        pass  # The icon is a convenience; services and window do not depend on it.
-            if not stop and not background and (not startup or record['preferences']['show_client']):
-                hub = next((c for c in components if c['kind'] == 'hub'), None)
-                if hub:
-                    show_window(registry, hub)
-                else:
-                    from .flutter_launcher import open_window
-                    open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard')
-        return {'status': 'stopped' if stop else 'ready'}
+        return {'status': 'stopped'}
+
+
+def _start_with_window(registry, components, start_hub, start_router, *, show):
+    """Services start while the Orion window is already being opened: it appears as soon as the Flutter
+    server answers (the app shows its own "starting" screen until the Hub is ready), not after the whole Hub,
+    worker included, reported ready."""
+    import threading
+    hub = next((c for c in components if c['kind'] == 'hub'), None)
+    abort = threading.Event()
+    with ThreadPoolExecutor(1) as pool:
+        window = pool.submit(_timed_window, registry, hub, abort) if show and hub else None
+        try:
+            with _timed(registry, 'start.services'):
+                _start_all(registry, components, start_hub, start_router)
+        except BaseException:
+            abort.set()  # No window for a start that failed; the entry script shows its dialog.
+            raise
+        (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
+        from .automatic_updates import spawn_watcher
+        spawn_watcher(registry)
+        if hub:
+            try:
+                spawn_tray(registry)
+            except OSError:
+                pass  # The icon is a convenience; services and window do not depend on it.
+        if window is not None:
+            window.result()
+    if show and hub is None:
+        from .flutter_launcher import open_window
+        open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard')
+
+
+def _timed_window(registry, hub, abort):
+    with _timed(registry, 'start.window'):
+        show_window(registry, hub, timeout=WINDOW_WAIT, abort=abort)
 
 
 DESKTOP_LINK = 'Orion.lnk'
@@ -636,6 +712,8 @@ def install_entry(registry, *, desktop=True):
     canonical_path(entry)
     entry.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(entry, Path(__file__).with_name('launcher_entry.ps1').read_bytes())
+    from .desktop_ui import install_ui
+    install_ui(entry.parent)
     source = retained_launcher(registry)
     if source is not None:
         destination = entry.with_name('Orion.exe')
