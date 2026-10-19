@@ -124,9 +124,10 @@ def inspect_router_folder(root, *, distribution='legacy-source', expected_identi
         candidate = replace(candidate, root=str(directory))
         if distribution == 'packaged':
             from .release_packages import verify_registered_package
+            from .installation_registry import default_registry_path
             from .runtime_layout import component
             try:
-                installed = component(directory)
+                installed = component(directory, default_registry_path())
             except RuntimeError:
                 return replace(candidate, status='incompatible', reason='Package is not registered by a trusted installer')
             if not installed or not installed.get('package'):
@@ -289,7 +290,9 @@ def find_router_script():
             candidate = select_router_candidate([inspect_router_folder(registered, **kwargs)])
     else:
         candidate = select_router_candidate(discover_router_candidates(legacy_roots=roots))
-    wrapper = Path(candidate.root) / ('orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
+    # A signed package ships Run-Router.ps1 (its launcher entry point); legacy installs the orionrouter wrapper.
+    packaged = candidate.distribution == 'packaged' and os.name == 'nt'
+    wrapper = Path(candidate.root) / ('Run-Router.ps1' if packaged else 'orionrouter.ps1' if os.name == 'nt' else 'orionrouter')
     try:
         resolved = wrapper.resolve(strict=True)
         if not resolved.is_relative_to(Path(candidate.root)) or not resolved.is_file():

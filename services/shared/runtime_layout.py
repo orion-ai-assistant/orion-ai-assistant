@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 
 
-def component(root):
-    registry = os.getenv('ORION_INSTALLATION_REGISTRY')
+def component(root, registry=None):
+    # `registry`: an inspecting tool (the developer installer) names the registry it read; a packaged process gets
+    # it from its launcher through the environment.
+    registry = registry or os.getenv('ORION_INSTALLATION_REGISTRY')
     if not registry:
         if (Path(root) / 'orion-release.json').exists():
             raise RuntimeError('Packaged runtime requires an explicit installation registry')

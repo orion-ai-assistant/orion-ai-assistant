@@ -19,6 +19,11 @@ import uvicorn
 from . import config
 from .routes import router
 
+# A packaged (installed) Router or Hub is only read through an explicit installation registry, as its launcher
+# passes it. The developer installer names the registry it already uses, so it can see and drive them too.
+if os.environ.get('ORION_INSTALL_MODE') == 'local' and config.installation_registry().path.is_file():
+    os.environ.setdefault('ORION_INSTALLATION_REGISTRY', str(config.installation_registry().path))
+
 
 def installer_identity():
     # Installer and Hub share the persistent identity; no browser trust bypass.
