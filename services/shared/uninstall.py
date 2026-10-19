@@ -255,8 +255,12 @@ def _start_outside_job(arguments):
     if os.name != 'nt':
         return False
     line = subprocess.list2cmdline(arguments).replace("'", "''")
-    probe = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='" + line
-             + "'}; exit [int]$r.ReturnValue")
+    # ShowWindow=0 (SW_HIDE): without it Windows 11's default terminal (Windows Terminal) opened an empty window
+    # next to the uninstall dialog, which -WindowStyle Hidden cannot hide. (No console at all, DETACHED_PROCESS,
+    # makes PowerShell exit without running the script.)
+    probe = ("$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]0}; "
+             "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+             "@{CommandLine='" + line + "'; ProcessStartupInformation=$s}; exit [int]$r.ReturnValue")
     try:
         return subprocess.run([_powershell(), '-NoProfile', '-NonInteractive', '-Command', probe],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
