@@ -65,6 +65,34 @@ def test_an_installation_follows_a_renewed_root_and_metadata_lives_a_century(tmp
                                            .signed.targets))).custom['sequence'] == 2
 
 
+def test_an_installation_whose_root_already_expired_recovers_with_the_next_renewed_root(tmp, monkeypatch):
+    # Even if nobody released for longer than the root lived: the next release (same key) renews the root and every
+    # installation follows it. Only the final root of the chain must be valid, not the one the PC shipped with.
+    import time
+    monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'correct horse battery')
+    monkeypatch.setattr(release_keys, 'ROOT_VALID_DAYS', 3 / 86400)   # a root that lives 3 seconds
+    key, root = release_keys.init(tmp / 'keys', tmp / 'trusted-root.json')
+    shipped = root.read_bytes()
+    signer = release_keys.load_signer(key)
+    time.sleep(3.5)
+    assert Metadata.from_bytes(shipped).signed.expires < datetime.now(timezone.utc)   # long expired
+    monkeypatch.setattr(release_keys, 'ROOT_VALID_DAYS', 36500)
+    release_keys.renew_root(key, root)
+    repo = release(tmp, root, signer, 1, 7)
+    shutil.copyfile(tmp / 'trusted-root.json', repo / 'metadata/2.root.json')
+    (repo / 'metadata/1.root.json').write_bytes(shipped)
+    fetcher = Feeds({URL: repo / 'metadata'})
+    files = Feeds({URL: repo / 'targets'})
+
+    class Both(Feeds):
+        def _fetch(self, url):
+            return (fetcher if url.endswith('.json') else files)._fetch(url)
+    (tmp / 'cache').mkdir()
+    client = Updater(str(tmp / 'cache'), URL, target_base_url=URL, bootstrap=shipped, fetcher=Both({}))
+    client.refresh()
+    assert Metadata.from_file(str(tmp / 'cache/root.json')).signed.version == 2
+
+
 def test_release_renews_a_short_lived_root_once(tmp, monkeypatch):
     monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'correct horse battery')
     key, root = release_keys.init(tmp / 'keys', tmp / 'trusted-root.json')
