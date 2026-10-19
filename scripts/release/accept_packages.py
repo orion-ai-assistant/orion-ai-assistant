@@ -234,7 +234,10 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         with T.step('test TUF repository + bootstrap bundle'):
             # Fast mode signs only the components under test.
             subset = Path(artifacts)
-            if kinds != set(available):
+            # While the Client is still being built its ZIP can appear in `artifacts` between this signing and
+            # the name listing below: the install then asked for a Client the test repository did not sign
+            # ("Release check unavailable: PackageError"). A pending Client always means an explicit subset.
+            if kinds != set(available) or later:
                 subset = scratch / 'artifacts-subset'
                 subset.mkdir()
                 for kind in kinds:
