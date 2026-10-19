@@ -79,6 +79,8 @@ def register_entry(registry, *, key=ARP_KEY, hive=None):
         if not script.exists() or script.read_bytes() != source:
             from .installation_registry import _atomic_write
             _atomic_write(script, source)
+        from .desktop_ui import install_ui
+        install_ui(folder)
         values = entry_values(registry, record)
         with winreg.CreateKeyEx(hive if hive is not None else winreg.HKEY_CURRENT_USER, key, 0, winreg.KEY_SET_VALUE) as handle:
             for name, value in values.items():

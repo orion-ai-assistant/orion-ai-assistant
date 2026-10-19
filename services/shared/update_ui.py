@@ -64,6 +64,8 @@ def spawn_window(registry, *, popen=None, mode='updating'):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if not destination.exists() or destination.read_bytes() != source:
         _atomic_write(destination, source)
+    from .desktop_ui import install_ui
+    install_ui(destination.parent)
     (_bootstrap(registry) / EXIT_MARKER).unlink(missing_ok=True)
     (popen or subprocess.Popen)(
         ['powershell.exe', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',

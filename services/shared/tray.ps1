@@ -3,11 +3,12 @@
 #   left click / "Orion'u ac" : open the Orion window (starts services if they are not running)
 #   "Cik"                     : stop Hub, Router and every service through the normal launcher stop
 #   "Orion'u kaldir"          : the uninstall dialog (bootstrap/Orion-Uninstall.ps1; asks what to remove / keep)
+#   Windows sign-out / shutdown             : the same stop, so PostgreSQL shuts down cleanly (no crash recovery
+#                                             at the next start); Windows is held back only while it runs
 # Closing the Orion window never touches this icon or the services.
 param([Parameter(Mandatory = $true)][string]$Registry)
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+. (Join-Path $PSScriptRoot 'Orion-Ui.ps1')   # Orion's look (dark menu, Orion icon) and T.
 
 $bootstrap = Split-Path -Parent $PSCommandPath
 $entry = Join-Path $bootstrap 'Orion.ps1'
@@ -36,18 +37,25 @@ function Close-Tray {
     [Windows.Forms.Application]::ExitThread()
 }
 
+Initialize-OrionUi
 $script:icon = New-Object Windows.Forms.NotifyIcon
-# Same Orion icon as the desktop/Startup entry (embedded in the retained Orion.exe next to this script).
-$script:icon.Icon = [Drawing.SystemIcons]::Application
-try {
-    $exe = Join-Path $PSScriptRoot 'Orion.exe'
-    if (Test-Path -LiteralPath $exe -PathType Leaf) { $script:icon.Icon = [Drawing.Icon]::ExtractAssociatedIcon($exe) }
-} catch {}
+# Same Orion icon as the desktop/Startup entry (embedded in the retained Orion.exe next to this script), at the
+# size the notification area uses on this screen (ExtractAssociatedIcon only had 32 px, scaled down blurry).
+$script:icon.Icon = Get-OrionIcon ([Windows.Forms.SystemInformation]::SmallIconSize.Width)
 $script:icon.Text = 'Orion'
 $menu = New-Object Windows.Forms.ContextMenuStrip
+Set-OrionMenuStyle $menu
+$title = $menu.Items.Add('Orion AI Assistant')
+$title.Image = (Get-OrionIcon (S 20)).ToBitmap()
+$title.Font = Get-OrionFont 10 ([Drawing.FontStyle]::Bold)
+$title.ForeColor = $script:OrionTheme.Accent
+$title.Add_Click({ Open-Orion })
+[void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $open = $menu.Items.Add("Orion'u a" + [char]0x00E7)
-$remove = $menu.Items.Add("Orion'u kald" + [char]0x0131 + 'r')
+$remove = $menu.Items.Add("Orion'u kald" + [char]0x0131 + 'r' + [char]0x2026)
+[void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $quit = $menu.Items.Add([string][char]0x00C7 + [char]0x0131 + 'k')
+foreach ($item in @($open, $remove, $quit)) { $item.ForeColor = $script:OrionTheme.Text; $item.Padding = New-Object Windows.Forms.Padding(0, 3, 0, 3) }
 $script:icon.ContextMenuStrip = $menu
 $open.Add_Click({ Open-Orion })
 $script:icon.Add_MouseClick({ if ($_.Button -eq [Windows.Forms.MouseButtons]::Left) { Open-Orion } })
@@ -76,5 +84,29 @@ $script:timer.Add_Tick({
     }
 })
 $script:timer.Start()
+
+# Windows sign-out / shutdown. Without this, Windows ended PostgreSQL and the Hub abruptly: the next start ran
+# crash recovery. A hidden window receives WM_QUERYENDSESSION as FormClosing(WindowsShutDown); while it runs the
+# normal stop (seconds), Windows shows "Orion kapat\u0131l\u0131yor" and waits. The stop ends this icon itself.
+$script:session = New-Object Windows.Forms.Form
+$script:session.ShowInTaskbar = $false; $script:session.FormBorderStyle = 'None'; $script:session.Opacity = 0
+$script:session.Size = New-Object Drawing.Size(1, 1); $script:session.StartPosition = 'Manual'
+$script:session.Location = New-Object Drawing.Point(-32000, -32000)
+$script:session.Add_FormClosing({
+    param($sender, $e)
+    if ($e.CloseReason -ne [Windows.Forms.CloseReason]::WindowsShutDown -or $script:ending) { return }
+    $script:ending = $true
+    try { if ($script:OrionNative) { [void][OrionUiNative]::ShutdownBlockReasonCreate($sender.Handle, (T 'Orion kapat\u0131l\u0131yor...')) } } catch {}
+    $script:icon.Visible = $false
+    try {
+        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $entry + '"'), '-Stop', '-NonInteractive')
+        $stop = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $arguments -PassThru
+        # Until the stop is done, or it asks this icon to leave (services are down by then), at most 25 s.
+        $deadline = [DateTime]::Now.AddSeconds(25)
+        while (-not $stop.HasExited -and -not (Test-Path -LiteralPath $marker) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Milliseconds 200 }
+    } catch {}
+    try { if ($script:OrionNative) { [void][OrionUiNative]::ShutdownBlockReasonDestroy($sender.Handle) } } catch {}
+})
+$script:session.Show(); $script:session.Hide()   # A real (hidden) top-level window: Windows asks it before ending.
 $script:icon.Visible = $true
 try { [Windows.Forms.Application]::Run() } finally { $script:mutex.ReleaseMutex() }

@@ -5,9 +5,7 @@
 # -Mode quitting: a launch waits for the previous quit ("Cik") to finish, then Orion opens by itself.
 param([Parameter(Mandatory = $true)][string]$Registry, [ValidateSet('updating', 'quitting')][string]$Mode = 'updating')
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-function T([string]$text) { [regex]::Unescape($text) }
+. (Join-Path $PSScriptRoot 'Orion-Ui.ps1')   # Orion's look (Initialize-OrionUi, New-OrionForm, ...) and T.
 
 $base = Split-Path -Parent $Registry
 $bootstrap = Join-Path $base 'bootstrap'
@@ -62,25 +60,18 @@ function Get-Step {
     return @($text, $stamp, $percent)
 }
 
-$form = New-Object Windows.Forms.Form
-$form.Text = 'Orion'
-$form.Width = 540; $form.Height = 220
-$form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.ControlBox = $false; $form.TopMost = $true
-$form.ShowInTaskbar = $true
-$title = New-Object Windows.Forms.Label
-$title.Text = (T 'Orion g\u00fcncelleniyor, l\u00fctfen bekleyin (birka\u00e7 dakika s\u00fcrebilir).')
-$title.Font = New-Object Drawing.Font($title.Font.FontFamily, 10, [Drawing.FontStyle]::Bold)
-$title.SetBounds(20, 18, 490, 40); $form.Controls.Add($title)
-$step = New-Object Windows.Forms.Label
-$step.SetBounds(20, 66, 490, 22); $form.Controls.Add($step)
-$bar = New-Object Windows.Forms.ProgressBar
-$bar.Style = 'Marquee'; $bar.SetBounds(20, 96, 490, 22); $form.Controls.Add($bar)
-$note = New-Object Windows.Forms.Label
-$note.Text = (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak; bu pencereyi kapatmay\u0131n.')
-$note.SetBounds(20, 130, 490, 22); $form.Controls.Add($note)
-$elapsed = New-Object Windows.Forms.Label
-$elapsed.SetBounds(20, 155, 490, 22); $form.Controls.Add($elapsed)
+Initialize-OrionUi
+$form = New-OrionForm 'Orion' 520 236
+$form.ControlBox = $false; $form.TopMost = $true
+$header = New-OrionHeader $form (T 'Orion g\u00fcncelleniyor') (T 'L\u00fctfen bekleyin; birka\u00e7 dakika s\u00fcrebilir.') 520
+$title = $header[0]
+$step = Add-OrionControl $form (New-OrionLabel '' 10.5) 24 96 380 24
+$percent = Add-OrionControl $form (New-OrionLabel '' 10.5 -Muted) 404 96 92 24
+$percent.TextAlign = 'MiddleRight'
+$bar = Add-OrionControl $form (New-OrionProgress) 24 128 472 6
+$note = Add-OrionControl $form (New-OrionLabel (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak; bu pencereyi kapatmay\u0131n.') 9.5 -Muted) 24 156 472 22
+$elapsed = Add-OrionControl $form (New-OrionLabel '' 9.5 -Muted) 24 182 472 44
+$elapsed.AutoEllipsis = $false
 
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 1000
@@ -93,26 +84,29 @@ $timer.Add_Tick({
     $result = Read-Json (Join-Path $updates 'last-result.json')
     if ($result -and $result.at -ge $startedEpoch -and -not $script:shown) {
         $script:shown = $true
-        $title.Text = [string]$result.message
-        $bar.Style = 'Continuous'; $bar.Value = 100
+        $title.Text = (T 'G\u00fcncelleme bitti')
+        $step.Text = ''
+        $elapsed.Text = [string]$result.message   # Wraps over two lines; the title has room for one.
+        Set-OrionProgress $bar 100; $percent.Text = '100%'
         $note.Text = (T 'Orion birazdan yeniden a\u00e7\u0131lacak.')
     }
     if ($script:shown) { return }
     $info = Get-Step
     $step.Text = $info[0]
     if ($null -ne $info[2]) {
-        if ($bar.Style -ne 'Continuous') { $bar.Style = 'Continuous' }
-        $bar.Value = [math]::Max($bar.Value, [math]::Min(100, [int]$info[2]))  # Never moves backwards.
+        Set-OrionProgress $bar $info[2]  # Never moves backwards.
+        $percent.Text = ('{0}%' -f [int]$bar.Tag.Value)
     }
     $span = [DateTime]::Now - $started
     $elapsed.Text = (T 'Ge\u00e7en s\u00fcre: ') + ('{0:00}:{1:00}' -f [int][math]::Floor($span.TotalMinutes), $span.Seconds)
     if (([DateTime]::Now - $info[1]).TotalMinutes -gt 10) {
-        $elapsed.Text += '  ' + (T '(Beklenenden uzun s\u00fcr\u00fcyor; hala \u00e7al\u0131\u015f\u0131yor olabilir.)')
+        $elapsed.Text += "`r`n" +(T '(Beklenenden uzun s\u00fcr\u00fcyor; hala \u00e7al\u0131\u015f\u0131yor olabilir.)')
     }
 })
 $step.Text = (T 'G\u00fcncelleme s\u00fcr\u00fcyor...')
 if ($Mode -eq 'quitting') {
-    $title.Text = (T 'Orion kapan\u0131yor, birazdan a\u00e7\u0131lacak.')
+    $title.Text = (T 'Orion kapan\u0131yor')
+    $header[1].Text = (T 'Birazdan kendili\u011finden a\u00e7\u0131lacak.')
     $step.Text = (T '\u00d6nceki oturum kapat\u0131l\u0131yor...')
     $note.Text = (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak.')
     $deadline = $started.AddMinutes(3)

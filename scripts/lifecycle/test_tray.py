@@ -12,6 +12,7 @@ from services.shared.installation_registry import Registry, component_record, ne
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / 'services/shared/tray.ps1'
+UI = ROOT / 'services/shared/orion_ui.ps1'
 
 
 def process(*command, name='powershell.exe'):
@@ -35,15 +36,18 @@ class TrayTests(unittest.TestCase):
     def test_script_is_valid_powershell_with_the_required_menu(self):
         text = SCRIPT.read_text(encoding='utf-8')
         self.assertTrue(text.isascii(), 'Windows PowerShell 5.1 reads BOM-less files as ANSI')
-        for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false', 'ExtractAssociatedIcon'):
+        for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false',
+                       'Get-OrionIcon', 'Orion-Ui.ps1', 'WindowsShutDown', "'-NonInteractive'"):
             self.assertIn(needle, text)
+        self.assertTrue(UI.read_text(encoding='utf-8').isascii())
         powershell = shutil.which('powershell')
         if os.name != 'nt' or not powershell:
             self.skipTest('Windows PowerShell required')
-        check = ('$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile('
-                 f"'{SCRIPT}',[ref]$null,[ref]$e);if($e.Count){{$e|%{{$_.Message}};exit 1}}")
-        result = subprocess.run([powershell, '-NoProfile', '-Command', check], capture_output=True, timeout=60)
-        self.assertEqual(0, result.returncode, result.stdout)
+        for script in (SCRIPT, UI):
+            check = ('$e=$null;[void][System.Management.Automation.Language.Parser]::ParseFile('
+                     f"'{script}',[ref]$null,[ref]$e);if($e.Count){{$e|%{{$_.Message}};exit 1}}")
+            result = subprocess.run([powershell, '-NoProfile', '-Command', check], capture_output=True, timeout=60)
+            self.assertEqual(0, result.returncode, result.stdout)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows only')
     def test_spawn_installs_script_and_starts_exactly_one_hidden_icon(self):
@@ -51,6 +55,7 @@ class TrayTests(unittest.TestCase):
         with patch.object(launcher, 'tray_processes', return_value=[]):
             self.assertTrue(launcher.spawn_tray(self.store, popen=popen))
         self.assertEqual(SCRIPT.read_bytes(), self.script.read_bytes())
+        self.assertEqual(UI.read_bytes(), (self.script.parent / 'Orion-Ui.ps1').read_bytes())  # Dot-sourced by it.
         command = popen.call_args.args[0]
         self.assertEqual(['-File', str(self.script), '-Registry', str(self.store.path)], command[-4:])
         self.assertIn('Hidden', command)

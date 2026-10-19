@@ -1,8 +1,51 @@
 param([switch]$Startup, [switch]$Background, [switch]$Stop, [switch]$Repair, [switch]$NonInteractive)
 $ErrorActionPreference = 'Stop'
 $registry = Join-Path (Split-Path -Parent $PSScriptRoot) 'install.json'
+# Orion's look for this script's few windows (Orion-Ui.ps1, written next to it). Loaded only when a window is
+# needed - never on the normal launch path - and dot-sourced inside each dialog function, so its functions live
+# there. Without it (an older bootstrap folder) the plain WinForms dialogs are used.
+$script:OrionUiPath = Join-Path $PSScriptRoot 'Orion-Ui.ps1'
+function Show-OrionText([string]$text, [switch]$Warning) {
+    if (Test-Path -LiteralPath $script:OrionUiPath) {
+        try { . $script:OrionUiPath; Initialize-OrionUi; [void](Show-OrionMessage $text 'Orion' -Warning:$Warning); return } catch {}
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    [void][Windows.Forms.MessageBox]::Show($text, 'Orion')
+}
 function Show-OrionRepair([string]$message) {
     if ($NonInteractive) { Write-Output $message; return }
+    $logsFolder = $PSScriptRoot
+    $recordFolder = Split-Path -Parent $PSScriptRoot
+    if (Test-Path -LiteralPath $script:OrionUiPath) {
+        try {
+            . $script:OrionUiPath
+            Initialize-OrionUi
+            $form = New-OrionForm (T 'Orion - Onarma') 560 330
+            [void](New-OrionHeader $form (T 'Orion ba\u015flat\u0131lamad\u0131') (T 'Verileriniz de\u011fi\u015ftirilmedi.') 560)
+            $hint = New-OrionLabel (T 'Kay\u0131tl\u0131 diski ve kurulumu kontrol edin; sorun s\u00fcrerse a\u015fa\u011f\u0131daki ayr\u0131nt\u0131y\u0131 ve g\u00fcnl\u00fckleri iletin.') 10
+            $hint.AutoEllipsis = $false
+            [void](Add-OrionControl $form $hint 24 84 512 40)
+            $details = New-Object Windows.Forms.TextBox
+            $details.Multiline = $true; $details.ReadOnly = $true; $details.ScrollBars = 'Vertical'; $details.WordWrap = $true
+            $details.BorderStyle = 'FixedSingle'; $details.Text = $message
+            $details.BackColor = $script:OrionTheme.Surface; $details.ForeColor = $script:OrionTheme.Muted
+            $details.Font = Get-OrionFont 9 -family 'Consolas'
+            [void](Add-OrionControl $form $details 24 130 512 120)
+            $logs = New-OrionButton (T 'G\u00fcnl\u00fckler')
+            $logs.Add_Click({ Start-Process explorer.exe -ArgumentList ('"' + $logsFolder + '"') }.GetNewClosure())
+            [void](Add-OrionControl $form $logs 24 272 130 36)
+            $recordButton = New-OrionButton (T 'Kurulum kayd\u0131')
+            $recordButton.Add_Click({ Start-Process explorer.exe -ArgumentList ('"' + $recordFolder + '"') }.GetNewClosure())
+            [void](Add-OrionControl $form $recordButton 164 272 150 36)
+            $close = New-OrionButton (T 'Kapat') -Primary
+            $close.DialogResult = 'OK'
+            [void](Add-OrionControl $form $close 416 272 120 36)
+            $form.AcceptButton = $close; $form.CancelButton = $close
+            $form.Add_Shown({ $close.Focus() }.GetNewClosure())
+            [void]$form.ShowDialog()
+            return
+        } catch {}
+    }
     Add-Type -AssemblyName System.Windows.Forms
     $form = New-Object Windows.Forms.Form
     $form.Text = 'Orion - Onarma / Repair'
@@ -23,20 +66,18 @@ function Show-OrionRepair([string]$message) {
 function Show-OrionStopFailure([string]$message) {
     # A stop that could not finish must be visible: services may still be running.
     if ($NonInteractive) { Write-Output $message; return }
-    Add-Type -AssemblyName System.Windows.Forms
     $text = (T 'Orion tamamen kapat\u0131lamad\u0131; baz\u0131 servisler \u00e7al\u0131\u015fmaya devam ediyor olabilir. Biraz sonra \u00c7\u0131k komutunu yeniden deneyin.')
-    [void][Windows.Forms.MessageBox]::Show($text + "`r`n`r`n" + $message, 'Orion')
+    Show-OrionText ($text + "`r`n`r`n" + $message) -Warning
 }
 function Show-OrionElevated([string]$message) {
     # Orion and the shortcut run at different integrity levels (administrator vs normal): explain, no Repair dialog.
     if ($NonInteractive) { Write-Output $message; return }
-    Add-Type -AssemblyName System.Windows.Forms
     if ($message -match 'ORION-ELEVATED-SELF') {
         $text = (T 'Orion y\u00f6netici olarak ba\u015flat\u0131lamaz. Orion''u normal (y\u00f6netici olmayan) bir pencereden a\u00e7\u0131n.')
     } else {
         $text = (T 'Orion y\u00f6netici olarak \u00e7al\u0131\u015f\u0131yor (veya ba\u015fka bir yetki d\u00fczeyinde). Kapatmak i\u00e7in tepsiden \u00c7\u0131k''a bas\u0131n, sonra Orion''u normal (y\u00f6netici olmadan) a\u00e7\u0131n.')
     }
-    [void][Windows.Forms.MessageBox]::Show($text, 'Orion')
+    Show-OrionText $text -Warning
 }
 function Test-OrionElevated {
     try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false }
@@ -125,17 +166,31 @@ function Wait-OrionUpdate([string]$pending) {
         while ((Test-OrionUpdating $pending) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Seconds 2 }
         return
     }
-    Add-Type -AssemblyName System.Windows.Forms
-    $form = New-Object Windows.Forms.Form
-    $form.Text = 'Orion'
-    $form.Width = 520; $form.Height = 170
-    $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'
-    $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.ControlBox = $false; $form.TopMost = $true
-    $label = New-Object Windows.Forms.Label
-    $label.Text = (T 'Orion g\u00fcncelleniyor, birka\u00e7 dakika s\u00fcrebilir.') + "`r`n" + (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak; bu pencereyi kapatmay\u0131n.')
-    $label.SetBounds(20, 20, 470, 50); $form.Controls.Add($label)
-    $bar = New-Object Windows.Forms.ProgressBar
-    $bar.Style = 'Marquee'; $bar.SetBounds(20, 85, 470, 22); $form.Controls.Add($bar)
+    $form = $null
+    if (Test-Path -LiteralPath $script:OrionUiPath) {
+        try {
+            . $script:OrionUiPath
+            Initialize-OrionUi
+            $form = New-OrionForm 'Orion' 500 150
+            $form.ControlBox = $false; $form.TopMost = $true
+            [void](New-OrionHeader $form (T 'Orion g\u00fcncelleniyor') (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak.') 500)
+            [void](Add-OrionControl $form (New-OrionProgress) 24 96 452 6)
+            [void](Add-OrionControl $form (New-OrionLabel (T 'Birka\u00e7 dakika s\u00fcrebilir; bu pencereyi kapatmay\u0131n.') 9.5 -Muted) 24 114 452 22)
+        } catch { $form = $null }
+    }
+    if (-not $form) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $form = New-Object Windows.Forms.Form
+        $form.Text = 'Orion'
+        $form.Width = 520; $form.Height = 170
+        $form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'
+        $form.MaximizeBox = $false; $form.MinimizeBox = $false; $form.ControlBox = $false; $form.TopMost = $true
+        $label = New-Object Windows.Forms.Label
+        $label.Text = (T 'Orion g\u00fcncelleniyor, birka\u00e7 dakika s\u00fcrebilir.') + "`r`n" + (T 'Bitince Orion kendili\u011finden a\u00e7\u0131lacak; bu pencereyi kapatmay\u0131n.')
+        $label.SetBounds(20, 20, 470, 50); $form.Controls.Add($label)
+        $bar = New-Object Windows.Forms.ProgressBar
+        $bar.Style = 'Marquee'; $bar.SetBounds(20, 85, 470, 22); $form.Controls.Add($bar)
+    }
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 2000
     $timer.Add_Tick({ if (-not (Test-OrionUpdating $pending) -or [DateTime]::Now -ge $deadline) { $timer.Stop(); $form.Close() } })
@@ -165,7 +220,7 @@ try {
             Wait-OrionUpdate $pending
             $phase = Get-OrionUpdatePhase $pending
             if ($phase -in @('rolled_back', 'failed') -and -not $NonInteractive) {
-                [void][Windows.Forms.MessageBox]::Show((T 'G\u00fcncelleme uygulanamad\u0131; Orion \u00f6nceki s\u00fcr\u00fcmle a\u00e7\u0131l\u0131yor.'), 'Orion')
+                Show-OrionText (T 'G\u00fcncelleme uygulanamad\u0131; Orion \u00f6nceki s\u00fcr\u00fcmle a\u00e7\u0131l\u0131yor.')
             }
         }
         if ($phase -notin $allowedPhases) {

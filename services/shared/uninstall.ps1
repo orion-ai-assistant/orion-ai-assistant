@@ -4,8 +4,13 @@
 # reads this file as ANSI, so Turkish text is written as \uXXXX escapes and unescaped by T.
 param([Parameter(Mandatory = $true)][string]$Registry, [switch]$NonInteractive, [string]$Scope, [switch]$DeleteData, [switch]$DeleteModels)
 $ErrorActionPreference = 'Stop'
-function T([string]$text) { [regex]::Unescape($text) }
-Add-Type -AssemblyName System.Windows.Forms
+if ($NonInteractive) {
+    function T([string]$text) { [regex]::Unescape($text) }
+    Add-Type -AssemblyName System.Windows.Forms
+} else {
+    . (Join-Path $PSScriptRoot 'Orion-Ui.ps1')   # Orion's look (Initialize-OrionUi, New-OrionForm, ...) and T.
+    Initialize-OrionUi
+}
 $record = Get-Content -LiteralPath $Registry -Raw -Encoding UTF8 | ConvertFrom-Json
 $kinds = @($record.components | ForEach-Object { $_.kind })
 $hasHub = $kinds -contains 'hub'
@@ -20,7 +25,8 @@ if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) {
     if ($hub) { $root = $hub.code_path; $python = Join-Path $root 'runtime/python/python.exe' }
 }
 if (-not $python -or -not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    [void][Windows.Forms.MessageBox]::Show((T 'Orion kaldırma aracı bulunamadı; hiçbir şey silinmedi.'), 'Orion')
+    if ($NonInteractive) { Write-Output (T 'Orion kaldırma aracı bulunamadı; hiçbir şey silinmedi.') }
+    else { [void](Show-OrionMessage (T 'Orion kaldırma aracı bulunamadı; hiçbir şey silinmedi.')) }
     exit 1
 }
 
@@ -64,12 +70,9 @@ if ($NonInteractive) {
     exit 0
 }
 
-$form = New-Object Windows.Forms.Form
-$form.Text = (T 'Orion''u kaldır'); $form.Width = 520; $form.Height = 330
-$form.StartPosition = 'CenterScreen'; $form.FormBorderStyle = 'FixedDialog'; $form.MaximizeBox = $false; $form.MinimizeBox = $false
-$label = New-Object Windows.Forms.Label
-$label.Text = (T 'Neyi kaldırmak istiyorsunuz? Çalışan Orion kapatılır.')
-$label.SetBounds(20, 15, 470, 22); $form.Controls.Add($label)
+$form = New-OrionForm (T 'Orion''u kaldır') 520 400
+[void](New-OrionHeader $form (T 'Orion''u kaldır') (T 'Çalışan Orion önce kapatılır.') 520)
+[void](Add-OrionControl $form (New-OrionLabel (T 'Neyi kaldırmak istiyorsunuz?') 10.5 ([Drawing.FontStyle]::Bold)) 24 88 472 24)
 $options = @()
 if ($hasHub -and $hasRouter) {
     $options += , @('hub', (T 'Yalnız Hub ve web istemcisi (Router kalır)'))
@@ -81,26 +84,24 @@ if ($hasHub -and $hasRouter) {
     $options += , @('all', (T 'Orion''u kaldır'))
 }
 $radios = @()
-$top = 45
+$top = 118
 foreach ($option in $options) {
-    $radio = New-Object Windows.Forms.RadioButton
-    $radio.Text = $option[1]; $radio.Tag = $option[0]; $radio.SetBounds(30, $top, 450, 24)
-    if ($radios.Count -eq ($options.Count - 1)) { $radio.Checked = $true }
-    $form.Controls.Add($radio); $radios += $radio; $top += 28
+    $radio = New-OrionCheck $option[1] ($radios.Count -eq ($options.Count - 1)) -Radio
+    $radio.Tag = $option[0]
+    [void](Add-OrionControl $form $radio 32 $top 460 26)
+    $radios += $radio; $top += 30
 }
-$keepData = New-Object Windows.Forms.CheckBox
-$keepData.Text = (T 'Verilerimi koru (sohbetler, hesaplar, ayarlar, şifreler)'); $keepData.Checked = $true
-$keepData.SetBounds(30, $top + 10, 450, 24); $form.Controls.Add($keepData)
-$keepModels = New-Object Windows.Forms.CheckBox
-$keepModels.Text = (T 'Modellerimi ve indirmelerimi koru'); $keepModels.Checked = $true
-$keepModels.SetBounds(30, $top + 38, 450, 24); $form.Controls.Add($keepModels)
-$status = New-Object Windows.Forms.Label
-$status.SetBounds(20, $top + 72, 470, 40); $form.Controls.Add($status)
-$ok = New-Object Windows.Forms.Button
-$ok.Text = (T 'Kaldır'); $ok.SetBounds(290, $top + 118, 100, 30); $form.Controls.Add($ok)
-$cancel = New-Object Windows.Forms.Button
-$cancel.Text = (T 'Vazgeç'); $cancel.SetBounds(400, $top + 118, 90, 30); $form.Controls.Add($cancel)
-$form.Height = $top + 205
+$top += 10
+[void](Add-OrionControl $form (New-OrionLabel (T 'Korunacaklar') 10.5 ([Drawing.FontStyle]::Bold)) 24 $top 472 24)
+$keepData = Add-OrionControl $form (New-OrionCheck (T 'Verilerim (sohbetler, hesaplar, ayarlar, şifreler)') $true) 32 ($top + 30) 460 26
+$keepModels = Add-OrionControl $form (New-OrionCheck (T 'Modellerim ve indirmelerim') $true) 32 ($top + 60) 460 26
+$status = Add-OrionControl $form (New-OrionLabel '' 10 -Muted) 24 ($top + 96) 472 24
+$bar = Add-OrionControl $form (New-OrionProgress) 24 ($top + 124) 472 4
+$bar.Visible = $false
+$cancel = Add-OrionControl $form (New-OrionButton (T 'Vazgeç')) 386 ($top + 142) 110 36
+$ok = Add-OrionControl $form (New-OrionButton (T 'Kaldır') -Danger) 266 ($top + 142) 110 36
+$form.ClientSize = New-Object Drawing.Size((S 520), (S ($top + 196)))
+$form.CancelButton = $cancel
 $cancel.Add_Click({ $form.Close() })
 $ok.Add_Click({
     $scope = ($radios | Where-Object { $_.Checked }).Tag
@@ -108,12 +109,14 @@ $ok.Add_Click({
     $deleteModels = ($scope -eq 'all') -and -not $keepModels.Checked
     if ($deleteData -or $deleteModels) {
         $question = (T 'Seçilen veriler KALICI olarak silinecek ve geri alınamaz. Devam edilsin mi?')
-        if ([Windows.Forms.MessageBox]::Show($question, 'Orion', 'YesNo', 'Warning') -ne 'Yes') { return }
+        if ((Show-OrionMessage $question (T 'Verileri sil') -YesNo -Warning -Yes (T 'Sil')) -ne 'Yes') { return }
     }
     $ok.Enabled = $false; $cancel.Enabled = $false
     $status.Text = (T 'Kaldırılıyor, lütfen bekleyin...')
+    $bar.Visible = $true
     $result = Invoke-Uninstall $scope $deleteData $deleteModels
-    [void][Windows.Forms.MessageBox]::Show((Show-Result $result), 'Orion')
+    $bar.Visible = $false
+    [void](Show-OrionMessage (Show-Result $result))
     $form.Close()
 })
 [void]$form.ShowDialog()
