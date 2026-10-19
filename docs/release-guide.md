@@ -88,7 +88,11 @@ okur ve günceller.
 Bunun bir bedeli var, bilerek kabul edildi: bir PC'nin ağını kontrol eden biri ona daha eski bir imzalı yayını göstermeye
 devam edebilir. Ama o PC elindekinden eski bir şeyi asla kurmaz; sürüm ve sequence kontrolleri bunu engeller.
 
-Kök kaydını yenilemek (aynı anahtar, yeni bir 100 yıl):
+**Kök kaydı kendiliğinden yenilenir:** `release.cmd`, parolayı aldıktan sonra kök kaydının ömrü 50 yıldan azsa onu
+yeni bir sürüme yükseltir (aynı anahtar, 100 yıl), `trusted-root.json`'u commit eder ve yeni kök kaydı o turun
+bootstrap'ına girer. Elle bir şey yapman gerekmez.
+
+Gerekirse elle de yenilenebilir (aynı anahtar, yeni bir 100 yıl):
 
 ```powershell
 .tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py renew-root

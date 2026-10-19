@@ -139,6 +139,18 @@ def main():
         passphrase = release_keys._passphrase(enforce_length=False)
         release_keys.load_signer(Path.home() / '.orion-release/release-key.pem', passphrase)
         os.environ[release_keys.PASSPHRASE_ENV] = passphrase.decode('utf-8')
+        if not args.dry_run:
+            # A root that expires within RENEW_BELOW_DAYS gets its next version now (same key, 100 years), so
+            # nobody has to remember a separate step. It goes into the bootstraps built below; old clients
+            # follow 1 -> 2 from the root they ship with.
+            renewed = release_keys.renew_if_needed(Path.home() / '.orion-release/release-key.pem',
+                                                   HERE / 'trusted-root.json', passphrase)
+            if renewed:
+                version, expires = renewed
+                subprocess.run(['git', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m',
+                                f'release: root version {version}, valid until {expires:%Y-%m-%d}',
+                                '--', str(HERE / 'trusted-root.json')], cwd=ROOT, check=True)
+                print(f'Trust root renewed: version {version}, valid until {expires:%Y-%m-%d} (committed).', flush=True)
     if args.no_accept:
         print('WARNING: --no-accept: the packages are published without the automated install/start acceptance.',
               flush=True)

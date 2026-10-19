@@ -92,6 +92,17 @@ def renew_root(key_path, public_root, passphrase=None, *, now=None):
     return root.signed.version, root.signed.expires
 
 
+RENEW_BELOW_DAYS = 365 * 50  # release.cmd renews a root that has less than this left
+
+
+def renew_if_needed(key_path, public_root, passphrase=None, *, now=None):
+    """`renew_root` when the current root expires within RENEW_BELOW_DAYS; None otherwise."""
+    now = now or datetime.now(timezone.utc)
+    if Metadata.from_file(str(public_root)).signed.expires - now > timedelta(days=RENEW_BELOW_DAYS):
+        return None
+    return renew_root(key_path, public_root, passphrase, now=now)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['init', 'check', 'renew-root'],

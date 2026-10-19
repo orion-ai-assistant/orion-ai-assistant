@@ -65,6 +65,17 @@ def test_an_installation_follows_a_renewed_root_and_metadata_lives_a_century(tmp
                                            .signed.targets))).custom['sequence'] == 2
 
 
+def test_release_renews_a_short_lived_root_once(tmp, monkeypatch):
+    monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'correct horse battery')
+    key, root = release_keys.init(tmp / 'keys', tmp / 'trusted-root.json')
+    monkeypatch.setattr(release_keys, 'ROOT_VALID_DAYS', 365 * 5)   # as the first root was made
+    release_keys.renew_root(key, root)                                  # version 2, 5 years
+    monkeypatch.setattr(release_keys, 'ROOT_VALID_DAYS', 36500)
+    version, expires = release_keys.renew_if_needed(key, root)
+    assert version == 3 and expires > datetime.now(timezone.utc) + timedelta(days=36000)
+    assert release_keys.renew_if_needed(key, root) is None              # already long-lived: left alone
+
+
 def test_renew_root_refuses_a_key_that_does_not_sign_the_root(tmp, monkeypatch):
     monkeypatch.setenv(release_keys.PASSPHRASE_ENV, 'correct horse battery')
     _, root = release_keys.init(tmp / 'keys', tmp / 'trusted-root.json')
