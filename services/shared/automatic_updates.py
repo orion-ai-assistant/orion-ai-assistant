@@ -14,7 +14,7 @@ import time
 from urllib.parse import urlsplit
 
 from .installation_registry import Registry, RegistryError, operation_lock, _atomic_write
-from .installation_paths import canonical_path, validate_private_directory
+from .installation_paths import canonical_path, ensure_private_directory, validate_private_directory
 from .update_helper import UpdateHelper, UpdateError
 from .process_lifecycle import LifecycleError
 from .update_gate import APPLYING, TERMINAL
@@ -771,7 +771,7 @@ class AutomaticUpdates:
 
 def _usable_root(value):
     root = canonical_path(value, must_exist=True)
-    validate_private_directory(root)
+    ensure_private_directory(root)
     for name in ('bootstrap.json', 'runtime/python/python.exe', 'scripts/release/update_automatic.py'):
         canonical_path(root / name, must_exist=True)
     return root

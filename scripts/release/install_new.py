@@ -20,7 +20,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from services.shared.installation_registry import Registry, new_registry, operation_lock
-from services.shared.installation_paths import validate_destination, canonical_path, validate_private_directory
+from services.shared.installation_paths import validate_destination, canonical_path, ensure_private_directory, validate_private_directory
 from services.shared.release_packages import FeedSet, ReleaseClient, compatible
 from services.shared import component_setup
 from services.shared.component_setup import AddError, KIND_DIRS, add_components, materialize
@@ -55,7 +55,7 @@ def install(client, names, root, registry, *, settings=None, release_source=None
         raise ValueError('Prepared PostgreSQL runtime requires Windows 10 1903 or later')
     root = canonical_path(root)
     registry = Registry(canonical_path(registry))
-    validate_private_directory(registry.path.parent)
+    ensure_private_directory(registry.path.parent)
     with operation_lock(registry.path, timeout=180):
         if registry.read() is not None or registry.backup_path.exists():
             raise ValueError('Existing installation: use the add path (install_new without a fresh registry), '

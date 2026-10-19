@@ -17,7 +17,7 @@ import time
 import uuid
 
 from .installation_registry import Registry, RegistryError, operation_lock, _atomic_write, validate_record
-from .installation_paths import canonical_path, validate_private_directory
+from .installation_paths import canonical_path, ensure_private_directory, validate_private_directory
 from .release_packages import (PackageError, compatible, record_prepared_package,
                                verify_package_record, sha256)
 from .update_gate import TERMINAL
@@ -97,7 +97,7 @@ class UpdateHelper:
     def __init__(self, registry, *, host=None, fault=None):
         self.registry = registry if isinstance(registry, Registry) else Registry(registry)
         canonical_path(self.registry.path, must_exist=True)
-        validate_private_directory(self.registry.path.parent)
+        ensure_private_directory(self.registry.path.parent)
         self.base = canonical_path(self.registry.path.parent / 'updates')
         self.base.mkdir(exist_ok=True)
         self.host = host or NativeHost(self.registry)

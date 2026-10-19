@@ -193,5 +193,30 @@ class InstallationPathTests(unittest.TestCase):
         self.assertEqual(before, list(self.root.iterdir()))
 
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows ACLs')
+    def test_inherited_sandboxed_app_grant_is_healed_but_another_user_still_fails(self):
+        # The Claude desktop app (MSIX) grants its AppContainer SID full control of %LOCALAPPDATA%; Orion's root
+        # inherited it and refused to start. Only such SIDs are healed, by Orion's own protected ACL.
+        me = 'S-1-5-21-1-2-3-1001'
+        def acl(*others):
+            return {'current_sid': me, 'owner_sid': me, 'rules': [{'sid': me, 'rights': 0x1F01FF, 'allow': True}]
+                    + [{'sid': sid, 'rights': 0x1F01FF, 'allow': True} for sid in others]}
+        claude = 'S-1-15-3-3557520199-3666692283-3112367039-3524159787-2791857073-3163583606-3692855932'
+        states = [acl(claude), acl()]
+        with patch.object(paths, '_windows_acl', side_effect=lambda _: states[0]),                 patch.object(paths, 'protect_private_directory', side_effect=lambda _: states.pop(0)) as protect:
+            paths.ensure_private_directory(self.root)
+        protect.assert_called_once()
+        for others in ([claude, 'S-1-5-21-9-9-9-1002'], ['S-1-1-0']):
+            with patch.object(paths, '_windows_acl', return_value=acl(*others)),                     patch.object(paths, 'protect_private_directory') as protect:
+                with self.assertRaises(paths.PathValidationError):
+                    paths.ensure_private_directory(self.root)
+                protect.assert_not_called()
+        owned = dict(acl(claude), owner_sid='S-1-5-21-9-9-9-1002')
+        with patch.object(paths, '_windows_acl', return_value=owned),                 patch.object(paths, 'protect_private_directory') as protect:
+            with self.assertRaises(paths.PathValidationError):
+                paths.ensure_private_directory(self.root)
+            protect.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -219,6 +219,44 @@ def validate_private_directory(path):
     return path
 
 
+SANDBOXED_APP_SID = 'S-1-15-'  # AppContainer package/capability SIDs: sandboxed apps of this same user
+
+
+def ensure_private_directory(path):
+    """`validate_private_directory`, healing one known case: an Orion root that inherits a write grant for a
+    sandboxed app (an MSIX/AppContainer SID such as the Claude desktop app's, which grants itself
+    %LOCALAPPDATA%). Such a root owned by this user gets Orion's own protected ACL (this user, SYSTEM,
+    Administrators; no inheritance). That only removes access. A grant to another user or group still fails."""
+    path = canonical_path(path)
+    try:
+        return validate_private_directory(path)
+    except PathValidationError:
+        if os.name != 'nt' or not path.is_dir():
+            raise
+        record = _windows_acl(path)
+        own = record['current_sid']
+        allowed = {own, 'S-1-5-18', 'S-1-5-32-544'}
+        offending = [r['sid'] for r in record['rules'] if r['allow'] and r['sid'] not in allowed]
+        if record['owner_sid'] != own or not offending or not all(sid.startswith(SANDBOXED_APP_SID) for sid in offending):
+            raise
+    protect_private_directory(path)
+    return validate_private_directory(path)
+
+
+def protect_private_directory(path):
+    """Give an Orion-owned directory its own ACL: full control for this user, SYSTEM and Administrators,
+    inherited by everything inside it, and nothing inherited from its parent."""
+    if os.name != 'nt':
+        return
+    import subprocess
+    own = _windows_acl(path)['current_sid']
+    grants = [f'*{sid}:(OI)(CI)F' for sid in (own, 'S-1-5-18', 'S-1-5-32-544')]
+    result = subprocess.run(['icacls', str(path), '/inheritance:r', '/grant:r', *grants, '/Q'],
+                            capture_output=True, timeout=300, creationflags=0x08000000)
+    if result.returncode:
+        raise PathValidationError('Could not protect the private directory permissions')
+
+
 def paths_overlap(first, second):
     first, second = canonical_path(first), canonical_path(second)
     return first == second or first in second.parents or second in first.parents
