@@ -348,6 +348,37 @@ def test_old_watcher_stays_out_of_the_way_once_the_new_watcher_started(feed):
     assert feed.pointer() == new and state(feed)['state'] == 'trial' and state(feed)['started_at']
 
 
+def test_a_confirmed_bootstrap_is_not_proof_that_its_watcher_runs(feed):
+    # Real PC, 2026-10-20: a manual check from the new bootstrap confirmed it, the old watcher saw "confirmed",
+    # left, and no watcher ran: "Şimdi kur" did nothing until Orion was opened again.
+    current = feed.current()
+    feed.publish(1)
+    feed.service(current).check()
+    new = feed.pointer()
+    bootstrap_update.confirm(feed.registry, new)
+    clock = iter(range(0, 1000, 20))
+    assert bootstrap_update.supervise_handover(feed.registry, lambda: None, wait=60, sleep=lambda s: None,
+                                               clock=lambda: next(clock), alive=lambda: False) is False
+    assert state(feed)['state'] == 'confirmed' and feed.pointer() == new  # Not rolled back: started again.
+    running = iter([False, False, True])
+    assert bootstrap_update.supervise_handover(feed.registry, lambda: None, wait=60, sleep=lambda s: None,
+                                               alive=lambda: next(running)) is True
+
+
+def test_a_failing_spawn_is_logged(feed):
+    current = feed.current()
+    feed.publish(1)
+    feed.service(current).check()
+
+    def spawn():
+        raise ValueError('spawn broke')
+    clock = iter(range(0, 1000, 20))
+    bootstrap_update.supervise_handover(feed.registry, spawn, wait=60, sleep=lambda s: None,
+                                        clock=lambda: next(clock), alive=lambda: False)
+    log = (Path(feed.registry.path).parent / 'updates/watcher.log').read_text(encoding='utf-8')
+    assert 'handover.spawn' in log
+
+
 def test_unadopted_trial_is_not_stacked_with_a_second_adoption(feed):
     current = feed.current()
     feed.publish(1)

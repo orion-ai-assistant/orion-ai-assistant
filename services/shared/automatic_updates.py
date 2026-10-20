@@ -821,7 +821,9 @@ def run_startup(registry):
             raise RegistryError('Update launch boundary failed; inspect local update status/repair')
 
 
-def spawn_watcher(registry):
+def spawn_watcher(registry, *, hosted_only=False):
+    """`hosted_only`: start it only as a child of the resident Orion.exe (from inside a Hub-owned Job, where a
+    watcher must never run: its own "update now" stop would end it). Raises OSError when that is not possible."""
     command = runtime_command(registry)
     if command:
         # The separately retained worker survives Hub/browser closure, never activates. It runs in its own
@@ -830,7 +832,7 @@ def spawn_watcher(registry):
         # skipped at the next launch.
         # Under the installation's resident Orion.exe when it runs: shown with it, ended with it.
         from .orion_host import popen
-        popen(command + ['watch'], registry=registry, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        popen(command + ['watch'], registry=registry, require_host=hosted_only, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
               stderr=subprocess.DEVNULL, cwd=str(Path(command[2]).parents[2]),
               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
@@ -856,12 +858,17 @@ def record_check_failure(registry, returncode, code=None):
         pass  # A running check owns the state file and records its own outcome.
 
 
+WATCHER_LOCK_WAIT = 3
+
+
 def watch(automatic):
     # Launched by the outer launcher, never by a Hub-owned Job descendant.
     # A user may close Hub while a download is in flight; preparation finishes
     # here and never turns into activation. The next poll exits when stopped.
     base = automatic.base
-    with operation_lock(automatic.base / 'watcher.json', timeout=0):
+    # A short wait, not none: "is a watcher running?" probes (the Hub, a handover) take this lock for a moment,
+    # and a new watcher that met one of them gave up and left none running.
+    with operation_lock(automatic.base / 'watcher.json', timeout=WATCHER_LOCK_WAIT):
         update_log.log(base, 'watcher.start')
         if automatic.bootstrap_root is not None:
             from . import bootstrap_update

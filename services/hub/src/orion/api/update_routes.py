@@ -13,7 +13,7 @@ from orion.api.auth_routes import get_current_user
 from orion.api.access_boundary import is_desktop_peer, local_flutter_origin
 from services.shared.installation_registry import Registry
 from services.shared import update_now, update_ui
-from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command
+from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command, spawn_watcher
 from services.shared.process_lifecycle import LifecycleError
 from services.shared.installation_registry import operation_lock
 from services.shared.update_helper import UpdateError, UpdateHelper
@@ -252,9 +252,21 @@ async def preferences(payload: Preferences, request: Request, user: str = Depend
 watcher_alive = update_now.watcher_alive
 
 
-def begin_apply(registry):
-    if runtime_command(registry) is None or not watcher_alive(registry):
+def begin_apply(registry, *, start=None, wait=15.0, sleep=time.sleep):
+    if runtime_command(registry) is None:
         raise UpdateError('WatcherUnavailable')
+    if not watcher_alive(registry):
+        # No watcher (it ended, or a handover lost it): start one under the resident Orion.exe - never from
+        # here inside the Hub's Job, which the update's own stop ends - and use it once it runs.
+        try:
+            (start or (lambda: spawn_watcher(registry, hosted_only=True)))()
+        except OSError as error:
+            raise UpdateError('WatcherUnavailable') from error
+        deadline = time.monotonic() + wait
+        while not watcher_alive(registry):
+            if time.monotonic() >= deadline:
+                raise UpdateError('WatcherUnavailable')
+            sleep(.5)
     return update_now.begin(registry, UpdateHelper(registry))
 
 

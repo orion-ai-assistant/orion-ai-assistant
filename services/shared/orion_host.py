@@ -163,12 +163,13 @@ def _registered(registry, component_root):
         return False
 
 
-def popen(argv, *, registry=None, component_root=None, cwd=None, env=None, stdin=None, stdout=None, stderr=None,
-          creationflags=0, **fallback):
+def popen(argv, *, registry=None, component_root=None, require_host=False, cwd=None, env=None, stdin=None,
+          stdout=None, stderr=None, creationflags=0, **fallback):
     """Start `argv` as a child of this installation's host (inside its job); subprocess.Popen without a host.
 
     `component_root`: only a process of one of this installation's components goes under its host (a test or
-    development tree that happens to run with the registry in its environment never does)."""
+    development tree that happens to run with the registry in its environment never does). `require_host`: raise
+    OSError instead of starting it another way."""
     host = None
     if subprocess.PIPE not in (stdin, stdout, stderr) and (component_root is None or _registered(registry, component_root)):
         host = find(registry)
@@ -176,7 +177,11 @@ def popen(argv, *, registry=None, component_root=None, cwd=None, env=None, stdin
         try:
             return _spawn_under(host.pid, [str(arg) for arg in argv], cwd, env, (stdin, stdout, stderr), creationflags)
         except OSError:
-            pass  # The host just ended (or refused): start the way Orion always did.
+            if require_host:
+                raise
+            # The host just ended (or refused): start the way Orion always did.
+    if require_host:
+        raise OSError('No resident Orion.exe to start the process under')
     return subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin, stdout=stdout, stderr=stderr,
                             creationflags=creationflags, **fallback)
 

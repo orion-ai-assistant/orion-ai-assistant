@@ -120,6 +120,10 @@ class OrionHostTests(unittest.TestCase):
         self.assertIsInstance(child, subprocess.Popen)
         child.wait(10)
 
+    def test_require_host_refuses_without_a_host(self):
+        with self.assertRaises(OSError):
+            orion_host.popen([sys.executable, '-c', 'pass'], registry=self.store, require_host=True)
+
     def test_a_second_start_is_handed_to_the_running_host_and_stop_ends_it(self):
         host = self.start_host()
         self.assertEqual(0, subprocess.run([str(self.exe), '-Background'], timeout=30).returncode)

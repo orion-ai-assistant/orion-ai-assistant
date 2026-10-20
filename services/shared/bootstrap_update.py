@@ -326,26 +326,41 @@ def fallback(registry, failed_root):
                 and rollback(registry, 'BundleUnavailable'))
 
 
-def supervise_handover(registry, spawn, *, wait=STARTUP_WAIT, sleep=time.sleep, clock=time.monotonic):
+def supervise_handover(registry, spawn, *, wait=STARTUP_WAIT, sleep=time.sleep, clock=time.monotonic, alive=None):
     """The old watcher released its lock and starts the new one; it stays to see that start.
 
-    Returns True when the new watcher started, False after rolling back to the old runtime.
+    Proof is a watcher that runs (it holds the watcher lock), or the new bootstrap's own start note. A
+    confirmed bootstrap is not proof: a manual check from it confirms it before any watcher of it runs, and
+    the old watcher then left with none running ("Şimdi kur" did nothing until Orion was opened again).
+    Returns True when the new watcher runs; False after rolling an unconfirmed trial back, or for a confirmed
+    one whose watcher did not start (the caller hands over again and starts it again).
     """
+    if alive is None:
+        from .update_now import watcher_alive
+        alive = lambda: watcher_alive(registry)  # noqa: E731
     try:
         spawn()
-    except Exception:
-        pass  # Treated like a new watcher that never started: the wait below rolls back.
+    except Exception as error:
+        _log_exception(registry, 'handover.spawn', error)  # The wait below decides what happens next.
     deadline = clock() + wait
     while clock() < deadline:
         record = _read(state_path(registry), {})
-        if record.get('state') == 'confirmed' or (record.get('state') == 'trial' and record.get('started_at')):
+        if (record.get('state') == 'trial' and record.get('started_at')) or alive():
             return True
-        if record.get('state') != 'trial':
+        if record.get('state') not in ('trial', 'confirmed'):
             break
         sleep(1)
     if trial(registry) is not None:
         rollback(registry, 'NewBootstrapDidNotStart')
     return False
+
+
+def _log_exception(registry, event, error):
+    try:
+        from . import update_log
+        update_log.log_exception(Path(registry.path).parent / 'updates', event, error)
+    except Exception:
+        pass
 
 
 def confirm(registry, own_root):

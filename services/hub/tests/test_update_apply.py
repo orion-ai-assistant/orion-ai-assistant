@@ -128,6 +128,39 @@ class DrainTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.state['error'], 'ActivityCheckFailed')
 
 
+class BeginApplyTests(unittest.TestCase):
+    """"Şimdi kur" with no watcher running (a bootstrap handover lost it, 2026-10-20): it starts one under the
+    resident Orion.exe and goes on, instead of refusing until Orion is opened again."""
+
+    def setUp(self):
+        self.enterContext(patch.object(api, 'runtime_command', return_value=['python', 'update_automatic.py']))
+        self.begin = self.enterContext(patch.object(api.update_now, 'begin', return_value={'phase': 'waiting_for_idle'}))
+        self.enterContext(patch.object(api, 'UpdateHelper'))
+
+    def test_a_missing_watcher_is_started_and_used(self):
+        running = iter([False, False, True])
+        started = []
+        with patch.object(api, 'watcher_alive', side_effect=lambda registry: next(running)):
+            self.assertEqual({'phase': 'waiting_for_idle'},
+                             api.begin_apply(object(), start=lambda: started.append(1), sleep=lambda s: None))
+        self.assertEqual([1], started)
+
+    def test_no_resident_orion_exe_keeps_the_plain_refusal(self):
+        def start():
+            raise OSError('no host')
+        with patch.object(api, 'watcher_alive', return_value=False):
+            with self.assertRaises(api.UpdateError) as caught:
+                api.begin_apply(object(), start=start, sleep=lambda s: None)
+        self.assertEqual('WatcherUnavailable', str(caught.exception))
+        self.begin.assert_not_called()
+
+    def test_a_watcher_that_never_comes_is_refused(self):
+        with patch.object(api, 'watcher_alive', return_value=False):
+            with self.assertRaises(api.UpdateError):
+                api.begin_apply(object(), start=lambda: None, wait=0, sleep=lambda s: None)
+        self.begin.assert_not_called()
+
+
 class ApplyRouteTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.app = FastAPI()
