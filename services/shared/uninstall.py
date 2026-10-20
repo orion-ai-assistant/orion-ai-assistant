@@ -309,12 +309,12 @@ def schedule_removal(paths, *, root, wait=None, later=None, folder=None, spawn=T
 
 
 def remove_links(registry, installation_id):
-    """Both product identities' desktop/Startup links (if ours) and the stale Task Manager Startup state."""
-    from .launcher import ALL_DESKTOP_LINKS, ALL_STARTUP_LINKS
+    """Both product identities' desktop/Startup/Start menu links (if ours) and the stale Task Manager Startup state."""
+    from .launcher import ALL_DESKTOP_LINKS, ALL_START_LINKS, ALL_STARTUP_LINKS
     from .windows_autostart import known_folder, shortcut, clean_startup_approved
     entry = registry.path.parent / 'bootstrap/Orion.ps1'
     errors = []
-    for kind, names in (('desktop', ALL_DESKTOP_LINKS), ('startup', ALL_STARTUP_LINKS)):
+    for kind, names in (('desktop', ALL_DESKTOP_LINKS), ('startup', ALL_STARTUP_LINKS), ('programs', ALL_START_LINKS)):
         directory = known_folder(kind)
         for name in names:
             path = directory / name

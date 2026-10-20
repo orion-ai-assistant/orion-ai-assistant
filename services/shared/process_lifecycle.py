@@ -2,6 +2,10 @@
 
 Canonical source. Router vendors this exact module for independent installations.
 No port, PID file or directory substring grants permission to signal a process.
+
+One owner per process tree: the supervisor holds the only lasting handle of every job its children
+run in, so they end with it, whatever ends it. A new supervisor never adopts survivors of an older
+one; it stops whatever an earlier run left behind and starts clean.
 """
 from contextlib import contextmanager
 from functools import lru_cache
@@ -373,11 +377,11 @@ class Runtime:
             if previous:
                 if previous.get('status') != 'stopped' and living(previous['supervisor']):
                     raise LifecycleError('A previous supervisor is still alive')
-                for label, child in previous['children'].items():
+                # Ownerless leftovers (an older Orion whose hosts kept their own job handles, or a run that
+                # died between two steps): stopped here, never adopted. This run starts every child itself.
+                for child in previous['children'].values():
                     if child_tree_alive(child):
-                        self.children[label] = child
-                        if child.get('job'):
-                            self.jobs[label] = job_adapter().Job(child['job'])
+                        ManagedChild(child).stop()
             self.run_id = str(uuid.uuid4())
             self.supervisor = ProcessReference.capture(os.getpid())
             self.status = 'starting'
@@ -532,31 +536,57 @@ class Runtime:
         self.save()
 
     def stop_children(self, timeout=10):
+        """Stop every child; never give up halfway. Each step is attempted even when an earlier one failed,
+        and whatever a graceful stop leaves alive is ended through its job. Raises only when a child is still
+        alive afterwards (the database is then left alone: its clients may still be writing)."""
+        errors = []
+        def attempt(step, *args):
+            try:
+                step(*args)
+            except Exception as error:
+                errors.append(error)
+                print(f'[!] Stop step failed: {type(error).__name__}: {error}', flush=True)
         # Startup may fail before the steady-state polling loop ever runs.
         # Capture existing descendants while their parents are still alive.
-        self.refresh_children()
+        attempt(self.refresh_children)
         self.status = 'stopping'
         self.save()
         before_stop = getattr(self, 'before_stop', None)
         if before_stop:
-            before_stop()
+            attempt(before_stop)
         # Python applications first, database-like native children last. The Python applications are
         # independent of each other: they get their stop signal together and share one deadline (a serial
         # stop added up to 10 s per child that waited on an open connection - the >20 s tray quit).
         python = [child for child in self.children.values() if child['control']]
-        if len(python) > 1:
+        if python:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(len(python)) as pool:
                 for future in [pool.submit(ManagedChild(child).stop, timeout) for child in python]:
-                    future.result()
-        elif python:
-            ManagedChild(python[0]).stop(timeout)
+                    attempt(future.result)
         for child in self.children.values():
             if not child['control']:
                 before_native = getattr(self, 'before_native_stop', None)
                 if before_native:
-                    before_native(child)
-                ManagedChild(child).stop(timeout)
+                    attempt(before_native, child)
+                attempt(ManagedChild(child).stop, timeout)
+        left = []
+        for label, child in self.children.items():
+            try:
+                if child_tree_alive(child):
+                    if child.get('job'):
+                        # The job is the authority over the whole tree: end it.
+                        with job_adapter().Job(child['job']) as job:
+                            job.terminate()
+                    else:
+                        ManagedChild(child).stop(0)
+                if child_tree_alive(child):
+                    left.append(label)
+            except Exception as error:
+                errors.append(error)
+                left.append(label)
+        if left:
+            raise LifecycleError('Children still running after stop: ' + ', '.join(sorted(left))) from (
+                errors[0] if errors else None)
         self.status = 'children-stopped'
         self.save()
 
@@ -567,7 +597,7 @@ class Runtime:
                 # (browser shutdown process, per-child waits) a second time.
                 if not (self.status == 'children-stopped'
                         and not any(child_tree_alive(child) for child in self.children.values())):
-                    self.stop_children()
+                    self.stop_children()  # Raises only while a child still lives: the database is kept.
                 database = getattr(self, 'database', None)
                 if database is not None:
                     database.stop()
@@ -580,6 +610,7 @@ class Runtime:
                 self.status = 'stopped'
                 self.save()
         finally:
+            # The last handles: anything still in these jobs ends now, with its owner.
             for job in self.jobs.values():
                 job.close()
             self.jobs.clear()

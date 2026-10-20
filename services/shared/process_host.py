@@ -1,9 +1,11 @@
-"""Isolated stdlib Windows host: own a job before launching application code.
+"""Isolated stdlib Windows host: join the owner's job before launching application code.
 
 Base Python -I -S prevents user/site hooks from spawning uncontained children.
-The durable launch intent precedes this host. It keeps a job handle until the
-direct application exits; the supervisor keeps its own handle until tree stop.
-If both controllers die, KILL_ON_JOB_CLOSE prevents unobserved orphan survivors.
+The durable launch intent precedes this host. It joins the job and closes its
+own handle at once: the owner (the supervisor, or whoever started a database)
+holds the only handle, so when the owner ends for any reason - a clean stop, an
+error, Task Manager, Windows signing out - KILL_ON_JOB_CLOSE ends this host, the
+application and every descendant with it. Nothing outlives its owner.
 """
 import ctypes
 from ctypes import wintypes as W
@@ -25,14 +27,14 @@ def main():
     try:
         if not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
             raise RuntimeError('Cannot contain application process tree')
-        if Path(sys.argv[2]).exists():
-            return 1  # A recovered pending launch was canceled before admission.
-        # No breakaway flags: venv launchers, reloaders and native applications
-        # inherit membership as part of CreateProcess itself.
-        process = subprocess.Popen(sys.argv[3:])
-        return process.wait()
     finally:
-        kernel.CloseHandle(job)
+        kernel.CloseHandle(job)  # Membership stays; only the owner's handle keeps the job (and us) alive.
+    if Path(sys.argv[2]).exists():
+        return 1  # A recovered pending launch was canceled before admission.
+    # No breakaway flags: venv launchers, reloaders and native applications
+    # inherit membership as part of CreateProcess itself.
+    process = subprocess.Popen(sys.argv[3:])
+    return process.wait()
 
 
 if __name__ == '__main__':

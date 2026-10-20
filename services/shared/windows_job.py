@@ -1,8 +1,10 @@
 """Windows process-tree ownership; never infer membership from names or PPIDs.
 
-Jobs have a user-only DACL and no breakaway. Supervisor and stdlib host both
-retain handles. Closing the last handle kills only this job, so losing both
-controllers cannot strand descendants. Either controller permits recovery.
+Jobs have a user-only DACL, no breakaway and KILL_ON_JOB_CLOSE. The owner (the
+supervisor, or the process that started a database) holds the only lasting
+handle; the stdlib host closes its own right after joining. However the owner
+ends, Windows ends everything in its jobs: no process can outlive its owner.
+Other processes open a job only briefly, to inspect or stop it.
 """
 import ctypes
 from ctypes import wintypes as W

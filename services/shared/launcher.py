@@ -86,12 +86,36 @@ def launch_environment(registry):
     values.update(ORION_INSTALLATION_REGISTRY=str(registry.path), ORION_FLUTTER_OPEN_WINDOW='0')
     # Popen inherits a snapshot; restore our process even on a failed start.
     previous = os.environ.copy()
+    global _hub_only
+    # Everything but the registry path is the Hub's own configuration (and none of it with a Router-only
+    # install). The Router never runs with it: see router_environment().
+    _hub_only = ({key: previous.get(key) for key in values if key != 'ORION_INSTALLATION_REGISTRY'}
+                 if hub else {})
     os.environ.update(values)
     try:
         yield
     finally:
+        _hub_only = {}
         os.environ.clear()
         os.environ.update(previous)
+
+
+_hub_only = {}  # Within launch_environment: Hub configuration keys -> the value they had before (or None).
+
+
+def router_environment():
+    """The environment a Router is started with: this process's environment without the Hub's configuration.
+
+    Hub and Router are separate applications. The Hub's .env.global still names Docker-era hosts
+    (STT_HOST=stt, TTS_HOST=tts, ...): inherited by the Router, they replaced its own .env values and every
+    request to a local voice service failed with "getaddrinfo failed"."""
+    env = dict(os.environ)
+    for key, before in _hub_only.items():
+        if before is None:
+            env.pop(key, None)
+        else:
+            env[key] = before
+    return env
 
 
 def show_window(registry, hub, *, timeout=30, abort=None):
@@ -483,7 +507,7 @@ def _start_all(registry, components, start_hub, start_router):
     launch. The Hub start runs in THIS thread for the same reason as in `_stop_all` (re-entered mutex)."""
     def router(item):
         with _timed(registry, 'start.router'):
-            start_router(str(Path(item['code_path']) / 'cli.py'))
+            start_router(str(Path(item['code_path']) / 'cli.py'), env=router_environment())
     others = [item for item in components if item['kind'] != 'hub']
     with ThreadPoolExecutor(max(1, len(others))) as pool:
         futures = [pool.submit(router, item) for item in others]
@@ -638,6 +662,10 @@ LEGACY_STARTUP_LINK = 'Orion.lnk'  # Installs before Orion.exe named their Start
 ROUTER_LINK = 'Orion Router.lnk'   # Router-only installations: same file name on the desktop and in Startup.
 ALL_DESKTOP_LINKS = (DESKTOP_LINK, ROUTER_LINK)
 ALL_STARTUP_LINKS = (STARTUP_LINK, ROUTER_LINK, LEGACY_STARTUP_LINK)
+# Start menu > All apps: what makes Orion an app of Windows' own (search result, "Recent" list, pin to Start).
+# Without it search only found the Startup/desktop links, and launches from there were never "recent".
+START_LINK = 'Orion AI Assistant.lnk'
+ALL_START_LINKS = (START_LINK, ROUTER_LINK)
 
 
 def identity(record):
@@ -646,7 +674,8 @@ def identity(record):
     from .windows_autostart import PRODUCT_NAME, ROUTER_PRODUCT_NAME
     hub = record is None or any(c['kind'] == 'hub' for c in record.get('components', []))
     return {'product': PRODUCT_NAME if hub else ROUTER_PRODUCT_NAME, 'router_only': not hub,
-            'desktop': DESKTOP_LINK if hub else ROUTER_LINK, 'startup': STARTUP_LINK if hub else ROUTER_LINK}
+            'desktop': DESKTOP_LINK if hub else ROUTER_LINK, 'startup': STARTUP_LINK if hub else ROUTER_LINK,
+            'start': START_LINK if hub else ROUTER_LINK}
 
 
 def retained_launcher(registry, product=None):
@@ -702,6 +731,17 @@ def sync_desktop_link(record, entry, *, create):
             _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
 
 
+def sync_start_link(record, entry):
+    """The Start menu entry of the current identity (always present while Orion is installed), and no stale
+    entry of the other identity."""
+    from .windows_autostart import known_folder, shortcut
+    ident, directory = identity(record), known_folder('programs')
+    shortcut(directory / ident['start'], entry, record['installation_id'], product=ident['product'])
+    for name in ALL_START_LINKS:
+        if name != ident['start']:
+            _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+
+
 def install_entry(registry, *, desktop=True):
     record = registry.read()
     if record is None:
@@ -724,8 +764,12 @@ def install_entry(registry, *, desktop=True):
             except OSError:
                 if not destination.exists():
                     raise  # A running older copy is fine to keep; a missing one is not.
-    if desktop:
+    if desktop:  # The installer's call: the user's visible entry points.
         sync_desktop_link(record, entry, create=True)
+        try:
+            sync_start_link(record, entry)
+        except (OSError, RuntimeError):
+            pass  # Cosmetic; refresh_links retries on the next launch.
     return entry
 
 
@@ -746,7 +790,7 @@ def _startup_links(directory, entry, installation_id, enabled, record=None):
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
 
-LINKS_REVISION = 3  # 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+LINKS_REVISION = 4  # 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
 
 
 def register_uninstall_entry(registry):
@@ -778,6 +822,7 @@ def refresh_links(registry):
         pass
     entry = install_entry(registry, desktop=False)
     sync_desktop_link(record, entry, create=False)
+    sync_start_link(record, entry)
     _startup_links(known_folder('startup'), entry, record['installation_id'],
                    record['preferences']['start_with_windows'], record)
     register_uninstall_entry(registry)

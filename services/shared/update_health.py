@@ -9,7 +9,7 @@ import urllib.request
 
 
 def probe(registry, record):
-    from .launcher import launch_environment
+    from .launcher import launch_environment, router_environment
     from .native_services import start_hub, start_router
     from .update_gate import blocked
     if not blocked(registry.path):
@@ -20,7 +20,7 @@ def probe(registry, record):
         with launch_environment(registry):
             os.environ['ORION_UPDATE_OPERATION'] = operation
             router = next(c for c in record['components'] if c['kind'] == 'router')
-            start_router(str(Path(router['code_path']) / 'cli.py'))
+            start_router(str(Path(router['code_path']) / 'cli.py'), env=router_environment())
             verify_router(router)
             if not router_database_probe(record, running=True):
                 raise RuntimeError('Router database/schema health failed')
@@ -33,7 +33,7 @@ def probe(registry, record):
         # work waits for admission): both start at once. The environment is complete before either reads it.
         # The Hub stays in this thread; each start keeps its own ownership/readiness checks.
         with ThreadPoolExecutor(max(1, len(routers))) as pool:
-            routers = [pool.submit(start_router, script) for script in routers]
+            routers = [pool.submit(start_router, script, env=router_environment()) for script in routers]
             start_hub(root, update_operation=operation)
             for started in routers:
                 started.result()

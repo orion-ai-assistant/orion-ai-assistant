@@ -69,12 +69,17 @@ def recover(record, *, log_dir):
     for ctl, data in crashed_clusters(record):
         log = Path(log_dir) / ('postgres-recovery-' + data.parent.name + '.log')
         options = f'-p {_free_port()} -c listen_addresses=127.0.0.1'
-        start = subprocess.run([str(ctl), 'start', '-D', str(data), '-l', str(log), '-o', options, '-w',
-                                '-t', str(START_TIMEOUT)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=START_TIMEOUT + 30, **FLAGS)
-        stop = subprocess.run([str(ctl), 'stop', '-D', str(data), '-m', 'fast', '-w', '-t', '60'],
-                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                              timeout=90, **FLAGS)
+        # This process owns the recovery server (native_postgres.owned_start): if it ends early, so does the server.
+        from .native_postgres import owned_start
+        job, start = owned_start([str(ctl), 'start', '-D', str(data), '-l', str(log), '-o', options, '-w',
+                                  '-t', str(START_TIMEOUT)], data, data.parent, timeout=START_TIMEOUT + 30)
+        try:
+            stop = subprocess.run([str(ctl), 'stop', '-D', str(data), '-m', 'fast', '-w', '-t', '60'],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=90, **FLAGS)
+        finally:
+            if job is not None:
+                job.close()
         if start.returncode or stop.returncode or (data / 'postmaster.pid').exists():
             raise RuntimeError('PostgreSQL crash recovery did not finish')
         recovered.append(str(data))

@@ -158,7 +158,7 @@ def router_python(root):
     return selected
 
 
-def start_router(script):
+def start_router(script, env=None):
     from .update_gate import require_start_admission
     require_start_admission(router_root(script))
     if dispatch_if_needed('start-router', Path(__file__).resolve().parents[2], script):
@@ -168,7 +168,7 @@ def start_router(script):
     # Unupgraded legacy launchers cannot promise the new ownership contract.
     if not (root / 'core/process_lifecycle.py').is_file():
         raise LifecycleError('Router lifecycle upgrade required; existing Router left untouched')
-    return ensure_started(root, 'router-prod', [router_python(root), str(root / 'cli.py'), 'prod'])
+    return ensure_started(root, 'router-prod', [router_python(root), str(root / 'cli.py'), 'prod'], env=env)
 
 
 def stop_router(script):

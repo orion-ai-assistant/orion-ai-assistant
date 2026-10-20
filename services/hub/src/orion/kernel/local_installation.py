@@ -23,7 +23,14 @@ def register_native_hub(root, port):
     identity = tls_identity()
     certificate = Path(identity['cert']).resolve()
     proof = local_token_path().resolve()
-    if not certificate.is_relative_to(root) or not proof.is_relative_to(root):
+    # A packaged Hub keeps its identity in its own data folder (the code folder is replaced by updates);
+    # a source checkout keeps it inside the checkout. Either way it never leaves the installation.
+    from services.shared.runtime_layout import component, data_root
+    try:
+        data = data_root(root).resolve() if component(root) else root
+    except RuntimeError as error:  # An unregistered package: no desktop registration, never a failed start.
+        raise ValueError('Installation data folder unavailable') from error
+    if not certificate.is_relative_to(data) or not proof.is_relative_to(data):
         raise ValueError('Native bootstrap identity must stay inside the installation')
     if not proof.exists():
         atomic_write(proof, secrets.token_urlsafe(48).encode('ascii'))
@@ -33,6 +40,8 @@ def register_native_hub(root, port):
     record = {'v': 1, 'kind': 'orion-hub-local-installation', 'root': str(root),
               'id': identity['id'], 'name': identity['name'], 'certificate_path': str(certificate),
               'local_token_path': str(proof), 'mobile_port': int(port)}
+    if data != root:
+        record['data_root'] = str(data)
     target = installation_manifest_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(target, json.dumps(record).encode('utf-8'))

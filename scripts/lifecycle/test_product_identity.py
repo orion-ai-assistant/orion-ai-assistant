@@ -36,10 +36,13 @@ class ProductIdentityTests(unittest.TestCase):
         self.bootstrap = self.store.path.parent / 'bootstrap'
         self.desktop = self.root / 'Desktop'
         self.startup = self.root / 'Startup'
+        self.programs = self.root / 'Programs'
         self.desktop.mkdir()
         self.startup.mkdir()
+        self.programs.mkdir()
         folders = patch('services.shared.windows_autostart.known_folder',
-                        side_effect=lambda name: {'desktop': self.desktop, 'startup': self.startup}[name])
+                        side_effect=lambda name: {'desktop': self.desktop, 'startup': self.startup,
+                                                  'programs': self.programs}[name])
         folders.start()
         self.addCleanup(folders.stop)
         # Never touch the real HKCU StartupApproved values from a unit test.
@@ -108,6 +111,9 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertTrue(launcher.refresh_links(self.store))  # Preference is off by default.
         self.assertEqual(str(entry.with_name('Orion.exe')).lower(), read_link(self.desktop / 'Orion.lnk')[0].lower())
         self.assertEqual([], list(self.startup.iterdir()))  # Old link removed, none created for a user who turned it off.
+        # An existing install gets its Start menu entry (search, "Recent", pin to Start) on the next launch.
+        self.assertEqual(['Orion AI Assistant.lnk'], [p.name for p in self.programs.iterdir()])
+        self.assertEqual(str(entry.with_name('Orion.exe')).lower(), read_link(self.programs / 'Orion AI Assistant.lnk')[0].lower())
         with patch('services.shared.windows_autostart.shortcut') as touched:
             self.assertFalse(launcher.refresh_links(self.store))  # Once per Orion.exe.
         touched.assert_not_called()
@@ -149,6 +155,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.retained(router_exe=b'MZ router launcher')
         launcher.install_entry(self.store)
         self.assertEqual('Orion Router', read_link(self.desktop / 'Orion Router.lnk')[2])
+        self.assertEqual(['Orion Router.lnk'], [p.name for p in self.programs.iterdir()])
         self.assertFalse((self.desktop / 'Orion.lnk').exists())
         launcher.preferences(self.store, start_with_windows=True, show_client=True, startup_directory=self.startup)
         self.assertEqual(['Orion Router.lnk'], [p.name for p in self.startup.iterdir()])
@@ -164,6 +171,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertEqual(['Orion.lnk'], [p.name for p in self.desktop.iterdir()])
         self.assertEqual(['Orion AI Assistant.lnk'], [p.name for p in self.startup.iterdir()])
         self.assertEqual('Orion AI Assistant', read_link(self.startup / 'Orion AI Assistant.lnk')[2])
+        self.assertEqual(['Orion AI Assistant.lnk'], [p.name for p in self.programs.iterdir()])  # Swapped, not added.
 
     def test_stale_startup_approved_values_of_vanished_links_are_cleaned_on_refresh(self):
         self.retained()

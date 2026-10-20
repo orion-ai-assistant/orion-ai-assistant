@@ -22,13 +22,34 @@ class LaunchSpeedTests(unittest.TestCase):
 
     def test_router_and_hub_start_at_the_same_time(self):
         hub_started = threading.Event()
-        def router(_):
+        def router(_, env=None):
             # One after the other, the Router would wait here for a Hub start that never begins.
             self.assertTrue(hub_started.wait(5), 'Hub start waited for the Router')
         launcher._start_all(self.registry, [ROUTER, HUB], lambda _: hub_started.set(), router)
         log = (self.registry.path.parent / 'updates/watcher.log').read_text(encoding='utf-8')
         self.assertIn('launch.timing step=start.router', log)
         self.assertIn('launch.timing step=start.hub', log)
+
+    def test_the_router_is_started_without_the_hubs_configuration(self):
+        # Hub and Router are separate applications: the Hub's .env (Docker-era STT_HOST=stt, ...) must not
+        # replace the Router's own settings ("getaddrinfo failed" for every local voice request).
+        hub = self.registry.path.parent / 'Hub'
+        (hub / 'services').mkdir(parents=True)
+        (hub / 'services/.env.global').write_text('STT_HOST=stt' + chr(10) + 'PATH=hub-only' + chr(10), encoding='utf-8')
+        record = {'components': [{'kind': 'hub', 'code_path': str(hub), 'data_path': str(hub)}]}
+        seen = {}
+        with patch.object(Registry, 'read', return_value=record), \
+                patch.dict('os.environ', {'ORION_KEEP': 'yes'}, clear=False):
+            import os
+            before_path = os.environ['PATH']
+            with launcher.launch_environment(self.registry):
+                self.assertEqual('stt', os.environ['STT_HOST'])  # The Hub itself still gets its configuration.
+                launcher._start_all(self.registry, [ROUTER], lambda _: None,
+                                    lambda _, env=None: seen.update(env))
+        self.assertNotIn('STT_HOST', seen)
+        self.assertEqual(before_path, seen['PATH'])  # A key the Hub overrode gets the process's own value back.
+        self.assertEqual('yes', seen['ORION_KEEP'])
+        self.assertEqual(str(self.registry.path), seen['ORION_INSTALLATION_REGISTRY'])
 
     def test_a_failed_router_start_is_reported_after_the_hub_start_finished(self):
         hub = MagicMock()

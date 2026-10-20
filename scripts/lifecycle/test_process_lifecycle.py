@@ -89,19 +89,40 @@ def test_partial_installation_starts_only_missing_child(lab):
     assert state(lab)['children']['first']['process'] == first
 
 
-def test_crashed_supervisor_reconciles_verified_survivors(lab):
+def test_a_killed_supervisor_takes_its_children_with_it_and_the_next_start_is_clean(lab):
     start(lab)
     previous = state(lab)
     with lifecycle.ProcessReference(previous['supervisor']) as reference:
-        reference.force()
+        reference.force()  # Task Manager, a crash, Windows signing out: no clean stop runs.
         reference.wait(5)
-    assert lifecycle.living(previous['children']['first']['process'])
+    # The supervisor held the only handle of its children's jobs: Windows ended them with it.
+    wait_until(lambda: not lifecycle.child_tree_alive(previous['children']['first']))
     (lab / 'second.enabled').touch()
     start(lab)
     current = state(lab)
     assert current['run_id'] != previous['run_id']
-    assert current['children']['first']['process'] == previous['children']['first']['process']
+    assert current['children']['first']['process'] != previous['children']['first']['process']  # Never adopted.
     wait_until(lambda: len(state(lab)['children']) == 2)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership')
+def test_a_new_supervisor_stops_ownerless_leftovers_instead_of_adopting_them(lab):
+    # An older Orion's host kept its own job handle, so its child outlived the supervisor: simulated by holding
+    # a handle to the job here. The next supervisor ends that child and starts its own.
+    start(lab)
+    previous = state(lab)
+    child = previous['children']['first']
+    held = lifecycle.job_adapter().Job(child['job'])
+    try:
+        with lifecycle.ProcessReference(previous['supervisor']) as reference:
+            reference.force()
+            reference.wait(5)
+        assert lifecycle.child_tree_alive(child)
+        start(lab)
+        assert not lifecycle.child_tree_alive(child)
+        assert state(lab)['children']['first']['process'] != child['process']
+    finally:
+        held.close()
 
 
 def test_two_installations_and_foreign_listener_remain_independent(lab):
@@ -151,7 +172,8 @@ def test_abandoned_lifetime_lock_does_not_authorize_killing_children(lab):
         with lifecycle.InstanceLock(lifecycle.state_dir(lab, 'probe'), 'instance', timeout=.2) as lock:
             if handle:
                 assert lock.abandoned
-            assert lifecycle.living(previous['children']['first']['process'])
+            # The lock only reports the dead owner; its children ended with the owner, not with this lock.
+            wait_until(lambda: not lifecycle.child_tree_alive(previous['children']['first']))
     finally:
         if handle:
             lifecycle.K.CloseHandle(handle)
@@ -213,22 +235,35 @@ def test_corrupt_state_fails_closed(lab):
     assert path.read_text() == '{'
 
 
-def test_database_is_never_stopped_when_child_shutdown_fails(lab):
+def test_a_failed_graceful_stop_still_ends_the_child_then_stops_the_database(lab):
     runtime = lifecycle.Runtime(lab, 'failed-stop')
+    runtime.__enter__()
+    child = runtime.launch('first', [sys.executable, str(lab / 'child.py')], python=True).child
+    database = Mock(ctl='fake', data='fake', port=1, user='fake', database='fake')
+    runtime.database = database
+    runtime.before_stop = Mock(side_effect=RuntimeError('browser shutdown failed'))  # Never stops the stop.
+    with patch.object(lifecycle.ManagedChild, 'stop', side_effect=lifecycle.LifecycleError('timeout')):
+        runtime.__exit__()
+    assert not lifecycle.child_tree_alive(child)  # Ended through its job.
+    database.stop.assert_called_once()
+    assert state(lab, 'failed-stop')['status'] == 'stopped'
+
+
+def test_database_is_never_stopped_while_a_child_still_runs(lab):
+    runtime = lifecycle.Runtime(lab, 'stuck-stop')
     runtime.__enter__()
     runtime.launch('first', [sys.executable, str(lab / 'child.py')], python=True)
     database = Mock(ctl='fake', data='fake', port=1, user='fake', database='fake')
     runtime.database = database
-    with patch.object(lifecycle.ManagedChild, 'stop', side_effect=lifecycle.LifecycleError('timeout')):
-        with pytest.raises(lifecycle.LifecycleError, match='timeout'):
+    with patch.object(lifecycle.ManagedChild, 'stop', side_effect=lifecycle.LifecycleError('timeout')), \
+            patch.object(lifecycle, 'child_tree_alive', return_value=True), \
+            patch.object(lifecycle, 'job_adapter') as jobs:
+        jobs.return_value.Job.return_value.__enter__.return_value.terminate.side_effect = lifecycle.LifecycleError('stuck')
+        with pytest.raises(lifecycle.LifecycleError, match='still running'):
             runtime.__exit__()
     database.stop.assert_not_called()
-    assert state(lab, 'failed-stop')['status'] == 'stopping'
-    # Cleanup only this test child, then remove the fake DB adapter from state.
-    lifecycle.ManagedChild(runtime.children['first']).stop()
-    runtime.database = None
-    runtime.status = 'stopped'
-    runtime.save()
+    assert state(lab, 'stuck-stop')['status'] == 'stopping'
+    # The supervisor's handles are closed by __exit__: the child already ended with them.
 
 
 def test_recovery_keeps_database_shutdown_metadata_until_verified_stop(lab):
@@ -356,7 +391,8 @@ def test_postgres_durability_and_foreign_pid_checks(tmp_path):
     db = Postgres(tmp_path / 'bin/pg_ctl.exe', tmp_path / 'data', 15432, 'fake', 'fake')
     db.data.mkdir()
     sentinel = db.data / 'postmaster.pid'
-    sentinel.write_text(f'{os.getpid()}\n{db.data}\n1\n')
+    # A live process (this test) with its real start time, but not postgres.exe: refused, never signalled.
+    sentinel.write_text(f'{os.getpid()}\n{db.data}\n{int(psutil.Process().create_time())}\n')
     with pytest.raises(lifecycle.LifecycleError, match='ownership mismatch'):
         db.stop()
     assert sentinel.exists()
@@ -449,7 +485,10 @@ def test_real_isolated_postgres_start_ready_stop_and_foreign_cluster(tmp_path):
     databases = []
     try:
         for label in ('one', 'two'):
-            data = tmp_path / label
+            # Each cluster in its own folder, as Hub and Router are: the server log and the lifecycle lock live
+            # beside the data directory (two servers appending to one log made the second start fail).
+            data = tmp_path / label / 'data'
+            data.parent.mkdir()
             log_path = tmp_path / (label + '-initdb.log')
             with log_path.open('wb') as log:
                 result = subprocess.run([str(initdb), '-D', str(data), '-U', 'fixture', '--auth=trust', '--locale=C', '-E', 'UTF8'],
@@ -469,6 +508,54 @@ def test_real_isolated_postgres_start_ready_stop_and_foreign_cluster(tmp_path):
     finally:
         for db in databases:
             db.stop()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership')
+def test_real_postgres_ends_with_its_owner_and_an_ownerless_server_is_taken_over(tmp_path):
+    binaries = ROOT / '.local_db/postgres/bin'
+    if not (binaries / 'initdb.exe').exists():
+        pytest.skip('Real Windows PostgreSQL binaries unavailable')
+    data = tmp_path / 'cluster/data'
+    data.parent.mkdir()
+    subprocess.run([str(binaries / 'initdb.exe'), '-D', str(data), '-U', 'fixture', '--auth=trust', '--locale=C',
+                    '-E', 'UTF8'], check=True, capture_output=True, timeout=120)
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    db = Postgres(binaries / 'pg_ctl.exe', data, port, 'fixture', 'postgres')
+    holder = tmp_path / 'holder.py'
+    holder.write_text('\n'.join([
+        'import time',
+        'from services.shared.native_postgres import Postgres',
+        f'db = Postgres(r"{binaries / "pg_ctl.exe"}", r"{data}", {port}, "fixture", "postgres")',
+        'db.ensure()',
+        'print("ready", flush=True)',
+        'time.sleep(600)', '']), encoding='utf-8')
+    owner = subprocess.Popen([sys.executable, str(holder)], stdout=subprocess.PIPE, text=True,
+                             env=dict(os.environ, PYTHONPATH=str(ROOT)))
+    try:
+        assert owner.stdout.readline().strip() == 'ready'
+        assert db.owned()  # Another live process owns it: used, never taken over.
+        owner.kill()  # Task Manager / a crash: no clean stop runs.
+        owner.wait(10)
+        wait_until(lambda: db.owner() is None)  # Windows ended the server with its owner.
+        db.ensure()  # Crash recovery, then owned by this process.
+        assert db.owned()
+        db.stop()
+        assert db.owner() is None
+        # A server started outside any job (an older Orion) has no owner: shut down and started as ours.
+        subprocess.run([str(binaries / 'pg_ctl.exe'), 'start', '-D', str(data), '-l', str(data.parent / 'server.log'),
+                        '-o', f'-p {port}', '-w', '-t', '30'], check=True, timeout=60,
+                       # Never pipes: pg_ctl hands them to the server, and the call would wait for it to exit.
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        leftover = db.owner()
+        assert leftover is not None and not db.owned()
+        db.ensure()
+        assert db.owned() and db.owner()['pid'] != leftover['pid']
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        db.stop()
 
 
 def test_node_fork_inherits_graceful_control(tmp_path):
@@ -565,7 +652,7 @@ def test_fast_parent_exit_does_not_leave_unobserved_grandchild(tmp_path):
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership adapter')
 @pytest.mark.parametrize('pending', [False, True])
-def test_job_recovery_survives_supervisor_crash_and_incomplete_pid_record(lab, pending):
+def test_supervisor_crash_ends_its_job_and_stop_reconciles_even_an_incomplete_pid_record(lab, pending):
     script = lab / 'crash-supervisor.py'
     script.write_text('import os,sys,time\nfrom pathlib import Path\n'
         'from services.shared.process_lifecycle import Runtime\n'
@@ -580,7 +667,8 @@ def test_job_recovery_survives_supervisor_crash_and_incomplete_pid_record(lab, p
     try:
         assert child.wait(20) == 17
         record = state(lab, 'job-recovery')
-        assert lifecycle.child_tree_alive(record['children']['app'])
+        # The crashed supervisor held the only job handle: the application ended with it.
+        wait_until(lambda: not lifecycle.child_tree_alive(record['children']['app']))
         assert lifecycle.stop_component(lab, 'job-recovery')
         assert not lifecycle.child_tree_alive(record['children']['app'])
         assert state(lab, 'job-recovery')['status'] == 'stopped'
