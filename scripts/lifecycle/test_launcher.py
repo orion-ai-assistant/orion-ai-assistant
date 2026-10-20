@@ -250,7 +250,9 @@ while True: server.handle_request()
         def sleep(seconds):
             slept.append(seconds)
             self.journal(next(phases))
-        self.assertTrue(launcher.wait_for_update(self.store, sleep=sleep, interval=0))
+        # A live helper owns the switch (without one the apply is interrupted and not waited for).
+        with patch('services.shared.update_gate.interrupted', return_value=False):
+            self.assertTrue(launcher.wait_for_update(self.store, sleep=sleep, interval=0))
         self.assertEqual(2, len(slept))
         self.assertIsNone(progress(self.store.path))
 

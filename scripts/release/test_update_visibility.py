@@ -103,10 +103,11 @@ def test_refresh_outcomes_are_always_reported(automatic):
 
 def test_download_progress_is_in_the_journal(automatic):
     service, now, data, host = automatic
-    seen = []
+    seen, phases = [], []
     original = service.helper._phase
 
     def spy(tx, phase, **fields):
+        phases.append((phase, fields.get('progress')))
         if phase == 'downloading':
             seen.append(fields.get('progress'))
         return original(tx, phase, **fields)
@@ -115,8 +116,10 @@ def test_download_progress_is_in_the_journal(automatic):
     first, *rest = seen
     assert first['done'] == 0 and first['total'] == 1 and first['component'] == 'hub' and first['bytes'] == 0
     assert first['bytes_total'] > 0
-    assert rest and rest[-1]['bytes'] == first['bytes_total']  # Byte progress reached the end of the download.
     assert all(a['bytes'] <= b['bytes'] for a, b in zip(seen, seen[1:]))
+    # The last bytes turn the card to "doğrulanıyor / hazırlanıyor (1/1)" instead of a full download bar.
+    after = [progress for phase, progress in phases[phases.index(('downloading', seen[-1])) + 1:] if phase == 'verifying']
+    assert after and after[0] == {'done': 0, 'total': 1, 'component': 'hub'}
 
 
 def test_failed_check_says_why_in_turkish(automatic):
