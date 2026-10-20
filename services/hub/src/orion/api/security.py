@@ -11,7 +11,8 @@ from fastapi import HTTPException, status
 
 JWT_SECRET_KEY = get_env("JWT_SECRET_KEY", "super-secret-default-key-for-dev", required=False)
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 24 * 60  # 24 hours
+# Pre-session account tokens (before orion.api.sessions) expired after this; still accepted until then.
+ACCESS_TOKEN_EXPIRE_MINUTES = 24 * 60
 
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
@@ -22,6 +23,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
+    """A pre-session token; accounts now sign in through orion.api.sessions.issue."""
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta

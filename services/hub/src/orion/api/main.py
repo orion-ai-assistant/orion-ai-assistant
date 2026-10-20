@@ -135,6 +135,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     application.state.local_entry = local_entry
     application.state.local_http = local_http
     configure_cors(application)
+    from orion.api.sessions import redact_server_logs
+    redact_server_logs()
     application.include_router(auth_router, prefix='/api/v1')
     application.include_router(router)
     application.include_router(pc_audio_router)

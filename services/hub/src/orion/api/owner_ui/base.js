@@ -13,11 +13,17 @@
             } catch (_) { return null; }
         },
         clearSession() { sessionStorage.removeItem(this.sessionKey); },
-        fetch(path, options = {}) {
+        // The Hub restarts the idle limit on every request the session authenticates.
+        idleSeconds: 15 * 60,
+        async fetch(path, options = {}) {
             const headers = new Headers(options.headers);
             const session = this.session();
             if (session) headers.set('X-Orion-Owner-Session', session.token);
-            return window.fetch(this.url(path), {...options, headers});
+            const response = await window.fetch(this.url(path), {...options, headers});
+            if (session && response?.status !== 401 && this.session()?.token === session.token) {
+                sessionStorage.setItem(this.sessionKey, JSON.stringify({...session, expires: Date.now() + this.idleSeconds * 1000}));
+            }
+            return response;
         }
     };
 })();

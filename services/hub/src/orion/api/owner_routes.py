@@ -21,6 +21,7 @@ from orion.api import invitations
 from orion.kernel.registry import set_user_active
 
 router = APIRouter(prefix='/api/v1/owner', tags=['local owner'])
+# Idle limit of the elevated owner session: every authenticated request starts it again.
 SESSION_SECONDS = 15 * 60
 
 
@@ -33,8 +34,9 @@ async def authenticate_owner_session(request: Request):
     token = request.headers.get('X-Orion-Owner-Session') or request.cookies.get(owner_cookie_name(request.scope))
     if not token or len(token) > 128:
         return
+    key = 'auth:owner:' + hashlib.sha256(token.encode()).hexdigest()
     try:
-        raw = await request.app.state.redis.get('auth:owner:' + hashlib.sha256(token.encode()).hexdigest())
+        raw = await request.app.state.redis.get(key)
         record = json.loads(raw) if raw else {}
     except Exception:
         # Owner credentials fail closed; normal bearer authentication still works.
@@ -43,6 +45,10 @@ async def authenticate_owner_session(request: Request):
         return
     if record.get('fingerprint') == fingerprint() and record.get('scope') in {'people', 'admin'}:
         request.state.owner_scope = record['scope']
+        try:
+            await request.app.state.redis.expire(key, SESSION_SECONDS)
+        except Exception:
+            pass  # Valid for this request; it ends on its previous deadline.
 
 
 def require_owner(request: Request, scope=None):
@@ -73,7 +79,8 @@ async def login(payload: OwnerLogin, request: Request, response: Response):
     except Exception as exc:
         raise HTTPException(503, 'Yönetim oturumu açılamıyor.') from exc
     if not payload.tab_session:
-        response.set_cookie(owner_cookie_name(request.scope), token, max_age=SESSION_SECONDS, httponly=True, samesite='strict', secure=request.scope['scheme'] == 'https', path=request.scope.get('root_path') or '/')
+        # No max_age: the browser keeps it while the server-side session stays in use.
+        response.set_cookie(owner_cookie_name(request.scope), token, httponly=True, samesite='strict', secure=request.scope['scheme'] == 'https', path=request.scope.get('root_path') or '/')
     response.headers['Cache-Control'] = 'no-store'
     result = {'scope': payload.scope, 'expires_in': SESSION_SECONDS}
     if payload.tab_session:

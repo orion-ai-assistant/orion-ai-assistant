@@ -281,6 +281,8 @@ async def revoke_self(request: Request):
     if not device_id:
         raise HTTPException(401, 'Paired device required')
     SecurityStore().revoke(device_id)
+    from orion.api.sessions import revoke_device
+    await revoke_device(device_id)
     return {'ok': True}
 
 
@@ -396,6 +398,8 @@ async def revoke(device_id: str, request: Request):
     require_owner(request)
     if not SecurityStore().revoke(device_id):
         raise HTTPException(404, 'Device not found')
+    from orion.api.sessions import revoke_device
+    await revoke_device(device_id)
     return {'ok': True}
 
 

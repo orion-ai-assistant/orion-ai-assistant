@@ -76,6 +76,15 @@ const Auth = {
         return data;
     },
     
+    // Logout ends the session on the Hub too; an unreachable Hub still forgets it here.
+    endSession() {
+        const token = this.getToken();
+        if (!token) return;
+        fetch(HubPicker.apiPath("/api/v1/auth/logout"), {
+            method: "POST", keepalive: true, headers: { "Authorization": `Bearer ${token}` }
+        }).catch(() => {});
+    },
+
     handleUnauthorized() {
         this.clearToken();
         document.getElementById("auth-modal").classList.add("show");

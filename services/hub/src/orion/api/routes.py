@@ -18,9 +18,8 @@ from orion.kernel.router_models import validate_model_updates, ModelNotFoundErro
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, get_turn_audio, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
-from orion.api.auth_routes import get_current_user, require_active_user
-from orion.api.security import JWT_SECRET_KEY, ALGORITHM, valid_admin_key, require_admin
-import jwt
+from orion.api.auth_routes import authenticate_token, get_current_user
+from orion.api.security import valid_admin_key, require_admin
 from services.shared.environment import get_router_base_urls
 
 router = APIRouter()
@@ -357,14 +356,11 @@ async def stt_proxy(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
-        if getattr(websocket.app.state, 'mobile', False) and payload.get('device_id') != getattr(websocket.state, 'device_id', None):
-            raise ValueError('Account token is not bound to this device')
-        user_id = payload.get("sub")
-        await require_active_user(user_id)
-        if not user_id:
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
+        user_id = await authenticate_token(token, websocket)
+    except HTTPException as error:
+        # 1013 (try again later): the session could not be checked, it has not ended.
+        await websocket.close(code=1013 if error.status_code == 503 else status.WS_1008_POLICY_VIOLATION)
+        return
     except Exception:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
