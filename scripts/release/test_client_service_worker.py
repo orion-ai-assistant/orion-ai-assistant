@@ -62,3 +62,37 @@ def test_server_answers_old_worker_url_with_a_self_removing_worker(tmp_path):
         finally:
             server.shutdown()
     assert 'unregister()' in body and 'caches.delete' in body and 'RESOURCES' not in body
+
+
+@pytest.mark.skipif(not SERVE.is_file(), reason='Flutter repository not checked out beside the Hub')
+def test_icon_urls_carry_the_icon_content_so_a_changed_icon_is_fetched_again(tmp_path):
+    # Browsers keep a site icon per URL: Orion windows kept the old (Flutter) icon after it changed.
+    spec = importlib.util.spec_from_file_location('serve_web', SERVE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (tmp_path / 'icons').mkdir()
+    (tmp_path / 'favicon.png').write_bytes(b'old icon')
+    (tmp_path / 'icons/Icon-192.png').write_bytes(b'touch icon')
+    (tmp_path / 'manifest.json').write_text('{}')
+    (tmp_path / 'index.html').write_text(
+        '<link rel="apple-touch-icon" href="icons/Icon-192.png">\n'
+        '<link rel="icon" type="image/png" href="favicon.png"/>\n'
+        '<link rel="manifest" href="manifest.json">\n<link rel="stylesheet" href="style.css">\n')
+    first = module.versioned_index(tmp_path).decode()
+    assert first.count('?v=') == 3 and 'href="style.css"' in first  # Only icon/manifest links.
+    (tmp_path / 'favicon.png').write_bytes(b'new icon')
+    second = module.versioned_index(tmp_path).decode()
+    old, new = (page.split('href="favicon.png?v=')[1][:12] for page in (first, second))
+    assert old != new  # A changed icon is a new URL on every PC, without renaming files.
+    assert first.split('Icon-192.png?v=')[1][:12] == second.split('Icon-192.png?v=')[1][:12]
+    import http.server
+    module.DIRECTORY = tmp_path
+    with http.server.ThreadingHTTPServer(('127.0.0.1', 0), module.CustomHTTPHandler) as server:
+        server.isolate = False
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            for path in ('/', '/index.html?x=1'):
+                body = urllib.request.urlopen(f'http://127.0.0.1:{server.server_port}{path}').read().decode()
+                assert f'favicon.png?v={new}' in body
+        finally:
+            server.shutdown()
