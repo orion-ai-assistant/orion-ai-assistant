@@ -27,7 +27,7 @@ def stop_hub_browsers(hub_dir):
     try:
         result = subprocess.run([str(python), '-m', 'orion.browser.shutdown'],
             cwd=str(hub), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=30,
+            stderr=subprocess.PIPE, timeout=10,  # Best effort (it only drops browser connections): never holds a stop.
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         if result.returncode:
             logging.error('Orion browser shutdown failed (exit %s): %s', result.returncode,

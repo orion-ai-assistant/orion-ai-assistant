@@ -86,8 +86,36 @@ $script:timer.Add_Tick({
 $script:timer.Start()
 
 # Windows sign-out / shutdown. Without this, Windows ended PostgreSQL and the Hub abruptly: the next start ran
-# crash recovery. A hidden window receives WM_QUERYENDSESSION as FormClosing(WindowsShutDown); while it runs the
-# normal stop (seconds), Windows shows "Orion kapat\u0131l\u0131yor" and waits. The stop ends this icon itself.
+# crash recovery. A hidden window receives WM_QUERYENDSESSION as FormClosing(WindowsShutDown); Windows waits
+# (showing "Orion kapat\u0131l\u0131yor") while the services stop. No process may be started now - Windows refuses
+# them while it signs out (0xc0000142) - so this does not run the launcher's stop: it asks every running
+# supervisor of this installation directly, with the stop request each of them already watches
+# (process_lifecycle: stop-<run_id> in its state folder). They stop their services and their database
+# themselves, without starting a process either.
+function Request-SupervisorStop {
+    $folders = @()
+    try {
+        $record = Get-Content -LiteralPath $Registry -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($component in @($record.components)) {
+            $mode = $null
+            if ($component.kind -eq 'hub') { $mode = 'hub' } elseif ($component.kind -eq 'router') { $mode = 'router-prod' }
+            if (-not $mode -or $component.management -eq 'connect-only' -or -not $component.state_path) { continue }
+            try {
+                $folder = Join-Path ([string]$component.state_path) $mode
+                $state = Get-Content -LiteralPath (Join-Path $folder 'processes.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($state.status -ne 'stopped' -and [string]$state.run_id -match '^[0-9a-fA-F-]{36}$') {
+                    [IO.File]::WriteAllBytes((Join-Path $folder ('stop-' + $state.run_id)), [byte[]]@())
+                    $folders += $folder
+                }
+            } catch {}
+        }
+    } catch {}
+    return $folders
+}
+function Test-SupervisorStopped([string]$folder) {
+    try { return (Get-Content -LiteralPath (Join-Path $folder 'processes.json') -Raw -Encoding UTF8 | ConvertFrom-Json).status -eq 'stopped' }
+    catch { return $false }   # Mid-replace: read again on the next round.
+}
 $script:session = New-Object Windows.Forms.Form
 $script:session.ShowInTaskbar = $false; $script:session.FormBorderStyle = 'None'; $script:session.Opacity = 0
 $script:session.Size = New-Object Drawing.Size(1, 1); $script:session.StartPosition = 'Manual'
@@ -98,13 +126,13 @@ $script:session.Add_FormClosing({
     $script:ending = $true
     try { if ($script:OrionNative) { [void][OrionUiNative]::ShutdownBlockReasonCreate($sender.Handle, (T 'Orion kapat\u0131l\u0131yor...')) } } catch {}
     $script:icon.Visible = $false
-    try {
-        $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $entry + '"'), '-Stop', '-NonInteractive')
-        $stop = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $arguments -PassThru
-        # Until the stop is done, or it asks this icon to leave (services are down by then), at most 25 s.
-        $deadline = [DateTime]::Now.AddSeconds(25)
-        while (-not $stop.HasExited -and -not (Test-Path -LiteralPath $marker) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Milliseconds 200 }
-    } catch {}
+    $folders = @(Request-SupervisorStop)
+    # A normal stop takes a few seconds; Windows is never held longer than 25 s.
+    $deadline = [DateTime]::Now.AddSeconds(25)
+    while ($folders.Count -and [DateTime]::Now -lt $deadline) {
+        $folders = @($folders | Where-Object { -not (Test-SupervisorStopped $_) })
+        if ($folders.Count) { Start-Sleep -Milliseconds 200 }
+    }
     try { if ($script:OrionNative) { [void][OrionUiNative]::ShutdownBlockReasonDestroy($sender.Handle) } } catch {}
 })
 $script:session.Show(); $script:session.Hide()   # A real (hidden) top-level window: Windows asks it before ending.

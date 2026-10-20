@@ -29,6 +29,22 @@ def owner_job_record(data):
     return dict(v=1, scope=scope, name=job_adapter().job_name(scope))
 
 
+def fast_shutdown_signal(pid):
+    """Ask a Windows postmaster for a fast shutdown, exactly as pg_ctl stop -m fast does (src/port/kill.c):
+    the signal number travels through the server's own \\\\.\\pipe\\pgsignal_<pid> pipe. SIGINT (2) is a fast
+    shutdown: new connections refused, open transactions rolled back, a shutdown checkpoint written.
+    True when the server acknowledged the signal."""
+    import ctypes
+    from ctypes import wintypes as W
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CallNamedPipeW.argtypes = [W.LPCWSTR, ctypes.c_void_p, W.DWORD, ctypes.c_void_p, W.DWORD,
+                                      ctypes.POINTER(W.DWORD), W.DWORD]
+    signal, answer, received = ctypes.c_ubyte(2), ctypes.c_ubyte(0), W.DWORD(0)
+    ok = kernel.CallNamedPipeW(f'\\\\.\\pipe\\pgsignal_{int(pid)}', ctypes.byref(signal), 1,
+                               ctypes.byref(answer), 1, ctypes.byref(received), 1000)
+    return bool(ok) and received.value == 1 and answer.value == 2
+
+
 def owned_start(command, data, lock_directory, *, timeout):
     """Run the pg_ctl start `command` so that the postmaster is born inside this process's job.
 
@@ -189,6 +205,14 @@ class Postgres:
 
     def _shutdown(self, owner):
         with ProcessReference(owner) as reference:
+            # Fast shutdown without starting a process: Windows refuses new processes while it signs out
+            # (0xc0000142), and that is exactly when the server must still close cleanly.
+            if os.name == 'nt' and fast_shutdown_signal(owner['pid']):
+                try:
+                    reference.wait(30)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass  # pg_ctl below reports the failure the usual way.
             result = subprocess.run([str(self.ctl), 'stop', '-D', str(self.data), '-m', 'fast', '-w', '-t', '30'],
                                     capture_output=True, timeout=35, **NO_WINDOW)
             if result.returncode:

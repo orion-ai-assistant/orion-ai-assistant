@@ -37,7 +37,7 @@ class TrayTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding='utf-8')
         self.assertTrue(text.isascii(), 'Windows PowerShell 5.1 reads BOM-less files as ANSI')
         for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false',
-                       'Get-OrionIcon', 'Orion-Ui.ps1', 'WindowsShutDown', "'-NonInteractive'"):
+                       'Get-OrionIcon', 'Orion-Ui.ps1', 'WindowsShutDown', 'Request-SupervisorStop'):
             self.assertIn(needle, text)
         self.assertTrue(UI.read_text(encoding='utf-8').isascii())
         powershell = shutil.which('powershell')

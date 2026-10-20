@@ -89,8 +89,10 @@ def launch_environment(registry):
     global _hub_only
     # Everything but the registry path is the Hub's own configuration (and none of it with a Router-only
     # install). The Router never runs with it: see router_environment().
-    _hub_only = ({key: previous.get(key) for key in values if key != 'ORION_INSTALLATION_REGISTRY'}
-                 if hub else {})
+    # A value equal to the Hub file's is the Hub's even when it was already in this process's environment
+    # (services.shared.environment loads the Hub files at import): only a different, own value is kept.
+    _hub_only = ({key: (previous.get(key) if previous.get(key) != value else None)
+                  for key, value in values.items() if key != 'ORION_INSTALLATION_REGISTRY'} if hub else {})
     os.environ.update(values)
     try:
         yield
