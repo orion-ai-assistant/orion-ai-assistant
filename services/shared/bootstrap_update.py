@@ -39,7 +39,7 @@ from .update_gate import TERMINAL, blocked
 from .update_helper import UpdateError
 
 MARKER = '.orion-self-updated'
-MANAGED_NAME = re.compile(r'Bootstrap-Installer-s\d+-[0-9a-f]{8}')  # Folders this mechanism creates.
+MANAGED_NAME = re.compile(r'Bootstrap-Installer-s\d+-[0-9a-f]{8}')  # The folders this mechanism creates.
 STARTUP_WAIT = 60
 REQUIRED_FILES = (
     'bootstrap.json', 'orion-release.json', 'trusted-root.json', 'runtime/python/python.exe',
