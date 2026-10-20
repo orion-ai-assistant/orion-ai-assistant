@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "component": "hub",
-  "package_id": "orion-hub-0.2.17-windows-x86_64-cpu",
-  "version": "0.2.17",
-  "sequence": 33,
+  "package_id": "orion-hub-0.2.18-windows-x86_64-cpu",
+  "version": "0.2.18",
+  "sequence": 34,
   "platform": "windows",
   "arch": "x86_64",
   "profile": "cpu",
