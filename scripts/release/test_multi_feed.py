@@ -151,8 +151,68 @@ def feeds(request):
 
     def release_to(version):
         fetcher.directories = {url: repos[version] for url, repos in repositories.items()}
+
+    def republish(url, version, build):
+        """Signed repository `version` of one feed with what `build(artifacts directory)` writes; made current."""
+        artifacts = tmp / f'artifacts-{sum(map(len, repositories.values()))}'
+        artifacts.mkdir()
+        build(artifacts)
+        repositories[url][version] = publisher.publish(artifacts, tmp / f'repo-{sum(map(len, repositories.values()))}',
+                                                       trusted, signers, version=version)
+        fetcher.directories[url] = repositories[url][version]
     return type('Feeds', (), dict(tmp=tmp, trusted=trusted, fetcher=fetcher, names=names, client=staticmethod(client),
-                                  source=staticmethod(source), release_to=staticmethod(release_to)))
+                                  source=staticmethod(source), release_to=staticmethod(release_to),
+                                  republish=staticmethod(republish)))
+
+
+def bootstrap(directory, sequence, split):
+    """A bootstrap release: the combined bundle, and with `split` also its code package and runtime layer."""
+    value = {**manifest('hub', sequence), 'component': 'bootstrap', 'requires': {}, 'capabilities': [],
+             'package_id': f'orion-bootstrap-0.{sequence}.0-windows-x86_64-cpu', 'version': f'0.{sequence}.0',
+             'entrypoint': 'bootstrap.json'}
+    files = {'orion-release.json': json.dumps(value), 'bootstrap.json': '{}'}
+    parts = [('orion-bootstrap-windows-x64.zip', {**files, 'runtime/python/python.exe': 'x'}, {'custom': value})]
+    if split:
+        layer = directory / 'layer.zip'
+        with zipfile.ZipFile(layer, 'w') as archive:
+            archive.writestr('runtime/python/python.exe', 'x')
+        digest = sha256(layer)
+        reference = {'target': f'orion-bootstrap-runtime-{digest[:16]}.zip', 'sha256': digest,
+                     'length': layer.stat().st_size}
+        layer.rename(directory / reference['target'])
+        (directory / 'layer.target.json').write_text(json.dumps({
+            'path': reference['target'], 'length': reference['length'], 'hashes': {'sha256': digest},
+            'custom': {'schema': 1, 'layer': 'runtime', 'for': 'bootstrap', 'inputs': '0' * 64}}))
+        parts.append(('orion-bootstrap-code-windows-x64.zip', {**files, 'orion-runtime.json': json.dumps(reference)},
+                      {'custom': value, 'runtime': reference}))
+    for name, members, extra in parts:
+        with zipfile.ZipFile(directory / name, 'w') as archive:
+            for member, data in members.items():
+                archive.writestr(member, data)
+        (directory / (name[:-4] + '.target.json')).write_text(json.dumps({
+            'path': name, 'length': (directory / name).stat().st_size,
+            'hashes': {'sha256': sha256(directory / name)}, **extra}))
+
+
+def test_the_newest_bootstrap_of_all_feeds_is_chosen_and_its_code_package_preferred(feeds):
+    from services.shared import bootstrap_update
+    store = Registry(feeds.tmp / 'install.json')
+    installed = feeds.tmp / 'Bootstrap-Installer'
+    installed.mkdir()
+    (installed / 'bootstrap.json').write_text(json.dumps({'sequence': 3}))
+    (feeds.tmp / 'bootstrap').mkdir()
+    (feeds.tmp / 'bootstrap/automatic-runtime.json').write_text(json.dumps({'schema': 1, 'root': str(installed)}))
+    automatic = type('Automatic', (), {'registry': store, 'new_client': staticmethod(feeds.client)})()
+    source = feeds.source(2, ('hub', 'router'))
+    # The Hub feed is split already; the Router feed still has only a combined (older) bootstrap.
+    feeds.republish(HUB, 3, lambda d: (package(d, 'hub', 2), bootstrap(d, 5, split=True)))
+    feeds.republish(ROUTER, 3, lambda d: (package(d, 'router', 2), bootstrap(d, 4, split=False)))
+    _, target, installed_sequence, _ = bootstrap_update.newer(automatic, source)
+    assert (target.path, target.custom['sequence'], installed_sequence) == ('orion-bootstrap-code-windows-x64.zip', 5, 3)
+    # A newer combined-only bootstrap in the other feed wins: the sequence decides, the format does not.
+    feeds.republish(ROUTER, 4, lambda d: (package(d, 'router', 2), bootstrap(d, 6, split=False)))
+    _, target, _, _ = bootstrap_update.newer(automatic, source)
+    assert (target.path, target.custom['sequence']) == ('orion-bootstrap-windows-x64.zip', 6)
 
 
 @pytest.fixture

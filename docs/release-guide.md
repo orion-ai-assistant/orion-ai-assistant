@@ -21,13 +21,27 @@ içindir. Ayrıntılı teknik başvuru: [scripts/release/README.md](../scripts/r
 - **Feed biçimi:** GitHub Release asset'leri:
   - `N.root.json`, `N.targets.json`, `N.snapshot.json`, `timestamp.json`
   - Hash önekli paketler: `<sha256>.orion-router-code-windows-x86_64-cpu.zip`, `<sha256>.orion-router-runtime-<hash>.zip`, ...
-  - Düz `orion-bootstrap-windows-x64.zip`: kurulum betiğinin indirdiği kopya.
+  - Düz `orion-bootstrap-windows-x64.zip`: kurulum betiğinin indirdiği kopya (tek parça bootstrap).
   - `timestamp.json` en son yüklenir; yeni sürüm ancak o yüklenince görünür.
 - **Bölünmüş paketler:** Hub ve Router iki parça yayınlanır:
   - **Kod paketi** (birkaç MB).
   - **Runtime katmanı** (Python + kütüphaneler + PostgreSQL vb., 120-170 MB). İçerik adresli, yani içerik
     değişmedikçe ne yeniden derlenir ne yüklenir ne indirilir. Yeni bir Python kütüphanesi eklenirse
     katmanın hash'i değişir ve otomatik olarak yeni katman çıkar.
+- **Bootstrap (güncelleyici) de bölünmüştür,** ama aynı `sequence` ile iki biçimde imzalanır:
+  - **Tek parça** `orion-bootstrap-windows-x64.zip` (~17 MB): `get-orion.ps1` ile ilk kurulum bundan yapılır;
+    bölünmüş bootstrap'tan önceki güncelleyiciler (0.2.13 ve öncesi) yalnızca bu adı okur ve bir kez bunu indirip
+    yeni güncelleyiciye geçer.
+  - **Kod paketi** `orion-bootstrap-code-windows-x64.zip` (~0.6 MB) + **runtime katmanı**
+    `orion-bootstrap-runtime-<hash>.zip` (gömülü Python + kütüphaneleri, ~16 MB). Kurulu güncelleyiciler bunları
+    okur; runtime değişmediyse yalnızca kod paketi iner.
+  - Tek parçadan kurulmuş bir güncelleyicide katman ZIP'i yoktur, ama dosyaları vardır: `bootstrap.json`'daki
+    `runtime` kaydı yeni kod paketinin istediği katmanı gösteriyorsa ZIP'i kendi `runtime/` klasöründen birebir
+    yeniden üretir (`services/shared/runtime_layer.py`, derlemede de bundle'ın kendi Python'u kullanılır) ve
+    indirme önbelleğine koyar. Bayt'lar imzalı hash'le aynı değilse kullanılmaz, katman normal şekilde iner.
+    Böylece yeni kurulum ve eski güncelleyiciden geçiş de ilk güncellemede yalnızca kodu indirir.
+  - `build_bootstrap.py` üçünü de aynı klasöre yazar; `publish_release.py --reuse-bootstrap` üçünü birlikte taşır.
+    Katman içerik adresli olduğu için değişmediyse yeniden yüklenmez.
 
 ## 2. Bir kerelik kurulum (yeni geliştirici PC'si)
 
@@ -181,8 +195,8 @@ Seçenekler birleşebilir, ör. `.\release.cmd --feeds router --no-accept`.
 şunlar kalır:
 - `N.root.json` dosyalarının hepsi ve `timestamp.json`.
 - Canlı sürümün `snapshot` ve `targets` dosyaları.
-- Canlı sürümün listelediği paketler, runtime katmanları ve bootstrap. Eski bootstrap'lar için tutulan son tek
-  parça Hub/Router paketi de bu listede olduğu için kalır.
+- Canlı sürümün listelediği paketler, runtime katmanları ve bootstrap (tek parça, kod paketi ve katmanı). Eski
+  bootstrap'lar için tutulan son tek parça Hub/Router paketi de bu listede olduğu için kalır.
 - Düz `orion-bootstrap-windows-x64.zip`.
 
 Gerisi silinir. O sırada silinen bir paketi indiren istemci "dosya bulunamadı, bir sonraki denetimde yeni sürüm
@@ -374,6 +388,7 @@ der; kurulu sürüm değişmez. Bir sonraki denetimde yeni sürümü indirir.
 | --- | --- | --- |
 | Yayın "bytes differ under a published sequence" diye reddediyor | Aynı `sequence` ile farklı içerik | Bileşenin `version`/`sequence`/`package_id`'sini yükselt |
 | Kurulu PC'de `LengthOrHashMismatchError`, kart "yeni sürüm yok" diyor | Yarıda kalan bir turun bıraktığı eski `N.snapshot.json`/`N.targets.json` (Ekim 2026'da düzeltildi: bu sürümün metadata'sı artık sha256 farklıysa her zaman yeniden yüklenir) | Yerel `.tmp/release/<feed>-vN/repository/metadata/` içindeki doğru dosyayı `gh release upload feed <dosya> --repo ... --clobber` ile yükle; hash'i `timestamp.json`'daki ile karşılaştır |
+| Yayın "The bootstrap has no code package next to it" diyor | `--reuse-bootstrap` / `--no-bump` bölünmüş bootstrap'tan önce derlenmiş bir bundle'ı gösteriyor | `bootstrap.json`'u yükselt (veya `--no-bump` olmadan çalıştır); bootstrap yeniden derlenir |
 | Yeni sürüm birkaç dakika görünmüyor | GitHub CDN eski kopyayı sunuyor | Birkaç dakika bekle; `curl -sL <url> \| sha256sum` ile kontrol et |
 | Bir feed güncellendi, diğeri bir tur sonra geldi | İki feed aynı anda görünür olmayabilir (CDN) | Sonraki denetimde düzelir |
 | Derleme "Sources changed while the package was being built" | autocrlf'li checkout (Ekim 2026'da düzeltildi) | Güncel `main`'i kullan |

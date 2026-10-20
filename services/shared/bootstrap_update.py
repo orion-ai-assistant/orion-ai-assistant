@@ -14,23 +14,29 @@ The previous bootstrap stays until the new one has completed one successful chec
 a new bootstrap that cannot start is abandoned automatically. The trusted root is
 never changed here: a bundle whose root differs from the installed one is refused
 (root rotation stays an explicit, separate step).
+
+Every release is published twice under one sequence: the combined bundle (stable
+name; get-orion.ps1 installs from it and updaters that predate split bootstraps adopt
+it) and a code package whose runtime/ is a separate content-addressed layer target
+(see release_packages). This module reads the code package, so a release that did not
+change the runtime downloads about 1 MB instead of the whole embedded Python.
 """
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import time
+from urllib.parse import quote
 import uuid
 
 from .installation_paths import PathValidationError, canonical_path, validate_private_directory
 from .installation_registry import _atomic_write, operation_lock
 from .process_lifecycle import LifecycleError
-from .release_packages import PackageError, sha256
+from .release_packages import BOOTSTRAP_CODE_TARGET, BOOTSTRAP_TARGET, PackageError, runtime_reference, sha256
 from .update_gate import TERMINAL, blocked
 from .update_helper import UpdateError
 
-# The unsigned installer download (get-orion.ps1) and the signed TUF target share one stable name.
-BOOTSTRAP_TARGET = 'orion-bootstrap-windows-x64.zip'
 MARKER = '.orion-self-updated'
 STARTUP_WAIT = 60
 REQUIRED_FILES = (
@@ -172,14 +178,19 @@ def newer(automatic, source):
     # sequence wins and an unreachable feed never hides the others.
     from .automatic_updates import normalize_sources
     candidates = []
+    names = (BOOTSTRAP_CODE_TARGET, BOOTSTRAP_TARGET)
     for feed in source if isinstance(source, list) else normalize_sources(source):
         try:
             feed_client = automatic.new_client(feed)
-            _, found = feed_client.check([BOOTSTRAP_TARGET])
+            _, found = feed_client.check(names, optional=names)
         except Exception:
             continue
-        if found is not None and BOOTSTRAP_TARGET in found:
-            candidates.append((found[BOOTSTRAP_TARGET].custom.get('sequence', 0), feed_client, found[BOOTSTRAP_TARGET]))
+        # The code package when the feed offers it (a feed published before split bootstraps has only the combined
+        # bundle); both are the same release.
+        offered = [found[name] for name in names if found and name in found]
+        if offered:
+            target = max(offered, key=lambda t: (t.custom.get('sequence', 0), t.path == BOOTSTRAP_CODE_TARGET))
+            candidates.append((target.custom.get('sequence', 0), feed_client, target))
     if not candidates:
         return None  # No feed offers a bootstrap, or none is reachable: the component check reports that.
     _, client, target = max(candidates, key=lambda c: c[0])
@@ -190,6 +201,35 @@ def newer(automatic, source):
     if release['sequence'] <= installed or release['sequence'] <= previous.get('failed_sequence', 0):
         return None
     return client, target, installed, previous
+
+
+def seed_runtime_layer(client, target, current):
+    """Put the runtime layer `target` needs into the download cache when it is the runtime the current bootstrap
+    already has (bootstrap.json `runtime`): a bootstrap installed from the combined bundle (first install, or one
+    adopted by an older updater) holds those files, but not the layer ZIP. The ZIP is rebuilt from them and kept
+    only when it has the signed length and sha256 (prepare verifies it again). Best effort: otherwise the layer is
+    simply downloaded. Returns True when it seeded the cache."""
+    reference = runtime_reference(target)
+    info = _read(Path(current) / 'bootstrap.json', {})
+    cache = getattr(client, 'cache', None)
+    if reference is None or cache is None or not isinstance(info, dict) or info.get('runtime') != reference:
+        return False
+    cached = Path(cache) / 'targets' / quote(reference['target'], '')
+    if cached.is_file():
+        return False  # Either the very layer (prepare checks) or a damaged copy that the download replaces.
+    scratch = cached.with_name(f'.{uuid.uuid4().hex}.seed')
+    try:
+        from .runtime_layer import write
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        write(current, scratch)
+        if scratch.stat().st_size == reference['length'] and sha256(scratch) == reference['sha256']:
+            os.replace(scratch, cached)
+            return True
+    except (OSError, ValueError):
+        pass
+    finally:
+        scratch.unlink(missing_ok=True)
+    return False
 
 
 def adopt(automatic, source, *, probe=default_probe):
@@ -211,6 +251,7 @@ def adopt(automatic, source, *, probe=default_probe):
                 return None
             destination = current.parent / f"Bootstrap-Installer-s{release['sequence']}-{uuid.uuid4().hex[:8]}"
             try:
+                seed_runtime_layer(client, target, current)
                 tree = client.prepare(target, destination)
                 validate_bundle(tree, release, installed_root=_folder(registry) / 'trusted-root.json',
                                 current_root=current, probe=probe)

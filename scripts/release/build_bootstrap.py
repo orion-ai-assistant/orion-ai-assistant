@@ -3,24 +3,50 @@
 The resulting ZIP is an installer distribution, NOT a TUF trust bootstrap over
 the same untrusted channel. Production delivery requires an authenticated channel
 and Windows signing approval; no production root/key is invented by this tool.
+
+Next to it (same directory) the same bootstrap is written split, like Hub/Router packages: a code package
+(orion-bootstrap-code-windows-x64.zip, about 1 MB) and its runtime layer (runtime/: the embedded Python and its
+wheels, orion-bootstrap-runtime-<sha16>.zip, named by its content). Installed bootstraps update through those, so
+a release that did not change the runtime downloads only the code.
 """
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tuf.api.metadata import Metadata, Root
-from services.shared.release_packages import archive_name, extract_zip, sha256, validate_release
+from services.shared.release_packages import (BOOTSTRAP_CODE_TARGET, BOOTSTRAP_TARGET, RUNTIME_REFERENCE, extract_zip,
+                                             sha256, validate_release)
 from python_runtime import install_site_hook
 from build_launcher import build_launcher
 from build_package import drop_entry_point_launchers
+import zip_layers
+
+
+def code_path(output):
+    """The split code package written next to the combined bundle `output` (test bundles keep their own names)."""
+    output = Path(output)
+    return output.with_name(BOOTSTRAP_CODE_TARGET if output.name == BOOTSTRAP_TARGET else output.stem + '-code.zip')
+
+
+def write_runtime_layer(tree, directory, inputs_key):
+    """runtime/ of `tree` as its own target. Written by the bundle's own Python (services/shared/runtime_layer.py):
+    an installed bootstrap rebuilds exactly these bytes from its runtime/ to seed its download cache."""
+    unfinished = Path(directory) / '.runtime-layer.zip'
+    subprocess.run([str(tree / 'runtime/python/python.exe'), '-B', str(tree / 'services/shared/runtime_layer.py'),
+                    str(tree), str(unfinished)], check=True)
+    digest = sha256(unfinished)
+    description = {'path': f'orion-bootstrap-runtime-{digest[:16]}.zip', 'length': unfinished.stat().st_size,
+                   'hashes': {'sha256': digest},
+                   'custom': {'schema': 1, 'layer': 'runtime', 'for': 'bootstrap', 'inputs': inputs_key}}
+    return unfinished, description
 
 
 def build(trusted_root, inputs, output, *, test_only=False, release_source=None, single_key=False, release=None):
@@ -41,7 +67,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
     elif not test_only and (root.signed.roles['root'].threshold < 2 or len(root.signed.roles['root'].keyids) < 3):
         raise ValueError('Production bootstrap requires 2-of-3 offline root policy')
     output = Path(output)
-    if output.exists():
+    if output.exists() or code_path(output).exists():
         raise ValueError('Bootstrap destination already exists')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent, prefix='.orion-bootstrap-') as temporary:
@@ -50,12 +76,13 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         archive = Path(inputs) / pin['filename']
         if sha256(archive) != pin['sha256']:
             raise ValueError('Python bootstrap input hash mismatch')
+        requirements = Path(__file__).with_name('requirements.txt')
         extract_zip(archive, tree / 'runtime/python')
         python = tree / 'runtime/python'
         (python / 'python311._pth').write_text('python311.zip\n.\nsite-packages\n..\\..\nimport site\n')
         subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
             '--target', str(python / 'site-packages'), '--no-compile-bytecode', '--require-hashes', '--only-binary', ':all:',
-            '-r', str(Path(__file__).with_name('requirements.txt'))], check=True)
+            '-r', str(requirements)], check=True)
         # Console-script launchers embed this temporary folder's path: without this, two builds of the same
         # inputs differ and release.cmd could never recognise an unchanged bootstrap.
         drop_entry_point_launchers(python / 'site-packages')
@@ -86,11 +113,17 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
             from services.shared.automatic_updates import validate_source
             value = validate_source(json.loads(Path(release_source).read_text(encoding='utf-8')))
             (tree / 'release-source.json').write_text(json.dumps(value), encoding='utf-8')
+        inputs_key = hashlib.sha256(json.dumps([pin['sha256'], sha256(requirements),
+            sha256(Path(__file__).with_name('python_runtime.py')),
+            sha256(ROOT / 'services/shared/runtime_layer.py')]).encode()).hexdigest()
+        layer_zip, layer = write_runtime_layer(tree, temporary, inputs_key)
+        reference = {'target': layer['path'], 'sha256': layer['hashes']['sha256'], 'length': layer['length']}
+        # `runtime`: the layer this bootstrap runs on, in the combined bundle too (bootstrap_update.seed_runtime_layer).
         (tree / 'bootstrap.json').write_text(json.dumps({'schema': 1, 'test_only': test_only,
             'root_sha256': sha256(trusted_root), 'sequence': release['sequence'],
             'package_id': release['package_id'], 'version': release['version'],
             'launcher_sha256': sha256(launcher),
-            'router_launcher_sha256': sha256(router_launcher)}))
+            'router_launcher_sha256': sha256(router_launcher), 'runtime': reference}))
         (tree / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         (tree / 'Install-Orion.ps1').write_text(
             'param([string]$MetadataUrl, [string]$TargetsUrl, [string[]]$Targets, [string[]]$Components, '
@@ -123,15 +156,24 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         # validates occupied component directories instead of requiring that this
         # bootstrap metadata parent be empty.
         # Fixed timestamps and order: the same inputs give the same bytes, so a republished
-        # feed keeps the signed hash of an unchanged bundle.
-        with zipfile.ZipFile(output, 'x', zipfile.ZIP_DEFLATED) as stream:
-            for path in sorted(tree.rglob('*')):
-                if path.is_file():
-                    name = path.relative_to(tree).as_posix()
-                    archive_name(name)
-                    info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
-                    info.external_attr = 0o100644 << 16
-                    stream.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=6)
+        # feed keeps the signed hash of an unchanged bundle (and an unchanged layer keeps its name).
+        sources = {name: path for name, path in zip_layers.tree_members(tree).items() if not name.startswith('runtime/')}
+        pinned = Path(temporary) / RUNTIME_REFERENCE
+        pinned.write_text(json.dumps(reference, indent=2) + '\n', encoding='utf-8')
+        # The code package's hash changes with its runtime too (orion-runtime.json, as in Hub/Router packages).
+        zip_layers.assemble(Path(temporary) / 'code.zip', {**sources, RUNTIME_REFERENCE: pinned})
+        zip_layers.assemble(Path(temporary) / 'combined.zip', sources, [layer_zip])
+        layer_path = output.with_name(layer['path'])
+        if not (layer_path.is_file() and sha256(layer_path) == layer['hashes']['sha256']):
+            layer_path.unlink(missing_ok=True)
+            shutil.copyfile(layer_zip, layer_path)
+        (Path(temporary) / 'code.zip').rename(code_path(output))
+        (Path(temporary) / 'combined.zip').rename(output)
+    layer_path.with_suffix('.target.json').write_text(json.dumps(layer, indent=2) + '\n', encoding='utf-8')
+    code = code_path(output)
+    code.with_suffix('.target.json').write_text(json.dumps({
+        'path': code.name, 'length': code.stat().st_size, 'hashes': {'sha256': sha256(code)}, 'custom': release,
+        'runtime': reference}, indent=2) + '\n', encoding='utf-8')
     description = {'path': output.name, 'length': output.stat().st_size,
                    'hashes': {'sha256': sha256(output)}, 'custom': release}
     output.with_suffix('.target.json').write_text(json.dumps(description, indent=2) + '\n', encoding='utf-8')

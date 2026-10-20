@@ -172,6 +172,15 @@ def test_metadata_rollback_is_rejected(repo):
     assert client().check([name])[0]['status'] == 'check-unavailable'
 
 
+def test_optional_target_may_be_missing_but_a_required_one_may_not(repo):
+    _, _, name, _, _, _, _, client = repo
+    status, targets = client().check(['orion-bootstrap-code-windows-x64.zip', name],
+                                     optional=('orion-bootstrap-code-windows-x64.zip',))
+    assert status['status'] == 'checked' and list(targets) == [name]
+    status, targets = client().check(['orion-bootstrap-code-windows-x64.zip', name])
+    assert targets is None and status['reason'] == 'PackageError'
+
+
 def test_newer_signed_metadata_cannot_substitute_same_package(repo):
     tmp, _, name, signers, bootstrap, artifacts, fetcher, client = repo
     assert client().check([name])[0]['status'] == 'checked'

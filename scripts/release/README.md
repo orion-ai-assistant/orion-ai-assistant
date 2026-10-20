@@ -508,6 +508,19 @@ target name `orion-bootstrap-windows-x64.zip` (the same stable name `get-orion.p
 release asset and the hash-prefixed target are the same bytes). Only `ReleaseClient` (signature, hash,
 metadata/product rollback protection, safe extraction) is the trust path.
 
+Split like Hub/Router packages, but published in both forms under ONE sequence: `build_bootstrap.py`
+writes, next to the combined bundle, `orion-bootstrap-code-windows-x64.zip` (everything except `runtime/`,
+plus `orion-runtime.json`; ~0.6 MB) and `orion-bootstrap-runtime-<sha16>.zip` (`runtime/`, ~16 MB, written
+by the bundle's own Python via `services/shared/runtime_layer.py`). The combined bundle stays for
+`get-orion.ps1` and for updaters that predate split bootstraps (they read only that name and adopt it once);
+current updaters check both names (`optional`) and prefer the code target. `ReleaseClient` keeps rollback
+memory per component, except under the code target's own name (the same sequence is published twice with
+different bytes). The bundle's `bootstrap.json` records its layer (`runtime`); an updater whose runtime is the
+one the next code target references, but whose download cache lacks the layer ZIP (installed from the
+combined bundle), rebuilds the ZIP from its own `runtime/` and seeds the cache only when length and sha256
+equal the signed reference (`seed_runtime_layer`); otherwise the layer is downloaded. `--reuse-bootstrap`
+carries all three files (`bootstrap_parts`); `bootstrap_gate` checks the combined and the code name.
+
 * Version identity: `scripts/release/bootstrap.json` (`sequence`, `version`, `package_id`
   `orion-bootstrap-<version>-windows-x86_64-cpu`). `build_bootstrap.py` copies it into the bundle as
   `orion-release.json` and records `sequence`/`package_id`/`version` in the bundle's `bootstrap.json`
