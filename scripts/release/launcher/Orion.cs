@@ -8,7 +8,7 @@
 //   - It runs inside a kill-on-close job whose only handle it holds; the supervisors inherit the job and their
 //     own jobs nest inside it. However this process ends ("End task", a crash, Windows signing out) Windows
 //     ends every Orion process with it.
-//   - It is the notification-area icon: open, uninstall, quit (the launcher's normal stop), and Windows
+//   - It is the notification-area icon: open (the title or a click), quit (the launcher's normal stop), and Windows
 //     sign-out (asks every supervisor to stop through its stop request file, without starting a process).
 // The work itself stays in Orion.ps1 / the Python launcher, which it runs hidden. A second start hands its
 // request to the running host (WM_COPYDATA to its hidden window) and exits. Without a readable installation
@@ -234,15 +234,10 @@ internal sealed class Host : Form
         title.Click += delegate { Open(new List<string>(), false); };
         menu.Items.Add(title);
         menu.Items.Add(new ToolStripSeparator());
-        var open = new ToolStripMenuItem("Orion'u a\u00e7");
-        var remove = new ToolStripMenuItem("Orion'u kald\u0131r\u2026");
+        // Two entries only: the title opens Orion, Quit stops it (uninstall: Windows Settings > Apps).
         var quit = new ToolStripMenuItem("\u00c7\u0131k");
-        menu.Items.Add(open); menu.Items.Add(remove);
-        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(quit);
-        foreach (var item in new[] { open, remove, quit }) { item.ForeColor = Ui.Foreground; item.Padding = new Padding(0, 3, 0, 3); }
-        open.Click += delegate { Open(new List<string>(), false); };
-        remove.Click += delegate { Uninstall(); };
+        quit.ForeColor = Ui.Foreground; quit.Padding = new Padding(0, 3, 0, 3);
         quit.Click += delegate { Quit(); };
         icon.ContextMenuStrip = menu;
         icon.MouseClick += (sender, e) => { if (e.Button == MouseButtons.Left) Open(new List<string>(), false); };
@@ -294,17 +289,6 @@ internal sealed class Host : Form
         icon.Visible = false;
         stopping = Native.Run(Orion.Entry(script, new[] { "-Stop" }), folder, false);
         if (stopping == IntPtr.Zero) icon.Visible = true;
-    }
-
-    private void Uninstall()
-    {
-        // The dialog stops Orion (and this host) itself after the user confirmed, so it must not be inside
-        // this host's job; it asks what to remove and what to keep.
-        string uninstall = Path.Combine(folder, "Orion-Uninstall.ps1");
-        if (!File.Exists(uninstall)) return;
-        string line = "\"" + Native.PowerShell + "\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
-            + uninstall + "\" -Registry \"" + registry + "\"";
-        if (Native.Run(line, folder, true) == IntPtr.Zero) Native.Run(line, folder, false);
     }
 
     private void Tick()
@@ -567,7 +551,7 @@ internal static class Native
     }
 
     // The host's job: kill on close (this process holds the only handle), breakaway allowed only for processes
-    // started with CREATE_BREAKAWAY_FROM_JOB (the uninstall dialog, the browser window). The supervisors' own
+    // started with CREATE_BREAKAWAY_FROM_JOB (an uninstall's cleanup that must outlive Orion). The supervisors' own
     // jobs nest inside it and keep forbidding breakaway. Named, so Python can tell whether it runs inside it.
     internal static IntPtr CreateHostJob(string name)
     {

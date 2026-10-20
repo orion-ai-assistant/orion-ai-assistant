@@ -36,7 +36,8 @@ class TrayTests(unittest.TestCase):
     def test_script_is_valid_powershell_with_the_required_menu(self):
         text = SCRIPT.read_text(encoding='utf-8')
         self.assertTrue(text.isascii(), 'Windows PowerShell 5.1 reads BOM-less files as ANSI')
-        for needle in ('NotifyIcon', "Orion'u a", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false',
+        self.assertNotIn("Orion'u kald", text)  # Two entries: the title (open) and Quit.
+        for needle in ('NotifyIcon', "Add_Click({ Open-Orion })", '0x00C7', "'-Stop'", 'Local\\Orion-Tray-', 'tray.exit', 'Visible = $false',
                        'Get-OrionIcon', 'Orion-Ui.ps1', 'WindowsShutDown', 'Request-SupervisorStop'):
             self.assertIn(needle, text)
         self.assertTrue(UI.read_text(encoding='utf-8').isascii())

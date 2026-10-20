@@ -1,8 +1,8 @@
 # Orion notification-area icon. Dependency-free (Windows PowerShell + WinForms).
 # Started and supervised by services.shared.launcher; never started by the Hub itself.
-#   left click / "Orion'u ac" : open the Orion window (starts services if they are not running)
+#   left click / the title    : open the Orion window (starts services if they are not running)
 #   "Cik"                     : stop Hub, Router and every service through the normal launcher stop
-#   "Orion'u kaldir"          : the uninstall dialog (bootstrap/Orion-Uninstall.ps1; asks what to remove / keep)
+#   (uninstall: Windows Settings > Apps)
 #   Windows sign-out / shutdown             : the same stop, so PostgreSQL shuts down cleanly (no crash recovery
 #                                             at the next start); Windows is held back only while it runs
 # Closing the Orion window never touches this icon or the services.
@@ -51,22 +51,10 @@ $title.Font = Get-OrionFont 10 ([Drawing.FontStyle]::Bold)
 $title.ForeColor = $script:OrionTheme.Accent
 $title.Add_Click({ Open-Orion })
 [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
-$open = $menu.Items.Add("Orion'u a" + [char]0x00E7)
-$remove = $menu.Items.Add("Orion'u kald" + [char]0x0131 + 'r' + [char]0x2026)
-[void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $quit = $menu.Items.Add([string][char]0x00C7 + [char]0x0131 + 'k')
-foreach ($item in @($open, $remove, $quit)) { $item.ForeColor = $script:OrionTheme.Text; $item.Padding = New-Object Windows.Forms.Padding(0, 3, 0, 3) }
+$quit.ForeColor = $script:OrionTheme.Text; $quit.Padding = New-Object Windows.Forms.Padding(0, 3, 0, 3)
 $script:icon.ContextMenuStrip = $menu
-$open.Add_Click({ Open-Orion })
 $script:icon.Add_MouseClick({ if ($_.Button -eq [Windows.Forms.MouseButtons]::Left) { Open-Orion } })
-$remove.Add_Click({
-    # The dialog stops Orion itself after the user confirmed; this icon ends when the registry is gone.
-    $script = Join-Path $bootstrap 'Orion-Uninstall.ps1'
-    if (Test-Path -LiteralPath $script) {
-        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-            '-WindowStyle', 'Hidden', '-File', ('"' + $script + '"'), '-Registry', ('"' + $Registry + '"')) | Out-Null
-    }
-})
 $quit.Add_Click({
     # The launcher stop is the single shutdown path. Do not wait for it: this icon is already gone.
     $script:icon.Visible = $false
