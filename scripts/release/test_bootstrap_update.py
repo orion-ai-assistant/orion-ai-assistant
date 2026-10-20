@@ -14,9 +14,9 @@ import pytest
 
 from test_update_helper import installed
 from test_release_packages import repo, publisher
-from services.shared import bootstrap_update
+from services.shared import bootstrap_update, runtime_layer
 from services.shared.automatic_updates import AutomaticUpdates, runtime_command, watch, record_check_failure
-from services.shared.release_packages import sha256
+from services.shared.release_packages import BOOTSTRAP_CODE_TARGET, BOOTSTRAP_TARGET, sha256
 
 POINTER = 'bootstrap/automatic-runtime.json'
 
@@ -51,13 +51,25 @@ class Feed:
         self.probe_ok = True
         self.now = [2_000_000_000.0]
         monkeypatch.setattr('services.shared.automatic_updates.time.time', lambda: self.now[0])
+        self.fetched, fetch = [], self.fetcher._fetch
+        monkeypatch.setattr(self.fetcher, '_fetch', lambda url: (self.fetched.append(url.rsplit('/', 1)[1]), fetch(url))[1])
 
-    def current(self, sequence=None, name='Bootstrap-Installer', managed=False):
+    def current(self, sequence=None, name='Bootstrap-Installer', managed=False, runtime=None):
+        """`runtime`: the layer reference its bootstrap.json records (a bootstrap installed from a split release's
+        combined bundle)."""
         root = make_root(self.base / name, sequence, self.root_bytes, managed)
+        if runtime is not None:
+            info = json.loads((root / 'bootstrap.json').read_text())
+            (root / 'bootstrap.json').write_text(json.dumps({**info, 'runtime': runtime}))
         (self.folder / 'automatic-runtime.json').write_text(json.dumps({'schema': 1, 'root': str(root)}))
         return root
 
-    def publish(self, sequence, *, root_bytes=None, drop=None, tamper=False):
+    def downloads(self):
+        """Package files fetched (metadata left out)."""
+        return [name.split('.', 1)[1] for name in self.fetched if name.endswith('.zip')]
+
+    def publish(self, sequence, *, root_bytes=None, drop=None, tamper=False, split=False, runtime=b'x'):
+        """`split`: the combined bundle plus its code package and runtime layer, as build_bootstrap.py writes them."""
         self.version += 1
         release = {'schema': 1, 'component': 'bootstrap', 'package_id': f'orion-bootstrap-0.1.{sequence}-windows-x86_64-cpu',
                    'version': f'0.1.{sequence}', 'sequence': sequence, 'platform': 'windows', 'arch': 'x86_64',
@@ -65,13 +77,27 @@ class Feed:
                    'data_schema': 1, 'rollback': 'same-schema-only', 'entrypoint': 'bootstrap.json'}
         stage = self.base / f'bundle-{sequence}-{self.version}'
         make_root(stage, sequence, root_bytes if root_bytes is not None else self.root_bytes)
+        (stage / 'runtime/python/python.exe').write_bytes(runtime)
         info = json.loads((stage / 'bootstrap.json').read_text())
         info['package_id'] = release['package_id']
+        for stale in self.artifacts.glob('bootstrap-*.target.json'):
+            stale.unlink()
+        self.reference = None
+        if split:
+            layer = self.base / f'layer-{sequence}-{self.version}.zip'
+            runtime_layer.write(stage, layer)
+            digest = sha256(layer)
+            self.reference = info['runtime'] = {'target': f'orion-bootstrap-runtime-{digest[:16]}.zip',
+                                                'sha256': digest, 'length': layer.stat().st_size}
+            shutil.copyfile(layer, self.artifacts / self.reference['target'])
+            (self.artifacts / 'bootstrap-layer.target.json').write_text(json.dumps({
+                'path': self.reference['target'], 'length': self.reference['length'], 'hashes': {'sha256': digest},
+                'custom': {'schema': 1, 'layer': 'runtime', 'for': 'bootstrap', 'inputs': '0' * 64}}))
         (stage / 'bootstrap.json').write_text(json.dumps(info))
         (stage / 'orion-release.json').write_text(json.dumps(release))
         if drop:
             (stage / drop).unlink()
-        archive = self.artifacts / bootstrap_update.BOOTSTRAP_TARGET
+        archive = self.artifacts / BOOTSTRAP_TARGET
         archive.unlink(missing_ok=True)
         with zipfile.ZipFile(archive, 'w') as stream:
             for path in sorted(stage.rglob('*')):
@@ -80,11 +106,23 @@ class Feed:
         (self.artifacts / 'bootstrap.target.json').write_text(json.dumps({
             'path': archive.name, 'length': archive.stat().st_size, 'hashes': {'sha256': sha256(archive)},
             'custom': release}))
+        if split:
+            code = self.artifacts / BOOTSTRAP_CODE_TARGET
+            code.unlink(missing_ok=True)
+            with zipfile.ZipFile(code, 'w') as stream:
+                for path in sorted(stage.rglob('*')):
+                    if path.is_file() and path.relative_to(stage).parts[0] != 'runtime':
+                        stream.write(path, path.relative_to(stage).as_posix())
+                stream.writestr('orion-runtime.json', json.dumps(self.reference))
+            (self.artifacts / 'bootstrap-code.target.json').write_text(json.dumps({
+                'path': code.name, 'length': code.stat().st_size, 'hashes': {'sha256': sha256(code)},
+                'custom': release, 'runtime': self.reference}))
         output = publisher.publish(self.artifacts, self.base / f'feed-{self.version}', self.root_file,
                                    self.signers, version=self.version)
         if tamper:
-            for path in (output / 'targets').glob('*.' + bootstrap_update.BOOTSTRAP_TARGET):
-                path.write_bytes(path.read_bytes() + b'tampered')
+            for name in (BOOTSTRAP_TARGET, BOOTSTRAP_CODE_TARGET):
+                for path in (output / 'targets').glob('*.' + name):
+                    path.write_bytes(path.read_bytes() + b'tampered')
         self.fetcher.directory = output
         return release
 
@@ -137,6 +175,62 @@ def test_newer_signed_bootstrap_is_adopted_beside_the_running_one(feed):
     assert state(feed)['state'] == 'confirmed'
     assert feed.helper.status()['phase'] == 'staged'  # Hub update staged by the new bootstrap.
     assert old.is_dir()  # The original install folder is not ours to delete.
+
+
+def test_split_release_downloads_only_the_code_when_the_runtime_is_already_installed(feed):
+    # Installed from that runtime's combined bundle (get-orion.ps1, or adopted by an older updater): the PC has the
+    # runtime files, not the layer ZIP. It rebuilds the ZIP from them, so only the ~1 MB code package is downloaded.
+    feed.publish(1, split=True)
+    current = feed.current(runtime=feed.reference)
+    feed.fetched.clear()
+    assert attempt(feed.service(current)) == (True, None)
+    new = feed.pointer()
+    assert feed.downloads() == [BOOTSTRAP_CODE_TARGET]
+    assert (new / 'runtime/python/python.exe').read_bytes() == b'x' and (new / 'orion-runtime.json').is_file()
+    assert bootstrap_update.bundle_sequence(new) == 1
+    # The next code-only release: the layer is in the download cache now.
+    feed.publish(2, split=True)
+    feed.fetched.clear()
+    bootstrap_update.confirm(feed.registry, new)
+    assert attempt(feed.service(new)) == (True, None)
+    assert feed.downloads() == [BOOTSTRAP_CODE_TARGET] and bootstrap_update.bundle_sequence(feed.pointer()) == 2
+
+
+def test_split_release_with_another_runtime_downloads_its_layer_once(feed):
+    current = feed.current(runtime={'target': 'orion-bootstrap-runtime-0000000000000000.zip', 'sha256': '0' * 64,
+                                    'length': 1})
+    feed.publish(1, split=True, runtime=b'new python')
+    feed.fetched.clear()
+    assert attempt(feed.service(current)) == (True, None)
+    assert sorted(feed.downloads()) == sorted([BOOTSTRAP_CODE_TARGET, feed.reference['target']])
+    assert (feed.pointer() / 'runtime/python/python.exe').read_bytes() == b'new python'
+
+
+def test_rebuilt_layer_counts_only_when_it_is_the_signed_one(feed):
+    feed.publish(1, split=True)
+    current = feed.current(runtime=feed.reference)
+    (current / 'runtime/python/python.exe').write_bytes(b'changed on this PC')  # Same record, other bytes.
+    feed.fetched.clear()
+    assert attempt(feed.service(current)) == (True, None)
+    assert feed.reference['target'] in feed.downloads()
+    assert (feed.pointer() / 'runtime/python/python.exe').read_bytes() == b'x'
+
+
+def test_updater_that_predates_split_bootstraps_adopts_the_combined_bundle(feed):
+    # Installed 0.2.13 reads only the combined name; the bootstrap it adopts reads the code package of the same
+    # sequence from the same download cache (the two names are immutable on their own, no rollback alarm).
+    release = feed.publish(1, split=True)
+    old = feed.make_client('update-cache')
+    _, found = old.check([BOOTSTRAP_TARGET])
+    tree = old.prepare(found[BOOTSTRAP_TARGET], feed.base / 'Bootstrap-Installer-s1-old')
+    bootstrap_update.validate_bundle(tree, release, installed_root=feed.folder / 'trusted-root.json',
+                                     current_root=tree, probe=lambda tree: True)
+    assert (tree / 'runtime/python/python.exe').is_file() and not (tree / 'orion-runtime.json').exists()
+    assert json.loads((tree / 'bootstrap.json').read_text())['runtime'] == feed.reference
+    current = feed.current()
+    feed.fetched.clear()
+    assert attempt(feed.service(current)) == (True, None)
+    assert BOOTSTRAP_CODE_TARGET in feed.downloads() and BOOTSTRAP_TARGET not in feed.downloads()
 
 
 def test_managed_previous_bootstrap_is_pruned_only_after_a_successful_check(feed):
@@ -283,9 +377,8 @@ def test_default_probe_runs_a_real_interpreter_against_the_bundle(tmp_path):
     assert bootstrap_update.default_probe(root) is False  # Interpreter alone cannot import the bundle.
 
 
-def _published(sequence, digest):
-    return {'signed': {'targets': {bootstrap_update.BOOTSTRAP_TARGET: {
-        'custom': {'sequence': sequence}, 'hashes': {'sha256': digest}}}}}
+def _published(sequence, digest, name=BOOTSTRAP_TARGET):
+    return {'signed': {'targets': {name: {'custom': {'sequence': sequence}, 'hashes': {'sha256': digest}}}}}
 
 
 def test_publish_gate_refuses_changed_bytes_under_a_published_sequence():
@@ -298,17 +391,41 @@ def test_publish_gate_refuses_changed_bytes_under_a_published_sequence():
         pr.bootstrap_gate(_published(3, 'a'), custom, 'b')
     with pytest.raises(ValueError, match='below'):
         pr.bootstrap_gate(_published(4, 'a'), custom, 'a')
+    # The code package is gated on its own name: the same sequence as the combined bundle, other bytes.
+    pr.bootstrap_gate(_published(3, 'a'), custom, 'c', BOOTSTRAP_CODE_TARGET)
+    with pytest.raises(ValueError, match='bump'):
+        pr.bootstrap_gate(_published(3, 'c', BOOTSTRAP_CODE_TARGET), custom, 'd', BOOTSTRAP_CODE_TARGET)
+
+
+def test_reused_bootstrap_brings_its_code_package_and_layer(tmp_path):
+    import publish_release as pr
+    built = tmp_path / 'built'
+    built.mkdir()
+    layer = 'orion-bootstrap-runtime-0123456789abcdef.zip'
+    for name in (BOOTSTRAP_TARGET, BOOTSTRAP_CODE_TARGET, layer):
+        (built / name).write_bytes(name.encode())
+        description = {'path': name, **({'runtime': {'target': layer}} if name == BOOTSTRAP_CODE_TARGET else {})}
+        (built / name).with_suffix('.target.json').write_text(json.dumps(description))
+    parts = pr.bootstrap_parts(built / BOOTSTRAP_TARGET)
+    assert [p.name for p in parts] == [BOOTSTRAP_TARGET, BOOTSTRAP_CODE_TARGET, layer]
+    (tmp_path / 'staged').mkdir()
+    pr.copy_parts(parts, tmp_path / 'staged')
+    assert len(list((tmp_path / 'staged').iterdir())) == 6
+    (built / BOOTSTRAP_CODE_TARGET).with_suffix('.target.json').unlink()  # Built before split bootstraps.
+    assert pr.bootstrap_parts(built / BOOTSTRAP_TARGET) == [built / BOOTSTRAP_TARGET]
 
 
 def test_acceptance_binds_the_bootstrap_without_requiring_it_in_the_package_run(tmp_path):
     import publish_release as pr
     staging = tmp_path / 'artifacts'
     staging.mkdir()
-    for component, package in (('hub', 'orion-hub-1.0.0-windows-x86_64-cpu'),
-                               ('bootstrap', 'orion-bootstrap-0.1.0-windows-x86_64-cpu')):
-        (staging / f'{component}.zip').write_bytes(component.encode())
-        (staging / f'{component}.target.json').write_text(json.dumps({
-            'path': f'{component}.zip', 'hashes': {'sha256': sha256(staging / f'{component}.zip')}, 'custom': {'component': component, 'package_id': package}}))
+    # The combined bootstrap bundle and its code package are one release (one package id), bound by name.
+    for stem, component, package in (('hub', 'hub', 'orion-hub-1.0.0-windows-x86_64-cpu'),
+                                     ('bootstrap', 'bootstrap', 'orion-bootstrap-0.1.0-windows-x86_64-cpu'),
+                                     ('bootstrap-code', 'bootstrap', 'orion-bootstrap-0.1.0-windows-x86_64-cpu')):
+        (staging / f'{stem}.zip').write_bytes(stem.encode())
+        (staging / f'{stem}.target.json').write_text(json.dumps({
+            'path': f'{stem}.zip', 'hashes': {'sha256': sha256(staging / f'{stem}.zip')}, 'custom': {'component': component, 'package_id': package}}))
     result = tmp_path / 'result.json'
     result.write_text(json.dumps({'success': True, 'artifacts': [{'package_id': 'orion-hub-1.0.0-windows-x86_64-cpu'}]}))
     pr.write_acceptance(staging, result, tmp_path / 'acceptance.json')

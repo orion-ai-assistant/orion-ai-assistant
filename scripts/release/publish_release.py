@@ -6,8 +6,9 @@ installer bootstrap -> upload (targets first, timestamp.json last). Clients lear
 release json needs a higher `sequence`/`version`/`package_id`: release.cmd raises
 them by itself (bump_versions.py) unless it runs with --no-bump. The bootstrap is a
 signed target too (scripts/release/bootstrap.json), bumped the same way when its
-bytes differ from the feed's; an unchanged bundle is passed with `--reuse-bootstrap`. `--dry-run` stages
-everything locally and uploads nothing.
+bytes differ from the feed's; an unchanged bundle is passed with `--reuse-bootstrap`. It is signed twice under one
+sequence: the combined bundle (installers, older updaters) and its code package + runtime layer (current updaters;
+an unchanged layer is not uploaded again). `--dry-run` stages everything locally and uploads nothing.
 """
 import argparse
 import json
@@ -34,10 +35,28 @@ FEEDS = {
     'hub': {'repo': DEFAULT_REPO, 'tag': DEFAULT_TAG, 'components': ('hub', 'client'), 'cache': 'release-cache'},
     'router': {'repo': ROUTER_REPO, 'tag': DEFAULT_TAG, 'components': ('router',), 'cache': 'release-cache-router'},
 }
-from services.shared.bootstrap_update import BOOTSTRAP_TARGET
+from services.shared.release_packages import BOOTSTRAP_CODE_TARGET, BOOTSTRAP_TARGET
 
 # One stable name: the plain installer download (get-orion.ps1) and the signed TUF target.
 BOOTSTRAP_ASSET = BOOTSTRAP_TARGET
+
+
+def bootstrap_parts(bundle):
+    """The combined bundle and, when build_bootstrap wrote them next to it, its code package and runtime layer:
+    every file (each with its .target.json) that is published for one bootstrap."""
+    bundle = Path(bundle)
+    parts = [bundle]
+    code = bundle.with_name(BOOTSTRAP_CODE_TARGET)
+    if code.with_suffix('.target.json').is_file():
+        runtime = json.loads(code.with_suffix('.target.json').read_text(encoding='utf-8'))['runtime']
+        parts += [code, bundle.with_name(runtime['target'])]
+    return parts
+
+
+def copy_parts(parts, directory):
+    for path in parts:
+        for name in (path, path.with_suffix('.target.json')):
+            shutil.copyfile(name, Path(directory) / name.name)
 
 
 def feed_url(repo, tag):
@@ -172,13 +191,14 @@ def current_feed_version(base):
         raise
 
 
-def bootstrap_gate(previous_targets, custom, digest):
-    """Refuse a bundle that would contradict what the feed already published.
+def bootstrap_gate(previous_targets, custom, digest, name=BOOTSTRAP_TARGET):
+    """Refuse a bundle that would contradict what the feed already published (`name`: the combined bundle or the
+    code package; each is immutable under its sequence on its own).
 
     Clients reject changed bytes under an already-seen sequence (immutable target) and
     never accept a lower one, so catch both here instead of publishing a dead update.
     """
-    previous = (previous_targets or {}).get('signed', {}).get('targets', {}).get(BOOTSTRAP_TARGET)
+    previous = (previous_targets or {}).get('signed', {}).get('targets', {}).get(name)
     if previous is None:
         return
     sequence = previous['custom']['sequence']
@@ -326,8 +346,7 @@ def main():
         if args.reuse_bootstrap and Path(args.reuse_bootstrap).resolve().is_relative_to(work.resolve()):
             # The bundle to reuse lives in exactly this unfinished staging: keep a copy before it is discarded.
             keep = Path(tempfile.mkdtemp(prefix='orion-bootstrap-reuse-'))
-            for path in (Path(args.reuse_bootstrap), Path(args.reuse_bootstrap).with_suffix('.target.json')):
-                shutil.copyfile(path, keep / path.name)
+            copy_parts(bootstrap_parts(args.reuse_bootstrap), keep)
             args.reuse_bootstrap = keep / Path(args.reuse_bootstrap).name
         shutil.rmtree(work)
     names = stage_stable_names(args.artifacts, work / 'artifacts', FEEDS[args.feed]['components'])
@@ -341,17 +360,23 @@ def main():
     (work / 'release-source.json').write_text(json.dumps(source), encoding='utf-8')
     bundle = work / 'artifacts' / BOOTSTRAP_ASSET
     if args.reuse_bootstrap:
-        shutil.copyfile(args.reuse_bootstrap, bundle)
-        shutil.copyfile(args.reuse_bootstrap.with_suffix('.target.json'), bundle.with_suffix('.target.json'))
+        if args.reuse_bootstrap.name != BOOTSTRAP_ASSET:
+            raise ValueError('--reuse-bootstrap expects a ' + BOOTSTRAP_ASSET + ' written by build_bootstrap.py')
+        copy_parts(bootstrap_parts(args.reuse_bootstrap), bundle.parent)
     else:
         subprocess.run([sys.executable, str(HERE / 'build_bootstrap.py'), '--trusted-root', str(args.public_root),
                         '--inputs', str(args.inputs), '--output', str(bundle), '--single-key',
                         '--release-source', str(work / 'release-source.json')], check=True)
-    description = json.loads(bundle.with_suffix('.target.json').read_text(encoding='utf-8'))
-    if description['hashes']['sha256'] != sha256(bundle) or description['custom']['component'] != 'bootstrap':
-        raise ValueError('Bootstrap bundle does not match its target description')
+    parts = bootstrap_parts(bundle)
+    if len(parts) == 1:
+        # Without its code package every installed bootstrap would download the whole embedded Python again.
+        raise ValueError('The bootstrap has no code package next to it (built before split bootstraps): rebuild it')
     online = published_targets(base, current_feed_version(base))
-    bootstrap_gate(online, description['custom'], description['hashes']['sha256'])
+    for part in parts[:2]:
+        description = json.loads(part.with_suffix('.target.json').read_text(encoding='utf-8'))
+        if description['hashes']['sha256'] != sha256(part) or description['custom']['component'] != 'bootstrap':
+            raise ValueError('Bootstrap bundle does not match its target description')
+        bootstrap_gate(online, description['custom'], description['hashes']['sha256'], part.name)
     bootstrap_source_gate(bundle, {k: v for k, v in names.items() if k != 'bootstrap'})
     package_gate(online, work / 'artifacts', names)
     carry = carried_targets(online, names, FEEDS[args.feed]['components'])

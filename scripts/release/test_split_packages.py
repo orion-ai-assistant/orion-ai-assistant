@@ -14,7 +14,8 @@ from tuf.api.metadata import Metadata, Root
 
 import publish_metadata as publisher
 import publish_release as P
-from services.shared.release_packages import PackageError, ReleaseClient, sha256
+from services.shared.release_packages import (PackageError, ReleaseClient, artifact_identity, sha256,
+                                             validate_layer, validate_runtime_reference)
 from test_release_packages import LocalFetcher, release
 
 
@@ -133,6 +134,20 @@ def test_code_and_layer_must_agree_and_never_overlap(feed):
         return code(directory, 32, runtime)
     with pytest.raises(ValueError, match='not among the artifacts'):
         publish(3, missing)
+
+
+def test_bootstrap_layers_belong_to_the_bootstrap_only():
+    reference = {'target': 'orion-bootstrap-runtime-0123456789abcdef.zip', 'sha256': 'a' * 64, 'length': 7}
+    assert validate_runtime_reference(reference, 'bootstrap') == reference
+    with pytest.raises(PackageError):
+        validate_runtime_reference(reference, 'hub')
+    with pytest.raises(PackageError):
+        validate_runtime_reference({**reference, 'target': 'orion-hub-runtime-0123456789abcdef.zip'}, 'bootstrap')
+    validate_layer({'schema': 1, 'layer': 'runtime', 'for': 'bootstrap', 'inputs': '0' * 64})
+    # Its combined bundle and its code package are one release: the acceptance binding keys them by name.
+    release = {'component': 'bootstrap', 'package_id': 'orion-bootstrap-0.2.14-windows-x86_64-cpu'}
+    assert artifact_identity({'path': 'orion-bootstrap-windows-x64.zip', 'custom': release}) != \
+        artifact_identity({'path': 'orion-bootstrap-code-windows-x64.zip', 'custom': release, 'runtime': reference})
 
 
 def test_publisher_stages_split_names_carries_combined_targets_and_gates_the_bootstrap(tmp_path):

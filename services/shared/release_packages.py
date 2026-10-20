@@ -179,14 +179,19 @@ def validate_release(value):
 # hash, so an unchanged runtime is neither uploaded nor downloaded again; the code target's signed metadata
 # pins it (`runtime`: target name, sha256, length) and prepare() extracts both into ONE tree, identical to the
 # former combined package. Bootstraps that predate this never read the code targets (other stable names).
+# The bootstrap is split the same way, but its combined bundle is still published under the old name next to the
+# code target: get-orion.ps1 installs from it, and updaters that predate split bootstraps adopt it.
 RUNTIME_REFERENCE = 'orion-runtime.json'  # the code package's own copy of its signed runtime reference
-LAYER_NAME = re.compile(r'orion-(hub|router)-runtime-[0-9a-f]{16,64}\.zip')
+LAYER_NAME = re.compile(r'orion-(hub|router|bootstrap)-runtime-[0-9a-f]{16,64}\.zip')
+# The unsigned installer download (get-orion.ps1) and the signed combined TUF target share one stable name.
+BOOTSTRAP_TARGET = 'orion-bootstrap-windows-x64.zip'
+BOOTSTRAP_CODE_TARGET = 'orion-bootstrap-code-windows-x64.zip'
 
 
 def validate_layer(value):
     """custom of a runtime layer target: {'schema': 1, 'layer': 'runtime', 'for': kind, 'inputs': key}."""
     if (not isinstance(value, dict) or set(value) != {'schema', 'layer', 'for', 'inputs'} or value['schema'] != 1
-            or value['layer'] != 'runtime' or value['for'] not in {'hub', 'router'}
+            or value['layer'] != 'runtime' or value['for'] not in {'hub', 'router', 'bootstrap'}
             or not isinstance(value['inputs'], str) or not re.fullmatch(r'[0-9a-f]{64}', value['inputs'])):
         raise PackageError('Unsupported runtime layer metadata')
     return value
@@ -213,8 +218,17 @@ def is_layer_description(value):
 
 
 def artifact_identity(value):
-    """Acceptance binding key of a candidate `.target.json`: package id, or the content-addressed layer name."""
-    return value['path'] if is_layer_description(value) else value['custom']['package_id']
+    """Acceptance binding key of a candidate `.target.json`: package id, or the target name of a layer and of a
+    bootstrap (its combined bundle and its code package are one release, so they share the package id)."""
+    if is_layer_description(value) or value['custom']['component'] == 'bootstrap':
+        return value['path']
+    return value['custom']['package_id']
+
+
+def _seen_key(target):
+    """Rollback memory is per component, except that a bootstrap release is published twice under one sequence
+    (combined bundle and code package + layer): each of those two names is immutable on its own."""
+    return target.path if target.path == BOOTSTRAP_CODE_TARGET else target.custom['component']
 
 
 def compatible(releases, *, installed_sequences=None, mobile_api=None):
@@ -287,7 +301,8 @@ class ReleaseClient:
             except Exception:
                 pass  # Progress is cosmetic; it must never fail a download.
 
-    def check(self, targets):
+    def check(self, targets, optional=()):
+        """`optional`: names that may be missing from the feed (left out of the result instead of failing)."""
         from tuf.api.exceptions import RepositoryError, DownloadError
         previous = json.loads(self.status_path.read_text()) if self.status_path.exists() else {}
         seen = dict(previous.get('seen', {}))
@@ -297,6 +312,8 @@ class ReleaseClient:
             for name in targets:
                 archive_name(name)
                 info = self.updater.get_targetinfo(name)
+                if info is None and name in optional:
+                    continue
                 if info is None:
                     raise PackageError('Release target missing')
                 validate_release(info.custom)
@@ -304,11 +321,12 @@ class ReleaseClient:
                             'length': info.length, 'hashes': info.hashes}
                 if self._layer(info) is not None:
                     identity['runtime'] = runtime_reference(info)
-                prior = seen.get(info.custom['component'])
+                key = _seen_key(info)
+                prior = seen.get(key)
                 if prior and (identity['sequence'] < prior['sequence']
                               or (identity['sequence'] == prior['sequence'] and identity != prior)):
                     raise PackageError('Product rollback or immutable target substitution rejected')
-                seen[info.custom['component']] = identity
+                seen[key] = identity
                 result[name] = info
             status = {'status': 'checked', 'last_success': datetime.now(timezone.utc).isoformat(), 'seen': seen}
             self.checked = True
@@ -337,7 +355,7 @@ class ReleaseClient:
         if current is None or current.to_dict() != target.to_dict():
             raise PackageError('Target changed since release selection')
         archive_name(current.path)
-        seen = json.loads(self.status_path.read_text())['seen'][current.custom['component']]
+        seen = json.loads(self.status_path.read_text())['seen'][_seen_key(current)]
         if current.custom['sequence'] != seen['sequence'] or current.hashes != seen['hashes']:
             raise PackageError('Selected package is older than the last verified release')
         layer = self._layer(current)
