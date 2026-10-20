@@ -348,6 +348,18 @@ class AutomaticUpdates:
                 continue  # One damaged old journal never hides the others.
             if isinstance(value, dict) and value.get('installation_id') == record['installation_id']:
                 history.append({k: value.get(k) for k in ('operation_id', 'phase', 'changes', 'updated_at')})
+        # The updater replaces itself outside any journal (bootstrap/self-update.json, the latest renewal only):
+        # without this the history never showed it, although "Kurulu sürümler" had the new version.
+        try:
+            from . import bootstrap_update
+            renewal = read_json(bootstrap_update.state_path(self.registry), {})
+            if isinstance(renewal, dict) and renewal.get('state') == 'confirmed' and isinstance(
+                    renewal.get('confirmed_at'), (int, float)):
+                history.append({'operation_id': None, 'phase': 'completed', 'changes': ['bootstrap'],
+                                'updated_at': renewal['confirmed_at']})
+        except (OSError, ValueError, TypeError):
+            pass
+        history.sort(key=lambda entry: entry.get('updated_at') or 0, reverse=True)
         pending = None
         if tx and tx['phase'] not in TERMINAL:
             pending = {'phase': tx['phase'], 'operation_id': tx['operation_id'],

@@ -274,3 +274,21 @@ def test_feed_failure_while_the_bootstrap_replaces_itself_is_retried_once(automa
     service.check(now=True)
     assert len(calls) == 2
     assert service.status()['check_outcome'] == 'update_found' and service.status()['error'] is None
+
+
+def test_history_shows_the_updater_renewing_itself_newest_first(automatic):
+    # The updater replaces itself outside any journal: the history listed only component updates, while
+    # "Kurulu sürümler" already showed the new updater.
+    service, now, data, host = automatic
+    service.check()
+    assert service.startup()['phase'] == 'completed'
+    from services.shared import bootstrap_update
+    path = bootstrap_update.state_path(service.registry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'schema': 1, 'state': 'confirmed', 'confirmed_at': now[0] + 50}))
+    history = service.status()['history']
+    assert history[0] == {'operation_id': None, 'phase': 'completed', 'changes': ['bootstrap'],
+                          'updated_at': now[0] + 50}
+    assert len(history) == 2 and history[1]['phase'] == 'completed'
+    path.write_text(json.dumps({'schema': 1, 'state': 'trial'}))  # Not confirmed yet: not in the history.
+    assert len(service.status()['history']) == 1
