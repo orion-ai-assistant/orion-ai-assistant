@@ -485,7 +485,11 @@ class AutomaticUpdates:
         try:
             if bootstrap_update.sync_source(self.registry, self.bootstrap_root):
                 update_log.log(self.base, 'source.synced')
-        except Exception as error:  # A busy lock or a bad bundled file must never stop update checks.
+        except LifecycleError:
+            # Another operation (often the check that just staged an update) holds the lifecycle lock: the feeds
+            # are merged at the next check. Normal, so not an error entry.
+            update_log.log(self.base, 'source.sync-busy')
+        except Exception as error:  # A bad bundled file must never stop update checks.
             update_log.log_exception(self.base, 'source.sync', error)
 
     def _skip(self, outcome, explicit):

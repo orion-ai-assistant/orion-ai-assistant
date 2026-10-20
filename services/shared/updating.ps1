@@ -44,7 +44,7 @@ function Get-Step {
         'stopping' { $text = T 'Servisler kapat\u0131l\u0131yor...' }
         'draining' { $text = T 'Ge\u00e7i\u015f haz\u0131rlan\u0131yor...' }
         'backing_up' { $text = T 'Veriler yedekleniyor...' }
-        'applying' { $text = T 'Yeni s\u00fcr\u00fcm yerle\u015ftiriliyor...' }
+        'applying' { $text = T 'G\u00fcncelleme haz\u0131rlan\u0131yor...' }
         'switching' { $text = T 'Yeni s\u00fcr\u00fcm yerle\u015ftiriliyor...' }
         'health_check' { $text = T 'Yeni s\u00fcr\u00fcm denetleniyor...' }
         'rollback_pending' { $text = T '\u00d6nceki s\u00fcr\u00fcme d\u00f6n\u00fcl\u00fcyor...' }
@@ -56,6 +56,9 @@ function Get-Step {
     $percent = $null
     if ($journal -and $phase -eq $journal.phase -and $journal.progress -and $null -ne $journal.progress.percent) { $percent = [int]$journal.progress.percent }
     elseif ($phase -eq 'stopping') { $percent = 3 }
+    elseif ($phase -eq 'applying') { $percent = 5 }
+    # A phase that has not reported its own percent yet starts at the low end of its share (the bar never waits at 38%).
+    elseif (@{ draining = 8; backing_up = 10; switching = 45; health_check = 55 }.ContainsKey([string]$phase)) { $percent = @{ draining = 8; backing_up = 10; switching = 45; health_check = 55 }[[string]$phase] }
     elseif ($phase -eq 'restarting') { $percent = 97 }
     return @($text, $stamp, $percent)
 }

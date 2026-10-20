@@ -206,7 +206,7 @@ def phase_text(phase):
         'stopping': 'Servisler kapatılıyor…',
         'draining': 'Geçiş hazırlanıyor…',
         'backing_up': 'Veriler yedekleniyor…',
-        'applying': 'Yeni sürüm yerleştiriliyor…',
+        'applying': 'Güncelleme hazırlanıyor…',
         'switching': 'Yeni sürüm yerleştiriliyor…',
         'health_check': 'Yeni sürüm denetleniyor…',
         'rollback_pending': 'Önceki sürüme dönülüyor…',
