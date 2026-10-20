@@ -27,7 +27,11 @@ import build_cache
 FAMILY = re.compile(r'^(?P<family>.+)-[a-z0-9_]{8}$')  # tempfile.mkdtemp(prefix='<family>-')
 DEFAULT_FAMILY = 'stage05'
 MIN_AGE_SECONDS = 3600
-DETACHED = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
+# NEW_PROCESS_GROUP | NO_WINDOW: a hidden console of its own, never the caller's. Not DETACHED_PROCESS: the
+# venv's python.exe is a launcher that starts the real interpreter as a child, and a console program started
+# from a process without any console gets a new, visible window - the cmd window that flashed after every
+# acceptance run, for as long as the deletion took.
+BACKGROUND = 0x00000200 | 0x08000000
 
 
 def long_path(path):
@@ -150,7 +154,7 @@ def prune_in_background(base, *, keep, protect, cache):
     # `protect` is passed implicitly: the running sandbox is brand new, hence inside `keep`.
     try:
         log = open(Path(base) / 'prune.log', 'ab')
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, creationflags=DETACHED if os.name == 'nt' else 0)
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, creationflags=BACKGROUND if os.name == 'nt' else 0)
     except OSError:
         pass  # pruning is housekeeping; never fail an acceptance run over it
 
