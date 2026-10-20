@@ -33,9 +33,17 @@ def open_window(url, *, allow_tab_fallback=True, profile=None, reuse_existing=Fa
                 'BraveSoftware/Brave-Browser/Application/brave.exe'))
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
-            subprocess.Popen([candidate, f'--app={url}', f'--user-data-dir={profile}',
-                              '--no-first-run', '--no-default-browser-check'],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # The window is the browser's, not a service: outside the resident Orion.exe's job when the launcher
+            # runs inside it (End task there ends the services, not the window; closing it never ends them).
+            command = [candidate, f'--app={url}', f'--user-data-dir={profile}', '--no-first-run', '--no-default-browser-check']
+            if os.name == 'nt':
+                try:
+                    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     creationflags=subprocess.CREATE_BREAKAWAY_FROM_JOB)
+                    return True
+                except PermissionError:
+                    pass  # A job that forbids breakaway: started inside it, as before.
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
     return webbrowser.open(url) if allow_tab_fallback else False
 

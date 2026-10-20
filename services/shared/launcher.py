@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import time
+import uuid
 import tomllib
 import urllib.request
 
@@ -232,8 +233,18 @@ def tray_processes(registry):
 
 
 def spawn_tray(registry, *, popen=None):
-    """Show the notification-area icon (full Hub installs only; a Router-only install has none)."""
-    if os.name != 'nt' or tray_processes(registry):
+    """Show the notification-area icon (full Hub installs only; a Router-only install has none).
+
+    The installation's resident Orion.exe is the icon when it runs (services.shared.orion_host): then no
+    PowerShell icon is started, and one an earlier version started is closed. This one remains for Orion
+    started without it (an Orion.exe that predates it, a non-interactive start)."""
+    if os.name != 'nt':
+        return False
+    from .orion_host import find
+    if find(registry) is not None:
+        stop_tray(registry)
+        return False
+    if tray_processes(registry):
         return False
     import subprocess
     destination = canonical_path(registry.path.parent / 'bootstrap' / TRAY_SCRIPT)
@@ -620,6 +631,10 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
             if not apply_owner:
                 with _timed(registry, 'stop.watcher'):
                     request_watcher_exit(registry)
+                # Everything is stopped: the resident Orion.exe ends too (an update's stop keeps it: it restarts
+                # the services under it).
+                from .orion_host import release
+                release(registry)
         return {'status': 'stopped'}
 
 
@@ -760,12 +775,19 @@ def install_entry(registry, *, desktop=True):
     if source is not None:
         destination = entry.with_name('Orion.exe')
         data = source.read_bytes()
+        _remove_stale_launchers(destination)
         if not destination.exists() or destination.read_bytes() != data:
             try:
                 _atomic_write(destination, data)
             except OSError:
-                if not destination.exists():
-                    raise  # A running older copy is fine to keep; a missing one is not.
+                # The running resident Orion.exe cannot be replaced, but it can be renamed: it keeps running
+                # from the renamed file and the next start runs the new one.
+                try:
+                    destination.replace(destination.with_name(f'Orion.exe.{uuid.uuid4().hex[:8]}.old'))
+                    _atomic_write(destination, data)
+                except OSError:
+                    if not destination.exists():
+                        raise  # A running older copy is fine to keep; a missing one is not.
     if desktop:  # The installer's call: the user's visible entry points.
         sync_desktop_link(record, entry, create=True)
         try:
@@ -773,6 +795,15 @@ def install_entry(registry, *, desktop=True):
         except (OSError, RuntimeError):
             pass  # Cosmetic; refresh_links retries on the next launch.
     return entry
+
+
+def _remove_stale_launchers(destination):
+    """Renamed Orion.exe copies whose host has ended since (one still running stays until the next time)."""
+    for stale in destination.parent.glob('Orion.exe.*.old'):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 def _startup_links(directory, entry, installation_id, enabled, record=None):

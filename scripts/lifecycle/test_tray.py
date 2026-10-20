@@ -102,6 +102,24 @@ class TrayTests(unittest.TestCase):
             close.assert_called_once()
             self.assertEqual(2, stop.call_count)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows only')
+    def test_the_resident_orion_exe_replaces_the_powershell_icon(self):
+        popen = MagicMock()
+        with patch('services.shared.orion_host.find', return_value=MagicMock(pid=1)), \
+                patch.object(launcher, 'stop_tray') as stop:
+            self.assertFalse(launcher.spawn_tray(self.store, popen=popen))
+        stop.assert_called_once_with(self.store)  # An icon an earlier version started is closed.
+        popen.assert_not_called()
+
+    def test_stop_ends_the_resident_orion_exe_but_an_updates_stop_keeps_it(self):
+        with patch('services.shared.native_services.stop_hub'), patch.object(launcher, 'stop_tray'), \
+                patch.object(launcher, 'close_window'), patch.object(launcher, 'request_watcher_exit'), \
+                patch('services.shared.orion_host.release') as release:
+            launcher.launch(self.store, stop=True, keep_window=True, apply_owner=True)
+            release.assert_not_called()  # "Update now" restarts the services under it.
+            launcher.launch(self.store, stop=True)
+            release.assert_called_once_with(self.store)
+
     def test_failing_tray_never_breaks_startup(self):
         with patch('services.shared.native_services.start_hub'), patch.object(launcher, 'show_window'), \
                 patch.object(launcher, 'spawn_tray', side_effect=OSError('no powershell')):
