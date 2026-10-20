@@ -6,6 +6,7 @@ owner ends without one (error, Task Manager, Windows signing out) Windows ends t
 next start runs PostgreSQL's normal crash recovery. A running server whose owner is gone is shut down and
 restarted as one's own, never reused ownerless.
 """
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -124,15 +125,26 @@ class Postgres:
             raise NotAccepting('PostgreSQL authenticated readiness failed')
         return result.stdout.strip()
 
-    def same_cluster(self):
+    def settings(self):
+        """Everything readiness checks, read in one authenticated round trip (every psql start costs a process):
+        the data directory, the durability settings and the server's start time. A role without
+        pg_read_all_settings (older developer databases) does not see data_directory in pg_settings: None."""
+        return json.loads(self.sql(
+            "SELECT json_build_object("
+            "'data_directory', (SELECT setting FROM pg_settings WHERE name = 'data_directory'), "
+            "'fsync', current_setting('fsync'), 'full_page_writes', current_setting('full_page_writes'), "
+            "'synchronous_commit', current_setting('synchronous_commit'), "
+            "'started', extract(epoch FROM pg_postmaster_start_time())::bigint)"))
+
+    def same_cluster(self, settings=None):
         """The connection reaches the postmaster that owner() verified for this data directory."""
-        try:
-            return canonical(self.sql('SHOW data_directory')) == canonical(self.data)
-        except SettingDenied:
-            # A role without pg_read_all_settings (older developer databases) cannot read data_directory; the
-            # server's start time is readable by every role and must equal the one in this cluster's postmaster.pid.
-            started = int((self.data / 'postmaster.pid').read_text(encoding='utf-8').splitlines()[2])
-            return abs(int(self.sql('SELECT extract(epoch FROM pg_postmaster_start_time())::bigint')) - started) <= 1
+        settings = settings or self.settings()
+        if settings['data_directory'] is not None:
+            return canonical(settings['data_directory']) == canonical(self.data)
+        # Without data_directory: the server's start time is readable by every role and must equal the one in
+        # this cluster's postmaster.pid.
+        started = int((self.data / 'postmaster.pid').read_text(encoding='utf-8').splitlines()[2])
+        return abs(int(settings['started']) - started) <= 1
 
     def ready(self):
         owner = self.owner()
@@ -143,10 +155,11 @@ class Postgres:
                                     timeout=5, **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
             if status.returncode:
                 return False
-            if not self.same_cluster():
+            settings = self.settings()
+            if not self.same_cluster(settings):
                 raise LifecycleError('Connected to another PostgreSQL cluster')
             for setting in ('fsync', 'full_page_writes', 'synchronous_commit'):
-                if self.sql('SHOW ' + setting) != 'on':
+                if settings[setting] != 'on':
                     raise LifecycleError('PostgreSQL durability disabled: ' + setting)
             return reference.alive()
 
