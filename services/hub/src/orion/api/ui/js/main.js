@@ -362,6 +362,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         UI.setConnectionStatus(false, "disconnected");
         UI.chatArea.innerHTML = '<div class="message bot">Oturum kapatıldı. Lütfen tekrar giriş yapın.</div>';
 
+        Auth.endSession();
         Auth.clearToken();
         document.getElementById("auth-modal").classList.add("show");
     });

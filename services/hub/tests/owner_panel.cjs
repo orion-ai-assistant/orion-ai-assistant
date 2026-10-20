@@ -9,7 +9,7 @@ assert(html('local.html').includes('href="/hub"'), 'Chat remains available at th
 for (const name of ['index.html', 'people.html']) assert(!html(name).includes('/dashboard/'));
 assert(!fs.readFileSync(path.join(root, 'admin_ui/index.html'), 'utf8').includes('/dashboard/'));
 assert(html('index.html').includes('class="owner-locked" data-owner-scope="admin"'));
-assert(html('index.html').includes('gate.js?v=6'));
+assert(html('index.html').includes('gate.js?v=8'));
 assert(!html('security.html').includes('owner-password-form'));
 assert(html('people.html').includes('data-owner-scope="admin"'), 'People uses the same admin session as the panel');
 let locked = 0, calls = [], response = {ok: true, json: async () => ({ok: true})};

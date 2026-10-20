@@ -13,7 +13,7 @@ function boot(saved, defaultPassword = 'orion') {
   createElement:()=>gate,addEventListener(name,fn){if(name==='DOMContentLoaded')startup=fn;},dispatchEvent(){},getElementById(){return null;}
  },OwnerAPI:{url:x=>x,base:'/panel',sessionKey:'session',session:()=>cleared?null:saved,clearSession(){cleared=true;},
   fetch(url){if(url === '/api/v1/owner/secure/password-info') return defaultPassword === 'offline' ? Promise.reject(new Error('offline')) : Promise.resolve({ok:true,json:async()=>({default_password:defaultPassword})});request=url;return new Promise((resolve,reject)=>{resolveRequest=resolve;rejectRequest=reject;});}},
- crypto:{randomUUID:()=> 'tab'},Event:class{},setTimeout(fn,ms){if(ms===150)Promise.resolve().then(fn);},Date,
+ crypto:{randomUUID:()=> 'tab'},Event:class{},setTimeout(fn,ms){if(ms===150)Promise.resolve().then(fn);},setInterval(){},clearInterval(){},Date,
  sessionStorage:{},location:{reload(){}}};
  vm.runInNewContext(source,context);context.OwnerGate=context.window.OwnerGate;startup();
  return {gate,hint:nodes['[data-default-password]'],get focus(){return focus;},get unlocked(){return unlocked;},get request(){return request;},

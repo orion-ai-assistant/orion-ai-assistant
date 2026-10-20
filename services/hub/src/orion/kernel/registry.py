@@ -129,6 +129,19 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
                 revoked boolean not null default false
             )
         """)
+        # --- Account sessions (see orion.api.sessions) ---
+        await conn.execute("""
+            create table if not exists orion_sessions (
+                id text primary key,
+                user_id text not null,
+                device_id text,
+                credential text not null,
+                created_at timestamptz not null default now(),
+                last_seen_at timestamptz not null default now(),
+                revoked_at timestamptz
+            )
+        """)
+        await conn.execute("create index if not exists idx_orion_sessions_user_id on orion_sessions (user_id)")
         # --- Chats (metadata) ---
         await conn.execute(
             """
@@ -632,8 +645,76 @@ async def set_user_active(username: str, active: bool) -> bool:
         raise RuntimeError("User database unavailable")
     try:
         await _ensure_tables(conn)
-        result = await conn.execute("update orion_users set is_active = $2 where id = $1", username, active)
+        async with conn.transaction():
+            result = await conn.execute("update orion_users set is_active = $2 where id = $1", username, active)
+            if not active:
+                # Reactivation must not revive the sessions that deactivation ended.
+                await conn.execute("update orion_sessions set revoked_at = now() where user_id = $1 and revoked_at is null", username)
         return result == "UPDATE 1"
+    finally:
+        await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Account sessions
+# ---------------------------------------------------------------------------
+
+async def _session_connection() -> asyncpg.Connection:
+    # Unavailable storage is not an ended session: callers answer 503, never 401.
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Session database unavailable")
+    await _ensure_tables(conn)
+    return conn
+
+
+async def create_session(session_id: str, user_id: str, device_id: str | None, credential: str, forget_after) -> None:
+    conn = await _session_connection()
+    try:
+        await conn.execute(
+            "insert into orion_sessions (id, user_id, device_id, credential) values ($1, $2, $3, $4)",
+            session_id, user_id, device_id, credential,
+        )
+        await conn.execute(
+            "delete from orion_sessions where last_seen_at < now() - $1::interval or revoked_at < now() - $1::interval",
+            forget_after,
+        )
+    finally:
+        await conn.close()
+
+
+async def get_session(session_id: str) -> dict | None:
+    """The session with its account's current password hash and activation."""
+    conn = await _session_connection()
+    try:
+        row = await conn.fetchrow(
+            """
+            select s.id, s.user_id, s.device_id, s.credential, s.last_seen_at, s.revoked_at,
+                   u.password_hash, u.is_active
+            from orion_sessions s join orion_users u on u.id = s.user_id
+            where s.id = $1
+            """,
+            session_id,
+        )
+        return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def touch_session(session_id: str) -> None:
+    conn = await _session_connection()
+    try:
+        await conn.execute("update orion_sessions set last_seen_at = now() where id = $1 and revoked_at is null", session_id)
+    finally:
+        await conn.close()
+
+
+async def revoke_sessions(*, session_id: str | None = None, user_id: str | None = None, device_id: str | None = None) -> None:
+    column, value = next((name, value) for name, value in
+                         (('id', session_id), ('user_id', user_id), ('device_id', device_id)) if value)
+    conn = await _session_connection()
+    try:
+        await conn.execute(f"update orion_sessions set revoked_at = now() where {column} = $1 and revoked_at is null", value)
     finally:
         await conn.close()
 

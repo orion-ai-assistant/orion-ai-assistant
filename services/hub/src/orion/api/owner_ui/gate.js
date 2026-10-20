@@ -4,7 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const gate = document.createElement('section');
     gate.className = 'gate';
     gate.hidden = true;
-    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. Bu sekmedeki yönetim oturumu 15 dakika geçerlidir.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">Yönetimi aç</button></form><p class="hint" data-default-password hidden></p><p class="notice" role="alert" hidden></p>`;
+    gate.innerHTML = `<a class="brand" href="${OwnerAPI.url('/')}">✦ <span>ORION</span></a><h1>${document.body.dataset.ownerTitle || (scope === 'people' ? 'Kişiler ve davetler' : 'Gelişmiş yönetim')}</h1><p class="hint">Devam etmek için yönetici şifreni gir. Bu sekmedeki yönetim oturumu 15 dakika işlem yapılmazsa kapanır.</p><form><label>Yönetici şifresi<input type="password" autocomplete="current-password" required maxlength="512"></label><button type="submit">Yönetimi aç</button></form><p class="hint" data-default-password hidden></p><p class="notice" role="alert" hidden></p>`;
     document.body.appendChild(gate);
     const input = gate.querySelector('input'), button = gate.querySelector('button'), error = gate.querySelector('[role="alert"]');
     async function showDefaultPassword() {
@@ -23,8 +23,10 @@ document.addEventListener('DOMContentLoaded', () => {
         gate.remove();
         document.body.classList.remove('owner-locked');
         OwnerGate.unlocked = true;
-        const session = OwnerAPI.session();
-        if (session) setTimeout(() => OwnerGate.lock(), Math.max(0, session.expires - Date.now()));
+        // Each request moves the deadline (OwnerAPI.fetch); lock once it really passes.
+        if (OwnerAPI.session()) {
+            const watch = setInterval(() => { if (!OwnerAPI.session()) { clearInterval(watch); OwnerGate.lock(); } }, 15000);
+        }
         document.dispatchEvent(new Event('owner-unlocked'));
     }
     // Detect a sessionStorage copy when a new tab is opened or duplicated.
@@ -71,6 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || 'Yönetim açılamadı.');
             input.value = '';
+            OwnerAPI.idleSeconds = data.expires_in;
             sessionStorage.setItem(OwnerAPI.sessionKey, JSON.stringify({token: data.token, expires: Date.now() + data.expires_in * 1000}));
             unlock();
         } catch (failure) {

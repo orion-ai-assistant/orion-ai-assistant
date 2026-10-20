@@ -258,11 +258,13 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             response = await self.user_client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password'})
         self.assertEqual(response.status_code, 403)
         lookup.assert_not_awaited()
-        with patch.object(invitations, 'preview_invitation', AsyncMock(return_value={})), patch.object(invitations, 'redeem_invitation', AsyncMock()) as redeem:
+        from orion.kernel import registry
+        with patch.object(invitations, 'preview_invitation', AsyncMock(return_value={})), patch.object(invitations, 'redeem_invitation', AsyncMock()) as redeem,                 patch.object(registry, 'create_session', AsyncMock()) as session:
             response = await self.user_client.post('/api/v1/auth/register', json={'username': 'alice', 'password': 'password', 'invitation_token': 'a' * 43})
         self.assertEqual(response.status_code, 201)
         self.assertIn('access_token', response.json())
         self.assertEqual(redeem.call_args.args[:2], ('a' * 43, 'alice'))
+        self.assertEqual(session.call_args.args[1], 'alice', 'Registration signs in with a durable session')
 
     async def test_invalid_revoked_or_expired_invite_does_not_hash_or_create_user(self):
         with patch.object(invitations, 'preview_invitation', AsyncMock(side_effect=HTTPException(410, 'invalid'))), patch.object(auth_routes, 'hash_password') as hashing:

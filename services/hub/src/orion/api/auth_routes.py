@@ -1,20 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
-import jwt
 
 from orion.api.security import (
     hash_password,
     verify_password,
-    create_access_token,
-    JWT_SECRET_KEY,
     valid_admin_key,
     require_admin,
-    ALGORITHM
 )
 from orion.kernel.registry import get_user_by_username, create_user, set_user_active, set_user_approval
 from orion.api.login_limits import limit_login, limit_attempts
-from orion.api import invitations
+from orion.api import invitations, sessions
 from orion.api.access_boundary import is_local
 import asyncio
 
@@ -68,23 +64,24 @@ async def get_current_user(request: Request, credentials: HTTPAuthorizationCrede
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if getattr(request.app.state, 'mobile', False):
-        try:
-            payload = jwt.decode(token_str, JWT_SECRET_KEY, algorithms=[ALGORITHM])
-            if payload.get('device_id') != getattr(request.state, 'device_id', None):
-                raise HTTPException(401, 'Account token is not bound to this device')
-        except jwt.PyJWTError as error:
-            raise HTTPException(401, 'Invalid account token') from error
-    return await authenticate_token(token_str)
+    return await authenticate_token(token_str, request)
 
 
-async def authenticate_token(token_str: str) -> str:
-    try:
-        payload = jwt.decode(token_str, JWT_SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
+async def authenticate_token(token_str: str, connection=None) -> str:
+    """Every entry point (HTTP, SSE, WebSocket; local, public, mobile) authenticates accounts here."""
+    claims = sessions.decode(token_str)
+    if (connection is not None and getattr(connection.app.state, 'mobile', False)
+            and claims.get('device_id') != getattr(connection.state, 'device_id', None)):
+        raise sessions.ended('Account token is not bound to this device')
+    username = claims.get('sub')
+    if claims.get('sid') is None:
+        # A pre-session token from before this Hub version: valid until its own 24 h expiry.
+        # The client exchanges it for a session at startup (POST /auth/session).
+        if 'exp' not in claims:
+            raise sessions.ended()
         await require_active_user(username)
-    except jwt.PyJWTError as exc:
-        raise HTTPException(401, "Could not validate credentials", headers={"WWW-Authenticate": "Bearer"}) from exc
+    else:
+        await sessions.check(claims)
     return username
 
 
@@ -110,22 +107,22 @@ async def register(request: RegisterRequest, http_request: Request):
     # Validate before expensive password hashing; the transaction validates again under lock.
     if request.invitation_token:
         await invitations.preview_invitation(request.invitation_token)
-        await invitations.redeem_invitation(request.invitation_token, request.username,
-                                            await asyncio.to_thread(hash_password, request.password))
+    password_hash = await asyncio.to_thread(hash_password, request.password)
+    if request.invitation_token:
+        await invitations.redeem_invitation(request.invitation_token, request.username, password_hash)
     else:
         from orion.kernel.registry import create_local_user
         try:
-            created = await create_local_user(request.username, await asyncio.to_thread(hash_password, request.password))
+            created = await create_local_user(request.username, password_hash)
         except RuntimeError as error:
             raise HTTPException(503, 'Hesap veritabanına erişilemiyor.') from error
         if not created:
             raise HTTPException(409, 'Bu kullanıcı adı zaten kullanılıyor.')
     from orion.kernel.router_accounts import provision_if_available
     await provision_if_available(request.username)
-    claims = {'sub': request.username}
-    if getattr(http_request.app.state, 'mobile', False):
-        claims['device_id'] = http_request.state.device_id
-    return {'access_token': create_access_token(claims), 'token_type': 'bearer'}
+    return {'access_token': await sessions.issue({'id': request.username, 'password_hash': password_hash},
+                                                 bound_device(http_request)),
+            'token_type': 'bearer'}
 
 
 @router.post("/login", response_model=Token)
@@ -142,11 +139,33 @@ async def login(request: AuthRequest, http_request: Request):
     if not user.get("is_active", False):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user")
 
-    claims = {"sub": user["id"]}
-    if getattr(http_request.app.state, 'mobile', False):
-        claims['device_id'] = http_request.state.device_id
-    access_token = create_access_token(data=claims)
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"access_token": await sessions.issue(user, bound_device(http_request)), "token_type": "bearer"}
+
+
+def bound_device(request: Request) -> str | None:
+    # A phone's account session belongs to its paired device; browsers have none.
+    return request.state.device_id if getattr(request.app.state, 'mobile', False) else None
+
+
+@router.post("/session", response_model=Token)
+async def exchange_session(http_request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)):
+    """Replace a valid pre-session token with a session token, so an update logs nobody out."""
+    if not credentials:
+        raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+    username = await authenticate_token(credentials.credentials, http_request)
+    if sessions.decode(credentials.credentials).get('sid') is not None:
+        return {"access_token": credentials.credentials, "token_type": "bearer"}
+    user = await get_user_by_username(username)
+    if not user:
+        raise sessions.ended()
+    return {"access_token": await sessions.issue(user, bound_device(http_request)), "token_type": "bearer"}
+
+
+@router.post("/logout")
+async def logout(credentials: HTTPAuthorizationCredentials | None = Depends(security)):
+    if credentials:
+        await sessions.revoke(credentials.credentials)
+    return {"ok": True}
 
 
 @router.get("/me", response_model=UserProfile)
@@ -159,10 +178,10 @@ async def read_users_me(current_user: str = Depends(get_current_user)):
 
 async def require_active_user(username: str) -> None:
     if not isinstance(username, str) or username == "global":
-        raise HTTPException(401, "Invalid account")
+        raise sessions.ended("Invalid account")
     user = await get_user_by_username(username)
     if not user or not user.get("is_active", False):
-        raise HTTPException(401, "Account inactive or awaiting owner approval")
+        raise sessions.ended("Account inactive or awaiting owner approval")
 
 
 class ApprovalRequest(BaseModel):
