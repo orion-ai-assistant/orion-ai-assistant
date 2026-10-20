@@ -3,7 +3,8 @@
 # Her turda: Orion kapatilir (acik ise), Orion.exe ile acilir (masaustu kisayolu ile ayni), pencere
 # gorunene kadar adimlar zamanlanir; sonra "Cik" ile ayni yol (Orion.ps1 -Stop) zamanlanir.
 # Sonuc repo kokundeki .tmp\measure-desktop-<zaman>.txt dosyasina da yazilir. Hicbir veri degistirilmez.
-# Adim adim ic sureler: %LOCALAPPDATA%\Orion\updates\watcher.log icindeki 'launch.timing' satirlari.
+# Adim adim ic sureler: %LOCALAPPDATA%\Orion\updates\watcher.log icindeki 'launch.timing' satirlari; Router'inkiler
+# (supervisor ve backend) her acilis turunun altinda, Router'in router-prod\supervisor.log dosyasindan.
 param([int]$Rounds = 2, [int]$TimeoutSeconds = 240)
 $ErrorActionPreference = 'Stop'
 $base = Join-Path $env:LOCALAPPDATA 'Orion'
@@ -54,6 +55,26 @@ function Measure-Launch([string]$label) {
     }
     Say "--- $label acilis (Orion.exe) ---"
     foreach ($k in ($marks.Keys | Sort-Object { $marks[$_] })) { Say ('{0,-22} {1,7:N1} s' -f $k, $marks[$k]) }
+    Router-Timing
+}
+
+# Router'in kendi adim sureleri (supervisor.log icindeki 'launch.timing' satirlari, son baslatma).
+# router.* = supervisor surecinin yasi/adim suresi, backend.* = backend surecinin yasi (ffmpeg arka planda).
+function Router-Timing {
+    try {
+        $record = Get-Content -LiteralPath (Join-Path $base 'install.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $router = $record.components | Where-Object { $_.kind -eq 'router' } | Select-Object -First 1
+        if (-not $router) { return }
+        $log = Join-Path $router.state_path 'router-prod\supervisor.log'
+        if (-not (Test-Path -LiteralPath $log)) { return }
+        $lines = @(Get-Content -LiteralPath $log -Tail 400 -Encoding UTF8 | Where-Object { $_ -match 'launch\.timing step=' })
+        $start = -1
+        for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match 'step=router\.process ') { $start = $i } }
+        if ($start -lt 0) { return }
+        foreach ($line in $lines[$start..($lines.Count - 1)]) {
+            if ($line -match 'step=(\S+) seconds=(\S+)') { Say ('  {0,-24} {1,6} s' -f $Matches[1], $Matches[2]) }
+        }
+    } catch { Say "  (Router adim sureleri okunamadi: $($_.Exception.Message))" }
 }
 
 Say ("Orion olcumu " + (Get-Date -Format 's') + "  makine: $env:COMPUTERNAME")
