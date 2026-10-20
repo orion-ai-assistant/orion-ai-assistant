@@ -58,3 +58,24 @@ def test_request_file_from_the_router_panel_is_served_by_the_watcher(tmp_path):
     assert not request.exists()
     assert [names for names, _ in helper.prepared] == [['router.zip']]
     assert 'update_found' == json.loads((tmp_path / 'updates/automatic.json').read_text())['outcome']
+
+
+@nt_only
+def test_router_first_then_hub_added_later_joins_the_single_transaction(tmp_path):
+    """A Router-only install updates the Router on its own; once the Hub is installed beside it, the Hub's
+    scheduler takes the Router into the same transaction (nothing is fixed at install time)."""
+    registry = _install(tmp_path / 'first', ['router'])
+    helper = FakeHelper(registry)
+    clock = lambda: 1_000.0
+    factory = lambda: FakeClient({'hub': 7, 'client': 5, 'router': 3})
+    hub_scope = AutomaticUpdates(registry, helper=helper, client_factory=factory, clock=clock)
+    assert not hub_scope.covers_router()
+    AutomaticUpdates(registry, helper=helper, client_factory=factory, clock=clock, scope='router').check(manual=True)
+    assert [names for names, _ in helper.prepared] == [['router.zip']]
+
+    registry = _install(tmp_path / 'later', ['hub', 'client', 'router'])  # the Hub is added later
+    helper = FakeHelper(registry)
+    service = AutomaticUpdates(registry, helper=helper, client_factory=factory, clock=clock)
+    assert service.covers_router()
+    service.check(manual=True)
+    assert [names for names, _ in helper.prepared] == [['client.zip', 'hub.zip', 'router.zip']]

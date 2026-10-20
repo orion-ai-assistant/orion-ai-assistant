@@ -289,7 +289,7 @@ class UpdateHelper:
                             return
                         self._phase(tx, 'downloading', progress={
                             'done': number - 1, 'total': len(targets), 'component': kind,
-                            'bytes': before + received, 'bytes_total': overall_total,
+                            'bytes': before + received, 'bytes_total': max(overall_total, before + received),
                             'rate': int(received / seconds) if seconds > 0 else None})
                     self._phase(tx, 'downloading', progress={
                         'done': number - 1, 'total': len(targets), 'component': kind,

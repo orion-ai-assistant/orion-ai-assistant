@@ -87,3 +87,4 @@ files/security/
 # Native lifecycle ownership records and runtime controls
 .orion-lifecycle/
 .orion-lifecycle-postgres/
+build/
