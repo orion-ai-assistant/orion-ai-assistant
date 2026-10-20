@@ -245,6 +245,30 @@ def test_managed_previous_bootstrap_is_pruned_only_after_a_successful_check(feed
     assert state(feed)['state'] == 'confirmed' and state(feed)['discard'] == []
 
 
+def test_a_previous_bootstrap_still_running_is_kept_until_it_ends(feed, monkeypatch):
+    # Real PC, 2026-10-20: the new bootstrap's first check deleted the previous bundle while the previous watcher
+    # still ran from it; its handover then failed to import and no watcher started. The locked interpreter also
+    # left the folder half deleted, without its marker.
+    first = feed.current(1, 'Bootstrap-Installer-s1-aaaaaaaa', managed=True)
+    feed.publish(2)
+    feed.service(first).check()
+    new = feed.pointer()
+    running = {first}
+    monkeypatch.setattr(bootstrap_update, '_in_use', lambda path: Path(path) in running)
+    feed.service(new).check(now=True)
+    assert first.is_dir() and (first / 'bootstrap.json').exists()  # Untouched while in use.
+    assert state(feed)['state'] == 'confirmed' and state(feed)['discard'] == [str(first)]
+    (first / bootstrap_update.MARKER).unlink()  # As a half deletion left it: no marker any more.
+    running.clear()
+    bootstrap_update.prune(feed.registry, new)
+    assert not first.exists() and state(feed)['discard'] == []
+
+
+def test_in_use_sees_a_process_running_from_the_folder():
+    assert bootstrap_update._in_use(Path(sys.executable).parent)
+    assert not bootstrap_update._in_use(Path(sys.executable).parent / 'no-such-folder')
+
+
 @pytest.mark.parametrize('installed_sequence,published', [(2, 2), (5, 3), (4, 4)])
 def test_same_or_older_sequence_is_not_adopted(feed, installed_sequence, published):
     current = feed.current(installed_sequence)

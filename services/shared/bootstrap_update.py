@@ -24,6 +24,7 @@ change the runtime downloads about 1 MB instead of the whole embedded Python.
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
@@ -38,6 +39,7 @@ from .update_gate import TERMINAL, blocked
 from .update_helper import UpdateError
 
 MARKER = '.orion-self-updated'
+MANAGED_NAME = re.compile(r'Bootstrap-Installer-s\d+-[0-9a-f]{8}')  # Folders this mechanism creates.
 STARTUP_WAIT = 60
 REQUIRED_FILES = (
     'bootstrap.json', 'orion-release.json', 'trusted-root.json', 'runtime/python/python.exe',
@@ -373,18 +375,41 @@ def confirm(registry, own_root):
     prune(registry, own_root)
 
 
+def _in_use(folder):
+    """A process runs from `folder` (its interpreter): the previous watcher, still finishing its handover."""
+    import psutil
+    prefix = os.path.join(str(folder).lower(), '')
+    for process in psutil.process_iter(['exe']):
+        try:
+            if (process.info['exe'] or '').lower().startswith(prefix):
+                return True
+        except (psutil.Error, OSError):
+            continue
+    return False
+
+
 def prune(registry, own_root):
-    """Delete only bootstraps this mechanism created; the original install folder is kept."""
+    """Delete only bootstraps this mechanism created; the original install folder is kept.
+
+    Never one a process still runs from: the new bootstrap's first check confirmed it and deleted the previous
+    bundle while the previous watcher was still running from it, so that watcher's handover could not import
+    what it needed and no new watcher started (real PC, 2026-10-20). The locked interpreter also kept the folder
+    half deleted, without its marker, for ever. Such a folder is retried later (each watcher round)."""
     record = _read(state_path(registry), {})
     keep, active = [], pointer_root(registry)
     for name in record.get('discard', []):
         path = Path(name)
         if not path.is_dir() or path == active or path == Path(own_root):
             continue
-        if (path / MARKER).is_file() and path.parent == Path(own_root).parent:
-            shutil.rmtree(path, ignore_errors=True)
-            if path.exists():
-                keep.append(name)
+        ours = (path / MARKER).is_file() or MANAGED_NAME.fullmatch(path.name)  # A half-deleted one has no marker.
+        if not ours or path.parent != Path(own_root).parent:
+            continue
+        if _in_use(path):
+            keep.append(name)
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            keep.append(name)
     if keep != record.get('discard', []):
         _write(state_path(registry), {**record, 'discard': keep})
 

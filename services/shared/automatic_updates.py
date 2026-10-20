@@ -934,6 +934,12 @@ def watch(automatic):
                 if (automatic.base / 'watcher.exit').exists():
                     break
                 time.sleep(.25)
+            if automatic.bootstrap_root is not None:
+                try:
+                    # A retired bootstrap that the previous watcher was still running from when it was confirmed.
+                    bootstrap_update.prune(automatic.registry, automatic.bootstrap_root)
+                except Exception as error:
+                    update_log.log_exception(base, 'watch.prune', error)
 
 
 WATCH_PAUSE = 5  # seconds between watcher rounds
