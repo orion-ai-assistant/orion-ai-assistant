@@ -270,6 +270,12 @@ class Postgres:
                 # A controlled stop first. If it fails, the error is raised and the server ends with its
                 # owner at the latest (the owner job), never left running ownerless.
                 self._shutdown(owner)
+            if self._server is not None:
+                try:
+                    self._server.wait(5)  # Its host ends with the server; collect it.
+                except subprocess.TimeoutExpired:
+                    pass  # Ends with the job below at the latest.
+                self._server = None
             if self.job is not None:
                 self.job.close()
                 self.job = None
