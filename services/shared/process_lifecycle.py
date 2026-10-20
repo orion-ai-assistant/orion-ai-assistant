@@ -740,6 +740,10 @@ def stop_component(root, component, timeout=120):
         return True
 
 
+def _plain_popen(argv, *, registry=None, component_root=None, **options):
+    return subprocess.Popen(argv, **options)
+
+
 def ensure_started(root, component, argv, *, env=None, timeout=60):
     directory = state_dir(root, component)
     with InstanceLock(directory, 'operation', timeout=timeout):
@@ -753,9 +757,16 @@ def ensure_started(root, component, argv, *, env=None, timeout=60):
         else:
             options = dict(creationflags=0x08000000) if os.name == 'nt' else dict(start_new_session=True)
             log_path = directory / 'supervisor.log'
+            # A child of the installation's resident Orion.exe when it runs (one Task Manager entry, its job).
+            # The Router's vendored copy of this engine has no host module: it starts the way it always did.
+            try:
+                from .orion_host import popen
+            except ImportError:
+                popen = _plain_popen
             with log_path.open('ab') as log:
-                proc = subprocess.Popen(list(map(str, argv)), cwd=root, env=env, stdin=subprocess.DEVNULL,
-                                        stdout=log, stderr=log, **options)
+                proc = popen(list(map(str, argv)), registry=(env or os.environ).get('ORION_INSTALLATION_REGISTRY'),
+                             component_root=root, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                             stdout=log, stderr=log, **options)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             current = Runtime(root, component).read()

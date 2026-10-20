@@ -67,6 +67,26 @@ def owned_start(command, data, lock_directory, *, timeout):
     return job, result
 
 
+def owned_server(command, data, lock_directory, log):
+    """Windows: run the postmaster `command` (postgres.exe itself) inside this process's job, with the stdlib host
+    that joined the job staying alive as its parent.
+
+    pg_ctl started the server through cmd.exe and exited: the server had no live parent, so Task Manager listed it
+    on its own instead of under its owner (and so under the installation's Orion.exe). Returns (job, host process);
+    the caller keeps `job` for as long as it owns the server."""
+    job = job_adapter().Job(owner_job_record(data), create=True)
+    try:
+        cancel = Path(lock_directory) / ('cancel-' + str(uuid.uuid4()))  # Never created: the start is wanted.
+        host = [sys._base_executable, '-I', '-S', str(Path(__file__).with_name('process_host.py')),
+                job.record['name'], str(cancel), *command]
+        with open(log, 'ab') as output:  # The server's own log, as with pg_ctl -l.
+            process = subprocess.Popen(host, stdin=subprocess.DEVNULL, stdout=output, stderr=output, **NO_WINDOW)
+    except BaseException:
+        job.close()  # A half-started server ends with the job.
+        raise
+    return job, process
+
+
 class SettingDenied(LifecycleError):
     """The role may not read this server setting (it lacks pg_read_all_settings)."""
 
@@ -86,6 +106,7 @@ class Postgres:
         self.psql = self.ctl.with_name('psql.exe' if os.name == 'nt' else 'psql')
         self.directory = self.data.parent / '.orion-lifecycle-postgres'
         self.job = None  # Held while this process owns the running server.
+        self._server = None  # Windows: the stdlib host that started it, its live parent.
 
     def owner(self):
         pid_path = self.data / 'postmaster.pid'
@@ -195,17 +216,27 @@ class Postgres:
                 raise LifecycleError('PostgreSQL requires setup before start')
             # The log lives beside the data directory: crash recovery fsyncs every file inside it, and on Windows
             # the log that pg_ctl holds open made that walk retry for 30 s (a failed first start after power loss).
-            command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(self.data.parent / 'server.log'),
+            log = self.data.parent / 'server.log'
+            if os.name == 'nt':
+                command = [str(self.executable), '-D', str(self.data), '-p', str(self.port), '-c', 'fsync=on',
+                           '-c', 'full_page_writes=on', '-c', 'synchronous_commit=on']
+                self.job, self._server = owned_server(command, self.data, self.directory, log)
+                if not self._ready_soon(40, server=self._server):  # pg_ctl's 30 s start wait + its 10 s readiness check.
+                    raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
+                return
+            command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(log),
                        '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on', '-w', '-t', '30']
             self.job, result = owned_start(command, self.data, self.directory, timeout=35)
             if result.returncode or not self._ready_soon():
                 raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
 
-    def _ready_soon(self, timeout=10):
+    def _ready_soon(self, timeout=10, server=None):
         # pg_ctl -w (Windows) accepts a postmaster.pid younger than 2 s as the new server's: right after a
         # server that had just started was killed, it reports ready while the new one is still recovering.
         deadline = time.monotonic() + timeout
         while True:
+            if server is not None and server.poll() is not None:
+                return False  # The server ended (port, configuration, data): its log says why.
             try:
                 if self.ready():
                     return True

@@ -26,6 +26,12 @@ def test_launcher_has_product_identity_and_is_reproducible(tmp_path):
     assert info(first, 'FileVersion') == '0.1.1.0'
 
 
+def test_launcher_source_is_ascii():
+    # The Framework compiler reads a BOM-less source in the ANSI code page: Turkish text uses escapes.
+    from build_launcher import SOURCE
+    assert (SOURCE / 'Orion.cs').read_bytes().isascii()
+
+
 def test_router_launcher_names_itself_orion_router(tmp_path):
     exe = build_launcher(tmp_path / 'OrionRouter.exe', '0.1.1', 'Orion Router')
     assert info(exe, 'FileDescription') == 'Orion Router'

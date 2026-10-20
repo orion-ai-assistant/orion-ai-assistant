@@ -186,6 +186,26 @@ while True: server.handle_request()
         self.assertNotIn('-Startup', args)
         self.assertFalse(self.store.read()['preferences']['start_with_windows'])
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows running executable')
+    def test_a_running_orion_exe_is_renamed_aside_and_replaced(self):
+        # The resident Orion.exe runs all the time: its file cannot be replaced, only renamed.
+        entry = launcher.install_entry(self.store, desktop=False)
+        running = entry.with_name('Orion.exe')
+        running.write_bytes((Path(os.environ['SYSTEMROOT']) / 'System32/PING.EXE').read_bytes())
+        process = subprocess.Popen([str(running), '-n', '60', '127.0.0.1'], stdout=subprocess.DEVNULL)
+        self.addCleanup(process.kill)
+        new = self.root / 'new-Orion.exe'
+        new.write_bytes(b'MZ new launcher')
+        with patch.object(launcher, 'retained_launcher', return_value=new):
+            launcher.install_entry(self.store, desktop=False)
+            self.assertEqual(b'MZ new launcher', running.read_bytes())
+            aside = list(running.parent.glob('Orion.exe.*.old'))
+            self.assertEqual(1, len(aside))
+            process.kill()
+            process.wait(10)
+            launcher.install_entry(self.store, desktop=False)
+        self.assertFalse(aside[0].exists())  # Removed once nothing runs from it.
+
     @unittest.skipUnless(os.name == 'nt', 'Windows PowerShell entry')
     def test_stale_entry_runs_without_hub_or_python_when_disabled(self):
         entry = launcher.install_entry(self.store, desktop=False)

@@ -828,9 +828,11 @@ def spawn_watcher(registry):
         # bundle folder: the launcher's working directory is the Hub tree, and a watcher whose cwd is inside it
         # counted as a process using the installation ("busy=python.exe:<watcher>"), so a staged update was
         # skipped at the next launch.
-        subprocess.Popen(command + ['watch'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, cwd=str(Path(command[2]).parents[2]),
-                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
+        # Under the installation's resident Orion.exe when it runs: shown with it, ended with it.
+        from .orion_host import popen
+        popen(command + ['watch'], registry=registry, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL, cwd=str(Path(command[2]).parents[2]),
+              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), close_fds=True)
 
 
 def record_check_failure(registry, returncode, code=None):

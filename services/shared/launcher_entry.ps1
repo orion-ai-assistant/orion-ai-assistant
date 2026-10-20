@@ -199,6 +199,25 @@ function Wait-OrionUpdate([string]$pending) {
     $timer.Dispose(); $form.Dispose()
 }
 try {
+    # The installation's resident Orion.exe (scripts/release/launcher/Orion.cs) is the one long-lived root of every
+    # Orion process: one Task Manager entry, the tray icon, End task ends everything. Run directly (a de-elevated
+    # restart, an older link), this entry hands the start to it; the host runs this entry itself (ORION_HOST_PID).
+    # ORION_DELEGATED ends the hand-over through an Orion.exe that predates the host and only starts this entry.
+    if (-not $Stop -and -not $Repair -and -not $NonInteractive -and -not $env:ORION_HOST_PID -and -not $env:ORION_DELEGATED) {
+        $exe = Join-Path $PSScriptRoot 'Orion.exe'
+        if (Test-Path -LiteralPath $exe -PathType Leaf) {
+            $env:ORION_DELEGATED = '1'
+            $flags = @()
+            if ($Startup) { $flags += '-Startup' }
+            if ($Background) { $flags += '-Background' }
+            $started = $false
+            try {
+                if ($flags.Count) { Start-Process -FilePath $exe -ArgumentList $flags } else { Start-Process -FilePath $exe }
+                $started = $true
+            } catch {}
+            if ($started) { exit 0 }
+        }
+    }
     if (-not $Stop -and -not $Repair -and (Test-OrionElevated)) {
         # Orion never runs elevated: re-open it with normal rights and leave; the message is only the fallback.
         if (Start-OrionDeElevated) { exit 0 }

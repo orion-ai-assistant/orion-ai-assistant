@@ -538,6 +538,9 @@ def test_real_postgres_ends_with_its_owner_and_an_ownerless_server_is_taken_over
     try:
         assert owner.stdout.readline().strip() == 'ready'
         assert db.owned()  # Another live process owns it: used, never taken over.
+        # The server's parent stays alive under its owner (Task Manager shows it there, not on its own).
+        holders = {owner.pid} | {child.pid for child in psutil.Process(owner.pid).children()}  # venv redirector
+        assert psutil.Process(db.owner()['pid']).parent().parent().pid in holders
         owner.kill()  # Task Manager / a crash: no clean stop runs.
         owner.wait(10)
         wait_until(lambda: db.owner() is None)  # Windows ended the server with its owner.
