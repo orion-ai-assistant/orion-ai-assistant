@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager, suppress
-
+import logging
 import os
 import re
 from fastapi import FastAPI, Request
@@ -102,6 +102,11 @@ async def lifespan(app: FastAPI):
     # All API entry points monitor queues, independently of Worker availability.
     from orion.kernel.job_safety import queue_watchdog
     async with service_lifespan(app):
+        from orion.api.pc_audio import lease
+        try:
+            await lease.recover()
+        except Exception:
+            logging.exception("PC audio levels left by a previous run could not be restored")
         watchdog = asyncio.create_task(admitted(queue_watchdog(app.state.redis)))
         provisioner = None
         if getattr(app.state, 'public', True) is False:
@@ -117,7 +122,6 @@ async def lifespan(app: FastAPI):
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog
-            from orion.api.pc_audio import lease
             await lease.close()
 
 

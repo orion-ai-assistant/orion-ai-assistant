@@ -1,4 +1,4 @@
-"""Desktop-only authenticated control of the Hub PC's default playback endpoint."""
+"""Desktop-only authenticated per-app ducking of the Hub PC's playback while the user speaks."""
 import os
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
