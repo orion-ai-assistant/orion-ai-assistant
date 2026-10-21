@@ -365,9 +365,11 @@ async def phone_endpoint(websocket: WebSocket):
     link = PhoneLink(bus, user, send_json)
 
     async def watch():
+        # Heartbeats always flow, so the phone also detects a dead connection
+        # while disarmed. During a turn the PC's presence is checked faster.
         while True:
-            if await link.sync_arm():
-                await send_json({'type': 'heartbeat'})
+            await link.sync_arm()
+            await send_json({'type': 'heartbeat'})
             await asyncio.sleep(HEARTBEAT_SECONDS if not link.turn else 2)
 
     async def listen():
