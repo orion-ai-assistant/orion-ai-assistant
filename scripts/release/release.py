@@ -5,7 +5,7 @@
 1. Version bump (bump_versions.py): build without acceptance, compare every package and each feed's bootstrap
    with what the live feeds list (sha256) and, for what changed, raise sequence/version/package_id in its release
    json and commit that in its repository (never pushed). `--no-bump` uses the release jsons as they are.
-   `--version 0.3.1` gives every component published in this round (and a rebuilt bootstrap) that version, each
+   `--version 0.3.1` gives every component published in this round (and the bootstrap, changed or not) that version, each
    with sequence = published + 1, changed or not; it must be above every published version.
 2. `build_release.py` (build cache, parallel builds, full acceptance; reuses an identical earlier pass). After a
    bump only the bumped packages are built again.

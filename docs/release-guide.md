@@ -155,7 +155,7 @@ Kurallar:
   temelidir; değişmeyen bileşen için hiçbir şey yüklenmez.
 - **Hepsini aynı sürüme getirmek: `--version 0.3.1`.** Bu turda yayınlanan her bileşen (`--feeds` ile seçilen
   feed'lerinkiler) içeriği değişmese de `0.3.1` olur, `package_id` buna göre, `sequence` = yayınlanan + 1.
-  Bootstrap yalnızca yeniden derleniyorsa (baytları değiştiyse) `0.3.1` alır. Sürüm, yayınlanmış **her**
+  Bootstrap (güncelleyici) de, baytları değişmese bile, `0.3.1` olur ve iki feed'e yeniden yayınlanır. Sürüm, yayınlanmış **her**
   bileşenin güncel sürümünden yüksek olmalı; değilse `release.cmd` parola sormadan ve derlemeden önce durur.
   `--version` olmadan yalnızca değişen bileşenler bir yama yükseltilir.
 - **`--no-bump`:** Eski davranış. Sürüm dosyaları olduğu gibi kullanılır, feed ile karşılaştırma yapılmaz;

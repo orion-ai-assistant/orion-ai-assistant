@@ -180,8 +180,8 @@ def build_bootstrap(source, output):
 def bump_bootstrap(candidates, live, work, build=build_bootstrap, release_path=BOOTSTRAP_RELEASE, repository=ROOT,
                    apply=True, version=None):
     """Build each feed's bootstrap, compare it with that feed's; on any difference bump bootstrap.json (one
-    sequence for both feeds; to `version` when given) and build both again. An unchanged bootstrap keeps its
-    version even with `version`. Returns (Change, {feed: bundle to publish unchanged})."""
+    sequence for both feeds; to `version` when given) and build both again. With `version` the bootstrap is
+    aligned like the other components, changed or not (the updater is part of a test round). Returns (Change, {feed: bundle to publish unchanged})."""
     sources = {feed: P.default_source(feed, {c: n for c, (n, _) in
                                              P.candidate_names(candidates, value['components']).items()})
                for feed, value in P.FEEDS.items()}
@@ -200,11 +200,11 @@ def bump_bootstrap(candidates, live, work, build=build_bootstrap, release_path=B
         return Change('bootstrap', 'new', None, release['version'], release['sequence']), bundles
     newest = max(listed, key=lambda state: state.sequence)
     changed = any(state is not None and state.digest != sha256(bundles[feed]) for feed, state in states.items())
-    change, new = decide('bootstrap', release, newest, changed, version if changed else None)
+    change, new = decide('bootstrap', release, newest, changed, version)
     if new is not None and apply:
         write_release(release_path, new)
         bundles = build_all()
-        commit(repository, [release_path], message([change], version if changed else None))
+        commit(repository, [release_path], message([change], version))
     return change, bundles
 
 

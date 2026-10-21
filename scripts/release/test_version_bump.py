@@ -288,13 +288,10 @@ def test_version_check_uses_the_newest_sequence_not_an_old_higher_label():
     B.check_version('0.3.0', live)
 
 
-def test_version_option_sets_a_rebuilt_bootstrap_and_leaves_an_unchanged_one(world, tmp_path):
+def test_version_option_aligns_the_bootstrap_even_when_unchanged(world, tmp_path):
     code = {'code': b'v1'}
     path, build, built, live = bootstrap_world(world, tmp_path, code)
     change, _ = B.bump_bootstrap(world['candidates'], live, tmp_path / 'a', build, path, world['hub'], version='0.3.1')
-    assert change.state == 'unchanged' and B.read_release(path)['version'] == '0.2.6'
-    code['code'] = b'v2'
-    change, _ = B.bump_bootstrap(world['candidates'], live, tmp_path / 'b', build, path, world['hub'], version='0.3.1')
     value = B.read_release(path)
     assert change.state == 'bumped' and (value['version'], value['sequence']) == ('0.3.1', 15)
     assert value['package_id'] == 'orion-bootstrap-0.3.1-windows-x86_64-cpu'
