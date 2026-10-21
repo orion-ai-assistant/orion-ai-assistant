@@ -585,6 +585,7 @@ def start_local_service(service_id: str) -> bool:
         return False
     from services.shared.native_services import start_hub, start_router, python_at
     from services.shared.process_lifecycle import ensure_started, LifecycleError
+    from services.shared.service_supervisor import SERVICE_READY_TIMEOUT
     if service_id == 'orion-hub':
         return start_hub(config.PROJECT_ROOT)
     if service_id == 'orion-router':
@@ -602,14 +603,16 @@ def start_local_service(service_id: str) -> bool:
             if separator and not key.startswith('#'):
                 clean_env[key] = value.strip().strip('"')
     clean_env['ORION_NATIVE_MODELS_DIR'] = config.models_directory(service_id, s_dir, manifest)
-    port_key = manifest.get('category', '').upper() + '_PORT'
+    # The embedding service's global setting is EMBED_PORT, not <CATEGORY>_PORT.
+    port_key = {'embedding': 'EMBED_PORT'}.get(manifest.get('category', ''), manifest.get('category', '').upper() + '_PORT')
     if not clean_env.get(port_key):
         raise LifecycleError('Service readiness port missing: ' + port_key)
     root = config.PROJECT_ROOT
     clean_env['PYTHONPATH'] = root
     with config.installation_operation():
         return ensure_started(s_dir, 'service', [python_at(os.path.join(root, 'installer')), '-m',
-            'services.shared.service_supervisor', s_dir, target, clean_env[port_key], python_at(s_dir)], env=clean_env)
+            'services.shared.service_supervisor', s_dir, target, clean_env[port_key], python_at(s_dir)],
+            env=clean_env, timeout=SERVICE_READY_TIMEOUT + 10)
 
 
 def remove_service(service_id: str, hardware: str = None, keep_data: bool = False) -> bool:
