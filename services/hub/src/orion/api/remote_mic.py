@@ -19,14 +19,18 @@ Protocol (JSON text frames, PCM as binary frames):
                  {turn_id, reason}, heartbeat
   PC -> Hub    : turn_end {turn_id}, turn_reject {turn_id, reason}, heartbeat
 
-Echo cancellation (Phase 2) plugs in at ``clean_phone_audio``: the single
-place where phone audio becomes the audio the PC pipeline hears.
+Echo cancellation (Phase 2): ``PhoneAudioCleaner`` is the single place where
+phone audio becomes the audio the PC pipeline hears. It runs in the PC-side
+(local) process, which also captures the loudspeaker loopback, and uses
+``orion.audio.echo_cancel.EchoCanceller`` when that module is available.
+Without it, or after any canceller error, the audio passes through unchanged.
 """
 import asyncio
 import base64
 import json
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -44,14 +48,85 @@ HEARTBEAT_SECONDS = 5
 TURN_ID_LIMIT = 64
 
 
-def clean_phone_audio(pcm: bytes, *, user: str, phone: str, turn_id: str) -> bytes:
-    """Phase 2 hook: echo-cancel phone PCM against the PC's own playback.
+class PhoneAudioCleaner:
+    """Echo-cancels phone PCM against this PC's playback, sample-aligned.
 
-    Called once per phone packet, in order, in the PC-side (local) process,
-    just before the packet is handed to the PC assistant. Phase 1 passes the
-    audio through unchanged.
+    Wraps the CPU-bound ``EchoCanceller`` (calls run in a worker thread, in
+    order per phone). Output keeps the input's timeline, so the PC still finds
+    the pre-roll's end and ``wake_end_sample`` by counting samples; chunks may
+    be shorter while the reference catches up. ``canceller=None`` passes audio
+    through unchanged.
     """
-    return pcm
+
+    def __init__(self, canceller=None):
+        self.canceller = canceller
+        self._armed = 0
+        self._raw = set()  # devices whose current turn fell back to raw audio
+
+    async def _call(self, method, *args):
+        return await asyncio.to_thread(getattr(self.canceller, method), *args)
+
+    async def arm(self):
+        self._armed += 1
+        if self.canceller is not None and self._armed == 1:
+            try:
+                await self._call('arm')
+            except Exception:
+                log.warning('Echo canceller could not arm; phone audio passes through', exc_info=True)
+
+    async def disarm(self):
+        self._armed = max(0, self._armed - 1)
+        if self.canceller is not None and self._armed == 0:
+            with suppress(Exception):
+                await self._call('disarm')
+
+    async def start_turn(self, device, preroll, start_time):
+        self._raw.discard(device)
+        if self.canceller is None:
+            return preroll
+        try:
+            return await self._call('start_turn', device, preroll, start_time)
+        except Exception:
+            log.warning('Echo canceller failed at turn start; raw audio for this turn', exc_info=True)
+            self._raw.add(device)
+            return preroll
+
+    async def process(self, device, pcm):
+        if self.canceller is None or device in self._raw:
+            return pcm
+        try:
+            return await self._call('process', device, pcm)
+        except Exception:
+            # A switch to raw mid-turn may shift the timeline by the engine
+            # latency; still better than silence.
+            log.warning('Echo canceller failed mid-turn; raw audio for this turn', exc_info=True)
+            self._raw.add(device)
+            return pcm
+
+    async def end_turn(self, device):
+        """Close the turn. The tail is not needed: the PC already ended or left it."""
+        self._raw.discard(device)
+        if self.canceller is None:
+            return
+        with suppress(Exception):
+            await self._call('end_turn', device)
+
+
+_shared_cleaner = None
+
+
+def shared_cleaner():
+    """One canceller per PC-side process (one loopback capture, warm per-phone state)."""
+    global _shared_cleaner
+    if _shared_cleaner is None:
+        canceller = None
+        try:
+            from orion.audio.echo_cancel import EchoCanceller
+            canceller = EchoCanceller()
+        except Exception:
+            log.info('Echo cancellation module unavailable; phone audio passes through', exc_info=True)
+        _shared_cleaner = PhoneAudioCleaner(canceller)
+    return _shared_cleaner
 
 
 def _channel(user, side):
@@ -143,9 +218,11 @@ class RedisBus:
 class PhoneLink:
     """One phone connection in "PC mikrofonu" mode (mobile listener process)."""
 
-    def __init__(self, bus, user, send_json, phone_id=None, clock=None):
+    def __init__(self, bus, user, send_json, phone_id=None, clock=None, device=None):
         self.bus, self.user, self.send_json = bus, user, send_json
         self.id = phone_id or secrets.token_hex(8)
+        # Stable across reconnects, so the echo canceller stays warm per phone.
+        self.device = device or self.id
         self.armed = None
         self.turn = None  # {'turn_id', 'pc'}
         self.preroll_left = 0
@@ -190,7 +267,8 @@ class PhoneLink:
                 return await self.send_json({'type': 'turn_reject', 'turn_id': start['turn_id'], 'reason': 'busy'})
             self.turn = {'turn_id': start['turn_id'], 'pc': pc}
             self.preroll_left = start['preroll_samples'] * 2
-            await self.bus.publish(_channel(self.user, 'pc'), {**start, 'phone': self.id, 'pc': pc})
+            await self.bus.publish(_channel(self.user, 'pc'), {**start, 'phone': self.id, 'pc': pc,
+                                                              'device': self.device})
             return
         if kind == 'turn_end':
             if self.turn and message.get('turn_id') == self.turn['turn_id']:
@@ -239,15 +317,46 @@ class PhoneLink:
 class PcLink:
     """The PC assistant session that receives phone turns (local listener process)."""
 
-    def __init__(self, bus, user, send_json, send_bytes, pc_id=None):
+    def __init__(self, bus, user, send_json, send_bytes, pc_id=None, cleaner=None, clock=time.perf_counter):
         self.bus, self.user = bus, user
         self.send_json, self.send_bytes = send_json, send_bytes
         self.id = pc_id or secrets.token_hex(8)
-        self.turn = None  # {'turn_id', 'phone'}
+        self.cleaner = cleaner or PhoneAudioCleaner()
+        self.clock = clock
+        self.turn = None  # {'turn_id', 'phone', 'device', 'preroll', 'need', 'started', 'open'}
+        self._armed = False
 
     async def activate(self):
         # The newest PC assistant session takes over; an older one stops receiving.
         await self.bus.set(pc_key(self.user), self.id, PC_TTL_SECONDS)
+        if not self._armed:
+            self._armed = True
+            await self.cleaner.arm()  # Start the loudspeaker reference ring.
+
+    async def _close_turn(self):
+        turn, self.turn = self.turn, None
+        if turn and turn['open']:
+            await self.cleaner.end_turn(turn['device'])
+        return turn
+
+    async def _deliver(self, pcm):
+        """Phone PCM in arrival order -> cleaned PCM to the PC assistant."""
+        turn = self.turn
+        if not turn['open']:
+            take = turn['need'] - len(turn['preroll'])
+            turn['preroll'] += pcm[:take]
+            pcm = pcm[take:]
+            if len(turn['preroll']) < turn['need']:
+                return
+            turn['open'] = True
+            out = await self.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
+            if out and self.turn is turn:
+                await self.send_bytes(out)
+            if not pcm:
+                return
+        out = await self.cleaner.process(turn['device'], pcm)
+        if out and self.turn is turn:
+            await self.send_bytes(out)
 
     async def heartbeat(self):
         """Keep this PC active. False once a newer PC session took over."""
@@ -260,8 +369,7 @@ class PcLink:
                 await self.send_json({'type': 'inactive'})
             return
         if kind in {'turn_end', 'turn_reject'} and self.turn and message.get('turn_id') == self.turn['turn_id']:
-            turn = self.turn
-            self.turn = None
+            turn = await self._close_turn()
             reply = {'type': kind, 'turn_id': turn['turn_id'], 'phone': turn['phone']}
             if kind == 'turn_reject':
                 reason = message.get('reason')
@@ -275,8 +383,14 @@ class PcLink:
         if kind == 'phone_ready':
             await self.send_json({'type': 'phone_ready'})
         elif kind == 'turn_start':
-            self.turn = {'turn_id': message['turn_id'], 'phone': message['phone']}
-            await self.send_json({key: value for key, value in message.items() if key not in {'pc', 'phone'}})
+            await self._close_turn()
+            # The first live sample follows the pre-roll; it reaches the Hub now.
+            self.turn = {'turn_id': message['turn_id'], 'phone': message['phone'],
+                         'device': message.get('device') or message['phone'],
+                         'preroll': bytearray(), 'need': message['preroll_samples'] * 2,
+                         'started': self.clock(), 'open': False}
+            await self.send_json({key: value for key, value in message.items()
+                                  if key not in {'pc', 'phone', 'device'}})
         elif kind == 'audio':
             turn = self.turn
             if not turn or message.get('turn_id') != turn['turn_id']:
@@ -285,21 +399,23 @@ class PcLink:
                 pcm = base64.b64decode(message['pcm'], validate=True)
             except (KeyError, ValueError, TypeError):
                 return
-            await self.send_bytes(clean_phone_audio(pcm, user=self.user, phone=turn['phone'],
-                                                    turn_id=turn['turn_id']))
+            if pcm:
+                await self._deliver(pcm)
         elif kind == 'turn_end':
             if self.turn and message.get('turn_id') == self.turn['turn_id']:
-                self.turn = None
+                await self._close_turn()
                 await self.send_json({'type': 'turn_end', 'turn_id': message['turn_id'],
                                       'reason': message.get('reason', 'phone')})
 
     async def close(self):
-        if self.turn:
-            turn = self.turn
-            self.turn = None
+        turn = await self._close_turn()
+        if turn:
             await self.bus.publish(_channel(self.user, 'phone'), {'type': 'turn_end', 'turn_id': turn['turn_id'],
                                                                  'phone': turn['phone']})
         await self.bus.delete_if(pc_key(self.user), self.id)
+        if self._armed:
+            self._armed = False
+            await self.cleaner.disarm()
 
 
 async def _authenticate(websocket):
@@ -362,7 +478,8 @@ async def phone_endpoint(websocket: WebSocket):
     async def send_json(message):
         async with lock:
             await websocket.send_text(json.dumps(message))
-    link = PhoneLink(bus, user, send_json)
+    device = getattr(websocket.state, 'device_id', None)
+    link = PhoneLink(bus, user, send_json, device=str(device) if device else None)
 
     async def watch():
         # Heartbeats always flow, so the phone also detects a dead connection
@@ -406,7 +523,7 @@ async def pc_endpoint(websocket: WebSocket):
     async def send_bytes(data):
         async with lock:
             await websocket.send_bytes(data)
-    link = PcLink(bus, user, send_json, send_bytes)
+    link = PcLink(bus, user, send_json, send_bytes, cleaner=shared_cleaner())
 
     async def listen(ready):
         async with bus.subscribe(_channel(user, 'pc')) as messages:

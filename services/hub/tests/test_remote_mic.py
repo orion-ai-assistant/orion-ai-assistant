@@ -2,7 +2,7 @@ import base64
 import unittest
 
 from orion.api import remote_mic
-from orion.api.remote_mic import PcLink, PhoneLink, validate_turn_start, pc_key, turn_key
+from orion.api.remote_mic import PcLink, PhoneAudioCleaner, PhoneLink, validate_turn_start, pc_key, turn_key
 
 
 class MemoryBus:
@@ -36,6 +36,36 @@ class MemoryBus:
             del self.keys[key]
             return True
         return False
+
+
+class FakeCanceller:
+    """Records the EchoCanceller calls; output is tagged with a leading b'C'."""
+
+    def __init__(self, fail=None):
+        self.calls, self.fail = [], fail
+
+    def _record(self, *call):
+        self.calls.append(call)
+        if call[0] == self.fail:
+            raise RuntimeError('engine failed')
+
+    def arm(self):
+        self._record('arm')
+
+    def disarm(self):
+        self._record('disarm')
+
+    def start_turn(self, device, preroll, start_time):
+        self._record('start_turn', device, preroll, start_time)
+        return b'C' + preroll
+
+    def process(self, device, pcm):
+        self._record('process', device, pcm)
+        return b'C' + pcm
+
+    def end_turn(self, device):
+        self._record('end_turn', device)
+        return b''
 
 
 def start(turn_id='t1', **extra):
@@ -90,10 +120,11 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         h = Harness()
         await h.pc.activate()
         await h.phone.sync_arm()
-        await h.phone.on_text(start())
+        small = start(preroll_samples=4, start_sample=0, wake_end_sample=3)
+        await h.phone.on_text(small)
         await h.phone.on_audio(b'\x01\x00' * 4)
         await h.phone.on_audio(b'\x02\x00' * 2)
-        self.assertEqual(h.pc_out[-1], {k: v for k, v in validate_turn_start(start()).items()})
+        self.assertEqual(h.pc_out[-1], validate_turn_start(small))
         self.assertEqual(h.pc_audio, [b'\x01\x00' * 4, b'\x02\x00' * 2])
         self.assertEqual(h.bus.keys[turn_key('user')], 'phone:t1')
 
@@ -203,31 +234,52 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await h.pc.close()  # The old session must not drop the newer one's key.
         self.assertEqual(h.bus.keys[pc_key('user')], 'newer')
 
-    async def test_audio_passes_through_the_echo_hook(self):
+    async def test_canceller_gets_exact_preroll_then_live_audio(self):
         h = Harness()
-        calls = []
-        original = remote_mic.clean_phone_audio
+        fake = FakeCanceller()
+        h.pc.cleaner = PhoneAudioCleaner(fake)
+        h.pc.clock = lambda: 42.0
+        h.phone.device = 'device-7'
+        await h.pc.activate()
+        self.assertEqual(fake.calls, [('arm',)])
+        await h.phone.on_text(start(preroll_samples=3, start_sample=0, wake_end_sample=2))
+        self.assertNotIn('device', h.pc_out[-1])
+        await h.phone.on_audio(b'\x01\x00\x02\x00')
+        await h.phone.on_audio(b'\x03\x00\x04\x00')  # Last pre-roll sample + one live sample.
+        await h.phone.on_audio(b'\x05\x00')
+        self.assertEqual(fake.calls[1:], [('start_turn', 'device-7', b'\x01\x00\x02\x00\x03\x00', 42.0),
+                                          ('process', 'device-7', b'\x04\x00'),
+                                          ('process', 'device-7', b'\x05\x00')])
+        self.assertEqual(b''.join(h.pc_audio), b'C\x01\x00\x02\x00\x03\x00C\x04\x00C\x05\x00')
+        await h.pc.on_text({'type': 'turn_end', 'turn_id': 't1'})
+        self.assertEqual(fake.calls[-1], ('end_turn', 'device-7'))
+        await h.pc.close()
+        self.assertEqual(fake.calls[-1], ('disarm',))
 
-        def hook(pcm, *, user, phone, turn_id):
-            calls.append((pcm, user, phone, turn_id))
-            return pcm[::-1]
-        remote_mic.clean_phone_audio = hook
-        try:
-            await h.pc.activate()
-            await h.phone.on_text(start())
-            await h.phone.on_audio(b'\x01\x02')
-        finally:
-            remote_mic.clean_phone_audio = original
-        self.assertEqual(calls, [(b'\x01\x02', 'user', 'phone', 't1')])
-        self.assertEqual(h.pc_audio, [b'\x02\x01'])
+    async def test_canceller_failure_falls_back_to_raw_audio(self):
+        h = Harness()
+        fake = FakeCanceller(fail='process')
+        h.pc.cleaner = PhoneAudioCleaner(fake)
+        await h.pc.activate()
+        await h.phone.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))
+        await h.phone.on_audio(b'\x01\x00')
+        await h.phone.on_audio(b'\x02\x00')
+        await h.phone.on_audio(b'\x03\x00')
+        self.assertEqual(h.pc_audio, [b'C\x01\x00', b'\x02\x00', b'\x03\x00'])
+        self.assertEqual([c[0] for c in fake.calls].count('process'), 1)
 
-    def test_default_hook_passes_audio_unchanged(self):
-        self.assertEqual(remote_mic.clean_phone_audio(b'\x01\x02', user='u', phone='p', turn_id='t'), b'\x01\x02')
+    async def test_without_canceller_audio_is_unchanged(self):
+        cleaner = PhoneAudioCleaner(None)
+        await cleaner.arm()
+        self.assertEqual(await cleaner.start_turn('d', b'\x01\x02', 0), b'\x01\x02')
+        self.assertEqual(await cleaner.process('d', b'\x03\x04'), b'\x03\x04')
+        await cleaner.end_turn('d')
+        await cleaner.disarm()
 
     async def test_corrupt_audio_message_is_ignored(self):
         h = Harness()
         await h.pc.activate()
-        await h.phone.on_text(start())
+        await h.phone.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))
         await h.pc.on_bus({'type': 'audio', 'turn_id': 't1', 'pc': 'pc', 'pcm': '%%%'})
         self.assertEqual(h.pc_audio, [])
         await h.pc.on_bus({'type': 'audio', 'turn_id': 't1', 'pc': 'pc',

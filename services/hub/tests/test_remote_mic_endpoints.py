@@ -79,7 +79,9 @@ class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.redis = FakeRedis()
         patches = [mock.patch('orion.api.auth_routes.authenticate_token', user),
-                   mock.patch('orion.api.access_boundary.is_desktop_peer', lambda scope: True)]
+                   mock.patch('orion.api.access_boundary.is_desktop_peer', lambda scope: True),
+                   # No loudspeaker loopback in tests: audio passes through.
+                   mock.patch.object(remote_mic, 'shared_cleaner', lambda: remote_mic.PhoneAudioCleaner(None))]
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
