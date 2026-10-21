@@ -140,6 +140,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     application.include_router(auth_router, prefix='/api/v1')
     application.include_router(router)
     application.include_router(pc_audio_router)
+    from orion.api.remote_mic import router as remote_mic_router
+    application.include_router(remote_mic_router)
     from orion.api.router_providers import router as provider_router
     application.include_router(provider_router)
     from orion.api.mobile_security import mobile_router, pairing_router, owner_router as secure_owner_router, MobileBoundary, LegacyDeviceBoundary
