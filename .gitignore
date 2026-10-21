@@ -54,6 +54,8 @@ services/tts/*.wav
 # Compiled Binaries and Executables
 *.exe
 *.dll
+# Portable LocalVQE build shipped with the Hub (built by services/hub/vendor/localvqe/build_localvqe.cmd)
+!services/hub/src/orion/audio/echo_cancel/native/localvqe.dll
 *.so
 *.dylib
 
