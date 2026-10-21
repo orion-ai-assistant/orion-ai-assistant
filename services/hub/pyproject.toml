@@ -23,6 +23,10 @@ dependencies = [
   "ddgs>=9.0,<10",
   "zeroconf>=0.151.0,<1",
   "psutil>=5.9,<8",
+  # Echo cancellation for the PC microphone mode (Windows loopback reference only).
+  "numpy>=1.26",
+  "ai-edge-litert>=2.3,<3; sys_platform == 'win32'",
+  "PyAudioWPatch>=0.2.12.9,<0.3; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

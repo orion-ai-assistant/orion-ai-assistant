@@ -1,0 +1,30 @@
+diff --git a/ggml/CMakeLists.txt b/ggml/CMakeLists.txt
+index be703e7..aea2f4d 100644
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -54,11 +54,21 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+     # x86: build all CPU backend variants (SSE4.2 through AVX-512/Zen4) as shared
+     # libraries, selected at runtime based on CPU capabilities.
+     # This avoids needing -march=native (which Nix strips).
+-    set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+-    set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
+-    set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
++    # Orion Hub: one self-contained localvqe.dll with an x86-64-v3 (AVX2) baseline.
++    # Not -march=native (would only run on the build CPU) and not the per-CPU
++    # variant DLLs (their nested build paths exceed MAX_PATH on Windows).
++    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
++    set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
++    set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
+     set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+-    set(GGML_STATIC OFF CACHE BOOL "" FORCE)
++    set(GGML_STATIC ON CACHE BOOL "" FORCE)
++    set(GGML_AVX ON CACHE BOOL "" FORCE)
++    set(GGML_AVX2 ON CACHE BOOL "" FORCE)
++    set(GGML_FMA ON CACHE BOOL "" FORCE)
++    set(GGML_F16C ON CACHE BOOL "" FORCE)
++    set(GGML_BMI2 ON CACHE BOOL "" FORCE)
++    set(GGML_AVX512 OFF CACHE BOOL "" FORCE)
++    set(GGML_AVX_VNNI OFF CACHE BOOL "" FORCE)
+     # Put all binaries and .so's in the same directory so ggml_backend_load_all()
+     # finds the CPU variant libraries next to the executable.
+     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin CACHE PATH "" FORCE)
