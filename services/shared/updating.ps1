@@ -60,7 +60,7 @@ function Get-Step {
     # A phase that has not reported its own percent yet starts at the low end of its share (the bar never waits at 38%).
     elseif (@{ draining = 8; backing_up = 10; switching = 45; health_check = 55 }.ContainsKey([string]$phase)) { $percent = @{ draining = 8; backing_up = 10; switching = 45; health_check = 55 }[[string]$phase] }
     elseif ($phase -eq 'restarting') { $percent = 97 }
-    return @($text, $stamp, $percent)
+    return @($text, $stamp, $percent, $phase)
 }
 
 Initialize-OrionUi
@@ -97,7 +97,13 @@ $timer.Add_Tick({
     $info = Get-Step
     $step.Text = $info[0]
     if ($null -ne $info[2]) {
-        Set-OrionProgress $bar $info[2]  # Never moves backwards.
+        # Never moves backwards. When the step reports nothing newer (a long file copy, a health probe) the bar
+        # still creeps one point a second up to the end of that step's share, so it never looks stuck and the
+        # final jump to 100% is only the last step.
+        $cap = @{ stopping = 7; applying = 9; draining = 9; backing_up = 44; switching = 54; health_check = 94 }[[string]$info[3]]
+        $current = [int]$bar.Tag.Value
+        if ($info[2] -le $current -and $null -ne $cap -and $current -lt $cap) { Set-OrionProgress $bar ($current + 1) }
+        else { Set-OrionProgress $bar $info[2] }
         $percent.Text = ('{0}%' -f [int]$bar.Tag.Value)
     }
     $span = [DateTime]::Now - $started
