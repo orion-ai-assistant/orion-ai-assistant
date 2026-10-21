@@ -347,6 +347,8 @@ class AutomaticUpdates:
             except (ValueError, OSError):
                 continue  # One damaged old journal never hides the others.
             if isinstance(value, dict) and value.get('installation_id') == record['installation_id']:
+                if value.get('phase') == 'failed' and value.get('reason') == 'Superseded':
+                    continue  # A half-published release replaced by the complete one is not a failure.
                 history.append({k: value.get(k) for k in ('operation_id', 'phase', 'changes', 'updated_at')})
         # The updater replaces itself outside any journal (bootstrap/self-update.json, the latest renewal only):
         # without this the history never showed it, although "Kurulu sürümler" had the new version.

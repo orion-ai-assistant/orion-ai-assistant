@@ -166,7 +166,7 @@ def test_launch_time_apply_opens_the_window_and_writes_the_result(automatic):
         assert service.startup()['phase'] == 'completed'
     assert events == ['open', 'close']
     result = update_ui.read_result(service.registry)
-    assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: hub 9.0.1')
+    assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: Hub 9.0.1')
 
 
 class PowerCut(BaseException):

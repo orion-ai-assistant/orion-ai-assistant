@@ -180,7 +180,7 @@ def test_success_result_names_the_new_versions_and_is_shown_once(automatic):
     request(service, now)
     update_now.process_request(service, stop=Calls().stop, start=Calls().start, clock=lambda: now[0])
     result = update_ui.read_result(service.registry)
-    assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: hub 9.0.1')
+    assert result['status'] == 'completed' and result['message'].startswith('Güncellendi: Hub 9.0.1')
     assert update_ui.mark_seen(service.registry)['seen'] is True
 
 

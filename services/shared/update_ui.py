@@ -142,7 +142,10 @@ def summarize(tx, outcome, error):
     if outcome == 'completed' and not error:
         proposed = _components((tx or {}).get('proposed'))
         changed = (tx or {}).get('changes') or list(proposed)
-        text = ', '.join(f'{kind} {proposed[kind]}' for kind in sorted(changed) if kind in proposed)
+        # The names the settings card uses (client is "Arayüz"), in the card's order.
+        names = {'hub': 'Hub', 'client': 'Arayüz', 'router': 'Router'}
+        order = [kind for kind in names if kind in changed] + sorted(kind for kind in changed if kind not in names)
+        text = ', '.join(f'{names.get(kind, kind)} {proposed[kind]}' for kind in order if kind in proposed)
         return 'completed', 'Güncellendi: ' + text + '.' if text else 'Güncellendi.'
     reason = update_log.describe(error or outcome)
     if outcome == 'repair_required':
