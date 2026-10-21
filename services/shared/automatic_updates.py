@@ -867,6 +867,26 @@ def record_check_failure(registry, returncode, code=None):
 WATCHER_LOCK_WAIT = 3
 
 
+def _router_apply(automatic):
+    """"Şimdi kur" from the Router panel of a Router-only installation: the prepared Router update is applied by
+    this watcher (it stops the Router, switches, health-checks and starts it again). With a Hub the Hub's own
+    "Şimdi kur" does this (it waits for the Hub's work to be idle first), so the panel never asks for it there.
+    Returns True when the apply was requested."""
+    from . import update_now
+    registry = automatic.registry
+    if any(c['kind'] == 'hub' for c in registry.read()['components']):
+        update_log.log(automatic.base, 'router-apply.ignored', reason='hub')
+        return False
+    try:
+        update_now.begin(registry, automatic.helper)
+        update_now.handoff(registry)  # No Hub work to wait for: verified idle by definition.
+    except UpdateError as error:
+        update_log.log(automatic.base, 'router-apply.refused', reason=str(error))
+        return False
+    update_log.log(automatic.base, 'router-apply.requested')
+    return True
+
+
 def watch(automatic):
     # Launched by the outer launcher, never by a Hub-owned Job descendant.
     # A user may close Hub while a download is in flight; preparation finishes
@@ -928,6 +948,10 @@ def watch(automatic):
                             automatic.check(manual=True, with_router=True)
                         else:
                             router.check(manual=True)
+                    elif value == {'schema': 1, 'installation_id': automatic.registry.read()['installation_id'], 'action': 'apply'}:
+                        request.unlink()
+                        if _router_apply(automatic):
+                            continue  # Requested: the next round (no pause) runs the apply.
                     else:
                         request.unlink()
                         raise UpdateError('Invalid Router update request')

@@ -79,3 +79,43 @@ def test_router_first_then_hub_added_later_joins_the_single_transaction(tmp_path
     assert service.covers_router()
     service.check(manual=True)
     assert [names for names, _ in helper.prepared] == [['client.zip', 'hub.zip', 'router.zip']]
+
+
+def _watch_once_with_apply_request(tmp_path, kinds):
+    from services.shared import update_now
+    registry = _install(tmp_path, kinds)
+    helper = FakeHelper(registry)
+    record = registry.read()
+    helper.status = lambda: {'operation_id': 'op-1', 'installation_id': record['installation_id'], 'phase': 'staged',
+                             'proposed': {'components': []}}
+
+    class Host:
+        calls = 0
+
+        def stopped(self, _):
+            from contextlib import nullcontext
+            Host.calls += 1
+            return nullcontext(Host.calls > 2)
+    helper.host = Host()
+    service = AutomaticUpdates(registry, helper=helper, client_factory=lambda: FakeClient({'router': 3}),
+                               clock=lambda: 1_000.0)
+    request = tmp_path / 'updates/router-request.json'
+    request.write_text(json.dumps({'schema': 1, 'installation_id': record['installation_id'], 'action': 'apply'}))
+    seen = []
+    with patch('services.shared.automatic_updates.time.sleep'),             patch.object(update_now, 'process_request', side_effect=lambda a, **k: seen.append(update_now.read(registry))):
+        watch(service)
+    assert not request.exists()
+    return seen
+
+
+@nt_only
+def test_router_only_panel_apply_request_hands_the_staged_update_to_the_watcher(tmp_path):
+    seen = _watch_once_with_apply_request(tmp_path, ['router'])
+    assert seen[0] is None  # nothing requested yet in the first round
+    assert seen[1]['phase'] == 'requested' and seen[1]['operation_id'] == 'op-1'
+
+
+@nt_only
+def test_apply_request_is_ignored_when_a_hub_is_installed(tmp_path):
+    seen = _watch_once_with_apply_request(tmp_path, ['hub', 'client', 'router'])
+    assert all(state is None for state in seen)

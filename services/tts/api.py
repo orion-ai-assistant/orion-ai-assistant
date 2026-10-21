@@ -129,6 +129,11 @@ app = FastAPI(title="Orion TTS API", version="1.0.4", lifespan=lifespan)
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _dashboard_dir = os.path.join(_current_dir, "dashboard")
 
+@app.get("/health")
+async def health():
+    # Served only after startup (engine load) completes; the lifecycle supervisor polls this for readiness.
+    return {"status": "ok"}
+
 @app.get("/")
 async def read_index():
     index_path = os.path.join(_dashboard_dir, "index.html")

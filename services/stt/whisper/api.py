@@ -115,6 +115,11 @@ async def startup_event():
 # =========================================================
 _dashboard_dir = os.path.join(CURRENT_DIR, "dashboard")
 
+@app.get("/health")
+async def health():
+    # Served only after startup (model load) completes; the lifecycle supervisor polls this for readiness.
+    return {"status": "ok"}
+
 @app.get("/")
 async def read_index():
     index_path = os.path.join(_dashboard_dir, "index.html")
