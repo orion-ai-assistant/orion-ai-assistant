@@ -10,6 +10,7 @@ LocalVQE v1.2 (localai-org/LocalVQE, Apache-2.0): `localvqe.dll` through ctypes,
 phone, fed 256-sample hops with `localvqe_process_frame_f32`. Never the batch
 `localvqe_process_f32`: it resets the state on every call and primes the delay from the whole file.
 """
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import os
 import threading
@@ -21,6 +22,8 @@ HOP = 256  # LocalVQE hop; the chain works in these frames (16 ms)
 DTLN_BLOCK, DTLN_SHIFT = 512, 128
 DTLN_LATENCY = DTLN_BLOCK - DTLN_SHIFT  # output sample n belongs to input sample n - 384
 CHAIN_LATENCY = DTLN_LATENCY + HOP  # 640 samples = 40 ms
+PIPELINE_BLOCK = 4 * HOP
+_PIPELINE = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echo-dtln")
 NATIVE = Path(__file__).resolve().parent / "native"
 
 
@@ -166,8 +169,22 @@ class DtlnLocalVqe:
 
     def process(self, mic, ref):
         delayed = np.concatenate([self._ref_delay, ref])
-        self._ref_delay = delayed[len(ref):]
-        return self.vqe.process(self.dtln.process(mic, ref), delayed[:len(ref)])
+        self._ref_delay, delayed = delayed[len(ref):], delayed[:len(ref)]
+        if len(mic) < 2 * PIPELINE_BLOCK:
+            return self.vqe.process(self.dtln.process(mic, ref), delayed)
+        # A backlog (the pre-roll, or catching up): DTLN on block j+1 runs in a second thread while
+        # LocalVQE does block j. Both release the GIL inside TFLite / the DLL, so this nearly halves
+        # the wall time; the output is identical to the sequential order.
+        blocks = range(0, len(mic), PIPELINE_BLOCK)
+        out = np.empty(len(mic), np.float32)
+        ahead = _PIPELINE.submit(self.dtln.process, mic[:PIPELINE_BLOCK], ref[:PIPELINE_BLOCK])
+        for i in blocks:
+            stage1 = ahead.result()
+            j = i + PIPELINE_BLOCK
+            if j < len(mic):
+                ahead = _PIPELINE.submit(self.dtln.process, mic[j:j + PIPELINE_BLOCK], ref[j:j + PIPELINE_BLOCK])
+            out[i:i + len(stage1)] = self.vqe.process(stage1, delayed[i:i + len(stage1)])
+        return out
 
     def close(self):
         self.vqe.close()

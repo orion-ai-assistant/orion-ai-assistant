@@ -44,6 +44,10 @@ class HalvingEngine:
         self.closed = True
 
 
+def stream_frames(turn):
+    return turn.stream.processed_frames
+
+
 def filled_ring(clock, ref, rate=RATE):
     ring = ReferenceRing(seconds=10, clock=clock)
     clock.now += len(ref) / rate
@@ -114,6 +118,28 @@ class RingTests(unittest.TestCase):
         self.assertLessEqual(round((clock.now - ring.time_of(0)) * RATE) - ring.end, ring.slack)
         self.assertEqual(ring.read(ring.end - 160, 160)[0], 1)
 
+    def test_late_callback_is_not_a_silence_gap(self):
+        clock = FakeClock()
+        ring = ReferenceRing(clock=clock)
+        for i in range(100):
+            clock.now += 0.01
+            ring.write(np.ones(160, np.float32), clock.now)
+        clock.now += 0.12  # the scheduler was busy: the next 12 packets arrive in a burst
+        for _ in range(13):
+            ring.write(np.ones(160, np.float32), clock.now)
+        self.assertEqual(ring.gap_samples, 0)
+        np.testing.assert_array_equal(ring.read(0, ring.end), np.ones(ring.end))
+
+    def test_slow_device_clock_lag_stays_bounded(self):
+        clock = FakeClock()
+        ring = ReferenceRing(clock=clock)
+        for i in range(3000):  # 30 s of a device clock 1 % slow
+            clock.now += 0.0101
+            ring.write(np.ones(160, np.float32), clock.now)
+            lag = ring.index_at(clock.now) - ring.end
+            self.assertLessEqual(lag, ring.slack + 0.0101 * RATE * 101)
+        self.assertGreater(ring.gap_samples, 0)
+
     def test_fast_device_clock_reanchors(self):
         clock = FakeClock()
         ring = ReferenceRing(clock=clock)
@@ -124,7 +150,17 @@ class RingTests(unittest.TestCase):
 
 class DeviceStreamTests(unittest.TestCase):
     def run_frames(self, stream, mic, ref):
-        return np.concatenate([stream.frame(mic[i:i + HOP], ref[i:i + HOP]) for i in range(0, len(mic), HOP)])
+        return np.concatenate([stream.process(mic[i:i + HOP], ref[i:i + HOP]) for i in range(0, len(mic), HOP)])
+
+    def test_one_block_equals_frame_by_frame(self):
+        rng = np.random.default_rng(5)
+        mic = rng.uniform(-0.5, 0.5, HOP * 300).astype(np.float32)
+        ref = np.zeros_like(mic)
+        ref[HOP * 40:HOP * 90] = LOUD
+        ref[HOP * 160:HOP * 170] = LOUD
+        block = DeviceStream(HalvingEngine(), hangover=0.3).process(mic, ref)
+        frames = self.run_frames(DeviceStream(HalvingEngine(), hangover=0.3), mic, ref)
+        np.testing.assert_array_equal(block, frames)
 
     def test_bypass_while_reference_silent(self):
         engine = HalvingEngine()
@@ -174,11 +210,11 @@ class TurnTests(unittest.TestCase):
         turn = Turn(DeviceStream(engine), self.ring, ref_start=self.ring.end - HOP * 4, clock=self.clock)
         out = turn.feed(np.zeros(HOP * 10, np.float32))
         self.assertEqual(len(out), HOP * 4 - 640)  # only the 4 frames whose reference exists
-        self.assertEqual(engine.calls, 4)
+        self.assertEqual(stream_frames(turn), 4)
         self.clock.now += HOP * 6 / RATE
         self.ring.write(np.full(HOP * 6, LOUD, np.float32), self.clock.now)
         out = turn.feed(np.zeros(0, np.float32))
-        self.assertEqual(engine.calls, 10)
+        self.assertEqual(stream_frames(turn), 10)
         self.assertEqual(len(out), HOP * 6)
 
     def test_reference_missing_too_long_counts_as_silence(self):

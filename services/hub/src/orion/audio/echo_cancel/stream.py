@@ -34,17 +34,42 @@ class DeviceStream:
         self.processed_frames = 0
         self.frames = 0
 
-    def frame(self, mic, ref):
-        """One 256-sample frame in, one out (lagging by `latency`)."""
+    def process(self, mic, ref):
+        """Whole 256-sample frames in, as many out (lagging by `latency`). The engine runs on the
+        contiguous runs of frames that need it, so a long block (the pre-roll) is one call."""
+        n = len(mic) // HOP
         raw = np.concatenate([self._raw, mic])
-        self._raw, raw = raw[HOP:], raw[:HOP]
-        self._peaks.append(float(np.max(np.abs(ref))) if len(ref) else 0.0)
+        self._raw, raw = raw[len(mic):], raw[:len(mic)]
+        plan = [self._step(ref[f * HOP:(f + 1) * HOP]) for f in range(n)]
+        self.frames += n
+        out = raw.copy()
+        f = 0
+        while f < n:
+            if plan[f] == "raw":
+                f += 1
+                continue
+            g = f
+            while g < n and plan[g] != "raw":
+                g += 1
+            engine = self.engine.process(mic[f * HOP:g * HOP], ref[f * HOP:g * HOP])
+            self.processed_frames += g - f
+            for k in range(f, g):
+                e, r = engine[(k - f) * HOP:(k - f + 1) * HOP], raw[k * HOP:(k + 1) * HOP]
+                if plan[k] == "engine":
+                    out[k * HOP:(k + 1) * HOP] = e
+                elif plan[k] == "fade_in":
+                    out[k * HOP:(k + 1) * HOP] = r * (1 - self._fade) + e * self._fade
+                elif plan[k] == "fade_out":
+                    out[k * HOP:(k + 1) * HOP] = e * (1 - self._fade) + r * self._fade
+            f = g
+        return out
+
+    def _step(self, ref):
+        """Advance the bypass/priming/active state by one frame; return what that frame outputs."""
+        self._peaks.append(float(np.max(np.abs(ref))))
         wanted = max(self._peaks) > self.threshold
-        self.frames += 1
         if self.state == "bypass" and not wanted:
-            return raw
-        out = self.engine.process(mic, ref)
-        self.processed_frames += 1
+            return "raw"
         if self.state == "bypass":
             # The engine's output frame k covers input [256k - latency, 256(k+1) - latency): it is
             # stale (older than this activation) until frame ceil(latency / 256) + 1.
@@ -52,13 +77,13 @@ class DeviceStream:
         if self.state == "priming":
             self._priming -= 1
             if self._priming > 0:
-                return raw
+                return "prime"  # engine runs, raw goes out
             self.state = "active"
-            return raw * (1 - self._fade) + out * self._fade
+            return "fade_in"
         if not wanted:
             self.state = "bypass"
-            return out * (1 - self._fade) + raw * self._fade
-        return out
+            return "fade_out"
+        return "engine"
 
     def close(self):
         self.engine.close()
@@ -91,33 +116,32 @@ class Turn:
         return self._run(final=True)[:missing]
 
     def _run(self, final):
-        outs = []
-        while len(self._pending) >= HOP:
-            start = self.ref_start + self._consumed
-            ref = self._reference(start, final)
-            if ref is None:
-                break
-            outs.append(self.stream.frame(self._pending[:HOP], ref))
-            self._pending = self._pending[HOP:]
-            self._consumed += HOP
-        out = np.concatenate(outs) if outs else np.zeros(0, np.float32)
+        frames = len(self._pending) // HOP
+        start = self.ref_start + self._consumed
+        captured = self.ring.end
+        ready = min(frames, max(0, (captured - start) // HOP))
+        if final:
+            ready = frames
+        else:
+            # A reference the ring still lacks after `stall` seconds counts as silence (capture stopped).
+            while ready < frames and self.clock() - self.ring.time_of(start + (ready + 1) * HOP) >= self.stall:
+                ready += 1
+        out = np.zeros(0, np.float32)
+        if ready:
+            n = ready * HOP
+            ref = np.zeros(n, np.float32)
+            have = min(n, max(0, captured - start))
+            if have:
+                ref[:have] = self.ring.read(start, have)
+            out = self.stream.process(self._pending[:n], ref)
+            self._pending = self._pending[n:]
+            self._consumed += n
         if self._drop:
             cut = min(self._drop, len(out))
             out, self._drop = out[cut:], self._drop - cut
         if not final:
             self.emitted += len(out)
         return out
-
-    def _reference(self, start, final):
-        end = self.ring.end
-        if end >= start + HOP:
-            return self.ring.read(start, HOP)
-        if not final and self.clock() - self.ring.time_of(start + HOP) < self.stall:
-            return None  # not captured yet; the next feed will retry
-        ref = np.zeros(HOP, np.float32)
-        if end > start:
-            ref[:end - start] = self.ring.read(start, end - start)
-        return ref
 
 
 def to_float(pcm16):
