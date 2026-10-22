@@ -224,6 +224,7 @@ class PhoneLink:
         # Stable across reconnects, so the echo canceller stays warm per phone.
         self.device = device or self.id
         self.armed = None
+        self.ready_for = None  # the PC session last told this phone is ready
         self.turn = None  # {'turn_id', 'pc'}
         self.preroll_left = 0
         self._clock = clock or asyncio.get_running_loop().time
@@ -241,8 +242,11 @@ class PhoneLink:
         if armed != self.armed:
             self.armed = armed
             await self.send_json({'type': 'arm' if armed else 'disarm'})
-            if armed:
-                await self.bus.publish(_channel(self.user, 'pc'), {'type': 'phone_ready', 'phone': self.id, 'pc': pc})
+        # Every new PC session hears it once, also when the PC restarted its
+        # listening between two polls and the phone never saw it disarmed.
+        if armed and pc != self.ready_for:
+            await self.bus.publish(_channel(self.user, 'pc'), {'type': 'phone_ready', 'phone': self.id, 'pc': pc})
+        self.ready_for = pc
         if self.turn:
             await self.bus.refresh(turn_key(self.user), self.owner, TURN_TTL_SECONDS)
         return armed
@@ -286,7 +290,10 @@ class PhoneLink:
         return True
 
     async def on_bus(self, message):
-        """A PC decision for this phone's turn."""
+        """A PC decision for this phone's turn, or a new PC session starting."""
+        if message.get('type') == 'pc_active':
+            await self.sync_arm()
+            return
         if not self.turn or message.get('turn_id') != self.turn['turn_id'] or message.get('phone') != self.id:
             return
         kind = message.get('type')
@@ -332,6 +339,10 @@ class PcLink:
         if not self._armed:
             self._armed = True
             await self.cleaner.arm()  # Start the loudspeaker reference ring.
+
+    async def announce(self):
+        """Ask connected phones to report now instead of at their next poll."""
+        await self.bus.publish(_channel(self.user, 'phone'), {'type': 'pc_active', 'pc': self.id})
 
     async def _close_turn(self):
         turn, self.turn = self.turn, None
@@ -539,6 +550,8 @@ async def pc_endpoint(websocket: WebSocket):
             # Subscribe before arming so the first turn cannot be missed.
             await link.activate()
             await send_json({'type': 'ready', 'pc': link.id})
+            # After 'ready', so the PC never sees phone_ready before it.
+            await link.announce()
             await listener
         finally:
             listener.cancel()

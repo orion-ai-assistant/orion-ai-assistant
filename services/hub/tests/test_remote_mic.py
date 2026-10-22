@@ -116,6 +116,30 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m['type'] for m in h.phone_out], ['disarm', 'arm', 'disarm'])
         self.assertEqual(h.pc_out, [{'type': 'phone_ready'}])
 
+    async def test_quick_pc_restart_still_hears_the_phone(self):
+        # The PC stops and restarts listening between two phone polls: the
+        # phone never sees itself disarmed, yet the new session must learn
+        # that it is ready, at once (pc_active), not after a poll.
+        h = Harness()
+        await h.pc.activate()
+        await h.phone.sync_arm()
+        await h.pc.close()
+        newer_out = []
+
+        async def newer_send(message):
+            newer_out.append(message)
+
+        async def ignore(data):
+            pass
+        newer = PcLink(h.bus, 'user', newer_send, ignore, pc_id='newer')
+        h.bus.on('orion:remote-mic:user:pc', newer.on_bus)
+        await newer.activate()
+        await newer.announce()
+        self.assertEqual(newer_out, [{'type': 'phone_ready'}])
+        await h.phone.sync_arm()  # A later poll does not repeat it.
+        self.assertEqual(newer_out, [{'type': 'phone_ready'}])
+        self.assertEqual([m['type'] for m in h.phone_out], ['arm'])
+
     async def test_turn_relays_preroll_and_live_audio_in_order(self):
         h = Harness()
         await h.pc.activate()
