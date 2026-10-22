@@ -164,7 +164,8 @@ class DtlnLocalVqe:
         self.vqe = LocalVqe(localvqe_model)
         self.latency = CHAIN_LATENCY if latency is None else latency
         # DTLN's output lags by 384 samples; delay LocalVQE's reference by as much so the second stage
-        # sees the same mic/reference relation as the first (and as in the offline experiment).
+        # sees the same mic/reference relation as the first. (The offline experiment fed it
+        # undelayed; a replay of its recordings measured no consistent difference.)
         self._ref_delay = np.zeros(DTLN_LATENCY, np.float32)
 
     def process(self, mic, ref):

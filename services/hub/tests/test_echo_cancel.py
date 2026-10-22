@@ -158,13 +158,13 @@ class DeviceStreamTests(unittest.TestCase):
         ref = np.zeros_like(mic)
         ref[HOP * 40:HOP * 90] = LOUD
         ref[HOP * 160:HOP * 170] = LOUD
-        block = DeviceStream(HalvingEngine(), hangover=0.3).process(mic, ref)
-        frames = self.run_frames(DeviceStream(HalvingEngine(), hangover=0.3), mic, ref)
+        block = DeviceStream(HalvingEngine(), hangover=0.3, gate=True).process(mic, ref)
+        frames = self.run_frames(DeviceStream(HalvingEngine(), hangover=0.3, gate=True), mic, ref)
         np.testing.assert_array_equal(block, frames)
 
     def test_bypass_while_reference_silent(self):
         engine = HalvingEngine()
-        stream = DeviceStream(engine)
+        stream = DeviceStream(engine, gate=True)
         mic = np.random.default_rng(2).uniform(-0.5, 0.5, HOP * 20).astype(np.float32)
         out = self.run_frames(stream, mic, np.zeros_like(mic))
         self.assertEqual(engine.calls, 0)
@@ -172,7 +172,7 @@ class DeviceStreamTests(unittest.TestCase):
 
     def test_engine_runs_with_sound_and_hangover_then_bypasses(self):
         engine = HalvingEngine()
-        stream = DeviceStream(engine, hangover=0.5)
+        stream = DeviceStream(engine, hangover=0.5, gate=True)
         n = HOP * 200
         mic = np.full(n, 0.2, np.float32)
         ref = np.zeros(n, np.float32)

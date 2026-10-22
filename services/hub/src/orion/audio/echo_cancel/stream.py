@@ -2,10 +2,13 @@
 
 An engine has `process(mic, ref) -> out` on whole 256-sample frames, an output `latency` in
 samples and `close()`. `DeviceStream` keeps one engine per phone across turns (no reset, so the
-delay estimate and model states stay warm) and switches between the engine and the raw mic:
-the engine only runs while the reference had sound within the last `hangover` seconds (the echo
-reaches the mic up to ~1 s after the reference). Raw audio is delayed by the same latency, and
-switches crossfade over one frame, so the output timeline never jumps.
+delay estimate and model states stay warm). By default the engine runs on every frame of a turn,
+also while the PC is silent: a replay of the recordings showed that an engine left idle starts
+cold when music begins mid-turn (-25 dB instead of -46 dB). With `gate=True` it only runs while
+the reference had sound within the last `hangover` seconds and passes the raw mic otherwise. Raw
+audio is delayed by the same latency, and switches crossfade over one frame, so the output
+timeline never jumps. A stream that starts active (its first frame) uses the engine at once
+instead of priming over raw audio.
 
 `Turn` turns a phone's contiguous mic samples into output samples aligned one to one with the
 input (output[k] belongs to input[k]): it pairs mic sample k with the reference captured at
@@ -22,8 +25,9 @@ RATE = 16000
 
 
 class DeviceStream:
-    def __init__(self, engine, threshold=10 ** (-65 / 20), hangover=1.2):
+    def __init__(self, engine, threshold=10 ** (-65 / 20), hangover=1.2, gate=False):
         self.engine = engine
+        self.gate = gate
         self.latency = int(engine.latency)
         self.threshold = threshold
         self._raw = np.zeros(self.latency, np.float32)
@@ -33,6 +37,7 @@ class DeviceStream:
         self._priming = 0
         self.processed_frames = 0
         self.frames = 0
+        self._steps = 0
 
     def process(self, mic, ref):
         """Whole 256-sample frames in, as many out (lagging by `latency`). The engine runs on the
@@ -67,9 +72,15 @@ class DeviceStream:
     def _step(self, ref):
         """Advance the bypass/priming/active state by one frame; return what that frame outputs."""
         self._peaks.append(float(np.max(np.abs(ref))))
-        wanted = max(self._peaks) > self.threshold
+        first, self._steps = self._steps == 0, self._steps + 1
+        wanted = not self.gate or max(self._peaks) > self.threshold
         if self.state == "bypass" and not wanted:
             return "raw"
+        if self.state == "bypass" and first:
+            # The very first frame: the engine's latency head lines up with the Turn's dropped
+            # latency, so nothing stale shows. A raw prefix here was ~20-50 ms of full echo.
+            self.state = "active"
+            return "engine"
         if self.state == "bypass":
             # The engine's output frame k covers input [256k - latency, 256(k+1) - latency): it is
             # stale (older than this activation) until frame ceil(latency / 256) + 1.
