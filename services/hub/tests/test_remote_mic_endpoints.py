@@ -75,6 +75,14 @@ async def user(token, connection=None):
     return 'user'
 
 
+def pc_json(pc):
+    """The next PC message other than the phone list."""
+    message = pc.receive_json()
+    while message['type'] == 'phones':
+        message = pc.receive_json()
+    return message
+
+
 class EndpointTests(unittest.TestCase):
     def setUp(self):
         self.redis = FakeRedis()
@@ -89,16 +97,16 @@ class EndpointTests(unittest.TestCase):
 
     def test_turn_round_trip(self):
         with self.client.websocket_connect('/p/api/v1/audio/remote-mic/pc?token=t') as pc:
-            self.assertEqual(pc.receive_json()['type'], 'ready')
+            self.assertEqual(pc_json(pc)['type'], 'ready')
             with self.client.websocket_connect('/m/api/v1/audio/remote-mic/phone?token=t') as phone:
                 self.assertEqual(phone.receive_json(), {'type': 'arm'})
-                self.assertEqual(pc.receive_json(), {'type': 'phone_ready'})
+                self.assertEqual(pc_json(pc), {'type': 'phone_ready'})
                 phone.send_json({'type': 'turn_start', 'turn_id': 'x1', 'sample_rate': 16000,
                                  'start_sample': 10, 'wake_end_sample': 12, 'wake_score': .5,
                                  'preroll_samples': 3})
                 phone.send_bytes(b'\x01\x00\x02\x00\x03\x00')
                 phone.send_bytes(b'\x04\x00')
-                start = pc.receive_json()
+                start = pc_json(pc)
                 self.assertEqual(start['type'], 'turn_start')
                 self.assertEqual(start['wake_end_sample'], 12)
                 self.assertNotIn('phone', start)

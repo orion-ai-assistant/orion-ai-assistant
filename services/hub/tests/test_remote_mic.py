@@ -76,13 +76,14 @@ def start(turn_id='t1', **extra):
 class Harness:
     def __init__(self):
         self.bus = MemoryBus()
-        self.phone_out, self.pc_out, self.pc_audio = [], [], []
+        self.phone_out, self.pc_out, self.pc_audio, self.pc_phones = [], [], [], []
 
         async def phone_send(message):
             self.phone_out.append(message)
 
         async def pc_send(message):
-            self.pc_out.append(message)
+            # The phone list is checked on its own (pc_phones).
+            (self.pc_phones if message['type'] == 'phones' else self.pc_out).append(message)
 
         async def pc_bytes(data):
             self.pc_audio.append(data)
@@ -127,7 +128,8 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         newer_out = []
 
         async def newer_send(message):
-            newer_out.append(message)
+            if message['type'] != 'phones':
+                newer_out.append(message)
 
         async def ignore(data):
             pass
@@ -313,3 +315,90 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Phone:
+    """One more phone on a Harness bus, with its own output."""
+
+    def __init__(self, h, device, name):
+        self.out = []
+
+        async def send(message):
+            self.out.append(message)
+        self.link = PhoneLink(h.bus, 'user', send, phone_id=device, device=device, name=name)
+        h.bus.on('orion:remote-mic:user:phone', self.link.on_bus)
+
+    @property
+    def last(self):
+        return self.out[-1]
+
+
+class SeveralPhonesTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.h = Harness()
+        self.h.phone.closed = True  # only the two phones below take part
+        await self.h.pc.activate()
+        self.a = Phone(self.h, 'a', 'Telefon A')
+        self.b = Phone(self.h, 'b', 'Telefon B')
+        await self.a.link.sync_arm()
+        await self.b.link.sync_arm()
+
+    async def test_first_phone_is_chosen_and_the_other_waits(self):
+        self.assertEqual(self.a.last, {'type': 'arm'})
+        self.assertEqual(self.b.last, {'type': 'disarm', 'reason': 'other_phone', 'selected_name': 'Telefon A'})
+        self.assertEqual(self.h.pc_phones[-1], {
+            'type': 'phones', 'phones': [{'id': 'a', 'name': 'Telefon A'}, {'id': 'b', 'name': 'Telefon B'}],
+            'selected': {'id': 'a', 'name': 'Telefon A'}})
+
+    async def test_pc_picks_another_phone(self):
+        await self.h.pc.on_text({'type': 'select', 'device': 'b'})
+        self.assertEqual(self.b.last, {'type': 'arm'})
+        self.assertEqual(self.a.last, {'type': 'disarm', 'reason': 'other_phone', 'selected_name': 'Telefon B'})
+        self.assertEqual(self.h.pc_phones[-1]['selected'], {'id': 'b', 'name': 'Telefon B'})
+
+    async def test_pc_cannot_pick_an_unknown_phone(self):
+        await self.h.pc.on_text({'type': 'select', 'device': 'zzz'})
+        self.assertEqual(self.h.pc_phones[-1]['selected'], {'id': 'a', 'name': 'Telefon A'})
+
+    async def test_a_phone_takes_over_itself(self):
+        await self.b.link.on_text({'type': 'claim'})
+        self.assertEqual(self.b.last, {'type': 'arm'})
+        self.assertEqual(self.a.last['type'], 'disarm')
+        self.assertEqual(self.h.pc_phones[-1]['selected']['id'], 'b')
+
+    async def test_unselected_phone_cannot_start_a_turn(self):
+        await self.b.link.on_text(start())
+        self.assertEqual(self.b.last, {'type': 'turn_reject', 'turn_id': 't1', 'reason': 'not_selected'})
+        self.assertNotIn('turn_start', [m['type'] for m in self.h.pc_out])
+
+    async def test_others_serve_while_the_selected_phone_is_away(self):
+        await self.a.link.close()
+        self.assertEqual(self.b.last, {'type': 'arm'})
+        self.assertEqual(self.h.pc_phones[-1]['phones'], [{'id': 'b', 'name': 'Telefon B'}])
+        # The choice itself is kept: phone A is armed again when it returns.
+        self.assertEqual(self.h.pc_phones[-1]['selected']['id'], 'a')
+        again = Phone(self.h, 'a', 'Telefon A')
+        await again.link.sync_arm()
+        await self.b.link.sync_arm()
+        self.assertEqual(again.last, {'type': 'arm'})
+        self.assertEqual(self.b.last['reason'], 'other_phone')
+
+    async def test_choice_is_remembered_by_a_new_pc_session(self):
+        await self.h.pc.on_text({'type': 'select', 'device': 'b'})
+        await self.h.pc.close()
+        out = []
+
+        async def send(message):
+            out.append(message)
+
+        async def ignore(data):
+            pass
+        newer = PcLink(self.h.bus, 'user', send, ignore, pc_id='newer')
+        await newer.activate()
+        await newer.send_phones()
+        self.assertEqual(out[-1]['selected'], {'id': 'b', 'name': 'Telefon B'})
+
+    async def test_silent_phone_drops_off_the_list(self):
+        self.h.pc.clock = lambda: 1e9  # every phone was last seen long ago
+        await self.h.pc.on_text({'type': 'heartbeat'})
+        self.assertEqual(self.h.pc_phones[-1]['phones'], [])

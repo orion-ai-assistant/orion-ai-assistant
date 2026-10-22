@@ -12,12 +12,21 @@ Protocol (JSON text frames, PCM as binary frames):
 
   phone -> Hub : turn_start {turn_id, sample_rate, start_sample, wake_end_sample,
                  wake_score, preroll_samples}, <binary PCM>, turn_end {turn_id,
-                 reason}, heartbeat
-  Hub -> phone : arm, disarm, turn_reject {turn_id, reason}, turn_end {turn_id},
+                 reason}, claim (use this phone), heartbeat
+  Hub -> phone : arm, disarm {reason?, selected_name?}, turn_reject {turn_id,
+                 reason}, turn_end {turn_id}, heartbeat
+  Hub -> PC    : phone_ready, phones {phones: [{id, name}], selected: {id, name}},
+                 turn_start (as sent), <binary PCM>, turn_end {turn_id, reason},
                  heartbeat
-  Hub -> PC    : phone_ready, turn_start (as sent), <binary PCM>, turn_end
-                 {turn_id, reason}, heartbeat
-  PC -> Hub    : turn_end {turn_id}, turn_reject {turn_id, reason}, heartbeat
+  PC -> Hub    : select {device}, turn_end {turn_id}, turn_reject {turn_id,
+                 reason}, heartbeat
+
+Several phones: each phone in "PC mikrofonu" mode reports itself (a presence
+key and ``phone_here`` every poll). One of them is the account's selected
+phone, saved on the Hub without expiry so the choice survives restarts. Only
+that phone is armed; the first phone seen becomes the selection, the PC can
+pick another, and a phone can take over itself (claim). While the selected
+phone is offline, every connected phone is armed.
 
 Echo cancellation (Phase 2): ``PhoneAudioCleaner`` is the single place where
 phone audio becomes the audio the PC pipeline hears. It runs in the PC-side
@@ -43,6 +52,7 @@ SAMPLE_RATE = 16000
 MAX_PREROLL_SAMPLES = SAMPLE_RATE * 4
 MAX_FRAME_BYTES = 64000  # Two seconds; the phone sends 100 ms packets.
 PC_TTL_SECONDS = 15  # The PC sends a heartbeat every 5 s.
+PHONE_TTL_SECONDS = 15  # Phones poll every 5 s.
 TURN_TTL_SECONDS = 30  # Refreshed by phone audio and heartbeats.
 HEARTBEAT_SECONDS = 5
 TURN_ID_LIMIT = 64
@@ -141,6 +151,34 @@ def turn_key(user):
     return f'orion:remote-mic:{user}:turn'
 
 
+def phone_key(user, device):
+    return f'orion:remote-mic:{user}:phone:{device}'
+
+
+def selected_key(user):
+    return f'orion:remote-mic:{user}:selected'
+
+
+async def read_selected(bus, user):
+    """The saved phone choice as {'id', 'name'}, or None."""
+    raw = await bus.get(selected_key(user))
+    try:
+        value = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) and isinstance(value.get('id'), str) else None
+
+
+async def save_selected(bus, user, device, name, only_new=False):
+    value = json.dumps({'id': device, 'name': name})
+    return await bus.set(selected_key(user), value, None, only_new=only_new)
+
+
+async def announce_selection(bus, user):
+    for side in ('phone', 'pc'):
+        await bus.publish(_channel(user, side), {'type': 'selection'})
+
+
 def _valid_turn_id(value):
     return isinstance(value, str) and 0 < len(value) <= TURN_ID_LIMIT and value.isprintable()
 
@@ -218,12 +256,15 @@ class RedisBus:
 class PhoneLink:
     """One phone connection in "PC mikrofonu" mode (mobile listener process)."""
 
-    def __init__(self, bus, user, send_json, phone_id=None, clock=None, device=None):
+    def __init__(self, bus, user, send_json, phone_id=None, clock=None, device=None, name=None):
         self.bus, self.user, self.send_json = bus, user, send_json
         self.id = phone_id or secrets.token_hex(8)
         # Stable across reconnects, so the echo canceller stays warm per phone.
         self.device = device or self.id
+        self.name = name or 'Telefon'
         self.armed = None
+        self.state = None  # the last arm/disarm message sent
+        self.closed = False
         self.ready_for = None  # the PC session last told this phone is ready
         self.turn = None  # {'turn_id', 'pc'}
         self.preroll_left = 0
@@ -234,14 +275,35 @@ class PhoneLink:
         return f'{self.id}:{self.turn["turn_id"]}' if self.turn else None
 
     async def sync_arm(self):
-        """Arm while an active PC assistant exists. Ends a turn whose PC left."""
+        """Arm while an active PC assistant exists and this is the phone to use.
+        Ends a turn whose PC left."""
+        await self.bus.set(phone_key(self.user, self.device), self.name, PHONE_TTL_SECONDS)
         pc = await self.bus.get(pc_key(self.user))
         if self.turn and pc != self.turn['pc']:
             await self._end('pc_gone', notify_phone=True, notify_pc=False)
-        armed = pc is not None
+        selected = await read_selected(self.bus, self.user)
+        if selected is None and await save_selected(self.bus, self.user, self.device, self.name, only_new=True):
+            selected = {'id': self.device, 'name': self.name}
+            await announce_selection(self.bus, self.user)
+        chosen = (selected is None or selected['id'] == self.device
+                  or await self.bus.get(phone_key(self.user, selected['id'])) is None)
+        armed = pc is not None and chosen
+        if pc is not None:
+            await self.bus.publish(_channel(self.user, 'pc'), {'type': 'phone_here', 'pc': pc,
+                                                              'device': self.device, 'name': self.name})
+        if not armed and self.turn:
+            await self._end('not_selected', notify_phone=True, notify_pc=True)
+        if armed:
+            state = {'type': 'arm'}
+        elif pc is not None:
+            state = {'type': 'disarm', 'reason': 'other_phone', 'selected_name': selected.get('name')}
+        else:
+            state = {'type': 'disarm'}
+        if state != self.state:
+            self.state = state
+            await self.send_json(state)
         if armed != self.armed:
             self.armed = armed
-            await self.send_json({'type': 'arm' if armed else 'disarm'})
         # Every new PC session hears it once, also when the PC restarted its
         # listening between two polls and the phone never saw it disarmed.
         if armed and pc != self.ready_for:
@@ -255,6 +317,10 @@ class PhoneLink:
         kind = message.get('type')
         if kind == 'heartbeat':
             return
+        if kind == 'claim':
+            await save_selected(self.bus, self.user, self.device, self.name)
+            await announce_selection(self.bus, self.user)
+            return
         if kind == 'turn_start':
             try:
                 start = validate_turn_start(message)
@@ -266,6 +332,9 @@ class PhoneLink:
             pc = await self.bus.get(pc_key(self.user))
             if pc is None:
                 return await self.send_json({'type': 'turn_reject', 'turn_id': start['turn_id'], 'reason': 'no_pc'})
+            if self.armed is False:  # another phone is the selected one
+                return await self.send_json({'type': 'turn_reject', 'turn_id': start['turn_id'],
+                                             'reason': 'not_selected'})
             owner = f'{self.id}:{start["turn_id"]}'
             if not await self.bus.set(turn_key(self.user), owner, TURN_TTL_SECONDS, only_new=True):
                 return await self.send_json({'type': 'turn_reject', 'turn_id': start['turn_id'], 'reason': 'busy'})
@@ -290,8 +359,10 @@ class PhoneLink:
         return True
 
     async def on_bus(self, message):
-        """A PC decision for this phone's turn, or a new PC session starting."""
-        if message.get('type') == 'pc_active':
+        """A PC decision for this phone's turn, a new PC session, or a new choice."""
+        if self.closed:
+            return
+        if message.get('type') in {'pc_active', 'selection'}:
             await self.sync_arm()
             return
         if not self.turn or message.get('turn_id') != self.turn['turn_id'] or message.get('phone') != self.id:
@@ -318,7 +389,12 @@ class PhoneLink:
                                   'turn_id': turn['turn_id'], 'reason': reason})
 
     async def close(self):
+        self.closed = True
         await self._end('phone_disconnected', notify_phone=False, notify_pc=True)
+        await self.bus.delete_if(phone_key(self.user, self.device), self.name)
+        # Others may serve now (the selected phone left), and the PC list changes.
+        await self.bus.publish(_channel(self.user, 'pc'), {'type': 'phone_gone', 'device': self.device})
+        await announce_selection(self.bus, self.user)
 
 
 class PcLink:
@@ -332,6 +408,8 @@ class PcLink:
         self.clock = clock
         self.turn = None  # {'turn_id', 'phone', 'device', 'preroll', 'need', 'started', 'open'}
         self._armed = False
+        self.phones = {}  # device -> {'name', 'seen'}: phones in "PC mikrofonu" mode
+        self._sent = None  # the last phones message
 
     async def activate(self):
         # The newest PC assistant session takes over; an older one stops receiving.
@@ -371,13 +449,42 @@ class PcLink:
 
     async def heartbeat(self):
         """Keep this PC active. False once a newer PC session took over."""
+        stale = [d for d, p in self.phones.items() if self.clock() - p['seen'] > PHONE_TTL_SECONDS]
+        for device in stale:
+            del self.phones[device]
+        if stale:
+            await self.send_phones()
         return await self.bus.refresh(pc_key(self.user), self.id, PC_TTL_SECONDS)
+
+    async def send_phones(self):
+        """Tell the PC which phones are available and which one is selected."""
+        message = {'type': 'phones',
+                   'phones': sorted(({'id': d, 'name': p['name']} for d, p in self.phones.items()),
+                                    key=lambda p: (p['name'], p['id'])),
+                   'selected': await read_selected(self.bus, self.user)}
+        if message != self._sent:
+            self._sent = message
+            await self.send_json(message)
 
     async def on_text(self, message):
         kind = message.get('type')
         if kind == 'heartbeat':
             if not await self.heartbeat():
                 await self.send_json({'type': 'inactive'})
+            return
+        if kind == 'select':
+            device = message.get('device')
+            if isinstance(device, str) and 0 < len(device) <= 128:
+                known = self.phones.get(device)
+                selected = await read_selected(self.bus, self.user)
+                if known:
+                    name = known['name']
+                elif selected and selected['id'] == device:
+                    name = selected.get('name') or 'Telefon'
+                else:
+                    return  # only a phone this PC has seen, or the current choice
+                await save_selected(self.bus, self.user, device, name)
+                await announce_selection(self.bus, self.user)
             return
         if kind in {'turn_end', 'turn_reject'} and self.turn and message.get('turn_id') == self.turn['turn_id']:
             turn = await self._close_turn()
@@ -389,7 +496,21 @@ class PcLink:
 
     async def on_bus(self, message):
         kind = message.get('type')
+        if kind == 'selection':
+            return await self.send_phones()
+        if kind == 'phone_gone':
+            if self.phones.pop(message.get('device'), None):
+                await self.send_phones()
+            return
         if message.get('pc') != self.id:
+            return
+        if kind == 'phone_here':
+            device, name = message.get('device'), message.get('name')
+            if isinstance(device, str) and isinstance(name, str):
+                fresh = self.phones.get(device, {}).get('name') != name
+                self.phones[device] = {'name': name, 'seen': self.clock()}
+                if fresh:
+                    await self.send_phones()
             return
         if kind == 'phone_ready':
             await self.send_json({'type': 'phone_ready'})
@@ -427,6 +548,16 @@ class PcLink:
         if self._armed:
             self._armed = False
             await self.cleaner.disarm()
+
+
+def paired_device_name(device_id):
+    """The name the phone gave when it paired (shown in the PC's phone list)."""
+    from orion.kernel.local_security import SecurityStore
+    with suppress(Exception):
+        for device in SecurityStore().devices():
+            if device['id'] == str(device_id):
+                return device['name']
+    return None
 
 
 async def _authenticate(websocket):
@@ -490,7 +621,8 @@ async def phone_endpoint(websocket: WebSocket):
         async with lock:
             await websocket.send_text(json.dumps(message))
     device = getattr(websocket.state, 'device_id', None)
-    link = PhoneLink(bus, user, send_json, device=str(device) if device else None)
+    name = await asyncio.to_thread(paired_device_name, device) if device else None
+    link = PhoneLink(bus, user, send_json, device=str(device) if device else None, name=name)
 
     async def watch():
         # Heartbeats always flow, so the phone also detects a dead connection
@@ -552,6 +684,7 @@ async def pc_endpoint(websocket: WebSocket):
             await send_json({'type': 'ready', 'pc': link.id})
             # After 'ready', so the PC never sees phone_ready before it.
             await link.announce()
+            await link.send_phones()
             await listener
         finally:
             listener.cancel()
