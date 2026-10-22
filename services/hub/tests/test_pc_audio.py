@@ -30,6 +30,8 @@ class DuckLeaseTests(unittest.IsolatedAsyncioTestCase):
         self.folder.cleanup()
 
     def lease(self, mixer, **options):
+        options.setdefault("duck_fade", 0)
+        options.setdefault("restore_fade", 0)
         return DuckLease(mixer, level=0.15, poll=0.01, store=self.store, **options)
 
     async def test_ducks_each_app_and_restores_and_wrong_token_ignored(self):
@@ -85,6 +87,20 @@ class DuckLeaseTests(unittest.IsolatedAsyncioTestCase):
         await lease.renew("user", token)
         await lease.close()
         self.assertAlmostEqual(mixer.sessions["chrome"]["level"], 0.7)
+
+    async def test_duck_and_restore_fade_in_steps(self):
+        mixer = FakeMixer(chrome=1.0)
+        lease = self.lease(mixer, duck_fade=0.01, restore_fade=0.01)
+        token = await lease.acquire("user")
+        ducking = [w["chrome"] for w in mixer.writes]
+        self.assertEqual(len(ducking), 5)
+        self.assertTrue(all(a > b for a, b in zip(ducking, ducking[1:])))
+        self.assertAlmostEqual(ducking[-1], 0.15)
+        await lease.release("user", token)
+        restoring = [w["chrome"] for w in mixer.writes[5:]]
+        self.assertEqual(len(restoring), 5)
+        self.assertTrue(all(a < b for a, b in zip(restoring, restoring[1:])))
+        self.assertAlmostEqual(restoring[-1], 1.0)
 
     async def test_recover_restores_levels_left_by_a_crash(self):
         self.store.write_text(json.dumps({

@@ -14,6 +14,12 @@ from pathlib import Path
 # cancellation with a reference whose echo never arrives, and it then
 # suppresses the user's voice instead.
 DUCK_LEVEL = 0.15
+# Short fades instead of jumps. Ducking stays quick so the first words are not
+# spoken over full music; restoring is gentler. Per-app levels change before
+# the loopback mix, so the echo reference follows every step either way.
+DUCK_FADE_SECONDS = 0.15
+RESTORE_FADE_SECONDS = 0.4
+FADE_STEPS = 5
 
 
 def duck_store_path():
@@ -100,8 +106,10 @@ def audio_sessions(levels=None):
 
 
 class DuckLease:
-    def __init__(self, backend=audio_sessions, ttl=90, level=DUCK_LEVEL, poll=0.5, store=None):
+    def __init__(self, backend=audio_sessions, ttl=90, level=DUCK_LEVEL, poll=0.5, store=None,
+                 duck_fade=DUCK_FADE_SECONDS, restore_fade=RESTORE_FADE_SECONDS):
         self.backend, self.ttl, self.level, self.poll = backend, ttl, level, poll
+        self.duck_fade, self.restore_fade = duck_fade, restore_fade
         self.store = Path(store) if store else duck_store_path()
         self.lock = asyncio.Lock()
         self.token = self.owner = self.timer = self.watch = None
@@ -133,7 +141,17 @@ class DuckLease:
                             for sid, s in fresh.items()})
         # Saved before writing: a crash mid-duck must still restore on restart.
         self._save()
-        await asyncio.to_thread(self.backend, {sid: self.ducked[sid]["target"] for sid in fresh})
+        await self._fade({sid: (s["level"], self.ducked[sid]["target"]) for sid, s in fresh.items()},
+                         self.duck_fade)
+
+    async def _fade(self, levels, seconds):
+        """{instance id: (from, to)}; the last step writes exactly `to`."""
+        steps = FADE_STEPS if seconds > 0 else 1
+        for step in range(1, steps + 1):
+            if step > 1:
+                await asyncio.sleep(seconds / steps)
+            share = step / steps
+            await asyncio.to_thread(self.backend, {sid: a + (b - a) * share for sid, (a, b) in levels.items()})
 
     async def _watch(self, token):
         # Apps that start playing during the lease are ducked too.
@@ -158,9 +176,9 @@ class DuckLease:
             for match in matches:
                 # A level the user changed while ducked is theirs; only undo our own.
                 if abs(sessions[match]["level"] - saved["target"]) < .01:
-                    levels[match] = saved["level"]
+                    levels[match] = (sessions[match]["level"], saved["level"])
         if levels:
-            await asyncio.to_thread(self.backend, levels)
+            await self._fade(levels, self.restore_fade)
         self.ducked = {}
         self._save()
 
