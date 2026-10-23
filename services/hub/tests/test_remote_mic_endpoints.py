@@ -120,6 +120,18 @@ class EndpointTests(unittest.TestCase):
                 self.assertNotIn(remote_mic.turn_key('user'), self.redis.keys)
         self.assertNotIn(remote_mic.pc_key('user'), self.redis.keys)
 
+    def test_pc_microphone_turn_comes_back_through_the_cleaner(self):
+        with self.client.websocket_connect('/p/api/v1/audio/remote-mic/clean?token=t') as clean:
+            # Tests have no loopback: the cleaner passes audio through.
+            self.assertEqual(clean.receive_json(), {'type': 'ready', 'available': False})
+            clean.send_bytes(b'\x09\x00')  # outside a turn: dropped
+            clean.send_json({'type': 'turn_start', 'preroll_samples': 3})
+            clean.send_bytes(b'\x01\x00\x02\x00')
+            clean.send_bytes(b'\x03\x00\x04\x00')
+            self.assertEqual(clean.receive_bytes(), b'\x01\x00\x02\x00\x03\x00')
+            self.assertEqual(clean.receive_bytes(), b'\x04\x00')
+            clean.send_json({'type': 'turn_end'})
+
     def test_phone_without_pc_is_disarmed_and_rejected(self):
         with self.client.websocket_connect('/m/api/v1/audio/remote-mic/phone?token=t') as phone:
             self.assertEqual(phone.receive_json(), {'type': 'disarm'})
@@ -132,7 +144,8 @@ class EndpointTests(unittest.TestCase):
 
     def test_endpoints_refuse_the_wrong_listener(self):
         from starlette.websockets import WebSocketDisconnect
-        for path in ('/p/api/v1/audio/remote-mic/phone?token=t', '/m/api/v1/audio/remote-mic/pc?token=t'):
+        for path in ('/p/api/v1/audio/remote-mic/phone?token=t', '/m/api/v1/audio/remote-mic/pc?token=t',
+                     '/m/api/v1/audio/remote-mic/clean?token=t'):
             with self.subTest(path=path), self.assertRaises(WebSocketDisconnect):
                 with self.client.websocket_connect(path) as socket:
                     socket.receive_json()

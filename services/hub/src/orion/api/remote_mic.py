@@ -28,6 +28,11 @@ that phone is armed; the first phone seen becomes the selection, the PC can
 pick another, and a phone can take over itself (claim). While the selected
 phone is offline, every connected phone is armed.
 
+The PC's own microphone uses the same canceller (``/remote-mic/clean``): the
+web client detects "Orion" on its raw microphone, then streams that turn (the
+two-second pre-roll first) here and gets it back echo-cancelled, as if it were
+a phone on this PC. Chrome's own echo cancellation is not used.
+
 Echo cancellation (Phase 2): ``PhoneAudioCleaner`` is the single place where
 phone audio becomes the audio the PC pipeline hears. It runs in the PC-side
 (local) process, which also captures the loudspeaker loopback, and uses
@@ -430,22 +435,7 @@ class PcLink:
 
     async def _deliver(self, pcm):
         """Phone PCM in arrival order -> cleaned PCM to the PC assistant."""
-        turn = self.turn
-        if not turn['open']:
-            take = turn['need'] - len(turn['preroll'])
-            turn['preroll'] += pcm[:take]
-            pcm = pcm[take:]
-            if len(turn['preroll']) < turn['need']:
-                return
-            turn['open'] = True
-            out = await self.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
-            if out and self.turn is turn:
-                await self.send_bytes(out)
-            if not pcm:
-                return
-        out = await self.cleaner.process(turn['device'], pcm)
-        if out and self.turn is turn:
-            await self.send_bytes(out)
+        await clean_turn_audio(self, self.turn, pcm)
 
     async def heartbeat(self):
         """Keep this PC active. False once a newer PC session took over."""
@@ -548,6 +538,99 @@ class PcLink:
         if self._armed:
             self._armed = False
             await self.cleaner.disarm()
+
+
+async def clean_turn_audio(link, turn, pcm):
+    """One packet of a turn (pre-roll first, then live) -> cleaned PCM to ``link.send_bytes``.
+
+    ``turn``: {'device', 'preroll', 'need', 'started', 'open'}; nothing is sent once
+    ``link.turn`` is another turn."""
+    if not turn['open']:
+        take = turn['need'] - len(turn['preroll'])
+        turn['preroll'] += pcm[:take]
+        pcm = pcm[take:]
+        if len(turn['preroll']) < turn['need']:
+            return
+        turn['open'] = True
+        out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
+        if out and link.turn is turn:
+            await link.send_bytes(out)
+        if not pcm:
+            return
+    out = await link.cleaner.process(turn['device'], pcm)
+    if out and link.turn is turn:
+        await link.send_bytes(out)
+
+
+class CleanLink:
+    """The PC's own microphone: its turns come back echo-cancelled (no relay)."""
+
+    def __init__(self, user, send_bytes, cleaner, clock=time.perf_counter):
+        self.send_bytes, self.cleaner, self.clock = send_bytes, cleaner, clock
+        # Stable per account, so the canceller stays warm across turns and sessions.
+        self.device = f'pc:{user}'
+        self.turn = None
+
+    @property
+    def available(self):
+        canceller = self.cleaner.canceller
+        return canceller is not None and getattr(canceller, 'unavailable', None) is None
+
+    async def on_text(self, message):
+        kind = message.get('type')
+        if kind == 'turn_start':
+            await self._close()
+            preroll = message.get('preroll_samples')
+            if not _int(preroll, 0, MAX_PREROLL_SAMPLES):
+                return
+            # The first live sample follows the pre-roll; it is captured about now.
+            self.turn = {'device': self.device, 'preroll': bytearray(), 'need': preroll * 2,
+                         'started': self.clock(), 'open': False}
+        elif kind == 'turn_end':
+            await self._close()
+
+    async def on_audio(self, pcm):
+        if self.turn and pcm and not len(pcm) % 2 and len(pcm) <= MAX_FRAME_BYTES:
+            await clean_turn_audio(self, self.turn, pcm)
+
+    async def _close(self):
+        turn, self.turn = self.turn, None
+        if turn and turn['open']:
+            await self.cleaner.end_turn(turn['device'])
+
+    async def close(self):
+        await self._close()
+
+
+@router.websocket('/api/v1/audio/remote-mic/clean')
+async def clean_endpoint(websocket: WebSocket):
+    from orion.api.access_boundary import is_desktop_peer
+    # The reference is this PC's loudspeaker: only a browser on this PC may use it.
+    if getattr(websocket.app.state, 'mobile', False) or not is_desktop_peer(websocket.scope):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    user = await _authenticate(websocket)
+    if user is None:
+        return
+    await websocket.accept()
+    lock = asyncio.Lock()
+
+    async def send_bytes(data):
+        async with lock:
+            await websocket.send_bytes(data)
+    link = CleanLink(user, send_bytes, shared_cleaner())
+    await link.cleaner.arm()  # The loudspeaker reference ring runs while this PC listens.
+    try:
+        async with lock:
+            await websocket.send_text(json.dumps({'type': 'ready', 'available': link.available}))
+        await _receive(websocket, link.on_text, link.on_audio)
+    finally:
+        with suppress(Exception):
+            await link.close()
+        with suppress(Exception):
+            await link.cleaner.disarm()
+        with suppress(RuntimeError, WebSocketDisconnect):
+            await websocket.close()
 
 
 def paired_device_name(device_id):
