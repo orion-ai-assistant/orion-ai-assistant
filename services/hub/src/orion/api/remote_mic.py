@@ -50,6 +50,8 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
 
 log = logging.getLogger(__name__)
+# Per-turn lines that show in the Hub log by default (uvicorn's handler).
+_diag = logging.getLogger('uvicorn.error')
 router = APIRouter()
 
 SAMPLE_RATE = 16000
@@ -427,8 +429,10 @@ class PcLink:
         """Ask connected phones to report now instead of at their next poll."""
         await self.bus.publish(_channel(self.user, 'phone'), {'type': 'pc_active', 'pc': self.id})
 
-    async def _close_turn(self):
+    async def _close_turn(self, reason='closed'):
         turn, self.turn = self.turn, None
+        if turn:
+            log_turn_end(turn, reason)
         if turn and turn['open']:
             await self.cleaner.end_turn(turn['device'])
         return turn
@@ -510,7 +514,7 @@ class PcLink:
             self.turn = {'turn_id': message['turn_id'], 'phone': message['phone'],
                          'device': message.get('device') or message['phone'],
                          'preroll': bytearray(), 'need': message['preroll_samples'] * 2,
-                         'started': self.clock(), 'open': False}
+                         'started': self.clock(), 'open': False, 'gain': _turn_gain()}
             await self.send_json({key: value for key, value in message.items()
                                   if key not in {'pc', 'phone', 'device'}})
         elif kind == 'audio':
@@ -545,6 +549,7 @@ async def clean_turn_audio(link, turn, pcm):
 
     ``turn``: {'device', 'preroll', 'need', 'started', 'open'}; nothing is sent once
     ``link.turn`` is another turn."""
+    gain = turn.get('gain')
     if not turn['open']:
         take = turn['need'] - len(turn['preroll'])
         turn['preroll'] += pcm[:take]
@@ -552,14 +557,30 @@ async def clean_turn_audio(link, turn, pcm):
         if len(turn['preroll']) < turn['need']:
             return
         turn['open'] = True
+        if gain:
+            gain.observe(bytes(turn['preroll']))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
-            await link.send_bytes(out)
+            await link.send_bytes(gain.apply(out) if gain else out)
         if not pcm:
             return
+    if gain:
+        gain.observe(pcm)
     out = await link.cleaner.process(turn['device'], pcm)
     if out and link.turn is turn:
-        await link.send_bytes(out)
+        await link.send_bytes(gain.apply(out) if gain else out)
+
+
+def _turn_gain():
+    from orion.audio.level_gain import RawLevelGain
+    return RawLevelGain()
+
+
+def log_turn_end(turn, reason):
+    _diag.info('Remote mic turn %s ended (%s): %.1f s received, %s',
+               turn['device'], reason, len(turn['preroll']) / 2 / SAMPLE_RATE if not turn['open'] else
+               turn['gain']._applied / SAMPLE_RATE if turn.get('gain') else 0,
+               turn['gain'].summary() if turn.get('gain') else 'no gain')
 
 
 class CleanLink:
@@ -585,7 +606,7 @@ class CleanLink:
                 return
             # The first live sample follows the pre-roll; it is captured about now.
             self.turn = {'device': self.device, 'preroll': bytearray(), 'need': preroll * 2,
-                         'started': self.clock(), 'open': False}
+                         'started': self.clock(), 'open': False, 'gain': _turn_gain()}
         elif kind == 'turn_end':
             await self._close()
 
@@ -595,6 +616,8 @@ class CleanLink:
 
     async def _close(self):
         turn, self.turn = self.turn, None
+        if turn:
+            log_turn_end(turn, 'pc')
         if turn and turn['open']:
             await self.cleaner.end_turn(turn['device'])
 
