@@ -46,14 +46,23 @@ class RawLevelGainTests(unittest.TestCase):
         self.assertGreater(rms(gain.apply(pcm(.004, 10))), rms(pcm(.004, 10)))
 
     def test_echo_frames_are_lowered_not_lifted(self):
-        gain = RawLevelGain()
+        gain = RawLevelGain(gate=True)
         gain.observe(pcm(.01, 20))  # the microphone hears the PC
         leftover = pcm(.0005, 20)  # 26 dB quieter after the canceller: echo
         self.assertLess(rms(gain.apply(leftover)), rms(leftover))
         self.assertGreater(gain.echo_frames, 15)
 
+    def test_gate_off_counts_echo_frames_but_lifts_them(self):
+        gain = RawLevelGain(gate=False)
+        gain.observe(pcm(.01, 20))
+        leftover = pcm(.0005, 20)
+        self.assertGreater(rms(gain.apply(leftover)), rms(leftover))
+        self.assertGreater(gain.echo_frames, 15)
+        self.assertIn('echo gate off: would lower', gain.summary(reset=True))
+        self.assertEqual((gain.echo_frames, gain.audible, gain.frames), (0, 0, 0))
+
     def test_the_users_voice_through_the_canceller_is_lifted(self):
-        gain = RawLevelGain()
+        gain = RawLevelGain(gate=True)
         gain.observe(pcm(.01, 20))
         voice = pcm(.008, 20)  # nearly unchanged by the canceller: the user
         self.assertGreater(rms(gain.apply(voice)), rms(voice))

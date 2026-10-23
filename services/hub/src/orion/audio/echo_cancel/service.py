@@ -223,8 +223,16 @@ class EchoCanceller:
     def live_turn(self, device_id, active):
         """A turn opened or closed on the PC: the chain may run while one is open."""
         live = self._live.get(device_id)
-        if live is not None and live.engine is not None:
-            live.engine.want_chain = bool(active)
+        if live is None or live.engine is None:
+            return
+        engine = live.engine
+        if engine.want_chain and not active:
+            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far",
+                       device_id, engine.hops * 256 / 16000,
+                       100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches)
+        if active and not engine.want_chain:
+            engine.hops = engine.playing_hops = 0
+        engine.want_chain = bool(active)
 
     def close_live(self, device_id):
         with self._device_locks.get(device_id + "#live", threading.Lock()):

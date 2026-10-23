@@ -84,10 +84,16 @@ flutter run -d <cihaz-kimliği> --dart-define=ORION_AUDIO_DIAGNOSTICS=true
 | Web debug | `flutter run` terminali (tarayıcı konsolu) |
 | Telefon | `flutter run` terminali veya `adb logcat` |
 
-Hub logunda her yankı iptalli tur için iki satır çıkar:
-- `Echo turn <cihaz>: ... reference X dBFS (<loopback cihazı>), mic Y dBFS -> cleaned Z dBFS, cpu ...`
-  (referans −120 dBFS ise PC sesi hiç alınmıyor demektir).
-- `Remote mic turn <cihaz> ended (...): ... gain avg A max B, echo frames lowered C%`.
+Hub logunda yankı iptalli turlar için:
+- Telefon mikrofonu: `Echo turn <cihaz>: ... reference X dBFS (<loopback cihazı>), mic Y dBFS -> cleaned Z dBFS, cpu ...`
+  (referans −120 dBFS ise PC sesi hiç alınmıyor demektir) ve
+  `Remote mic turn <cihaz> ended (...): microphone: phone '<telefon adı>', ... gain avg A max B, echo gate ...`.
+- PC mikrofonu (sürekli akış): bağlanınca `PC microphone pc:<kullanıcı>: <tarayıcının mikrofonu>`; her tur
+  bitince `PC microphone turn ... ended: microphone '<ad>', gain ..., echo gate off: would lower C% of N audible frames`
+  ve `Echo live turn ...: S s, PC playing P% of it`.
+- Yankı karesi kısıcısı şimdilik kapalı (`level_gain.ECHO_GATE`); "would lower" sadece ölçüm.
+- Web logunda `Orion empty follow-up turn` konuşmadan açılıp boş çıkan bir takip turu demektir (PC sesinin
+  sızdığını gösterir).
 
 ## 6. Testler
 

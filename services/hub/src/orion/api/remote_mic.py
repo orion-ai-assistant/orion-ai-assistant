@@ -569,7 +569,8 @@ class PcLink:
             self.turn = {'turn_id': message['turn_id'], 'phone': message['phone'],
                          'device': message.get('device') or message['phone'],
                          'preroll': bytearray(), 'need': message['preroll_samples'] * 2,
-                         'started': self.clock(), 'open': False, 'gain': _turn_gain()}
+                         'started': self.clock(), 'open': False, 'gain': _turn_gain(),
+                         'name': self.phones.get(message.get('device') or message['phone'], {}).get('name')}
             await self.send_json({key: value for key, value in message.items()
                                   if key not in {'pc', 'phone', 'device'}})
         elif kind == 'audio':
@@ -635,8 +636,8 @@ def _turn_gain():
 
 
 def log_turn_end(turn, reason):
-    _diag.info('Remote mic turn %s ended (%s): %.1f s received, %s',
-               turn['device'], reason, len(turn['preroll']) / 2 / SAMPLE_RATE if not turn['open'] else
+    _diag.info('Remote mic turn %s ended (%s): microphone: phone %r, %.1f s received, %s',
+               turn['device'], reason, turn.get('name') or '?', len(turn['preroll']) / 2 / SAMPLE_RATE if not turn['open'] else
                turn['gain']._applied / SAMPLE_RATE if turn.get('gain') else 0,
                turn['gain'].summary() if turn.get('gain') else 'no gain')
 
@@ -650,6 +651,8 @@ class CleanLink:
         self.device = f'pc:{user}'
         self.gain = _turn_gain()
         self.opened = False
+        self.label = '?'  # the microphone the browser uses (wired headset, built-in, ...)
+        self.in_turn = False
 
     @property
     def available(self):
@@ -657,8 +660,17 @@ class CleanLink:
         return canceller is not None and getattr(canceller, 'unavailable', None) is None
 
     async def on_text(self, message):
-        if message.get('type') == 'turn':
-            await self.cleaner.live_turn(self.device, message.get('active') is True)
+        if message.get('type') == 'source' and isinstance(message.get('label'), str):
+            self.label = message['label'][:80] or '?'
+            _diag.info('PC microphone %s: %s', self.device, self.label)
+        elif message.get('type') == 'turn':
+            active = message.get('active') is True
+            if active != self.in_turn:
+                self.in_turn = active
+                summary = self.gain.summary(reset=True)  # standby's counts are dropped
+                if not active:
+                    _diag.info('PC microphone turn %s ended: microphone %r, %s', self.device, self.label, summary)
+            await self.cleaner.live_turn(self.device, active)
 
     async def on_audio(self, pcm):
         if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES:
@@ -676,7 +688,8 @@ class CleanLink:
         if self.opened:
             self.opened = False
             await self.cleaner.close_live(self.device)
-            _diag.info('PC microphone stream %s closed: %s', self.device, self.gain.summary())
+            _diag.info('PC microphone stream %s closed: microphone %r, %s', self.device, self.label,
+                       self.gain.summary())
 
 
 @router.websocket('/api/v1/audio/remote-mic/clean')

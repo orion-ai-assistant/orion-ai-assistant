@@ -233,6 +233,7 @@ class AdaptiveEngine:
         self.want_chain = False
         self.on_chain = False
         self.switches = 0
+        self.hops = self.playing_hops = 0  # for the logs: how much of a turn the PC played
 
     def process(self, mic, ref):
         out_v = self.vqe.process(mic, ref)
@@ -241,6 +242,8 @@ class AdaptiveEngine:
         for k in range(0, len(ref), HOP):
             peak = float(np.max(np.abs(ref[k:k + HOP]))) if len(ref[k:k + HOP]) else 0.0
             self._silent_hops = 0 if peak > REF_THRESHOLD else self._silent_hops + 1
+            self.hops += 1
+            self.playing_hops += peak > REF_THRESHOLD
         wanted = self.want_chain and self._silent_hops < REF_HANGOVER
         if wanted and not self.on_chain:
             if self.chain is None:
