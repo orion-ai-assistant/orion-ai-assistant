@@ -128,6 +128,15 @@ class PhoneAudioCleaner:
             self._raw.add(device)
             return pcm
 
+    def pc_playing(self):
+        """The PC is playing (cheap, no thread); False when unknown."""
+        if self.canceller is None or not hasattr(self.canceller, 'pc_playing'):
+            return False
+        try:
+            return self.canceller.pc_playing()
+        except Exception:
+            return False
+
     async def reference_quiet(self, start_time, preroll_samples):
         """The PC played nothing around the phone's "Orion" (no check needed); False when unknown."""
         if self.canceller is None or not hasattr(self.canceller, 'reference_quiet'):
@@ -641,14 +650,19 @@ async def clean_turn_audio(link, turn, pcm):
             turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
-            await link.send_bytes(gain.apply(out) if gain else out)
+            await link.send_bytes(gain.apply(out, gate=_playing(link)) if gain else out)
         if not pcm:
             return
     if gain:
         gain.observe(pcm)
     out = await link.cleaner.process(turn['device'], pcm)
     if out and link.turn is turn:
-        await link.send_bytes(gain.apply(out) if gain else out)
+        await link.send_bytes(gain.apply(out, gate=_playing(link)) if gain else out)
+
+
+def _playing(link):
+    cleaner = getattr(link, 'cleaner', None)
+    return bool(cleaner is not None and hasattr(cleaner, 'pc_playing') and cleaner.pc_playing())
 
 
 def _turn_gain():
@@ -703,7 +717,8 @@ class CleanLink:
         self.gain.observe(pcm)
         out = await self.cleaner.feed_live(self.device, pcm, arrived)
         if out:
-            await self.send_bytes(self.gain.apply(out))
+            # Only inside a turn: in standby "Orion" is listened for on LocalVQE's output as is.
+            await self.send_bytes(self.gain.apply(out, gate=self.in_turn and _playing(self)))
 
     async def close(self):
         if self.opened:

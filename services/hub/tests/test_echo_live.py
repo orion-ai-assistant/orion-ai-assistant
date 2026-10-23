@@ -167,6 +167,19 @@ class LiveStreamTests(_CancellerCase):
         out = self.play_and_feed(1.0)
         np.testing.assert_allclose(out[-RATE // 2:], .05, atol=1e-3)
 
+    def test_standby_is_localvqe_alone_the_suppressor_only_in_turns(self):
+        ec = EchoCanceller(engine_factory=lambda: ScaleEngine(640, .5), vqe_factory=vqe,
+                           capture_factory=FakeCapture, clock=self.clock, suppress=True)
+        ec.arm()
+        self.ec = ec
+        ec.open_live("pc:a", self.clock.now)
+        suppressor = ec._live["pc:a"].turn.stream.suppressor
+        self.assertFalse(suppressor.enabled)  # "Orion" is listened for on LocalVQE's output
+        self.ec.live_turn("pc:a", True)
+        self.assertTrue(suppressor.enabled)
+        self.ec.live_turn("pc:a", False)
+        self.assertFalse(suppressor.enabled)
+
     def test_passthrough_until_the_models_are_ready(self):
         ec = EchoCanceller(capture_factory=FakeCapture, clock=self.clock)  # no factories yet
         ec.arm()

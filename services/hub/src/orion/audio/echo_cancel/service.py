@@ -260,6 +260,15 @@ class EchoCanceller:
                 raise KeyError(f"No open turn for {device_id}")
             return to_pcm16(self._feed(turn, to_float(pcm)))
 
+    def pc_playing(self, seconds=1.2):
+        """The PC played something within the last `seconds` (the echo-frame gate runs then)."""
+        if self._capture is None:
+            return False
+        from .engines import REF_THRESHOLD
+        end = self.ring.end
+        n = min(int(seconds * 16000), end)
+        return n > 0 and float(np.max(np.abs(self.ring.read(end - n, n)))) > REF_THRESHOLD
+
     def reference_quiet(self, start_time, preroll_samples, margin=0.5):
         """Whether the PC played nothing from `preroll_samples` (plus `margin` s for the echo's way
         to the microphone) before `start_time` until now: then the phone's "Orion" cannot have
@@ -328,6 +337,8 @@ class EchoCanceller:
                        "not measured" if live.echo_delay is None else f"{live.echo_delay / 16:.0f} ms",
                        -live.realigned / 16,
                        suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
+        if suppressor:
+            suppressor.enabled = bool(active)  # standby: LocalVQE alone, as "Orion" is listened for
         if active and not engine.want_chain:
             engine.hops = engine.playing_hops = 0
             if suppressor:
@@ -352,6 +363,8 @@ class EchoCanceller:
         stream = self._keyed_stream(self._live_streams, device_id,
                                     lambda: AdaptiveEngine(vqe_factory(), chain_factory))
         stream.engine.want_chain = False
+        if getattr(stream, "suppressor", None):
+            stream.suppressor.enabled = False
         return _Live(Turn(stream, self.ring, self.ring.index_at(arrived), clock=self.clock), stream.engine, arrived)
 
     def _keyed_stream(self, streams, device_id, factory):

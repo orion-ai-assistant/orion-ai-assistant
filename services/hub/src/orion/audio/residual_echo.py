@@ -100,6 +100,7 @@ class ResidualEchoSuppressor:
         self._learned = np.zeros(BANDS, int)  # hops each band's leak was updated on
         self._gain = np.ones(BANDS)
         self._silent = REF_HANGOVER
+        self.enabled = True  # False: measure and learn, but pass the audio unchanged
         self.stats = _Stats()
 
     def process(self, out, mic, ref):
@@ -134,7 +135,7 @@ class ResidualEchoSuppressor:
             gain = np.ones(BANDS)
         else:
             gain = self._suppression(y, m, py, pm)
-        if self._silent >= REF_HANGOVER:
+        if self._silent >= REF_HANGOVER or not self.enabled:
             gain = np.ones(BANDS)
         # Smooth across neighbouring bands, then in time.
         gain = np.convolve(np.pad(gain, 1, mode="edge"), SPREAD, mode="valid")
