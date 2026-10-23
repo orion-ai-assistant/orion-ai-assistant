@@ -51,6 +51,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager, suppress
@@ -660,6 +661,11 @@ async def clean_turn_audio(link, turn, pcm):
         await link.send_bytes(gain.apply(out, gate=_playing(link)) if gain else out)
 
 
+def _gate_always():
+    """ORION_ECHO_GATE=always: the echo-frame gate in every frame, as before 2026-10-24 (A/B)."""
+    return os.environ.get('ORION_ECHO_GATE') == 'always'
+
+
 def _playing(link):
     cleaner = getattr(link, 'cleaner', None)
     return bool(cleaner is not None and hasattr(cleaner, 'pc_playing') and cleaner.pc_playing())
@@ -718,7 +724,8 @@ class CleanLink:
         out = await self.cleaner.feed_live(self.device, pcm, arrived)
         if out:
             # Only inside a turn: in standby "Orion" is listened for on LocalVQE's output as is.
-            await self.send_bytes(self.gain.apply(out, gate=self.in_turn and _playing(self)))
+            gate = _gate_always() or (self.in_turn and _playing(self))
+            await self.send_bytes(self.gain.apply(out, gate=gate))
 
     async def close(self):
         if self.opened:

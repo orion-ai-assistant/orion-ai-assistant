@@ -76,6 +76,7 @@ class _Live:
         self._deviations = deque()
         self._mic = np.zeros(0, np.float32)  # the last ALIGN_WINDOW s of raw microphone
         self._next_align = arrived + ALIGN_WINDOW
+        self.turn_energy, self.turn_counted = None, 0  # the Turn's energy sums when a PC turn began
         self.echo_delay = None  # samples from the reference to its echo, last measured
         self.realigned = 0  # samples the pairing was moved by, in all
 
@@ -345,6 +346,17 @@ class EchoCanceller:
                        suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         if suppressor:
             suppressor.enabled = bool(active)  # standby: LocalVQE alone, as "Orion" is listened for
+        turn = live.turn
+        if isinstance(turn, Turn) and engine.want_chain and not active and live.turn_energy is not None:
+            mic, out = (turn.energy[k] - live.turn_energy[k] for k in ('mic', 'out'))
+            if mic > 0 and out > 0:
+                _diag.info("Echo live turn %s: microphone %.1f dB -> cleaned %.1f dB (the canceller took "
+                           "out %.1f dB, the user's own voice included)", device_id,
+                           10 * np.log10(mic / max(1, turn.counted - live.turn_counted)),
+                           10 * np.log10(out / max(1, turn.counted - live.turn_counted)),
+                           10 * np.log10(mic / out))
+        if active and not engine.want_chain and isinstance(turn, Turn):
+            live.turn_energy, live.turn_counted = dict(turn.energy), turn.counted
         if active and not engine.want_chain:
             engine.hops = engine.playing_hops = 0
             if suppressor:
