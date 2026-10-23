@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from orion.audio.echo_cancel import EchoCanceller
-from orion.audio.echo_cancel.engines import HOP, REF_HANGOVER, WARMUP, AdaptiveEngine
+from orion.audio.echo_cancel.engines import HOP, MIN_PLAY_HOPS, REF_HANGOVER, WARMUP, AdaptiveEngine
 from orion.audio.echo_cancel.stream import to_float, to_pcm16
 
 RATE = 16000
@@ -72,9 +72,16 @@ class AdaptiveEngineTests(unittest.TestCase):
         self.assertFalse(self.engine.on_chain)
         self.assertEqual(self.chains, [])
 
+    def test_a_short_sound_stays_on_localvqe(self):
+        self.engine.want_chain = True  # the assistant's own "heard" sound, ~0.25 s
+        self.engine.process(self.mic, self.loud)
+        self.engine.process(self.mic, self.loud)
+        self.assertFalse(self.engine.on_chain)
+        self.assertEqual(self.chains, [])
+
     def test_back_to_localvqe_when_the_turn_ends(self):
         self.engine.want_chain = True
-        for _ in range(3):
+        for _ in range(MIN_PLAY_HOPS // 8 + 2):
             self.engine.process(self.mic, self.loud)
         self.engine.want_chain = False
         out = self.engine.process(self.mic, self.loud)

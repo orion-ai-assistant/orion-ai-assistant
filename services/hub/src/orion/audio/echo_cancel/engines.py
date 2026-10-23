@@ -209,6 +209,7 @@ class LocalVqeOnly:
 WARMUP = 62 * HOP  # ~1 s of recent audio warms the chain before it takes over
 REF_THRESHOLD = 10 ** (-65 / 20)
 REF_HANGOVER = 75  # hops (~1.2 s) of silent reference before the chain is let go
+MIN_PLAY_HOPS = 31  # ~0.5 s of playback before the chain: the assistant's own short sounds stay on LocalVQE
 
 
 class AdaptiveEngine:
@@ -230,6 +231,7 @@ class AdaptiveEngine:
         self._history_ref = np.zeros(0, np.float32)
         self._fade = np.linspace(0, 1, HOP, endpoint=False, dtype=np.float32)
         self._silent_hops = REF_HANGOVER
+        self._playing_run = 0  # hops of playback since the reference last went quiet
         self.want_chain = False
         self.on_chain = False
         self.switches = 0
@@ -242,9 +244,14 @@ class AdaptiveEngine:
         for k in range(0, len(ref), HOP):
             peak = float(np.max(np.abs(ref[k:k + HOP]))) if len(ref[k:k + HOP]) else 0.0
             self._silent_hops = 0 if peak > REF_THRESHOLD else self._silent_hops + 1
+            if peak > REF_THRESHOLD:
+                self._playing_run += 1
+            elif self._silent_hops >= REF_HANGOVER:
+                self._playing_run = 0
             self.hops += 1
             self.playing_hops += peak > REF_THRESHOLD
-        wanted = self.want_chain and self._silent_hops < REF_HANGOVER
+        wanted = (self.want_chain and self._silent_hops < REF_HANGOVER
+                  and (self.on_chain or self._playing_run >= MIN_PLAY_HOPS))
         if wanted and not self.on_chain:
             if self.chain is None:
                 self.chain = self._chain_factory()
