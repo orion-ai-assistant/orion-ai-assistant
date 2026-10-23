@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import unittest
 
@@ -281,6 +282,26 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.calls[-1], ('end_turn', 'device-7'))
         await h.pc.close()
         self.assertEqual(fake.calls[-1], ('disarm',))
+
+    async def test_silent_pc_starts_the_turn_without_a_check(self):
+        h = Harness()
+
+        class QuietCanceller(FakeCanceller):
+            def reference_quiet(self, start_time, preroll_samples):
+                self._record('reference_quiet', start_time, preroll_samples)
+                return True
+
+            def check_preroll(self, device, preroll, start_time):
+                self._record('check_preroll', device)
+                return preroll
+        fake = QuietCanceller()
+        h.pc.cleaner = PhoneAudioCleaner(fake)
+        await h.pc.activate()
+        await h.phone.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))
+        self.assertEqual(h.pc_out[-1], {'type': 'preroll_check', 'turn_id': 't1', 'verified': True})
+        await h.phone.on_audio(b'\x01\x00')
+        await asyncio.sleep(0)
+        self.assertNotIn('check_preroll', [c[0] for c in fake.calls])
 
     async def test_canceller_failure_falls_back_to_raw_audio(self):
         h = Harness()

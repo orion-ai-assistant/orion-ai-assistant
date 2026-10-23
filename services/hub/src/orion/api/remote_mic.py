@@ -36,7 +36,10 @@ something. Chrome's own echo cancellation is not used.
 
 For a phone turn the Hub also sends ``preroll_check`` (JSON, base64 PCM): the
 pre-roll cleaned by LocalVQE alone, ready ~0.45 s after it arrived, so the PC
-can check "Orion" and start the turn while the chain is still on its way.
+can check "Orion" and start the turn while the chain is still on its way. When
+the PC played nothing around the phone's "Orion" (its loudspeaker cannot have
+said it), it sends ``preroll_check {turn_id, verified: true}`` at once instead,
+and the PC starts the turn without a check.
 
 Echo cancellation (Phase 2): ``PhoneAudioCleaner`` is the single place where
 phone audio becomes the audio the PC pipeline hears. It runs in the PC-side
@@ -124,6 +127,16 @@ class PhoneAudioCleaner:
             log.warning('Echo canceller failed mid-turn; raw audio for this turn', exc_info=True)
             self._raw.add(device)
             return pcm
+
+    async def reference_quiet(self, start_time, preroll_samples):
+        """The PC played nothing around the phone's "Orion" (no check needed); False when unknown."""
+        if self.canceller is None or not hasattr(self.canceller, 'reference_quiet'):
+            return False
+        try:
+            return await self._call('reference_quiet', start_time, preroll_samples)
+        except Exception:
+            log.warning('Echo canceller failed on the reference check', exc_info=True)
+            return False
 
     async def check_preroll(self, device, preroll, start_time):
         """The pre-roll cleaned by LocalVQE alone (quick Orion check); raw when unavailable."""
@@ -573,6 +586,14 @@ class PcLink:
                          'name': self.phones.get(message.get('device') or message['phone'], {}).get('name')}
             await self.send_json({key: value for key, value in message.items()
                                   if key not in {'pc', 'phone', 'device'}})
+            turn = self.turn
+            if (self.cleaner is not None and hasattr(self.cleaner, 'reference_quiet')
+                    and await self.cleaner.reference_quiet(turn['started'], message['preroll_samples'])
+                    and self.turn is turn):
+                # The PC was silent: its loudspeaker cannot have said "Orion". The PC starts the
+                # turn now instead of waiting for the cleaned pre-roll and its own check.
+                turn['quiet'] = True
+                await self.send_json({'type': 'preroll_check', 'turn_id': turn['turn_id'], 'verified': True})
         elif kind == 'audio':
             turn = self.turn
             if not turn or message.get('turn_id') != turn['turn_id']:
@@ -615,7 +636,7 @@ async def clean_turn_audio(link, turn, pcm):
         turn['open'] = True
         if gain:
             gain.observe(bytes(turn['preroll']))
-        if hasattr(link, 'send_check'):
+        if hasattr(link, 'send_check') and not turn.get('quiet'):
             # LocalVQE alone is ready first: the PC checks "Orion" on it and starts the turn.
             turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])

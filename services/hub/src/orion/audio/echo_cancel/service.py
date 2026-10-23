@@ -181,6 +181,19 @@ class EchoCanceller:
                 raise KeyError(f"No open turn for {device_id}")
             return to_pcm16(self._feed(turn, to_float(pcm)))
 
+    def reference_quiet(self, start_time, preroll_samples, margin=0.5):
+        """Whether the PC played nothing from `preroll_samples` (plus `margin` s for the echo's way
+        to the microphone) before `start_time` until now: then the phone's "Orion" cannot have
+        come from the PC's loudspeaker and needs no check. False when unknown."""
+        if self._capture is None:
+            return False
+        from .engines import REF_THRESHOLD
+        end = self.ring.end
+        start = self.ring.index_at(start_time) - preroll_samples - round(margin * 16000)
+        if end <= start:
+            return False
+        return float(np.max(np.abs(self.ring.read(start, end - start)))) <= REF_THRESHOLD
+
     def check_preroll(self, device_id, preroll_pcm, start_time=None):
         """The pre-roll cleaned by LocalVQE alone (same length), for the PC's quick Orion check
         while the chain is still on its way. Its own warm stream per device; never the chain's."""
@@ -328,13 +341,23 @@ class EchoCanceller:
                    stats.get("cleaned_db"), stats["cpu_seconds"])
         return out
 
+    def _turn_engine(self):
+        """A phone turn's engine: as for the PC microphone, LocalVQE while the PC is silent and the
+        chain while it plays (warmed on the last second); the chain alone without LocalVQE."""
+        if self._vqe_factory is None:
+            return self._engine_factory()
+        from .engines import AdaptiveEngine
+        engine = AdaptiveEngine(self._vqe_factory(), self._engine_factory)
+        engine.want_chain = True  # a phone's stream only runs inside turns
+        return engine
+
     def _stream(self, device_id):
         if self._capture is None or self._engine_factory is None:
             return None
         with self._lock:
             stream = self._streams.get(device_id)
             if stream is None:
-                stream = DeviceStream(self._engine_factory())
+                stream = DeviceStream(self._turn_engine())
                 self._streams[device_id] = stream
                 while len(self._streams) > self.max_devices:
                     _, old = self._streams.popitem(last=False)

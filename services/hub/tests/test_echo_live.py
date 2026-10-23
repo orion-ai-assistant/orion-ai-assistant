@@ -186,7 +186,27 @@ class LiveStreamTests(_CancellerCase):
         self.assertGreater(live.turn.ref_start - start, 320)
 
 
-class PrerollCheckTests(_CancellerCase):
+class PhoneTurnTests(_CancellerCase):
+    def test_silent_pc_around_orion_needs_no_check(self):
+        self.clock.now += 3.0
+        self.ec.ring.write(np.zeros(RATE * 3, np.float32), self.clock.now)
+        self.assertTrue(self.ec.reference_quiet(self.clock.now, RATE * 2))
+        self.play(.2)  # the PC starts playing right after "Orion"
+        self.assertFalse(self.ec.reference_quiet(self.clock.now - .2, RATE * 2))
+
+    def test_phone_turn_uses_localvqe_while_the_pc_is_silent(self):
+        self.clock.now += 3.0
+        self.ec.ring.write(np.zeros(RATE * 3, np.float32), self.clock.now)
+        out = to_float(self.ec.start_turn("phone-1", to_pcm16(np.full(RATE * 2, .2, np.float32)), self.clock.now))
+        np.testing.assert_allclose(out[RATE:], .05, atol=1e-3)  # .2 * .25: LocalVQE, not the chain
+        self.assertEqual(self.chains, [])
+
+    def test_phone_turn_uses_the_chain_while_the_pc_plays(self):
+        self.play(3.0)
+        out = to_float(self.ec.start_turn("phone-1", to_pcm16(np.full(RATE * 2, .2, np.float32)), self.clock.now))
+        np.testing.assert_allclose(out[-RATE // 2:], .1, atol=1e-3)  # .2 * .5: the chain
+
+
     def test_check_uses_localvqe_alone_and_keeps_the_length(self):
         self.play(2.0)
         preroll = to_pcm16(np.full(RATE * 2, .2, np.float32))
