@@ -1,5 +1,7 @@
 """Both relay endpoints over real WebSockets, sharing an in-memory Redis."""
 import asyncio
+import base64
+import json
 import unittest
 from unittest import mock
 
@@ -110,7 +112,17 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(start['type'], 'turn_start')
                 self.assertEqual(start['wake_end_sample'], 12)
                 self.assertNotIn('phone', start)
-                self.assertEqual(pc.receive_bytes(), b'\x01\x00\x02\x00\x03\x00')
+                # The quick check (LocalVQE alone; raw here) and the chain's pre-roll, in either order.
+                first = pc.receive()
+                if 'text' in first:
+                    check = json.loads(first['text'])
+                    self.assertEqual(pc.receive_bytes(), b'\x01\x00\x02\x00\x03\x00')
+                else:
+                    self.assertEqual(first['bytes'], b'\x01\x00\x02\x00\x03\x00')
+                    check = pc_json(pc)
+                self.assertEqual(check['type'], 'preroll_check')
+                self.assertEqual(check['turn_id'], 'x1')
+                self.assertEqual(base64.b64decode(check['pcm']), b'\x01\x00\x02\x00\x03\x00')
                 self.assertEqual(pc.receive_bytes(), b'\x04\x00')
                 pc.send_json({'type': 'turn_end', 'turn_id': 'x1'})
                 message = phone.receive_json()
@@ -120,17 +132,16 @@ class EndpointTests(unittest.TestCase):
                 self.assertNotIn(remote_mic.turn_key('user'), self.redis.keys)
         self.assertNotIn(remote_mic.pc_key('user'), self.redis.keys)
 
-    def test_pc_microphone_turn_comes_back_through_the_cleaner(self):
+    def test_pc_microphone_streams_continuously_through_the_cleaner(self):
         with self.client.websocket_connect('/p/api/v1/audio/remote-mic/clean?token=t') as clean:
             # Tests have no loopback: the cleaner passes audio through.
             self.assertEqual(clean.receive_json(), {'type': 'ready', 'available': False})
-            clean.send_bytes(b'\x09\x00')  # outside a turn: dropped
-            clean.send_json({'type': 'turn_start', 'preroll_samples': 3})
             clean.send_bytes(b'\x01\x00\x02\x00')
-            clean.send_bytes(b'\x03\x00\x04\x00')
-            self.assertEqual(clean.receive_bytes(), b'\x01\x00\x02\x00\x03\x00')
-            self.assertEqual(clean.receive_bytes(), b'\x04\x00')
-            clean.send_json({'type': 'turn_end'})
+            self.assertEqual(clean.receive_bytes(), b'\x01\x00\x02\x00')
+            clean.send_json({'type': 'turn', 'active': True})
+            clean.send_bytes(b'\x03\x00')
+            self.assertEqual(clean.receive_bytes(), b'\x03\x00')
+            clean.send_json({'type': 'turn', 'active': False})
 
     def test_phone_without_pc_is_disarmed_and_rejected(self):
         with self.client.websocket_connect('/m/api/v1/audio/remote-mic/phone?token=t') as phone:

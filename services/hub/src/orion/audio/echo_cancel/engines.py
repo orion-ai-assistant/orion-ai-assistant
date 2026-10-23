@@ -189,3 +189,85 @@ class DtlnLocalVqe:
 
     def close(self):
         self.vqe.close()
+
+
+class LocalVqeOnly:
+    """LocalVQE alone: cleans echo and steady noise; about 40% of the chain's CPU. Output lags the
+    mic by one hop."""
+
+    def __init__(self, localvqe_model):
+        self.vqe = LocalVqe(localvqe_model)
+        self.latency = HOP
+
+    def process(self, mic, ref):
+        return self.vqe.process(mic, ref)
+
+    def close(self):
+        self.vqe.close()
+
+
+WARMUP = 62 * HOP  # ~1 s of recent audio warms the chain before it takes over
+REF_THRESHOLD = 10 ** (-65 / 20)
+REF_HANGOVER = 75  # hops (~1.2 s) of silent reference before the chain is let go
+
+
+class AdaptiveEngine:
+    """The PC microphone's continuous stream: LocalVQE always; the chain (DTLN -> LocalVQE) while
+    `want_chain` is set (a turn is open) and the PC plays something.
+
+    Both run on the raw mic and reference (never one after the other). LocalVQE keeps running so
+    a return to it is seamless; its output is delayed to the chain's latency so the two line up
+    sample for sample. When the chain is wanted it first runs over the last ~1 s of raw audio
+    (warm-up, output discarded), then one hop crossfades to it; the way back also crossfades."""
+
+    def __init__(self, vqe, chain_factory):
+        self.vqe = vqe
+        self._chain_factory = chain_factory
+        self.chain = None
+        self.latency = CHAIN_LATENCY
+        self._align = np.zeros(self.latency - vqe.latency, np.float32)
+        self._history_mic = np.zeros(0, np.float32)
+        self._history_ref = np.zeros(0, np.float32)
+        self._fade = np.linspace(0, 1, HOP, endpoint=False, dtype=np.float32)
+        self._silent_hops = REF_HANGOVER
+        self.want_chain = False
+        self.on_chain = False
+        self.switches = 0
+
+    def process(self, mic, ref):
+        out_v = self.vqe.process(mic, ref)
+        delayed = np.concatenate([self._align, out_v])
+        self._align, out_v = delayed[len(out_v):], delayed[:len(out_v)]
+        for k in range(0, len(ref), HOP):
+            peak = float(np.max(np.abs(ref[k:k + HOP]))) if len(ref[k:k + HOP]) else 0.0
+            self._silent_hops = 0 if peak > REF_THRESHOLD else self._silent_hops + 1
+        wanted = self.want_chain and self._silent_hops < REF_HANGOVER
+        if wanted and not self.on_chain:
+            if self.chain is None:
+                self.chain = self._chain_factory()
+            if len(self._history_mic):
+                self.chain.process(self._history_mic, self._history_ref)  # warm-up
+            out_c = self.chain.process(mic, ref)
+            out = out_c.copy()
+            out[:HOP] = out_v[:HOP] * (1 - self._fade) + out_c[:HOP] * self._fade
+            self.on_chain = True
+            self.switches += 1
+        elif self.on_chain:
+            out_c = self.chain.process(mic, ref)
+            if wanted:
+                out = out_c
+            else:
+                out = out_v.copy()
+                out[:HOP] = out_c[:HOP] * (1 - self._fade) + out_v[:HOP] * self._fade
+                self.on_chain = False
+                self.switches += 1
+        else:
+            out = out_v
+        self._history_mic = np.concatenate([self._history_mic, mic])[-WARMUP:]
+        self._history_ref = np.concatenate([self._history_ref, ref])[-WARMUP:]
+        return out
+
+    def close(self):
+        self.vqe.close()
+        if self.chain is not None:
+            self.chain.close()

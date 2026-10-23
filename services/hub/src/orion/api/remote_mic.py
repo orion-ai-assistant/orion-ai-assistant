@@ -16,8 +16,8 @@ Protocol (JSON text frames, PCM as binary frames):
   Hub -> phone : arm, disarm {reason?, selected_name?}, turn_reject {turn_id,
                  reason}, turn_end {turn_id}, heartbeat
   Hub -> PC    : phone_ready, phones {phones: [{id, name}], selected: {id, name}},
-                 turn_start (as sent), <binary PCM>, turn_end {turn_id, reason},
-                 heartbeat
+                 turn_start (as sent), preroll_check {turn_id, pcm}, <binary PCM>,
+                 turn_end {turn_id, reason}, heartbeat
   PC -> Hub    : select {device}, turn_end {turn_id}, turn_reject {turn_id,
                  reason}, heartbeat
 
@@ -28,10 +28,15 @@ that phone is armed; the first phone seen becomes the selection, the PC can
 pick another, and a phone can take over itself (claim). While the selected
 phone is offline, every connected phone is armed.
 
-The PC's own microphone uses the same canceller (``/remote-mic/clean``): the
-web client detects "Orion" on its raw microphone, then streams that turn (the
-two-second pre-roll first) here and gets it back echo-cancelled, as if it were
-a phone on this PC. Chrome's own echo cancellation is not used.
+The PC's own microphone streams continuously to ``/remote-mic/clean`` and gets
+it back cleaned, sample for sample: LocalVQE alone in standby (the web client
+listens for "Orion" on the clean audio, so the PC's own "Orion" never wakes
+it), the chain (DTLN -> LocalVQE) while the web reports a turn and the PC plays
+something. Chrome's own echo cancellation is not used.
+
+For a phone turn the Hub also sends ``preroll_check`` (JSON, base64 PCM): the
+pre-roll cleaned by LocalVQE alone, ready ~0.45 s after it arrived, so the PC
+can check "Orion" and start the turn while the chain is still on its way.
 
 Echo cancellation (Phase 2): ``PhoneAudioCleaner`` is the single place where
 phone audio becomes the audio the PC pipeline hears. It runs in the PC-side
@@ -119,6 +124,47 @@ class PhoneAudioCleaner:
             log.warning('Echo canceller failed mid-turn; raw audio for this turn', exc_info=True)
             self._raw.add(device)
             return pcm
+
+    async def check_preroll(self, device, preroll, start_time):
+        """The pre-roll cleaned by LocalVQE alone (quick Orion check); raw when unavailable."""
+        if self.canceller is None:
+            return preroll
+        try:
+            return await self._call('check_preroll', device, preroll, start_time)
+        except Exception:
+            log.warning('Echo canceller failed on the pre-roll check; raw pre-roll', exc_info=True)
+            return preroll
+
+    async def open_live(self, device, arrived):
+        self._raw.discard(device + '#live')
+        if self.canceller is not None:
+            try:
+                await self._call('open_live', device, arrived)
+                return
+            except Exception:
+                log.warning('Echo canceller could not open the live stream; raw audio', exc_info=True)
+        self._raw.add(device + '#live')
+
+    async def feed_live(self, device, pcm, arrived):
+        if self.canceller is None or device + '#live' in self._raw:
+            return pcm
+        try:
+            return await self._call('feed_live', device, pcm, arrived)
+        except Exception:
+            log.warning('Echo canceller failed on the live stream; raw audio from now on', exc_info=True)
+            self._raw.add(device + '#live')
+            return pcm
+
+    async def live_turn(self, device, active):
+        if self.canceller is not None:
+            with suppress(Exception):
+                await self._call('live_turn', device, active)
+
+    async def close_live(self, device):
+        self._raw.discard(device + '#live')
+        if self.canceller is not None:
+            with suppress(Exception):
+                await self._call('close_live', device)
 
     async def end_turn(self, device):
         """Close the turn. The tail is not needed: the PC already ended or left it."""
@@ -441,6 +487,15 @@ class PcLink:
         """Phone PCM in arrival order -> cleaned PCM to the PC assistant."""
         await clean_turn_audio(self, self.turn, pcm)
 
+    async def send_check(self, turn, preroll):
+        try:
+            clean = await self.cleaner.check_preroll(turn['device'], preroll, turn['started'])
+            if self.turn is turn:
+                await self.send_json({'type': 'preroll_check', 'turn_id': turn['turn_id'],
+                                      'pcm': base64.b64encode(clean).decode('ascii')})
+        except Exception:
+            log.warning('Pre-roll check could not be sent', exc_info=True)
+
     async def heartbeat(self):
         """Keep this PC active. False once a newer PC session took over."""
         stale = [d for d, p in self.phones.items() if self.clock() - p['seen'] > PHONE_TTL_SECONDS]
@@ -559,6 +614,9 @@ async def clean_turn_audio(link, turn, pcm):
         turn['open'] = True
         if gain:
             gain.observe(bytes(turn['preroll']))
+        if hasattr(link, 'send_check'):
+            # LocalVQE alone is ready first: the PC checks "Orion" on it and starts the turn.
+            turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
             await link.send_bytes(gain.apply(out) if gain else out)
@@ -584,13 +642,14 @@ def log_turn_end(turn, reason):
 
 
 class CleanLink:
-    """The PC's own microphone: its turns come back echo-cancelled (no relay)."""
+    """The PC's own microphone, streamed continuously and returned cleaned (no relay)."""
 
     def __init__(self, user, send_bytes, cleaner, clock=time.perf_counter):
         self.send_bytes, self.cleaner, self.clock = send_bytes, cleaner, clock
-        # Stable per account, so the canceller stays warm across turns and sessions.
+        # Stable per account, so the canceller stays warm across reconnects.
         self.device = f'pc:{user}'
-        self.turn = None
+        self.gain = _turn_gain()
+        self.opened = False
 
     @property
     def available(self):
@@ -598,31 +657,26 @@ class CleanLink:
         return canceller is not None and getattr(canceller, 'unavailable', None) is None
 
     async def on_text(self, message):
-        kind = message.get('type')
-        if kind == 'turn_start':
-            await self._close()
-            preroll = message.get('preroll_samples')
-            if not _int(preroll, 0, MAX_PREROLL_SAMPLES):
-                return
-            # The first live sample follows the pre-roll; it is captured about now.
-            self.turn = {'device': self.device, 'preroll': bytearray(), 'need': preroll * 2,
-                         'started': self.clock(), 'open': False, 'gain': _turn_gain()}
-        elif kind == 'turn_end':
-            await self._close()
+        if message.get('type') == 'turn':
+            await self.cleaner.live_turn(self.device, message.get('active') is True)
 
     async def on_audio(self, pcm):
-        if self.turn and pcm and not len(pcm) % 2 and len(pcm) <= MAX_FRAME_BYTES:
-            await clean_turn_audio(self, self.turn, pcm)
-
-    async def _close(self):
-        turn, self.turn = self.turn, None
-        if turn:
-            log_turn_end(turn, 'pc')
-        if turn and turn['open']:
-            await self.cleaner.end_turn(turn['device'])
+        if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES:
+            return
+        arrived = self.clock()
+        if not self.opened:
+            self.opened = True
+            await self.cleaner.open_live(self.device, arrived - len(pcm) / 2 / SAMPLE_RATE)
+        self.gain.observe(pcm)
+        out = await self.cleaner.feed_live(self.device, pcm, arrived)
+        if out:
+            await self.send_bytes(self.gain.apply(out))
 
     async def close(self):
-        await self._close()
+        if self.opened:
+            self.opened = False
+            await self.cleaner.close_live(self.device)
+            _diag.info('PC microphone stream %s closed: %s', self.device, self.gain.summary())
 
 
 @router.websocket('/api/v1/audio/remote-mic/clean')
