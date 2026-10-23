@@ -11,6 +11,8 @@ from .ring import ReferenceRing
 from .stream import DeviceStream, Turn, to_float, to_pcm16
 
 log = logging.getLogger(__name__)
+# Shown in the Hub log by default (uvicorn's handler), unlike this package's own logger.
+_diag = logging.getLogger("uvicorn.error")
 
 
 class _PassThrough:
@@ -173,13 +175,23 @@ class EchoCanceller:
         c0 = time.thread_time()
         out = turn.finish()
         stream = turn.stream
-        self.last_turn[device_id] = {
+        stats = self.last_turn[device_id] = {
             "samples": turn.received,
             "processed_frames": getattr(stream, "processed_frames", 0),
             "cpu_seconds": round(turn.cpu + time.thread_time() - c0, 3),
             "wall_seconds": round(self.clock() - turn.started, 3),
             "cancelled": stream is not None,
         }
+        counted = getattr(turn, "counted", 0)
+        if counted:
+            level = {k: round(10 * float(np.log10(v / counted + 1e-12)), 1) for k, v in turn.energy.items()}
+            stats.update(mic_db=level["mic"], reference_db=level["ref"], cleaned_db=level["out"])
+        # One line per turn: whether the reference had sound and how much the canceller took out
+        # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
+        _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s",
+                   device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
+                   getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
+                   stats.get("cleaned_db"), stats["cpu_seconds"])
         return out
 
     def _stream(self, device_id):

@@ -112,6 +112,9 @@ class Turn:
         self._drop = stream.latency
         self.received = 0
         self.emitted = 0
+        # Energy sums for the turn's diagnostic line (mic in, reference, cleaned out).
+        self.energy = {'mic': 0.0, 'ref': 0.0, 'out': 0.0}
+        self.counted = 0
 
     def feed(self, mic):
         mic = np.asarray(mic, np.float32).ravel()
@@ -145,6 +148,11 @@ class Turn:
             if have:
                 ref[:have] = self.ring.read(start, have)
             out = self.stream.process(self._pending[:n], ref)
+            mic = self._pending[:n].astype(np.float64)
+            self.energy['mic'] += float(np.dot(mic, mic))
+            self.energy['ref'] += float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
+            self.energy['out'] += float(np.dot(out.astype(np.float64), out.astype(np.float64)))
+            self.counted += n
             self._pending = self._pending[n:]
             self._consumed += n
         if self._drop:
