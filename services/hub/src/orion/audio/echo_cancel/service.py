@@ -43,6 +43,18 @@ def _factories(models_dir):
 
 DRIFT_WINDOW = 3.0  # seconds of arrival timing behind one clock-drift estimate
 DRIFT_LIMIT = 320  # samples (20 ms) of drift before the reference pairing is moved
+# Where the browser's microphone really is against the loopback: its audio reaches the Hub late
+# by an unknown, browser-made delay (live: ~1 s), so the first packet's arrival only roughly says
+# which reference belongs to it. The echo's own delay is measured instead, from the envelopes of
+# the microphone and the reference while the PC plays, and the pairing is moved so the echo
+# follows its reference by ALIGN_TARGET (what the engines expect; LocalVQE searches ~1 s at most).
+ALIGN_WINDOW = 3.0  # seconds of microphone per measurement
+ALIGN_EARLY = 0.5  # seconds the echo may seem to come before its reference
+ALIGN_LATE = 2.5  # ... or after it
+ALIGN_TARGET = 1280  # samples (80 ms): echo after its reference once aligned
+ALIGN_SLACK = 2400  # samples (150 ms) either side of the target left alone
+ALIGN_EVERY = 1.0  # seconds between measurements
+ALIGN_FRAME = 160  # 10 ms envelope frames
 
 
 class _Live:
@@ -58,6 +70,42 @@ class _Live:
         self.cpu = 0.0
         self._offset = None
         self._deviations = deque()
+        self._mic = np.zeros(0, np.float32)  # the last ALIGN_WINDOW s of raw microphone
+        self._next_align = arrived + ALIGN_WINDOW
+        self.echo_delay = None  # samples from the reference to its echo, last measured
+        self.realigned = 0  # samples the pairing was moved by, in all
+
+    def align(self, ring, mic, arrived):
+        """Measure the echo's delay against the paired reference; move the pairing when it is off."""
+        if not isinstance(self.turn, Turn):
+            return
+        window = int(ALIGN_WINDOW * 16000)
+        self._mic = np.concatenate([self._mic, mic])[-window:]
+        if arrived < self._next_align or len(self._mic) < window:
+            return
+        self._next_align = arrived + ALIGN_EVERY
+        end = self.turn.ref_start + self.turn.received  # the reference paired with the newest sample
+        early, late = int(ALIGN_EARLY * 16000), int(ALIGN_LATE * 16000)
+        lo, hi = end - window - late, min(end + early, ring.end)
+        if lo < ring.end - ring.capacity or hi - lo < window + late:
+            return
+        ref = ring.read(lo, hi - lo)
+        if float(np.max(np.abs(ref))) <= 10 ** (-50 / 20):
+            return  # the PC is (nearly) silent: nothing to measure
+        delay = _echo_delay(self._mic, ref, late, (hi - lo) - window - late)
+        if delay is None:
+            return
+        self.echo_delay = delay
+        if abs(delay - ALIGN_TARGET) <= ALIGN_SLACK:
+            return
+        shift = delay - ALIGN_TARGET  # pair with a reference this much older
+        self.turn.ref_start -= shift
+        if self._offset is not None:
+            self._offset += shift  # the drift tracker measures against the moved pairing
+        self.realigned += shift
+        self._mic = np.zeros(0, np.float32)  # measured against the old pairing: start over
+        _diag.info("Echo live stream: the echo came %.0f ms after its reference; pairing moved by %.0f ms",
+                   delay / 16, -shift / 16)
 
     def track(self, ring, arrived):
         if not isinstance(self.turn, Turn):
@@ -78,13 +126,43 @@ class _Live:
             self._deviations.clear()
 
 
+def _echo_delay(mic, ref, late, early):
+    """Samples the echo in `mic` follows its reference: `ref` holds `late` samples before the
+    microphone's window, the window, and `early` after it. None when no clear echo is found."""
+    f = ALIGN_FRAME
+
+    def envelope(x):
+        n = len(x) // f
+        e = np.log10(np.mean(x[:n * f].reshape(n, f).astype(np.float64) ** 2, axis=1) + 1e-10)
+        return e
+
+    em, er = envelope(mic), envelope(ref)
+    em = em - em.mean()
+    if em.std() < 1e-6:
+        return None
+    em /= em.std()
+    n, base = len(em), late // f
+    scores = []
+    for lag in range(-(early // f), late // f + 1):  # lag > 0: the echo comes after the reference
+        seg = er[base - lag:base - lag + n]
+        if len(seg) < n or seg.std() < 1e-6:
+            scores.append(-1.0)
+            continue
+        scores.append(float(np.dot(em, (seg - seg.mean()) / seg.std()) / n))
+    scores = np.array(scores)
+    best = int(np.argmax(scores))
+    if scores[best] < .3 or scores[best] - np.median(scores) < .2:
+        return None
+    return (best - early // f) * f
+
+
 def _loopback(ring):
     from .loopback import LoopbackCapture
     return LoopbackCapture(ring)
 
 
 class EchoCanceller:
-    def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=3.0,
+    def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=8.0,
                  clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=True):
         self.ring = ReferenceRing(ring_seconds, clock=clock)
         self.suppress = suppress  # residual echo suppression after the engine (per stream)
@@ -231,6 +309,7 @@ class EchoCanceller:
             live.track(self.ring, arrived)
             c0 = time.thread_time()
             out = live.turn.feed(mic)
+            live.align(self.ring, mic, arrived)  # after feeding: `received` includes this packet
             live.cpu += time.thread_time() - c0
             return to_pcm16(out)
 
@@ -242,9 +321,12 @@ class EchoCanceller:
         engine = live.engine
         suppressor = getattr(live.turn.stream, "suppressor", None)
         if engine.want_chain and not active:
-            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far, %s",
+            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far, "
+                       "echo %s after its reference (pairing moved %.0f ms in all), %s",
                        device_id, engine.hops * 256 / 16000,
                        100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches,
+                       "not measured" if live.echo_delay is None else f"{live.echo_delay / 16:.0f} ms",
+                       -live.realigned / 16,
                        suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         if active and not engine.want_chain:
             engine.hops = engine.playing_hops = 0

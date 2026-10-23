@@ -187,6 +187,54 @@ class LiveStreamTests(_CancellerCase):
         self.assertGreater(live.turn.ref_start - start, 320)
 
 
+class AlignmentTests(_CancellerCase):
+    def speech_like(self, seconds, seed=0):
+        """Noise with a syllable-rate envelope, so its envelope has something to match."""
+        rng = np.random.default_rng(seed)
+        n = int(seconds * RATE)
+        env = np.repeat(rng.uniform(.02, .3, n // 1600 + 1), 1600)[:n]
+        return (rng.normal(0, 1, n) * env).astype(np.float32)
+
+    def test_measures_the_echo_delay(self):
+        from orion.audio.echo_cancel.service import _echo_delay
+        ref = self.speech_like(6.0)
+        late, window = int(2.5 * RATE), int(3.0 * RATE)
+        for delay in (1280, 14400, -4000):  # 80 ms, 900 ms, echo before its reference
+            mic = .3 * ref[late - delay:late - delay + window]
+            found = _echo_delay(mic, ref, late, len(ref) - window - late)
+            self.assertIsNotNone(found)
+            self.assertLess(abs(found - delay), 320)
+
+    def test_a_late_browser_microphone_is_realigned(self):
+        """The browser's audio reaches the Hub ~0.9 s late: the echo seems 0.9 s after its pair."""
+        play = self.speech_like(12.0, seed=1)
+        lag = int(.9 * RATE)
+        self.clock.now += 4.0
+        self.ec.ring.write(play[:int(4.0 * RATE)], self.clock.now)
+        self.ec.open_live("pc:a", self.clock.now)
+        live = self.ec._live["pc:a"]
+        for k in range(int(4.0 * 10), int(11.0 * 10)):  # 100 ms chunks
+            a, b = k * 1600, (k + 1) * 1600
+            self.clock.now += .1
+            self.ec.ring.write(play[a:b], self.clock.now)
+            # Mic sample paired with ring index `start + i` holds the echo of index `start + i - lag`.
+            self.ec.feed_live("pc:a", to_pcm16(.3 * play[a - lag:b - lag]), self.clock.now)
+        self.assertIsNotNone(live.echo_delay)
+        self.assertLess(abs(live.realigned - (lag - 1280)), 480)
+
+    def test_silent_pc_is_not_measured(self):
+        self.clock.now += 4.0
+        self.ec.ring.write(np.zeros(int(4.0 * RATE), np.float32), self.clock.now)
+        self.ec.open_live("pc:a", self.clock.now)
+        live = self.ec._live["pc:a"]
+        for _ in range(60):
+            self.clock.now += .1
+            self.ec.ring.write(np.zeros(1600, np.float32), self.clock.now)
+            self.ec.feed_live("pc:a", to_pcm16(self.speech_like(.1)), self.clock.now)
+        self.assertIsNone(live.echo_delay)
+        self.assertEqual(live.realigned, 0)
+
+
 class PhoneTurnTests(_CancellerCase):
     def test_silent_pc_around_orion_needs_no_check(self):
         self.clock.now += 3.0
