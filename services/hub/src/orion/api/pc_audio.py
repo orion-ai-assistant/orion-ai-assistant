@@ -9,14 +9,15 @@ import logging
 from pathlib import Path
 
 # Each playing app keeps this fraction of its own level while the user speaks
-# (0.20 = 80% quieter). Measured with the phone near the speaker and loud
-# music: 80% and 85% kept the user's speech equally well (Silero 153 of 155
-# frames), 75% 151, 60% 141; so the least ducking without a loss.
+# (0.25 = 75% quieter). Measured with the phone near the speaker and loud
+# music, the hardest case: 75% kept 151 of 155 speech frames (80-85%: 153,
+# 60%: 141). Quieter playback needs less, so 75% leaves the user more of
+# what they watch at a small cost only in that worst case.
 # Ducking is per app, never the whole device: loopback is
 # captured before device volume and mute, so a muted device leaves echo
 # cancellation with a reference whose echo never arrives, and it then
 # suppresses the user's voice instead.
-DUCK_LEVEL = 0.20
+DUCK_LEVEL = 0.25
 # Short fades instead of jumps. Ducking stays quick so the first words are not
 # spoken over full music; restoring is gentler. Per-app levels change before
 # the loopback mix, so the echo reference follows every step either way.
