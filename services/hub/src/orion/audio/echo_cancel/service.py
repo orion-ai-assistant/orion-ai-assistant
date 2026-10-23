@@ -85,8 +85,9 @@ def _loopback(ring):
 
 class EchoCanceller:
     def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=3.0,
-                 clock=time.perf_counter, max_devices=4, vqe_factory=None):
+                 clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=True):
         self.ring = ReferenceRing(ring_seconds, clock=clock)
+        self.suppress = suppress  # residual echo suppression after the engine (per stream)
         self.clock = clock
         self.max_devices = max_devices
         self._models_dir = models_dir
@@ -226,12 +227,16 @@ class EchoCanceller:
         if live is None or live.engine is None:
             return
         engine = live.engine
+        suppressor = getattr(live.turn.stream, "suppressor", None)
         if engine.want_chain and not active:
-            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far",
+            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far, %s",
                        device_id, engine.hops * 256 / 16000,
-                       100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches)
+                       100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches,
+                       suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         if active and not engine.want_chain:
             engine.hops = engine.playing_hops = 0
+            if suppressor:
+                suppressor.summary(reset=True)  # standby's counts are dropped
         engine.want_chain = bool(active)
 
     def close_live(self, device_id):
@@ -260,13 +265,19 @@ class EchoCanceller:
         with self._lock:
             stream = streams.get(device_id)
             if stream is None:
-                stream = DeviceStream(factory())
+                stream = self._device_stream(factory())
                 streams[device_id] = stream
                 while len(streams) > self.max_devices:
                     _, old = streams.popitem(last=False)
                     old.close()
             streams.move_to_end(device_id)
             return stream
+
+    def _device_stream(self, engine):
+        if not self.suppress:
+            return DeviceStream(engine)
+        from ..residual_echo import ResidualEchoSuppressor
+        return DeviceStream(engine, suppressor=ResidualEchoSuppressor())
 
     def end_turn(self, device_id):
         """Close the turn; returns the remaining cleaned samples. Total output == total input."""
@@ -322,10 +333,12 @@ class EchoCanceller:
             stats.update(mic_db=level["mic"], reference_db=level["ref"], cleaned_db=level["out"])
         # One line per turn: whether the reference had sound and how much the canceller took out
         # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
-        _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s",
+        suppressor = getattr(stream, "suppressor", None)
+        _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, %s",
                    device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
                    getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
-                   stats.get("cleaned_db"), stats["cpu_seconds"])
+                   stats.get("cleaned_db"), stats["cpu_seconds"],
+                   suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         return out
 
     def _stream(self, device_id):
@@ -334,7 +347,7 @@ class EchoCanceller:
         with self._lock:
             stream = self._streams.get(device_id)
             if stream is None:
-                stream = DeviceStream(self._engine_factory())
+                stream = self._device_stream(self._engine_factory())
                 self._streams[device_id] = stream
                 while len(self._streams) > self.max_devices:
                     _, old = self._streams.popitem(last=False)
