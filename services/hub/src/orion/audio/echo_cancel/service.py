@@ -55,6 +55,10 @@ ALIGN_TARGET = 1280  # samples (80 ms): echo after its reference once aligned
 ALIGN_SLACK = 2400  # samples (150 ms) either side of the target left alone
 ALIGN_EVERY = 1.0  # seconds between measurements
 ALIGN_FRAME = 160  # 10 ms envelope frames
+# Measuring only: live, envelope matching found 40 ms once, then -90, 1270 and 2140 ms on music
+# and speech, and moving the pairing by those broke the canceller and "Orion". The arrival-time
+# pairing was right (40 ms). Moving stays off until a measurement is trustworthy.
+ALIGN_MOVE = False
 
 
 class _Live:
@@ -96,7 +100,7 @@ class _Live:
         if delay is None:
             return
         self.echo_delay = delay
-        if abs(delay - ALIGN_TARGET) <= ALIGN_SLACK:
+        if not ALIGN_MOVE or abs(delay - ALIGN_TARGET) <= ALIGN_SLACK:
             return
         shift = delay - ALIGN_TARGET  # pair with a reference this much older
         self.turn.ref_start -= shift

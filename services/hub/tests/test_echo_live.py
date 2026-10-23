@@ -218,6 +218,8 @@ class AlignmentTests(_CancellerCase):
             self.assertIsNotNone(found)
             self.assertLess(abs(found - delay), 320)
 
+    @unittest.skipUnless(__import__("orion.audio.echo_cancel.service", fromlist=["x"]).ALIGN_MOVE,
+                         "moving the pairing is off")
     def test_a_late_browser_microphone_is_realigned(self):
         """The browser's audio reaches the Hub ~0.9 s late: the echo seems 0.9 s after its pair."""
         play = self.speech_like(12.0, seed=1)
