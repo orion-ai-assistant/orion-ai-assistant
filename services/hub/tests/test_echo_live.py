@@ -127,8 +127,9 @@ class _CancellerCase(unittest.TestCase):
         def make_chain():
             self.chains.append(ScaleEngine(640, .5))
             return self.chains[-1]
+        # The stand-in engines' plumbing is under test here, not the residual echo suppression.
         self.ec = EchoCanceller(engine_factory=make_chain, vqe_factory=make_vqe, capture_factory=FakeCapture,
-                                clock=self.clock)
+                                clock=self.clock, suppress=False)
         self.ec.arm()
 
     def play(self, seconds):

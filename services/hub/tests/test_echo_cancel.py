@@ -249,7 +249,9 @@ class EchoCancellerTests(unittest.TestCase):
             self.engines.append(HalvingEngine())
             return self.engines[-1]
 
-        self.ec = EchoCanceller(engine_factory=factory, capture_factory=FakeCapture, clock=self.clock, max_devices=2)
+        # The stand-in engine's plumbing is under test here, not the residual echo suppression.
+        self.ec = EchoCanceller(engine_factory=factory, capture_factory=FakeCapture, clock=self.clock, max_devices=2,
+                                suppress=False)
 
     def play(self, seconds):
         self.clock.now += seconds
@@ -292,6 +294,19 @@ class EchoCancellerTests(unittest.TestCase):
         self.assertEqual(self.ec.status()["devices"], ["b", "c"])
         self.ec.start_turn("c", b"")  # restarting a turn flushes the old one
         self.assertIn("c", self.ec.last_turn)
+
+    def test_turns_get_residual_echo_suppression_by_default(self):
+        ec = EchoCanceller(engine_factory=HalvingEngine, capture_factory=FakeCapture, clock=self.clock)
+        ec.arm()
+        self.clock.now += 1.0
+        ec.ring.write(np.zeros(RATE, np.float32), self.clock.now)  # the PC is silent
+        mic = np.random.default_rng(1).normal(0, .1, RATE).astype(np.float32)
+        with self.assertLogs("uvicorn.error", "INFO") as logs:
+            out = to_float(ec.start_turn("phone-1", to_pcm16(mic)) + ec.end_turn("phone-1"))
+        self.assertEqual(len(out), len(mic))
+        np.testing.assert_allclose(out, .5 * mic, atol=2e-4)  # nothing playing: nothing suppressed
+        self.assertIsNotNone(ec._streams["phone-1"].suppressor)
+        self.assertIn("residual echo", logs.output[-1])
 
     def test_process_without_turn_raises(self):
         with self.assertRaises(KeyError):

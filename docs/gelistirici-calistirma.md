@@ -85,13 +85,17 @@ flutter run -d <cihaz-kimliği> --dart-define=ORION_AUDIO_DIAGNOSTICS=true
 | Telefon | `flutter run` terminali veya `adb logcat` |
 
 Hub logunda yankı iptalli turlar için:
-- Telefon mikrofonu: `Echo turn <cihaz>: ... reference X dBFS (<loopback cihazı>), mic Y dBFS -> cleaned Z dBFS, cpu ...`
+- Telefon mikrofonu: `Echo turn <cihaz>: ... reference X dBFS (<loopback cihazı>), mic Y dBFS -> cleaned Z dBFS, cpu ...,
+  canceller removed E dB (...), residual suppression avg S dB on N playing hops (G% gated), delay D ms, leak ...`
   (referans −120 dBFS ise PC sesi hiç alınmıyor demektir) ve
-  `Remote mic turn <cihaz> ended (...): microphone: phone '<telefon adı>', ... gain avg A max B, echo gate ...`.
+  `Remote mic turn <cihaz> ended (...): microphone: phone '<telefon adı>', ... gain avg A max B`.
 - PC mikrofonu (sürekli akış): bağlanınca `PC microphone pc:<kullanıcı>: <tarayıcının mikrofonu>`; her tur
-  bitince `PC microphone turn ... ended: microphone '<ad>', gain ..., echo gate off: would lower C% of N audible frames`
-  ve `Echo live turn ...: S s, PC playing P% of it`.
-- Yankı karesi kısıcısı şimdilik kapalı (`level_gain.ECHO_GATE`); "would lower" sadece ölçüm.
+  bitince `PC microphone turn ... ended: microphone '<ad>', gain avg A max B`
+  ve `Echo live turn ...: S s, PC playing P% of it, ..., canceller removed ...` (aynı kalıntı yankı özeti).
+- Kalıntı yankı bastırma (`audio/residual_echo.py`): iptalcinin çıkışında, bant bazında. "canceller removed":
+  kullanıcı susarken iptalcinin sildiği ortalama dB; "residual suppression": bu katmanın PC çalarken ekstra
+  kıstığı ortalama; "gated": iptalcinin anlık kaçırdığı, tüm kare kısılan hop oranı; "leak": öğrenilen kalıntı
+  profili (<1k / 1-4k / 4-8k, referansa göre dB). Eski 15 dB kare kısıcısı kaldırıldı.
 - Web logunda `Orion empty follow-up turn` konuşmadan açılıp boş çıkan bir takip turu demektir (PC sesinin
   sızdığını gösterir).
 
@@ -100,7 +104,7 @@ Hub logunda yankı iptalli turlar için:
 ```bash
 # Hub (depo kökü PYTHONPATH'te olmalı, yoksa auth_routes içe aktarılamaz)
 cd orion-ai-assistant/services/hub
-PYTHONPATH="D:/krstlcm Workspace/DevProjects/orion-ai-assistant" uv run pytest tests/test_remote_mic.py tests/test_remote_mic_endpoints.py tests/test_echo_cancel.py tests/test_level_gain.py -q
+PYTHONPATH="D:/krstlcm Workspace/DevProjects/orion-ai-assistant" uv run pytest tests/test_remote_mic.py tests/test_remote_mic_endpoints.py tests/test_echo_cancel.py tests/test_level_gain.py tests/test_echo_live.py tests/test_residual_echo.py -q
 
 # Flutter
 cd orion-ai-assistant-flutter/main_app/app

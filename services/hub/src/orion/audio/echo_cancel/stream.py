@@ -2,7 +2,8 @@
 
 An engine has `process(mic, ref) -> out` on whole 256-sample frames, an output `latency` in
 samples and `close()`. `DeviceStream` keeps one engine per phone across turns (no reset, so the
-delay estimate and model states stay warm). By default the engine runs on every frame of a turn,
+delay estimate and model states stay warm), and optionally a residual echo suppressor after it
+(its latency adds to the stream's). By default the engine runs on every frame of a turn,
 also while the PC is silent: a replay of the recordings showed that an engine left idle starts
 cold when music begins mid-turn (-25 dB instead of -46 dB). With `gate=True` it only runs while
 the reference had sound within the last `hangover` seconds and passes the raw mic otherwise. Raw
@@ -25,12 +26,15 @@ RATE = 16000
 
 
 class DeviceStream:
-    def __init__(self, engine, threshold=10 ** (-65 / 20), hangover=1.2, gate=False):
+    def __init__(self, engine, threshold=10 ** (-65 / 20), hangover=1.2, gate=False, suppressor=None):
         self.engine = engine
         self.gate = gate
-        self.latency = int(engine.latency)
+        self.suppressor = suppressor  # residual echo suppression on the output, if given
+        self._engine_latency = int(engine.latency)
+        self.latency = self._engine_latency + (suppressor.latency if suppressor else 0)
         self.threshold = threshold
-        self._raw = np.zeros(self.latency, np.float32)
+        self._raw = np.zeros(self._engine_latency, np.float32)
+        self._ref = np.zeros(self._engine_latency, np.float32)
         self._peaks = deque(maxlen=max(1, round(hangover * RATE / HOP)))
         self._fade = np.linspace(0, 1, HOP, endpoint=False, dtype=np.float32)
         self.state = "bypass"  # bypass -> priming -> active -> bypass
@@ -67,7 +71,11 @@ class DeviceStream:
                 elif plan[k] == "fade_out":
                     out[k * HOP:(k + 1) * HOP] = e * (1 - self._fade) + r * self._fade
             f = g
-        return out
+        if self.suppressor is None:
+            return out
+        ref_late = np.concatenate([self._ref, ref])  # the reference of the raw samples in `out`
+        self._ref, ref_late = ref_late[len(ref):], ref_late[:len(ref)]
+        return self.suppressor.process(out, raw, ref_late)
 
     def _step(self, ref):
         """Advance the bypass/priming/active state by one frame; return what that frame outputs."""
@@ -84,7 +92,7 @@ class DeviceStream:
         if self.state == "bypass":
             # The engine's output frame k covers input [256k - latency, 256(k+1) - latency): it is
             # stale (older than this activation) until frame ceil(latency / 256) + 1.
-            self.state, self._priming = "priming", -(-self.latency // HOP) + 1
+            self.state, self._priming = "priming", -(-self._engine_latency // HOP) + 1
         if self.state == "priming":
             self._priming -= 1
             if self._priming > 0:
