@@ -94,7 +94,9 @@ class RawLevelGain:
             self._decided = index
             raw = self._raw[index - self._base]
             rms = float(np.sqrt(np.mean((cleaned.astype(np.float64) / 32768) ** 2)))
-            echo = gate and raw >= NOISE_FLOOR * 4 and rms < raw * 10 ** (-ECHO_DROP_DB / 20)
+            # No room-noise floor here: a quiet microphone (~-65 dBFS) hears the PC's echo below it,
+            # and that is exactly the echo its high gain would lift.
+            echo = gate and raw >= 1e-5 and rms < raw * 10 ** (-ECHO_DROP_DB / 20)
             self._echo_hold = HANGOVER if echo else max(0, self._echo_hold - 1)
             self._echo = gate and (echo or self._echo_hold > 0)
             self.gated_frames += gate

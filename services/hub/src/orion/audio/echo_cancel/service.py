@@ -167,8 +167,10 @@ def _loopback(ring):
 
 class EchoCanceller:
     def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=8.0,
-                 clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=True):
+                 clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=None):
         self.ring = ReferenceRing(ring_seconds, clock=clock)
+        if suppress is None:  # ORION_RESIDUAL_ECHO=0 turns it off (A/B tests)
+            suppress = os.environ.get("ORION_RESIDUAL_ECHO", "1") != "0"
         self.suppress = suppress  # residual echo suppression after the engine (per stream)
         self.clock = clock
         self.max_devices = max_devices

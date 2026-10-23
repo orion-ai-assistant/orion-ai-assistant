@@ -71,3 +71,10 @@ class RawLevelGainTests(unittest.TestCase):
         voice = pcm(.008, 20)  # nearly unchanged by the canceller: the user
         self.assertGreater(rms(gain.apply(voice, gate=True)), rms(voice))
         self.assertEqual(gain.echo_frames, 0)
+
+    def test_a_quiet_microphones_echo_is_lowered_too(self):
+        gain = RawLevelGain()
+        gain.observe(pcm(.0003, 20))  # the PC's echo at a -70 dBFS microphone
+        leftover = pcm(.00003, 20)  # ~20 dB under it after the canceller
+        self.assertLess(rms(gain.apply(leftover, gate=True)), 2 * rms(leftover))
+        self.assertGreater(gain.echo_frames, 15)
