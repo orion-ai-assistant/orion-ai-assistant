@@ -43,6 +43,7 @@ def _factories(models_dir):
 
 DRIFT_WINDOW = 3.0  # seconds of arrival timing behind one clock-drift estimate
 DRIFT_LIMIT = 320  # samples (20 ms) of drift before the reference pairing is moved
+LOSS_WINDOW = 0.6  # seconds: a microphone this far behind for this long lost audio (not jitter)
 # Where the browser's microphone really is against the loopback: its audio reaches the Hub late
 # by an unknown, browser-made delay (live: ~1 s), so the first packet's arrival only roughly says
 # which reference belongs to it. The echo's own delay is measured instead, from the envelopes of
@@ -74,6 +75,11 @@ class _Live:
         self.cpu = 0.0
         self._offset = None
         self._deviations = deque()
+        # Lost microphone audio (a Realtek: 13560 of 16000 samples a second) is filled with
+        # silence; moving the pairing for each loss made the reference stutter.
+        self.filled = self.fills = 0
+        self.moves = self.moved = 0
+        self._padded = deque()  # (first input sample, count) filled with silence, not yet emitted
         self._mic = np.zeros(0, np.float32)  # the last ALIGN_WINDOW s of raw microphone
         self._next_align = arrived + ALIGN_WINDOW
         self.turn_energy, self.turn_counted = None, 0  # the Turn's energy sums when a PC turn began
@@ -113,22 +119,53 @@ class _Live:
                    delay / 16, -shift / 16)
 
     def track(self, ring, arrived):
+        """Samples of lost audio to fill before this packet (0 if none)."""
         if not isinstance(self.turn, Turn):
-            return
+            return 0
         deviation = ring.index_at(arrived) - (self.turn.ref_start + self.turn.received)
         if self._offset is None:
             self._offset = deviation
-            return
+            return 0
         self._deviations.append((arrived, deviation - self._offset))
         while self._deviations and arrived - self._deviations[0][0] > DRIFT_WINDOW:
             self._deviations.popleft()
+        if arrived - self.started >= LOSS_WINDOW:
+            recent = [d for t, d in self._deviations if arrived - t <= LOSS_WINDOW]
+            lost = min(recent) if recent else 0
+            if lost > DRIFT_LIMIT:  # behind for a while: audio was lost, not merely late
+                self._deviations.clear()  # measured before the fill: start over
+                self.fills += 1
+                self.filled += lost
+                return lost
         if arrived - self.started < DRIFT_WINDOW:
-            return
+            return 0
         drift = min(d for _, d in self._deviations)
         if abs(drift) > DRIFT_LIMIT:
+            self.moves += 1
+            self.moved += drift
             self.turn.ref_start += drift
             self._offset += drift
             self._deviations.clear()
+        return 0
+
+    def feed(self, mic, fill):
+        """Feed the turn, with `fill` samples of silence for lost audio first; the output has no
+        samples for the filled stretch (one to one with what was sent)."""
+        if fill:
+            self._padded.append((self.turn.received, fill))
+            mic = np.concatenate([np.zeros(fill, np.float32), mic])
+        first = self.turn.emitted
+        out = self.turn.feed(mic)
+        if not self._padded:
+            return out
+        keep = np.ones(len(out), bool)
+        for start, n in self._padded:
+            a, b = max(start - first, 0), min(start + n - first, len(out))
+            if a < b:
+                keep[a:b] = False
+        while self._padded and sum(self._padded[0]) <= first + len(out):
+            self._padded.popleft()
+        return out[keep]
 
 
 def _echo_delay(mic, ref, late, early):
@@ -322,9 +359,9 @@ class EchoCanceller:
             if live.engine is None and self._capture is not None and self._engine_factory and self._vqe_factory:
                 live = self._live[device_id] = self._new_live(device_id, arrived)  # models just became ready
             mic = to_float(pcm)
-            live.track(self.ring, arrived)
+            fill = live.track(self.ring, arrived) or 0
             c0 = time.thread_time()
-            out = live.turn.feed(mic)
+            out = live.feed(mic, fill) if isinstance(live.turn, Turn) else live.turn.feed(mic)
             live.align(self.ring, mic, arrived)  # after feeding: `received` includes this packet
             live.cpu += time.thread_time() - c0
             return to_pcm16(out)
@@ -338,11 +375,12 @@ class EchoCanceller:
         suppressor = getattr(live.turn.stream, "suppressor", None)
         if engine.want_chain and not active:
             _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far, "
-                       "echo %s after its reference (pairing moved %.0f ms in all), %s",
+                       "echo %s after its reference (pairing moved %.0f ms in all), lost microphone "
+                       "audio filled %d times (%.0f ms), drift corrections %d (%.0f ms), %s",
                        device_id, engine.hops * 256 / 16000,
                        100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches,
                        "not measured" if live.echo_delay is None else f"{live.echo_delay / 16:.0f} ms",
-                       -live.realigned / 16,
+                       -live.realigned / 16, live.fills, live.filled / 16, live.moves, live.moved / 16,
                        suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         if suppressor:
             suppressor.enabled = bool(active)  # standby: LocalVQE alone, as "Orion" is listened for

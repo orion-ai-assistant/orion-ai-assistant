@@ -684,7 +684,12 @@ def log_turn_end(turn, reason):
 
 
 class CleanLink:
-    """The PC's own microphone, streamed continuously and returned cleaned (no relay)."""
+    """The PC's own microphone, streamed continuously and returned cleaned (no relay).
+
+    Packets are timestamped the moment they arrive and cleaned by a worker of their own: the
+    canceller pairs each packet with the loudspeaker by its arrival time, and a packet left
+    waiting while the previous one was cleaned arrived "late" by the Hub's own work. That moved
+    the pairing hundreds of times a minute and the reference the canceller saw stuttered."""
 
     def __init__(self, user, send_bytes, cleaner, clock=time.perf_counter):
         self.send_bytes, self.cleaner, self.clock = send_bytes, cleaner, clock
@@ -694,6 +699,9 @@ class CleanLink:
         self.opened = False
         self.label = '?'  # the microphone the browser uses (wired headset, built-in, ...)
         self.in_turn = False
+        self._queue = asyncio.Queue()
+        self._worker = None
+        self.backlog = 0  # most packets ever waiting
 
     @property
     def available(self):
@@ -716,7 +724,26 @@ class CleanLink:
     async def on_audio(self, pcm):
         if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES:
             return
-        arrived = self.clock()
+        self._queue.put_nowait((pcm, self.clock()))
+        self.backlog = max(self.backlog, self._queue.qsize())
+        if self._worker is None:
+            self._worker = asyncio.create_task(self._clean_packets())
+
+    async def _clean_packets(self):
+        while True:
+            pcm, arrived = await self._queue.get()
+            try:
+                await self._clean(pcm, arrived)
+            except Exception:
+                log.warning('PC microphone packet failed', exc_info=True)
+
+    async def drain(self):
+        """Wait until every packet received so far is cleaned and sent (tests)."""
+        while not self._queue.empty():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    async def _clean(self, pcm, arrived):
         if not self.opened:
             self.opened = True
             await self.cleaner.open_live(self.device, arrived - len(pcm) / 2 / SAMPLE_RATE)
@@ -728,9 +755,16 @@ class CleanLink:
             await self.send_bytes(self.gain.apply(out, gate=gate))
 
     async def close(self):
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
         if self.opened:
             self.opened = False
             await self.cleaner.close_live(self.device)
+            if self.backlog > 5:
+                _diag.info('PC microphone %s: up to %d packets waited to be cleaned', self.device, self.backlog)
             _diag.info('PC microphone stream %s closed: microphone %r, %s', self.device, self.label,
                        self.gain.summary())
 

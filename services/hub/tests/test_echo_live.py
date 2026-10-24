@@ -180,6 +180,24 @@ class LiveStreamTests(_CancellerCase):
         self.ec.live_turn("pc:a", False)
         self.assertFalse(suppressor.enabled)
 
+    def test_lost_microphone_audio_is_filled_not_skipped_in_the_reference(self):
+        """A microphone that loses 20% of its packets: the reference must not jump each time."""
+        self.ec.open_live("pc:a", self.clock.now)
+        live = self.ec._live["pc:a"]
+        sent = got = 0
+        for k in range(120):  # 12 s of 100 ms packets, every fifth one lost on the way
+            self.clock.now += .1
+            self.ec.ring.write(np.full(1600, LOUD, np.float32), self.clock.now)
+            if k % 5 == 4:
+                continue
+            pcm = to_pcm16(np.full(1600, .2, np.float32))
+            sent += 1600
+            got += len(self.ec.feed_live("pc:a", pcm, self.clock.now)) // 2
+        self.assertGreater(live.fills, 10)
+        self.assertLess(live.moves, 3)  # the pairing itself stays put
+        self.assertLessEqual(got, sent)
+        self.assertGreater(got, sent - 1600)  # one to one with what was sent (minus the latency)
+
     def test_passthrough_until_the_models_are_ready(self):
         ec = EchoCanceller(capture_factory=FakeCapture, clock=self.clock)  # no factories yet
         ec.arm()
@@ -197,7 +215,8 @@ class LiveStreamTests(_CancellerCase):
             self.clock.now += .101
             self.ec.ring.write(np.full(1616, LOUD, np.float32), self.clock.now)
             self.ec.feed_live("pc:a", to_pcm16(np.full(1600, .2, np.float32)), self.clock.now)
-        self.assertGreater(live.turn.ref_start - start, 320)
+        # Slower packets than samples look like lost audio: filled with silence, or the pairing moved.
+        self.assertGreater(live.filled + (live.turn.ref_start - start), 320)
 
 
 class AlignmentTests(_CancellerCase):

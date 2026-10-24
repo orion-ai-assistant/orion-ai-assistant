@@ -423,3 +423,38 @@ class SeveralPhonesTests(unittest.IsolatedAsyncioTestCase):
         self.h.pc.clock = lambda: 1e9  # every phone was last seen long ago
         await self.h.pc.on_text({'type': 'heartbeat'})
         self.assertEqual(self.h.pc_phones[-1]['phones'], [])
+
+
+class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_packets_keep_their_arrival_time_while_the_canceller_is_busy(self):
+        from orion.api.remote_mic import CleanLink
+        now = [10.0]
+        seen, sent = [], []
+
+        class SlowCleaner:
+            canceller = None
+
+            async def open_live(self, device, arrived):
+                pass
+
+            async def feed_live(self, device, pcm, arrived):
+                seen.append(arrived)
+                now[0] += .5  # cleaning takes longer than the packet lasts
+                await asyncio.sleep(0)
+                return pcm
+
+            async def close_live(self, device):
+                pass
+
+        async def send(data):
+            sent.append(data)
+
+        link = CleanLink('user', send, SlowCleaner(), clock=lambda: now[0])
+        for k in range(3):
+            await link.on_audio(b'\x01\x00' * 160)
+            now[0] += .01
+        await link.drain()
+        while len(sent) < 3:
+            await asyncio.sleep(0)
+        self.assertEqual([round(t - 10, 2) for t in seen], [0.0, 0.01, 0.02])  # not 0.5 / 1.0 late
+        await link.close()
