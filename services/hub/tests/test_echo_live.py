@@ -193,10 +193,29 @@ class LiveStreamTests(_CancellerCase):
             pcm = to_pcm16(np.full(1600, .2, np.float32))
             sent += 1600
             got += len(self.ec.feed_live("pc:a", pcm, self.clock.now)) // 2
-        self.assertGreater(live.fills, 10)
+        self.assertGreater(live.fills, 4)
         self.assertLess(live.moves, 3)  # the pairing itself stays put
         self.assertLessEqual(got, sent)
         self.assertGreater(got, sent - 1600)  # one to one with what was sent (minus the latency)
+
+    def test_late_bursts_are_not_lost_audio(self):
+        """A browser that holds packets back for up to a second, then sends them at once."""
+        live = None
+        held = []
+        for k in range(150):
+            self.clock.now += .1
+            self.ec.ring.write(np.full(1600, LOUD, np.float32), self.clock.now)
+            held.append(to_pcm16(np.full(1600, .2, np.float32)))
+            if k % 10 == 9:  # every second, all of it at once
+                if live is None:  # as CleanLink does: the first packet is taken as just captured
+                    self.ec.open_live("pc:a", self.clock.now - .1)
+                    live = self.ec._live["pc:a"]
+                for pcm in held:
+                    self.ec.feed_live("pc:a", pcm, self.clock.now)
+                held = []
+        self.assertEqual(live.fills, 0)
+        self.assertLess(live.moves, 3)  # once, for the first packet's own lateness
+        self.assertLess(live.moves, 3)
 
     def test_passthrough_until_the_models_are_ready(self):
         ec = EchoCanceller(capture_factory=FakeCapture, clock=self.clock)  # no factories yet

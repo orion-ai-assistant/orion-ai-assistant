@@ -295,8 +295,9 @@ class EchoCancellerTests(unittest.TestCase):
         self.ec.start_turn("c", b"")  # restarting a turn flushes the old one
         self.assertIn("c", self.ec.last_turn)
 
-    def test_turns_get_residual_echo_suppression_by_default(self):
-        ec = EchoCanceller(engine_factory=HalvingEngine, capture_factory=FakeCapture, clock=self.clock)
+    def test_turns_get_residual_echo_suppression_when_asked(self):
+        ec = EchoCanceller(engine_factory=HalvingEngine, capture_factory=FakeCapture, clock=self.clock,
+                           suppress=True)
         ec.arm()
         self.clock.now += 1.0
         ec.ring.write(np.zeros(RATE, np.float32), self.clock.now)  # the PC is silent

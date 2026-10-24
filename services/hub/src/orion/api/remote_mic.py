@@ -680,8 +680,9 @@ def _gate_always():
 
 
 def _gate_off():
-    """ORION_ECHO_GATE=off: no echo-frame gate, the canceller alone (A/B)."""
-    return os.environ.get('ORION_ECHO_GATE') == 'off'
+    """No echo-frame gate unless ORION_ECHO_GATE=on (or =always): with a reference that no longer
+    stutters the canceller alone removed the echo, and the gate cost soft sounds inside words."""
+    return os.environ.get('ORION_ECHO_GATE', 'off') not in ('on', 'always')
 
 
 def _playing(link):

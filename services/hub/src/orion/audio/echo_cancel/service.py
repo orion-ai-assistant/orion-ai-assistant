@@ -43,7 +43,8 @@ def _factories(models_dir):
 
 DRIFT_WINDOW = 3.0  # seconds of arrival timing behind one clock-drift estimate
 DRIFT_LIMIT = 320  # samples (20 ms) of drift before the reference pairing is moved
-LOSS_WINDOW = 0.6  # seconds: a microphone this far behind for this long lost audio (not jitter)
+LOSS_WINDOW = 1.5  # seconds behind, from the window's start, before audio counts as lost
+LOSS_LIMIT = 2560  # samples (160 ms): smaller slips are left to the canceller's own delay search
 # Where the browser's microphone really is against the loopback: its audio reaches the Hub late
 # by an unknown, browser-made delay (live: ~1 s), so the first packet's arrival only roughly says
 # which reference belongs to it. The echo's own delay is measured instead, from the envelopes of
@@ -75,6 +76,7 @@ class _Live:
         self.cpu = 0.0
         self._offset = None
         self._deviations = deque()
+        self._since = arrived  # the current estimation window began
         # Lost microphone audio (a Realtek: 13560 of 16000 samples a second) is filled with
         # silence; moving the pairing for each loss made the reference stutter.
         self.filled = self.fills = 0
@@ -129,23 +131,26 @@ class _Live:
         self._deviations.append((arrived, deviation - self._offset))
         while self._deviations and arrived - self._deviations[0][0] > DRIFT_WINDOW:
             self._deviations.popleft()
-        if arrived - self.started >= LOSS_WINDOW:
-            recent = [d for t, d in self._deviations if arrived - t <= LOSS_WINDOW]
-            lost = min(recent) if recent else 0
-            if lost > DRIFT_LIMIT:  # behind for a while: audio was lost, not merely late
-                self._deviations.clear()  # measured before the fill: start over
-                self.fills += 1
-                self.filled += lost
-                return lost
-        if arrived - self.started < DRIFT_WINDOW:
-            return 0
+        if arrived - self._since < LOSS_WINDOW:
+            return 0  # a whole window first (also after a correction: one packet is no estimate)
+        # The earliest arrival in the window: packets held back and sent in a burst (the browser
+        # busy, e.g. right as "Orion" is heard) do not count, only audio that never came.
         drift = min(d for _, d in self._deviations)
-        if abs(drift) > DRIFT_LIMIT:
+        if drift > LOSS_LIMIT:  # behind for the whole window: audio was lost
+            self._deviations.clear()  # measured before the fill: start over
+            self._since = arrived
+            self.fills += 1
+            self.filled += drift
+            return drift
+        if arrived - self._since >= DRIFT_WINDOW and abs(drift) > DRIFT_LIMIT:
             self.moves += 1
             self.moved += drift
+            # Deviations drop by `drift` with the moved pairing, so the aligned baseline
+            # (`_offset`) stays. Moving it too made every correction ask for the next one: the
+            # pairing swung back and forth (hundreds of times a minute live).
             self.turn.ref_start += drift
-            self._offset += drift
             self._deviations.clear()
+            self._since = arrived
         return 0
 
     def feed(self, mic, fill):
@@ -207,8 +212,8 @@ class EchoCanceller:
     def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=8.0,
                  clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=None):
         self.ring = ReferenceRing(ring_seconds, clock=clock)
-        if suppress is None:  # ORION_RESIDUAL_ECHO=0 turns it off (A/B tests)
-            suppress = os.environ.get("ORION_RESIDUAL_ECHO", "1") != "0"
+        if suppress is None:  # off unless ORION_RESIDUAL_ECHO=1 (Plan A; not needed live so far)
+            suppress = os.environ.get("ORION_RESIDUAL_ECHO", "0") == "1"
         self.suppress = suppress  # residual echo suppression after the engine (per stream)
         self.clock = clock
         self.max_devices = max_devices
