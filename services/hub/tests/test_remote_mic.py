@@ -486,3 +486,22 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertEqual([c[:3] for c in fake.calls if c[0] == 'start_turn'], [('start_turn', 'pc:user', b'\x02\x00')])
         await link.close()
+
+
+class DumpPruneTests(unittest.TestCase):
+    def test_only_the_newest_turns_stay(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from orion.api.remote_mic import _prune_dumps
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for k in range(5):
+                for part in ('raw', 'cleaned'):
+                    path = folder / f'0{k}0000-pcturn-{part}.wav'
+                    path.write_bytes(b'x')
+                    os.utime(path, (k, k))
+            _prune_dumps(folder, keep=2)
+            self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                             ['030000-pcturn-cleaned.wav', '030000-pcturn-raw.wav',
+                              '040000-pcturn-cleaned.wav', '040000-pcturn-raw.wav'])

@@ -669,6 +669,21 @@ def _write_dump(link, turn):
             w.writeframes(b''.join(parts))
     _diag.info('Microphone audio written to %s (%s-*.wav)', folder, stamp)
     turn['_dump_parts'] = None
+    _prune_dumps(folder)
+
+
+DUMP_KEEP = 20  # turns kept in the dump folder; older ones are deleted
+
+
+def _prune_dumps(folder, keep=DUMP_KEEP):
+    """Keep the dump folder small: only the newest `keep` turns' files stay."""
+    turns = {}
+    for path in folder.glob('*.wav'):
+        turns.setdefault(path.name.rsplit('-', 1)[0], []).append(path)
+    for name in sorted(turns, key=lambda n: max(p.stat().st_mtime for p in turns[n]))[:-keep]:
+        for path in turns[name]:
+            with suppress(OSError):
+                path.unlink()
 
 
 def _turn_gain():
