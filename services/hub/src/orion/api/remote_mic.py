@@ -679,7 +679,15 @@ def _gate_always():
     return os.environ.get('ORION_ECHO_GATE') == 'always'
 
 
+def _gate_off():
+    """ORION_ECHO_GATE=off: no echo-frame gate, the canceller alone (A/B)."""
+    return os.environ.get('ORION_ECHO_GATE') == 'off'
+
+
 def _playing(link):
+    """The PC is playing, so the echo-frame gate may run; False when unknown or the gate is off."""
+    if _gate_off():
+        return False
     cleaner = getattr(link, 'cleaner', None)
     return bool(cleaner is not None and hasattr(cleaner, 'pc_playing') and cleaner.pc_playing())
 
@@ -812,7 +820,7 @@ class CleanLink:
             dump['raw'].append(pcm)
         if out:
             # Only inside a turn: in standby "Orion" is listened for on LocalVQE's output as is.
-            gate = _gate_always() or (self.in_turn and _playing(self))
+            gate = not _gate_off() and (_gate_always() or (self.in_turn and _playing(self)))
             final = self.gain.apply(out, gate=gate)
             if dump is not None:
                 dump['cleaned'].append(out)
