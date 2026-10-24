@@ -132,16 +132,21 @@ class EndpointTests(unittest.TestCase):
                 self.assertNotIn(remote_mic.turn_key('user'), self.redis.keys)
         self.assertNotIn(remote_mic.pc_key('user'), self.redis.keys)
 
-    def test_pc_microphone_streams_continuously_through_the_cleaner(self):
+    def test_pc_microphone_sends_turns_like_a_phone(self):
+        import json
         with self.client.websocket_connect('/p/api/v1/audio/remote-mic/clean?token=t') as clean:
             # Tests have no loopback: the cleaner passes audio through.
             self.assertEqual(clean.receive_json(), {'type': 'ready', 'available': False})
+            clean.send_json({'type': 'source', 'label': 'Mic', 'local_wake': True})
+            clean.send_json({'type': 'turn_start', 'turn_id': 'p1', 'sample_rate': 16000,
+                             'start_sample': 0, 'wake_end_sample': 1, 'preroll_samples': 2})
+            self.assertEqual(clean.receive_json()['type'], 'turn_start')
             clean.send_bytes(b'\x01\x00\x02\x00')
-            self.assertEqual(clean.receive_bytes(), b'\x01\x00\x02\x00')
-            clean.send_json({'type': 'turn', 'active': True})
-            clean.send_bytes(b'\x03\x00')
-            self.assertEqual(clean.receive_bytes(), b'\x03\x00')
-            clean.send_json({'type': 'turn', 'active': False})
+            got = [clean.receive() for _ in range(2)]
+            self.assertIn(b'\x01\x00\x02\x00', [m.get('bytes') for m in got])
+            check = next(json.loads(m['text']) for m in got if m.get('text'))
+            self.assertEqual((check['type'], check['turn_id']), ('preroll_check', 'p1'))
+            clean.send_json({'type': 'turn_end', 'turn_id': 'p1'})
 
     def test_phone_without_pc_is_disarmed_and_rejected(self):
         with self.client.websocket_connect('/m/api/v1/audio/remote-mic/phone?token=t') as phone:

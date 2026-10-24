@@ -1,4 +1,4 @@
-"""The PC microphone's continuous stream (LocalVQE always, the chain in turns) and quick checks."""
+"""A turn's adaptive engine (LocalVQE, the chain while the PC plays) and the quick checks."""
 import unittest
 
 import numpy as np
@@ -107,6 +107,13 @@ class AdaptiveEngineTests(unittest.TestCase):
         back = 20 * HOP * 8 + HOP  # after the crossfade hop: LocalVQE, sample for sample
         np.testing.assert_allclose(out[back:], .25 * signal[back - 640:len(signal) - 640], rtol=1e-6)
 
+    def test_a_new_turn_does_not_warm_up_on_the_last_turns_audio(self):
+        for _ in range(4):
+            self.engine.process(self.mic, self.loud)
+        self.engine.new_turn()
+        self.engine.process(self.mic, self.loud)  # LocalVQE: not enough playback for the chain yet
+        self.assertEqual(len(self.engine._history_mic), len(self.mic))
+
     def test_warm_up_history_is_about_one_second(self):
         for _ in range(20):
             self.engine.process(self.mic, self.loud)
@@ -153,158 +160,6 @@ class _CancellerCase(unittest.TestCase):
     def play(self, seconds):
         self.clock.now += seconds
         self.ec.ring.write(np.full(int(seconds * RATE), LOUD, np.float32), self.clock.now)
-
-    def play_and_feed(self, seconds, mic_level=.2, chunk=.1):
-        out = b""
-        for _ in range(round(seconds / chunk)):
-            self.clock.now += chunk
-            self.ec.ring.write(np.full(int(chunk * RATE), LOUD, np.float32), self.clock.now)
-            out += self.ec.feed_live("pc:a", to_pcm16(np.full(int(chunk * RATE), mic_level, np.float32)), self.clock.now)
-        return to_float(out)
-
-
-
-class LiveStreamTests(_CancellerCase):
-    def test_stream_is_cleaned_by_localvqe_and_stays_warm_across_reopens(self):
-        self.ec.open_live("pc:a", self.clock.now)
-        out = self.play_and_feed(1.0)
-        self.assertGreater(len(out), RATE * .8)
-        np.testing.assert_allclose(out[HOP * 4:], .05, atol=1e-3)  # .2 * .25
-        self.ec.close_live("pc:a")
-        self.ec.open_live("pc:a", self.clock.now)
-        self.play_and_feed(.5)
-        self.assertEqual(len(self.vqes), 1)  # same engine after a reconnect
-
-    def test_a_turn_switches_the_stream_to_the_chain(self):
-        self.ec.open_live("pc:a", self.clock.now)
-        self.play_and_feed(1.0)
-        self.ec.live_turn("pc:a", True)
-        out = self.play_and_feed(1.0)
-        np.testing.assert_allclose(out[-RATE // 2:], .1, atol=1e-3)  # .2 * .5
-        self.ec.live_turn("pc:a", False)
-        out = self.play_and_feed(1.0)
-        np.testing.assert_allclose(out[-RATE // 2:], .05, atol=1e-3)
-
-    def test_standby_is_localvqe_alone_the_suppressor_only_in_turns(self):
-        ec = EchoCanceller(engine_factory=lambda: ScaleEngine(640, .5), vqe_factory=vqe,
-                           capture_factory=FakeCapture, clock=self.clock, suppress=True)
-        ec.arm()
-        self.ec = ec
-        ec.open_live("pc:a", self.clock.now)
-        suppressor = ec._live["pc:a"].turn.stream.suppressor
-        self.assertFalse(suppressor.enabled)  # "Orion" is listened for on LocalVQE's output
-        self.ec.live_turn("pc:a", True)
-        self.assertTrue(suppressor.enabled)
-        self.ec.live_turn("pc:a", False)
-        self.assertFalse(suppressor.enabled)
-
-    def test_lost_microphone_audio_is_filled_not_skipped_in_the_reference(self):
-        """A microphone that loses 20% of its packets: the reference must not jump each time."""
-        self.ec.open_live("pc:a", self.clock.now)
-        live = self.ec._live["pc:a"]
-        sent = got = 0
-        for k in range(120):  # 12 s of 100 ms packets, every fifth one lost on the way
-            self.clock.now += .1
-            self.ec.ring.write(np.full(1600, LOUD, np.float32), self.clock.now)
-            if k % 5 == 4:
-                continue
-            pcm = to_pcm16(np.full(1600, .2, np.float32))
-            sent += 1600
-            got += len(self.ec.feed_live("pc:a", pcm, self.clock.now)) // 2
-        self.assertGreater(live.fills, 4)
-        self.assertLess(live.moves, 3)  # the pairing itself stays put
-        self.assertLessEqual(got, sent)
-        self.assertGreater(got, sent - 1600)  # one to one with what was sent (minus the latency)
-
-    def test_late_bursts_are_not_lost_audio(self):
-        """A browser that holds packets back for up to a second, then sends them at once."""
-        live = None
-        held = []
-        for k in range(150):
-            self.clock.now += .1
-            self.ec.ring.write(np.full(1600, LOUD, np.float32), self.clock.now)
-            held.append(to_pcm16(np.full(1600, .2, np.float32)))
-            if k % 10 == 9:  # every second, all of it at once
-                if live is None:  # as CleanLink does: the first packet is taken as just captured
-                    self.ec.open_live("pc:a", self.clock.now - .1)
-                    live = self.ec._live["pc:a"]
-                for pcm in held:
-                    self.ec.feed_live("pc:a", pcm, self.clock.now)
-                held = []
-        self.assertEqual(live.fills, 0)
-        self.assertLess(live.moves, 3)  # once, for the first packet's own lateness
-        self.assertLess(live.moves, 3)
-
-    def test_passthrough_until_the_models_are_ready(self):
-        ec = EchoCanceller(capture_factory=FakeCapture, clock=self.clock)  # no factories yet
-        ec.arm()
-        ec.open_live("pc:a", self.clock.now)
-        pcm = to_pcm16(np.full(1600, .2, np.float32))
-        self.assertEqual(ec.feed_live("pc:a", pcm, self.clock.now), pcm)
-
-    def test_clock_drift_moves_the_reference_pairing(self):
-        self.ec.open_live("pc:a", self.clock.now)
-        live = self.ec._live["pc:a"]
-        self.play_and_feed(1.0)
-        start = live.turn.ref_start
-        # The browser's packets now arrive 1% slower than their samples: 80 ms over 8 s.
-        for _ in range(80):
-            self.clock.now += .101
-            self.ec.ring.write(np.full(1616, LOUD, np.float32), self.clock.now)
-            self.ec.feed_live("pc:a", to_pcm16(np.full(1600, .2, np.float32)), self.clock.now)
-        # Slower packets than samples look like lost audio: filled with silence, or the pairing moved.
-        self.assertGreater(live.filled + (live.turn.ref_start - start), 320)
-
-
-class AlignmentTests(_CancellerCase):
-    def speech_like(self, seconds, seed=0):
-        """Noise with a syllable-rate envelope, so its envelope has something to match."""
-        rng = np.random.default_rng(seed)
-        n = int(seconds * RATE)
-        env = np.repeat(rng.uniform(.02, .3, n // 1600 + 1), 1600)[:n]
-        return (rng.normal(0, 1, n) * env).astype(np.float32)
-
-    def test_measures_the_echo_delay(self):
-        from orion.audio.echo_cancel.service import _echo_delay
-        ref = self.speech_like(6.0)
-        late, window = int(2.5 * RATE), int(3.0 * RATE)
-        for delay in (1280, 14400, -4000):  # 80 ms, 900 ms, echo before its reference
-            mic = .3 * ref[late - delay:late - delay + window]
-            found = _echo_delay(mic, ref, late, len(ref) - window - late)
-            self.assertIsNotNone(found)
-            self.assertLess(abs(found - delay), 320)
-
-    @unittest.skipUnless(__import__("orion.audio.echo_cancel.service", fromlist=["x"]).ALIGN_MOVE,
-                         "moving the pairing is off")
-    def test_a_late_browser_microphone_is_realigned(self):
-        """The browser's audio reaches the Hub ~0.9 s late: the echo seems 0.9 s after its pair."""
-        play = self.speech_like(12.0, seed=1)
-        lag = int(.9 * RATE)
-        self.clock.now += 4.0
-        self.ec.ring.write(play[:int(4.0 * RATE)], self.clock.now)
-        self.ec.open_live("pc:a", self.clock.now)
-        live = self.ec._live["pc:a"]
-        for k in range(int(4.0 * 10), int(11.0 * 10)):  # 100 ms chunks
-            a, b = k * 1600, (k + 1) * 1600
-            self.clock.now += .1
-            self.ec.ring.write(play[a:b], self.clock.now)
-            # Mic sample paired with ring index `start + i` holds the echo of index `start + i - lag`.
-            self.ec.feed_live("pc:a", to_pcm16(.3 * play[a - lag:b - lag]), self.clock.now)
-        self.assertIsNotNone(live.echo_delay)
-        self.assertLess(abs(live.realigned - (lag - 1280)), 480)
-
-    def test_silent_pc_is_not_measured(self):
-        self.clock.now += 4.0
-        self.ec.ring.write(np.zeros(int(4.0 * RATE), np.float32), self.clock.now)
-        self.ec.open_live("pc:a", self.clock.now)
-        live = self.ec._live["pc:a"]
-        for _ in range(60):
-            self.clock.now += .1
-            self.ec.ring.write(np.zeros(1600, np.float32), self.clock.now)
-            self.ec.feed_live("pc:a", to_pcm16(self.speech_like(.1)), self.clock.now)
-        self.assertIsNone(live.echo_delay)
-        self.assertEqual(live.realigned, 0)
-
 
 class PhoneTurnTests(_CancellerCase):
     def test_silent_pc_around_orion_needs_no_check(self):

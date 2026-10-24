@@ -50,33 +50,3 @@ class RawLevelGainTests(unittest.TestCase):
         gain.observe(pcm(.004, 10))
         self.assertTrue(gain.summary(reset=True).startswith('gain avg 14.1 max 14.1'))
         self.assertTrue(gain.summary().startswith('gain avg 1.0 max 1.0'))
-
-    def test_echo_frames_are_lowered_while_the_pc_plays(self):
-        gain = RawLevelGain()
-        gain.observe(pcm(.01, 30))  # the microphone hears the PC
-        leftover = pcm(.0005, 15)  # 26 dB quieter after the canceller: echo
-        gain.apply(leftover, gate=True)  # the first 160 ms + ramp stay (a soft sound in a word?)
-        self.assertLess(rms(gain.apply(leftover, gate=True)), rms(leftover))
-        self.assertGreater(gain.echo_frames, 15)
-
-    def test_no_gate_while_the_pc_is_silent(self):
-        gain = RawLevelGain()
-        gain.observe(pcm(.01, 20))
-        leftover = pcm(.0005, 20)  # LocalVQE took a soft ending down: not echo, the PC is silent
-        self.assertGreater(rms(gain.apply(leftover)), rms(leftover))
-        self.assertEqual(gain.echo_frames, 0)
-
-    def test_the_users_voice_is_lifted_while_the_pc_plays(self):
-        gain = RawLevelGain()
-        gain.observe(pcm(.01, 20))
-        voice = pcm(.008, 20)  # nearly unchanged by the canceller: the user
-        self.assertGreater(rms(gain.apply(voice, gate=True)), rms(voice))
-        self.assertEqual(gain.echo_frames, 0)
-
-    def test_a_quiet_microphones_echo_is_lowered_too(self):
-        gain = RawLevelGain()
-        gain.observe(pcm(.0003, 30))  # the PC's echo at a -70 dBFS microphone
-        leftover = pcm(.00003, 15)  # ~20 dB under it after the canceller
-        gain.apply(leftover, gate=True)
-        self.assertLess(rms(gain.apply(leftover, gate=True)), 2 * rms(leftover))
-        self.assertGreater(gain.echo_frames, 15)

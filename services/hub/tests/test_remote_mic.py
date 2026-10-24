@@ -426,39 +426,6 @@ class SeveralPhonesTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
-    async def test_packets_keep_their_arrival_time_while_the_canceller_is_busy(self):
-        from orion.api.remote_mic import CleanLink
-        now = [10.0]
-        seen, sent = [], []
-
-        class SlowCleaner:
-            canceller = None
-
-            async def open_live(self, device, arrived):
-                pass
-
-            async def feed_live(self, device, pcm, arrived):
-                seen.append(arrived)
-                now[0] += .5  # cleaning takes longer than the packet lasts
-                await asyncio.sleep(0)
-                return pcm
-
-            async def close_live(self, device):
-                pass
-
-        async def send(data):
-            sent.append(data)
-
-        link = CleanLink('user', send, SlowCleaner(), clock=lambda: now[0])
-        for k in range(3):
-            await link.on_audio(b'\x01\x00' * 160)
-            now[0] += .01
-        await link.drain()
-        while len(sent) < 3:
-            await asyncio.sleep(0)
-        self.assertEqual([round(t - 10, 2) for t in seen], [0.0, 0.01, 0.02])  # not 0.5 / 1.0 late
-        await link.close()
-
     async def _local_link(self, canceller):
         from orion.api.remote_mic import CleanLink
         self.json, self.audio = [], []
@@ -472,7 +439,7 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
         await link.on_text({'type': 'source', 'label': 'Mic', 'local_wake': True})
         return link
 
-    async def test_local_wake_cleans_only_turns_like_a_phone_turn(self):
+    async def test_only_turns_are_cleaned_like_a_phone_turn(self):
         fake = FakeCanceller()
         link = await self._local_link(fake)
         await link.on_audio(b'\x09\x00')  # standby: nothing reaches the canceller
@@ -497,7 +464,7 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.calls[-1], ('end_turn', 'pc:user'))
         await link.close()
 
-    async def test_local_wake_with_a_silent_pc_needs_no_check(self):
+    async def test_a_silent_pc_needs_no_check(self):
         class Quiet(FakeCanceller):
             def reference_quiet(self, start_time, preroll_samples):
                 return True
@@ -506,7 +473,7 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.json[-1], {'type': 'preroll_check', 'turn_id': 't1', 'verified': True})
         await link.close()
 
-    async def test_local_wake_audio_of_an_ended_turn_is_dropped(self):
+    async def test_audio_of_an_ended_turn_is_dropped(self):
         fake = FakeCanceller()
         link = await self._local_link(fake)
         await link.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))

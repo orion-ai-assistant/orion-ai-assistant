@@ -28,15 +28,12 @@ that phone is armed; the first phone seen becomes the selection, the PC can
 pick another, and a phone can take over itself (claim). While the selected
 phone is offline, every connected phone is armed.
 
-The PC's own microphone also uses ``/remote-mic/clean``. Since 2026-10-24 the
-web client listens for "Orion" on the raw microphone itself, as a phone does
-(``source {local_wake: true}``), and sends only turns: turn_start, the pre-roll
-and live PCM, turn_end / turn_reject. The Hub answers as it does for a phone
-turn (turn_start, preroll_check, cleaned PCM), so nothing runs in standby. An
-older web client streams the microphone continuously instead and gets it back
-cleaned, sample for sample: LocalVQE alone in standby, the chain (DTLN ->
-LocalVQE) while the web reports a turn and the PC plays something. Chrome's own
-echo cancellation is not used.
+The PC's own microphone works the same way over ``/remote-mic/clean``: the web
+client listens for "Orion" on the raw microphone itself, as a phone does, and
+sends only turns (turn_start, the pre-roll and live PCM, turn_end /
+turn_reject). The Hub answers as it does for a phone turn (turn_start,
+preroll_check, cleaned PCM), so nothing runs in standby. Chrome's own echo
+cancellation is not used.
 
 For a phone turn the Hub also sends ``preroll_check`` (JSON, base64 PCM): the
 pre-roll cleaned by LocalVQE alone, ready ~0.45 s after it arrived, so the PC
@@ -133,15 +130,6 @@ class PhoneAudioCleaner:
             self._raw.add(device)
             return pcm
 
-    def pc_playing(self):
-        """The PC is playing (cheap, no thread); False when unknown."""
-        if self.canceller is None or not hasattr(self.canceller, 'pc_playing'):
-            return False
-        try:
-            return self.canceller.pc_playing()
-        except Exception:
-            return False
-
     async def reference_quiet(self, start_time, preroll_samples):
         """The PC played nothing around the phone's "Orion" (no check needed); False when unknown."""
         if self.canceller is None or not hasattr(self.canceller, 'reference_quiet'):
@@ -161,37 +149,6 @@ class PhoneAudioCleaner:
         except Exception:
             log.warning('Echo canceller failed on the pre-roll check; raw pre-roll', exc_info=True)
             return preroll
-
-    async def open_live(self, device, arrived):
-        self._raw.discard(device + '#live')
-        if self.canceller is not None:
-            try:
-                await self._call('open_live', device, arrived)
-                return
-            except Exception:
-                log.warning('Echo canceller could not open the live stream; raw audio', exc_info=True)
-        self._raw.add(device + '#live')
-
-    async def feed_live(self, device, pcm, arrived):
-        if self.canceller is None or device + '#live' in self._raw:
-            return pcm
-        try:
-            return await self._call('feed_live', device, pcm, arrived)
-        except Exception:
-            log.warning('Echo canceller failed on the live stream; raw audio from now on', exc_info=True)
-            self._raw.add(device + '#live')
-            return pcm
-
-    async def live_turn(self, device, active):
-        if self.canceller is not None:
-            with suppress(Exception):
-                await self._call('live_turn', device, active)
-
-    async def close_live(self, device):
-        self._raw.discard(device + '#live')
-        if self.canceller is not None:
-            with suppress(Exception):
-                await self._call('close_live', device)
 
     async def end_turn(self, device):
         """Close the turn. The tail is not needed: the PC already ended or left it."""
@@ -643,7 +600,7 @@ async def clean_turn_audio(link, turn, pcm):
     ``turn``: {'device', 'preroll', 'need', 'started', 'open'}; nothing is sent once
     ``link.turn`` is another turn."""
     gain = turn.get('gain')
-    dump = _dump(link, holder=turn)
+    dump = _dump(turn)
     if dump is not None:
         dump['raw'].append(bytes(pcm))
     if not turn['open']:
@@ -660,7 +617,7 @@ async def clean_turn_audio(link, turn, pcm):
             turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
-            final = gain.apply(out, gate=_playing(link)) if gain else out
+            final = gain.apply(out) if gain else out
             if dump is not None:
                 dump['cleaned'].append(out)
                 dump['final'].append(final)
@@ -671,64 +628,39 @@ async def clean_turn_audio(link, turn, pcm):
         gain.observe(pcm)
     out = await link.cleaner.process(turn['device'], pcm)
     if out and link.turn is turn:
-        final = gain.apply(out, gate=_playing(link)) if gain else out
+        final = gain.apply(out) if gain else out
         if dump is not None:
             dump['cleaned'].append(out)
             dump['final'].append(final)
         await link.send_bytes(final)
 
 
-def _gate_always():
-    """ORION_ECHO_GATE=always: the echo-frame gate in every frame, as before 2026-10-24 (A/B)."""
-    return os.environ.get('ORION_ECHO_GATE') == 'always'
-
-
-def _gate_off():
-    """No echo-frame gate unless ORION_ECHO_GATE=on (or =always): with a reference that no longer
-    stutters the canceller alone removed the echo, and the gate cost soft sounds inside words."""
-    return os.environ.get('ORION_ECHO_GATE', 'off') not in ('on', 'always')
-
-
-def _playing(link):
-    """The PC is playing, so the echo-frame gate may run; False when unknown or the gate is off."""
-    if _gate_off():
-        return False
-    cleaner = getattr(link, 'cleaner', None)
-    return bool(cleaner is not None and hasattr(cleaner, 'pc_playing') and cleaner.pc_playing())
-
-
-def _dump(link, holder=None):
-    """ORION_PC_MIC_DUMP=1: keep a stream's raw, cleaned and final audio (last 90 s). `holder`: a
-    phone turn's dict instead of the PC microphone's link."""
+def _dump(turn):
+    """ORION_PC_MIC_DUMP=1: keep a turn's raw, cleaned and final audio (last 90 s)."""
     if os.environ.get('ORION_PC_MIC_DUMP') != '1':
         return None
-    dump = holder.get('_dump_parts') if holder is not None else getattr(link, '_dump_parts', None)
+    dump = turn.get('_dump_parts')
     if dump is None:
-        dump = {'raw': [], 'cleaned': [], 'final': []}
-        if holder is not None:
-            holder['_dump_parts'] = dump
-        else:
-            link._dump_parts = dump
+        dump = turn['_dump_parts'] = {'raw': [], 'cleaned': [], 'final': []}
     for parts in dump.values():
         while sum(map(len, parts)) > SAMPLE_RATE * 2 * 90:
             parts.pop(0)
     return dump
 
 
-def _write_dump(link, turn=None):
-    """Write a dump to services/hub/data/pc-mic-dump; `turn`: a phone turn instead of the PC mic."""
-    dump = turn.get('_dump_parts') if turn is not None else getattr(link, '_dump_parts', None)
+def _write_dump(link, turn):
+    """Write a turn's dump to services/hub/data/pc-mic-dump (HHMMSS-phone-*.wav / -pcturn-*.wav)."""
+    dump = turn.get('_dump_parts')
     if not dump:
         return
     import wave
     from pathlib import Path
     folder = Path(__file__).resolve().parents[3] / 'data' / 'pc-mic-dump'
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime('%H%M%S') + ('-' + turn.get('dump', 'phone') if turn is not None else '-pc')
-    device = turn['device'] if turn is not None else link.device
+    stamp = time.strftime('%H%M%S') + '-' + turn.get('dump', 'phone')
     canceller = getattr(getattr(link, 'cleaner', None), 'canceller', None)
     if canceller is not None and hasattr(canceller, 'take_ref_dump'):
-        dump['reference'] = [canceller.take_ref_dump(device)]
+        dump['reference'] = [canceller.take_ref_dump(turn['device'])]
     for name, parts in dump.items():
         with wave.open(str(folder / f'{stamp}-{name}.wav'), 'wb') as w:
             w.setnchannels(1)
@@ -736,10 +668,7 @@ def _write_dump(link, turn=None):
             w.setframerate(SAMPLE_RATE)
             w.writeframes(b''.join(parts))
     _diag.info('Microphone audio written to %s (%s-*.wav)', folder, stamp)
-    if turn is not None:
-        turn['_dump_parts'] = None
-    else:
-        link._dump_parts = None
+    turn['_dump_parts'] = None
 
 
 def _turn_gain():
@@ -748,36 +677,27 @@ def _turn_gain():
 
 
 def log_turn_end(turn, reason):
-    _diag.info('Remote mic turn %s ended (%s): microphone: phone %r, %.1f s received, %s',
-               turn['device'], reason, turn.get('name') or '?', len(turn['preroll']) / 2 / SAMPLE_RATE if not turn['open'] else
+    _diag.info('Remote mic turn %s ended (%s): microphone: %s %r, %.1f s received, %s',
+               turn['device'], reason, 'PC' if turn.get('dump') == 'pcturn' else 'phone',
+               turn.get('name') or '?', len(turn['preroll']) / 2 / SAMPLE_RATE if not turn['open'] else
                turn['gain']._applied / SAMPLE_RATE if turn.get('gain') else 0,
                turn['gain'].summary() if turn.get('gain') else 'no gain')
 
 
 class CleanLink:
-    """The PC's own microphone, returned cleaned (no relay).
-
-    With ``local_wake`` the web client heard "Orion" on the raw microphone and sends turns only;
-    they are cleaned exactly like a phone's turn. Otherwise the microphone streams continuously.
-
-    Packets of the continuous stream are timestamped the moment they arrive and cleaned by a worker of their own: the
-    canceller pairs each packet with the loudspeaker by its arrival time, and a packet left
-    waiting while the previous one was cleaned arrived "late" by the Hub's own work. That moved
-    the pairing hundreds of times a minute and the reference the canceller saw stuttered."""
+    """The PC's own microphone in the role of a phone (no relay): the web client heard "Orion" on
+    the raw microphone and sends turns only, cleaned exactly like a phone's turn. Packets wait in
+    a queue for a worker of their own, tagged with their turn: audio of a turn that ended while it
+    waited is dropped, never taken for the next turn's pre-roll."""
 
     def __init__(self, user, send_bytes, cleaner, clock=time.perf_counter, send_json=None):
         self.send_bytes, self.cleaner, self.clock, self.send_json = send_bytes, cleaner, clock, send_json
         # Stable per account, so the canceller stays warm across reconnects.
         self.device = f'pc:{user}'
-        self.gain = _turn_gain()
-        self.opened = False
         self.label = '?'  # the microphone the browser uses (wired headset, built-in, ...)
-        self.in_turn = False
-        self.local_wake = False  # the web listens for "Orion" itself and sends turns only
-        self.turn = None  # a local-wake turn, as PcLink's
+        self.turn = None  # as PcLink's
         self._queue = asyncio.Queue()
         self._worker = None
-        self.backlog = 0  # most packets ever waiting
 
     @property
     def available(self):
@@ -788,21 +708,11 @@ class CleanLink:
         kind = message.get('type')
         if kind == 'source' and isinstance(message.get('label'), str):
             self.label = message['label'][:80] or '?'
-            self.local_wake = message.get('local_wake') is True
-            _diag.info('PC microphone %s: %s%s', self.device, self.label,
-                       ' ("Orion" heard by the web on the raw microphone)' if self.local_wake else '')
-        elif kind == 'turn_start' and self.local_wake:
+            _diag.info('PC microphone %s: %s', self.device, self.label)
+        elif kind == 'turn_start':
             await self._turn_start(message)
         elif kind in {'turn_end', 'turn_reject'} and self.turn and message.get('turn_id') == self.turn['turn_id']:
             await self._close_turn('pc' if kind == 'turn_end' else str(message.get('reason'))[:40])
-        elif kind == 'turn':
-            active = message.get('active') is True
-            if active != self.in_turn:
-                self.in_turn = active
-                summary = self.gain.summary(reset=True)  # standby's counts are dropped
-                if not active:
-                    _diag.info('PC microphone turn %s ended: microphone %r, %s', self.device, self.label, summary)
-            await self.cleaner.live_turn(self.device, active)
 
     async def _turn_start(self, message):
         """The web heard "Orion" on the raw microphone: the pre-roll and the turn's live audio follow,
@@ -834,23 +744,17 @@ class CleanLink:
             _write_dump(self, turn)
 
     async def on_audio(self, pcm):
-        if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES:
-            return
-        if self.local_wake and self.turn is None:
-            return  # between turns: nothing is cleaned
-        # A turn's packets are tagged with it: one that ends while its audio waits drops the rest.
-        self._queue.put_nowait((pcm, self.clock(), self.turn if self.local_wake else None))
-        self.backlog = max(self.backlog, self._queue.qsize())
+        if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES or self.turn is None:
+            return  # between turns nothing is cleaned
+        self._queue.put_nowait((pcm, self.turn))
         if self._worker is None:
             self._worker = asyncio.create_task(self._clean_packets())
 
     async def _clean_packets(self):
         while True:
-            pcm, arrived, turn = await self._queue.get()
+            pcm, turn = await self._queue.get()
             try:
-                if turn is None:
-                    await self._clean(pcm, arrived)
-                elif turn is self.turn:
+                if turn is self.turn:
                     await clean_turn_audio(self, turn, pcm)
             except Exception:
                 log.warning('PC microphone packet failed', exc_info=True)
@@ -861,24 +765,6 @@ class CleanLink:
             await asyncio.sleep(0)
         await asyncio.sleep(0)
 
-    async def _clean(self, pcm, arrived):
-        if not self.opened:
-            self.opened = True
-            await self.cleaner.open_live(self.device, arrived - len(pcm) / 2 / SAMPLE_RATE)
-        self.gain.observe(pcm)
-        out = await self.cleaner.feed_live(self.device, pcm, arrived)
-        dump = _dump(self)
-        if dump is not None:
-            dump['raw'].append(pcm)
-        if out:
-            # Only inside a turn: in standby "Orion" is listened for on LocalVQE's output as is.
-            gate = not _gate_off() and (_gate_always() or (self.in_turn and _playing(self)))
-            final = self.gain.apply(out, gate=gate)
-            if dump is not None:
-                dump['cleaned'].append(out)
-                dump['final'].append(final)
-            await self.send_bytes(final)
-
     async def close(self):
         worker, self._worker = self._worker, None
         if worker is not None:
@@ -886,14 +772,6 @@ class CleanLink:
             with suppress(asyncio.CancelledError):
                 await worker
         await self._close_turn('closed')
-        if self.opened:
-            self.opened = False
-            _write_dump(self)
-            await self.cleaner.close_live(self.device)
-            if self.backlog > 5:
-                _diag.info('PC microphone %s: up to %d packets waited to be cleaned', self.device, self.backlog)
-            _diag.info('PC microphone stream %s closed: microphone %r, %s', self.device, self.label,
-                       self.gain.summary())
 
 
 @router.websocket('/api/v1/audio/remote-mic/clean')

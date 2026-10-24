@@ -213,8 +213,8 @@ MIN_PLAY_HOPS = 31  # ~0.5 s of playback before the chain: the assistant's own s
 
 
 class AdaptiveEngine:
-    """The PC microphone's continuous stream: LocalVQE always; the chain (DTLN -> LocalVQE) while
-    `want_chain` is set (a turn is open) and the PC plays something.
+    """A turn's engine: LocalVQE; the chain (DTLN -> LocalVQE) while `want_chain` is set and the PC
+    plays something.
 
     Each runs on the raw mic and reference (never one after the other); LocalVQE's output is
     delayed to the chain's latency so the two line up sample for sample. Only one runs at a time:
@@ -237,6 +237,11 @@ class AdaptiveEngine:
         self.on_chain = False
         self.switches = 0
         self.hops = self.playing_hops = 0  # for the logs: how much of a turn the PC played
+
+    def new_turn(self):
+        """A new turn begins: the last turn's audio (maybe minutes old) warms nothing."""
+        self._history_mic = np.zeros(0, np.float32)
+        self._history_ref = np.zeros(0, np.float32)
 
     def _localvqe(self, mic, ref):
         out_v = self.vqe.process(mic, ref)

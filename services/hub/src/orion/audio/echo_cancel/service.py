@@ -1,5 +1,5 @@
 """The echo canceller the PC-microphone relay calls (see package docstring for the contract)."""
-from collections import OrderedDict, deque
+from collections import OrderedDict
 import logging
 import os
 import threading
@@ -41,168 +41,6 @@ def _factories(models_dir):
     return (lambda: engines.DtlnLocalVqe(dtln_models, model)), (lambda: engines.LocalVqeOnly(model))
 
 
-DRIFT_WINDOW = 3.0  # seconds of arrival timing behind one clock-drift estimate
-DRIFT_LIMIT = 320  # samples (20 ms) of drift before the reference pairing is moved
-LOSS_WINDOW = 1.5  # seconds behind, from the window's start, before audio counts as lost
-LOSS_LIMIT = 2560  # samples (160 ms): smaller slips are left to the canceller's own delay search
-# Where the browser's microphone really is against the loopback: its audio reaches the Hub late
-# by an unknown, browser-made delay (live: ~1 s), so the first packet's arrival only roughly says
-# which reference belongs to it. The echo's own delay is measured instead, from the envelopes of
-# the microphone and the reference while the PC plays, and the pairing is moved so the echo
-# follows its reference by ALIGN_TARGET (what the engines expect; LocalVQE searches ~1 s at most).
-ALIGN_WINDOW = 3.0  # seconds of microphone per measurement
-ALIGN_EARLY = 0.5  # seconds the echo may seem to come before its reference
-ALIGN_LATE = 2.5  # ... or after it
-ALIGN_TARGET = 1280  # samples (80 ms): echo after its reference once aligned
-ALIGN_SLACK = 2400  # samples (150 ms) either side of the target left alone
-ALIGN_EVERY = 1.0  # seconds between measurements
-ALIGN_FRAME = 160  # 10 ms envelope frames
-# Measuring only: live, envelope matching found 40 ms once, then -90, 1270 and 2140 ms on music
-# and speech, and moving the pairing by those broke the canceller and "Orion". The arrival-time
-# pairing was right (40 ms). Moving stays off until a measurement is trustworthy.
-ALIGN_MOVE = False
-
-
-class _Live:
-    """The PC microphone's continuous stream: one never-ending turn on an `AdaptiveEngine`.
-
-    The browser's clock and the loopback's drift apart over hours; the earliest arrival of each
-    packet (jitter only ever delays it) says where the reference should be, and the pairing is
-    moved when it is off by more than 20 ms."""
-
-    def __init__(self, turn, engine, arrived):
-        self.turn, self.engine = turn, engine
-        self.started = arrived
-        self.cpu = 0.0
-        self._offset = None
-        self._deviations = deque()
-        self._since = arrived  # the current estimation window began
-        # Lost microphone audio (a Realtek: 13560 of 16000 samples a second) is filled with
-        # silence; moving the pairing for each loss made the reference stutter.
-        self.filled = self.fills = 0
-        self.moves = self.moved = 0
-        self._padded = deque()  # (first input sample, count) filled with silence, not yet emitted
-        self._mic = np.zeros(0, np.float32)  # the last ALIGN_WINDOW s of raw microphone
-        self._next_align = arrived + ALIGN_WINDOW
-        self.turn_energy, self.turn_counted = None, 0  # the Turn's energy sums when a PC turn began
-        self.echo_delay = None  # samples from the reference to its echo, last measured
-        self.realigned = 0  # samples the pairing was moved by, in all
-
-    def align(self, ring, mic, arrived):
-        """Measure the echo's delay against the paired reference; move the pairing when it is off."""
-        if not isinstance(self.turn, Turn):
-            return
-        window = int(ALIGN_WINDOW * 16000)
-        self._mic = np.concatenate([self._mic, mic])[-window:]
-        if arrived < self._next_align or len(self._mic) < window:
-            return
-        self._next_align = arrived + ALIGN_EVERY
-        end = self.turn.ref_start + self.turn.received  # the reference paired with the newest sample
-        early, late = int(ALIGN_EARLY * 16000), int(ALIGN_LATE * 16000)
-        lo, hi = end - window - late, min(end + early, ring.end)
-        if lo < ring.end - ring.capacity or hi - lo < window + late:
-            return
-        ref = ring.read(lo, hi - lo)
-        if float(np.max(np.abs(ref))) <= 10 ** (-50 / 20):
-            return  # the PC is (nearly) silent: nothing to measure
-        delay = _echo_delay(self._mic, ref, late, (hi - lo) - window - late)
-        if delay is None:
-            return
-        self.echo_delay = delay
-        if not ALIGN_MOVE or abs(delay - ALIGN_TARGET) <= ALIGN_SLACK:
-            return
-        shift = delay - ALIGN_TARGET  # pair with a reference this much older
-        self.turn.ref_start -= shift
-        if self._offset is not None:
-            self._offset += shift  # the drift tracker measures against the moved pairing
-        self.realigned += shift
-        self._mic = np.zeros(0, np.float32)  # measured against the old pairing: start over
-        _diag.info("Echo live stream: the echo came %.0f ms after its reference; pairing moved by %.0f ms",
-                   delay / 16, -shift / 16)
-
-    def track(self, ring, arrived):
-        """Samples of lost audio to fill before this packet (0 if none)."""
-        if not isinstance(self.turn, Turn):
-            return 0
-        deviation = ring.index_at(arrived) - (self.turn.ref_start + self.turn.received)
-        if self._offset is None:
-            self._offset = deviation
-            return 0
-        self._deviations.append((arrived, deviation - self._offset))
-        while self._deviations and arrived - self._deviations[0][0] > DRIFT_WINDOW:
-            self._deviations.popleft()
-        if arrived - self._since < LOSS_WINDOW:
-            return 0  # a whole window first (also after a correction: one packet is no estimate)
-        # The earliest arrival in the window: packets held back and sent in a burst (the browser
-        # busy, e.g. right as "Orion" is heard) do not count, only audio that never came.
-        drift = min(d for _, d in self._deviations)
-        if drift > LOSS_LIMIT:  # behind for the whole window: audio was lost
-            self._deviations.clear()  # measured before the fill: start over
-            self._since = arrived
-            self.fills += 1
-            self.filled += drift
-            return drift
-        if arrived - self._since >= DRIFT_WINDOW and abs(drift) > DRIFT_LIMIT:
-            self.moves += 1
-            self.moved += drift
-            # Deviations drop by `drift` with the moved pairing, so the aligned baseline
-            # (`_offset`) stays. Moving it too made every correction ask for the next one: the
-            # pairing swung back and forth (hundreds of times a minute live).
-            self.turn.ref_start += drift
-            self._deviations.clear()
-            self._since = arrived
-        return 0
-
-    def feed(self, mic, fill):
-        """Feed the turn, with `fill` samples of silence for lost audio first; the output has no
-        samples for the filled stretch (one to one with what was sent)."""
-        if fill:
-            self._padded.append((self.turn.received, fill))
-            mic = np.concatenate([np.zeros(fill, np.float32), mic])
-        first = self.turn.emitted
-        out = self.turn.feed(mic)
-        if not self._padded:
-            return out
-        keep = np.ones(len(out), bool)
-        for start, n in self._padded:
-            a, b = max(start - first, 0), min(start + n - first, len(out))
-            if a < b:
-                keep[a:b] = False
-        while self._padded and sum(self._padded[0]) <= first + len(out):
-            self._padded.popleft()
-        return out[keep]
-
-
-def _echo_delay(mic, ref, late, early):
-    """Samples the echo in `mic` follows its reference: `ref` holds `late` samples before the
-    microphone's window, the window, and `early` after it. None when no clear echo is found."""
-    f = ALIGN_FRAME
-
-    def envelope(x):
-        n = len(x) // f
-        e = np.log10(np.mean(x[:n * f].reshape(n, f).astype(np.float64) ** 2, axis=1) + 1e-10)
-        return e
-
-    em, er = envelope(mic), envelope(ref)
-    em = em - em.mean()
-    if em.std() < 1e-6:
-        return None
-    em /= em.std()
-    n, base = len(em), late // f
-    scores = []
-    for lag in range(-(early // f), late // f + 1):  # lag > 0: the echo comes after the reference
-        seg = er[base - lag:base - lag + n]
-        if len(seg) < n or seg.std() < 1e-6:
-            scores.append(-1.0)
-            continue
-        scores.append(float(np.dot(em, (seg - seg.mean()) / seg.std()) / n))
-    scores = np.array(scores)
-    best = int(np.argmax(scores))
-    if scores[best] < .3 or scores[best] - np.median(scores) < .2:
-        return None
-    return (best - early // f) * f
-
-
 def _loopback(ring):
     from .loopback import LoopbackCapture
     return LoopbackCapture(ring)
@@ -227,9 +65,7 @@ class EchoCanceller:
         self._streams = OrderedDict()  # device_id -> DeviceStream, least recently used first
         self._turns = {}
         self._checkers = OrderedDict()  # device_id -> LocalVQE-alone stream for quick pre-roll checks
-        self._live_streams = OrderedDict()  # device_id -> DeviceStream(AdaptiveEngine), kept warm
-        self._live = {}  # device_id -> _Live
-        self._ref_dump = {}  # ORION_PC_MIC_DUMP: the paired reference per stream
+        self._ref_dump = {}  # ORION_PC_MIC_DUMP: the last turn's paired reference per device
         self._device_locks = {}
         self._lock = threading.Lock()
         self.last_turn = {}  # device_id -> stats of its last finished turn
@@ -292,6 +128,8 @@ class EchoCanceller:
         with lock:
             self._finish(device_id)
             stream = self._stream(device_id)
+            if stream is not None and hasattr(stream.engine, "new_turn"):
+                stream.engine.new_turn()  # warm-ups use this turn's audio, not the last turn's end
             if stream is None:
                 turn = _PassThrough()
             else:
@@ -309,15 +147,6 @@ class EchoCanceller:
             if turn is None:
                 raise KeyError(f"No open turn for {device_id}")
             return to_pcm16(self._feed(turn, to_float(pcm)))
-
-    def pc_playing(self, seconds=1.2):
-        """The PC played something within the last `seconds` (the echo-frame gate runs then)."""
-        if self._capture is None:
-            return False
-        from .engines import REF_THRESHOLD
-        end = self.ring.end
-        n = min(int(seconds * 16000), end)
-        return n > 0 and float(np.max(np.abs(self.ring.read(end - n, n)))) > REF_THRESHOLD
 
     def reference_quiet(self, start_time, preroll_samples, margin=0.5):
         """Whether the PC played nothing from `preroll_samples` (plus `margin` s for the echo's way
@@ -347,103 +176,8 @@ class EchoCanceller:
             out = np.concatenate([turn.feed(preroll), turn.finish()])
             return to_pcm16(out[:len(preroll)])
 
-    # --- the PC microphone's continuous stream ---
-
-    def open_live(self, device_id, arrived=None):
-        """Start (or restart) a device's continuous stream; its engines stay warm in between."""
-        arrived = self.clock() if arrived is None else arrived
-        with self._lock:
-            lock = self._device_locks.setdefault(device_id + "#live", threading.Lock())
-        with lock:
-            self._live[device_id] = self._new_live(device_id, arrived)
-
-    def feed_live(self, device_id, pcm, arrived=None):
-        """Raw PCM16 in (in order, no gaps); cleaned PCM16 out, aligned sample for sample."""
-        arrived = self.clock() if arrived is None else arrived
-        with self._device_locks[device_id + "#live"]:
-            live = self._live[device_id]
-            if live.engine is None and self._capture is not None and self._engine_factory and self._vqe_factory:
-                live = self._live[device_id] = self._new_live(device_id, arrived)  # models just became ready
-            mic = to_float(pcm)
-            fill = live.track(self.ring, arrived) or 0
-            c0 = time.thread_time()
-            out = live.feed(mic, fill) if isinstance(live.turn, Turn) else live.turn.feed(mic)
-            if os.environ.get("ORION_PC_MIC_DUMP") == "1" and isinstance(live.turn, Turn):
-                # The reference the canceller paired with this packet (filled silence included),
-                # read once the loopback has captured it.
-                end = live.turn.ref_start + live.turn.received
-                dump = self._ref_dump.setdefault(device_id, {"done": [], "pending": []})
-                dump["pending"].append((end - len(mic) - fill, len(mic) + fill))
-                while dump["pending"] and sum(dump["pending"][0]) <= self.ring.end:
-                    start, n = dump["pending"].pop(0)
-                    ref = np.zeros(n, np.float32)
-                    if start >= self.ring.end - self.ring.capacity:
-                        ref = self.ring.read(start, n)
-                    dump["done"].append(to_pcm16(ref))
-            live.align(self.ring, mic, arrived)  # after feeding: `received` includes this packet
-            live.cpu += time.thread_time() - c0
-            return to_pcm16(out)
-
     def take_ref_dump(self, device_id):
-        dump = self._ref_dump.pop(device_id, None)
-        return b"".join(dump["done"]) if dump else b""
-
-    def live_turn(self, device_id, active):
-        """A turn opened or closed on the PC: the chain may run while one is open."""
-        live = self._live.get(device_id)
-        if live is None or live.engine is None:
-            return
-        engine = live.engine
-        suppressor = getattr(live.turn.stream, "suppressor", None)
-        if engine.want_chain and not active:
-            _diag.info("Echo live turn %s: %.1f s, PC playing %.0f%% of it, chain switches %s so far, "
-                       "echo %s after its reference (pairing moved %.0f ms in all), lost microphone "
-                       "audio filled %d times (%.0f ms), drift corrections %d (%.0f ms), %s",
-                       device_id, engine.hops * 256 / 16000,
-                       100 * engine.playing_hops / engine.hops if engine.hops else 0, engine.switches,
-                       "not measured" if live.echo_delay is None else f"{live.echo_delay / 16:.0f} ms",
-                       -live.realigned / 16, live.fills, live.filled / 16, live.moves, live.moved / 16,
-                       suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
-        if suppressor:
-            suppressor.enabled = bool(active)  # standby: LocalVQE alone, as "Orion" is listened for
-        turn = live.turn
-        if isinstance(turn, Turn) and engine.want_chain and not active and live.turn_energy is not None:
-            mic, out = (turn.energy[k] - live.turn_energy[k] for k in ('mic', 'out'))
-            if mic > 0 and out > 0:
-                _diag.info("Echo live turn %s: microphone %.1f dB -> cleaned %.1f dB (the canceller took "
-                           "out %.1f dB, the user's own voice included)", device_id,
-                           10 * np.log10(mic / max(1, turn.counted - live.turn_counted)),
-                           10 * np.log10(out / max(1, turn.counted - live.turn_counted)),
-                           10 * np.log10(mic / out))
-        if active and not engine.want_chain and isinstance(turn, Turn):
-            live.turn_energy, live.turn_counted = dict(turn.energy), turn.counted
-        if active and not engine.want_chain:
-            engine.hops = engine.playing_hops = 0
-            if suppressor:
-                suppressor.summary(reset=True)  # standby's counts are dropped
-        engine.want_chain = bool(active)
-
-    def close_live(self, device_id):
-        with self._device_locks.get(device_id + "#live", threading.Lock()):
-            live = self._live.pop(device_id, None)
-        if live is not None:
-            seconds = live.turn.received / 16000
-            engine = live.engine
-            _diag.info("Echo live stream %s closed: %.0f s, cpu %.1f s (%.0f%% of a core), chain switches %s",
-                       device_id, seconds, live.cpu, 100 * live.cpu / seconds if seconds else 0,
-                       engine.switches if engine else "n/a (passthrough)")
-
-    def _new_live(self, device_id, arrived):
-        if self._capture is None or self._engine_factory is None or self._vqe_factory is None:
-            return _Live(_PassThrough(), None, arrived)
-        from .engines import AdaptiveEngine
-        chain_factory, vqe_factory = self._engine_factory, self._vqe_factory
-        stream = self._keyed_stream(self._live_streams, device_id,
-                                    lambda: AdaptiveEngine(vqe_factory(), chain_factory))
-        stream.engine.want_chain = False
-        if getattr(stream, "suppressor", None):
-            stream.suppressor.enabled = False
-        return _Live(Turn(stream, self.ring, self.ring.index_at(arrived), clock=self.clock), stream.engine, arrived)
+        return self._ref_dump.pop(device_id, b"")
 
     def _keyed_stream(self, streams, device_id, factory):
         if self._capture is None or factory is None:
@@ -481,9 +215,8 @@ class EchoCanceller:
         self.disarm()
         for device_id in list(self._streams):
             self.forget_device(device_id)
-        for streams in (self._checkers, self._live_streams):
-            while streams:
-                streams.popitem()[1].close()
+        while self._checkers:
+            self._checkers.popitem()[1].close()
 
     def status(self):
         capture = self._capture
@@ -508,7 +241,7 @@ class EchoCanceller:
             start = max(turn.ref_start, self.ring.end - self.ring.capacity)
             end = min(turn.ref_start + turn.received, self.ring.end)
             ref = self.ring.read(start, end - start) if end > start else np.zeros(0, np.float32)
-            self._ref_dump[device_id] = {"done": [to_pcm16(ref)], "pending": []}
+            self._ref_dump[device_id] = to_pcm16(ref)
         out = turn.finish()
         stream = turn.stream
         stats = self.last_turn[device_id] = {
@@ -533,13 +266,13 @@ class EchoCanceller:
         return out
 
     def _turn_engine(self):
-        """A phone turn's engine: as for the PC microphone, LocalVQE while the PC is silent and the
-        chain while it plays (warmed on the last second); the chain alone without LocalVQE."""
+        """A turn's engine (a phone's or this PC's microphone): LocalVQE while the PC is silent and
+        the chain while it plays (warmed on the last second); the chain alone without LocalVQE."""
         if self._vqe_factory is None:
             return self._engine_factory()
         from .engines import AdaptiveEngine
         engine = AdaptiveEngine(self._vqe_factory(), self._engine_factory)
-        engine.want_chain = True  # a phone's stream only runs inside turns
+        engine.want_chain = True  # audio only comes inside turns
         return engine
 
     def _stream(self, device_id):
