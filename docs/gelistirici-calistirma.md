@@ -89,9 +89,11 @@ Hub logunda yankı iptalli turlar için:
   canceller removed E dB (...), residual suppression avg S dB on N playing hops (G% gated), delay D ms, leak ...`
   (referans −120 dBFS ise PC sesi hiç alınmıyor demektir) ve
   `Remote mic turn <cihaz> ended (...): microphone: phone '<telefon adı>', ... gain avg A max B`.
-- PC mikrofonu (sürekli akış): bağlanınca `PC microphone pc:<kullanıcı>: <tarayıcının mikrofonu>`; her tur
-  bitince `PC microphone turn ... ended: microphone '<ad>', gain avg A max B`
-  ve `Echo live turn ...: S s, PC playing P% of it, ..., canceller removed ...` (aynı kalıntı yankı özeti).
+- PC mikrofonu (2026-10-24'ten beri telefon gibi: web "Orion"u ham seste dinler, Hub'a yalnızca turlar gider):
+  bağlanınca `PC microphone pc:<kullanıcı>: <mikrofon> ("Orion" heard by the web on the raw microphone)`;
+  her tur bitince telefon turundaki satırların aynısı, cihaz `pc:<kullanıcı>`:
+  `Remote mic turn pc:... ended (...)` ve `Echo turn pc:...: ...`. Kayıtlar (`ORION_PC_MIC_DUMP=1`)
+  `HHMMSS-pcturn-*.wav`. Eski sürekli akışta (eski web) `Echo live turn ...` satırları çıkar.
 - Kalıntı yankı bastırma (`audio/residual_echo.py`): iptalcinin çıkışında, bant bazında. "canceller removed":
   kullanıcı susarken iptalcinin sildiği ortalama dB; "residual suppression": bu katmanın PC çalarken ekstra
   kıstığı ortalama; "gated": iptalcinin anlık kaçırdığı, tüm kare kısılan hop oranı; "leak": öğrenilen kalıntı
