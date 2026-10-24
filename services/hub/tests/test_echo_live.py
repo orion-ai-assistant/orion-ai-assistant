@@ -89,6 +89,24 @@ class AdaptiveEngineTests(unittest.TestCase):
         np.testing.assert_allclose(out[HOP:], .25)
         self.assertEqual(self.engine.switches, 2)
 
+    def test_standalone_localvqe_pauses_on_the_chain_and_warms_up_on_the_way_back(self):
+        # A ramp, so a misaligned way back (a stale delay line) would show in the samples.
+        signal = np.arange(HOP * 8 * 40, dtype=np.float32) / 1e4
+        blocks = [signal[i:i + HOP * 8] for i in range(0, len(signal), HOP * 8)]
+        self.engine.want_chain = True
+        out = [self.engine.process(b, self.loud) for b in blocks[:10]]
+        self.assertTrue(self.engine.on_chain)
+        fed = self.engine.vqe.fed
+        out += [self.engine.process(b, self.loud) for b in blocks[10:20]]
+        self.assertEqual(self.engine.vqe.fed, fed)  # paused: the chain has its own LocalVQE
+        self.engine.want_chain = False
+        out += [self.engine.process(b, self.loud) for b in blocks[20:]]
+        self.assertFalse(self.engine.on_chain)
+        self.assertEqual(self.engine.vqe.fed, fed + WARMUP + len(signal) - 20 * HOP * 8)
+        out = np.concatenate(out)
+        back = 20 * HOP * 8 + HOP  # after the crossfade hop: LocalVQE, sample for sample
+        np.testing.assert_allclose(out[back:], .25 * signal[back - 640:len(signal) - 640], rtol=1e-6)
+
     def test_warm_up_history_is_about_one_second(self):
         for _ in range(20):
             self.engine.process(self.mic, self.loud)

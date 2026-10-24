@@ -216,10 +216,11 @@ class AdaptiveEngine:
     """The PC microphone's continuous stream: LocalVQE always; the chain (DTLN -> LocalVQE) while
     `want_chain` is set (a turn is open) and the PC plays something.
 
-    Both run on the raw mic and reference (never one after the other). LocalVQE keeps running so
-    a return to it is seamless; its output is delayed to the chain's latency so the two line up
-    sample for sample. When the chain is wanted it first runs over the last ~1 s of raw audio
-    (warm-up, output discarded), then one hop crossfades to it; the way back also crossfades."""
+    Each runs on the raw mic and reference (never one after the other); LocalVQE's output is
+    delayed to the chain's latency so the two line up sample for sample. Only one runs at a time:
+    the chain has a LocalVQE of its own, so the standalone one pauses while the chain works. A
+    switch either way first runs the incoming engine over the last ~1 s of raw audio (warm-up,
+    output discarded), then one hop crossfades to it."""
 
     def __init__(self, vqe, chain_factory):
         self.vqe = vqe
@@ -237,10 +238,13 @@ class AdaptiveEngine:
         self.switches = 0
         self.hops = self.playing_hops = 0  # for the logs: how much of a turn the PC played
 
-    def process(self, mic, ref):
+    def _localvqe(self, mic, ref):
         out_v = self.vqe.process(mic, ref)
         delayed = np.concatenate([self._align, out_v])
         self._align, out_v = delayed[len(out_v):], delayed[:len(out_v)]
+        return out_v
+
+    def process(self, mic, ref):
         for k in range(0, len(ref), HOP):
             peak = float(np.max(np.abs(ref[k:k + HOP]))) if len(ref[k:k + HOP]) else 0.0
             self._silent_hops = 0 if peak > REF_THRESHOLD else self._silent_hops + 1
@@ -253,6 +257,7 @@ class AdaptiveEngine:
         wanted = (self.want_chain and self._silent_hops < REF_HANGOVER
                   and (self.on_chain or self._playing_run >= MIN_PLAY_HOPS))
         if wanted and not self.on_chain:
+            out_v = self._localvqe(mic, ref)
             if self.chain is None:
                 self.chain = self._chain_factory()
             if len(self._history_mic):
@@ -267,12 +272,15 @@ class AdaptiveEngine:
             if wanted:
                 out = out_c
             else:
+                if len(self._history_mic):  # warm-up; its tail refills the delay line
+                    self._localvqe(self._history_mic, self._history_ref)
+                out_v = self._localvqe(mic, ref)
                 out = out_v.copy()
                 out[:HOP] = out_c[:HOP] * (1 - self._fade) + out_v[:HOP] * self._fade
                 self.on_chain = False
                 self.switches += 1
         else:
-            out = out_v
+            out = self._localvqe(mic, ref)
         self._history_mic = np.concatenate([self._history_mic, mic])[-WARMUP:]
         self._history_ref = np.concatenate([self._history_ref, ref])[-WARMUP:]
         return out
