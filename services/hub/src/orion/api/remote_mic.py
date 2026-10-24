@@ -504,6 +504,8 @@ class PcLink:
             log_turn_end(turn, reason)
         if turn and turn['open']:
             await self.cleaner.end_turn(turn['device'])
+        if turn:
+            _write_dump(self, turn)
         return turn
 
     async def _deliver(self, pcm):
@@ -637,6 +639,9 @@ async def clean_turn_audio(link, turn, pcm):
     ``turn``: {'device', 'preroll', 'need', 'started', 'open'}; nothing is sent once
     ``link.turn`` is another turn."""
     gain = turn.get('gain')
+    dump = _dump(link, holder=turn)
+    if dump is not None:
+        dump['raw'].append(bytes(pcm))
     if not turn['open']:
         take = turn['need'] - len(turn['preroll'])
         turn['preroll'] += pcm[:take]
@@ -651,14 +656,22 @@ async def clean_turn_audio(link, turn, pcm):
             turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
-            await link.send_bytes(gain.apply(out, gate=_playing(link)) if gain else out)
+            final = gain.apply(out, gate=_playing(link)) if gain else out
+            if dump is not None:
+                dump['cleaned'].append(out)
+                dump['final'].append(final)
+            await link.send_bytes(final)
         if not pcm:
             return
     if gain:
         gain.observe(pcm)
     out = await link.cleaner.process(turn['device'], pcm)
     if out and link.turn is turn:
-        await link.send_bytes(gain.apply(out, gate=_playing(link)) if gain else out)
+        final = gain.apply(out, gate=_playing(link)) if gain else out
+        if dump is not None:
+            dump['cleaned'].append(out)
+            dump['final'].append(final)
+        await link.send_bytes(final)
 
 
 def _gate_always():
@@ -669,6 +682,51 @@ def _gate_always():
 def _playing(link):
     cleaner = getattr(link, 'cleaner', None)
     return bool(cleaner is not None and hasattr(cleaner, 'pc_playing') and cleaner.pc_playing())
+
+
+def _dump(link, holder=None):
+    """ORION_PC_MIC_DUMP=1: keep a stream's raw, cleaned and final audio (last 90 s). `holder`: a
+    phone turn's dict instead of the PC microphone's link."""
+    if os.environ.get('ORION_PC_MIC_DUMP') != '1':
+        return None
+    dump = holder.get('_dump_parts') if holder is not None else getattr(link, '_dump_parts', None)
+    if dump is None:
+        dump = {'raw': [], 'cleaned': [], 'final': []}
+        if holder is not None:
+            holder['_dump_parts'] = dump
+        else:
+            link._dump_parts = dump
+    for parts in dump.values():
+        while sum(map(len, parts)) > SAMPLE_RATE * 2 * 90:
+            parts.pop(0)
+    return dump
+
+
+def _write_dump(link, turn=None):
+    """Write a dump to services/hub/data/pc-mic-dump; `turn`: a phone turn instead of the PC mic."""
+    dump = turn.get('_dump_parts') if turn is not None else getattr(link, '_dump_parts', None)
+    if not dump:
+        return
+    import wave
+    from pathlib import Path
+    folder = Path(__file__).resolve().parents[3] / 'data' / 'pc-mic-dump'
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime('%H%M%S') + ('-phone' if turn is not None else '-pc')
+    device = turn['device'] if turn is not None else link.device
+    canceller = getattr(getattr(link, 'cleaner', None), 'canceller', None)
+    if canceller is not None and hasattr(canceller, 'take_ref_dump'):
+        dump['reference'] = [canceller.take_ref_dump(device)]
+    for name, parts in dump.items():
+        with wave.open(str(folder / f'{stamp}-{name}.wav'), 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(b''.join(parts))
+    _diag.info('Microphone audio written to %s (%s-*.wav)', folder, stamp)
+    if turn is not None:
+        turn['_dump_parts'] = None
+    else:
+        link._dump_parts = None
 
 
 def _turn_gain():
@@ -749,10 +807,17 @@ class CleanLink:
             await self.cleaner.open_live(self.device, arrived - len(pcm) / 2 / SAMPLE_RATE)
         self.gain.observe(pcm)
         out = await self.cleaner.feed_live(self.device, pcm, arrived)
+        dump = _dump(self)
+        if dump is not None:
+            dump['raw'].append(pcm)
         if out:
             # Only inside a turn: in standby "Orion" is listened for on LocalVQE's output as is.
             gate = _gate_always() or (self.in_turn and _playing(self))
-            await self.send_bytes(self.gain.apply(out, gate=gate))
+            final = self.gain.apply(out, gate=gate)
+            if dump is not None:
+                dump['cleaned'].append(out)
+                dump['final'].append(final)
+            await self.send_bytes(final)
 
     async def close(self):
         worker, self._worker = self._worker, None
@@ -762,6 +827,7 @@ class CleanLink:
                 await worker
         if self.opened:
             self.opened = False
+            _write_dump(self)
             await self.cleaner.close_live(self.device)
             if self.backlog > 5:
                 _diag.info('PC microphone %s: up to %d packets waited to be cleaned', self.device, self.backlog)

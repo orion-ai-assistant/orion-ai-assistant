@@ -224,6 +224,7 @@ class EchoCanceller:
         self._checkers = OrderedDict()  # device_id -> LocalVQE-alone stream for quick pre-roll checks
         self._live_streams = OrderedDict()  # device_id -> DeviceStream(AdaptiveEngine), kept warm
         self._live = {}  # device_id -> _Live
+        self._ref_dump = {}  # ORION_PC_MIC_DUMP: the paired reference per stream
         self._device_locks = {}
         self._lock = threading.Lock()
         self.last_turn = {}  # device_id -> stats of its last finished turn
@@ -362,9 +363,25 @@ class EchoCanceller:
             fill = live.track(self.ring, arrived) or 0
             c0 = time.thread_time()
             out = live.feed(mic, fill) if isinstance(live.turn, Turn) else live.turn.feed(mic)
+            if os.environ.get("ORION_PC_MIC_DUMP") == "1" and isinstance(live.turn, Turn):
+                # The reference the canceller paired with this packet (filled silence included),
+                # read once the loopback has captured it.
+                end = live.turn.ref_start + live.turn.received
+                dump = self._ref_dump.setdefault(device_id, {"done": [], "pending": []})
+                dump["pending"].append((end - len(mic) - fill, len(mic) + fill))
+                while dump["pending"] and sum(dump["pending"][0]) <= self.ring.end:
+                    start, n = dump["pending"].pop(0)
+                    ref = np.zeros(n, np.float32)
+                    if start >= self.ring.end - self.ring.capacity:
+                        ref = self.ring.read(start, n)
+                    dump["done"].append(to_pcm16(ref))
             live.align(self.ring, mic, arrived)  # after feeding: `received` includes this packet
             live.cpu += time.thread_time() - c0
             return to_pcm16(out)
+
+    def take_ref_dump(self, device_id):
+        dump = self._ref_dump.pop(device_id, None)
+        return b"".join(dump["done"]) if dump else b""
 
     def live_turn(self, device_id, active):
         """A turn opened or closed on the PC: the chain may run while one is open."""
@@ -482,6 +499,11 @@ class EchoCanceller:
         if turn is None:
             return np.zeros(0, np.float32)
         c0 = time.thread_time()
+        if os.environ.get("ORION_PC_MIC_DUMP") == "1" and isinstance(turn, Turn):
+            start = max(turn.ref_start, self.ring.end - self.ring.capacity)
+            end = min(turn.ref_start + turn.received, self.ring.end)
+            ref = self.ring.read(start, end - start) if end > start else np.zeros(0, np.float32)
+            self._ref_dump[device_id] = {"done": [to_pcm16(ref)], "pending": []}
         out = turn.finish()
         stream = turn.stream
         stats = self.last_turn[device_id] = {
