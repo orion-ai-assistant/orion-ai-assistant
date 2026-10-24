@@ -458,3 +458,64 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         self.assertEqual([round(t - 10, 2) for t in seen], [0.0, 0.01, 0.02])  # not 0.5 / 1.0 late
         await link.close()
+
+    async def _local_link(self, canceller):
+        from orion.api.remote_mic import CleanLink
+        self.json, self.audio = [], []
+
+        async def send_json(message):
+            self.json.append(message)
+
+        async def send_bytes(data):
+            self.audio.append(data)
+        link = CleanLink('user', send_bytes, PhoneAudioCleaner(canceller), clock=lambda: 42.0, send_json=send_json)
+        await link.on_text({'type': 'source', 'label': 'Mic', 'local_wake': True})
+        return link
+
+    async def test_local_wake_cleans_only_turns_like_a_phone_turn(self):
+        fake = FakeCanceller()
+        link = await self._local_link(fake)
+        await link.on_audio(b'\x09\x00')  # standby: nothing reaches the canceller
+        await link.drain()
+        self.assertEqual(fake.calls, [])
+        await link.on_text(start(preroll_samples=2, start_sample=0, wake_end_sample=2))
+        self.assertEqual(self.json[0]['type'], 'turn_start')
+        await link.on_audio(b'\x01\x00\x02\x00\x03\x00')  # the pre-roll and one live sample
+        await link.on_audio(b'\x04\x00')
+        await link.drain()
+        while len(self.audio) < 3:
+            await asyncio.sleep(0)
+        self.assertEqual([c[:3] for c in fake.calls],
+                         [('start_turn', 'pc:user', b'\x01\x00\x02\x00'), ('process', 'pc:user', b'\x03\x00'),
+                          ('process', 'pc:user', b'\x04\x00')])
+        self.assertEqual(fake.calls[0][3], 42.0)
+        self.assertEqual(b''.join(self.audio), b'C\x01\x00\x02\x00C\x03\x00C\x04\x00')
+        await link.on_text({'type': 'turn_end', 'turn_id': 't1'})
+        self.assertEqual(fake.calls[-1], ('end_turn', 'pc:user'))
+        await link.on_audio(b'\x05\x00')
+        await link.drain()
+        self.assertEqual(fake.calls[-1], ('end_turn', 'pc:user'))
+        await link.close()
+
+    async def test_local_wake_with_a_silent_pc_needs_no_check(self):
+        class Quiet(FakeCanceller):
+            def reference_quiet(self, start_time, preroll_samples):
+                return True
+        link = await self._local_link(Quiet())
+        await link.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))
+        self.assertEqual(self.json[-1], {'type': 'preroll_check', 'turn_id': 't1', 'verified': True})
+        await link.close()
+
+    async def test_local_wake_audio_of_an_ended_turn_is_dropped(self):
+        fake = FakeCanceller()
+        link = await self._local_link(fake)
+        await link.on_text(start(preroll_samples=1, start_sample=0, wake_end_sample=1))
+        await link.on_audio(b'\x01\x00')
+        await link.on_text({'type': 'turn_reject', 'turn_id': 't1', 'reason': 'wake_not_verified'})
+        await link.on_text(start('t2', preroll_samples=1, start_sample=0, wake_end_sample=1))
+        await link.on_audio(b'\x02\x00')
+        await link.drain()
+        while not self.audio:
+            await asyncio.sleep(0)
+        self.assertEqual([c[:3] for c in fake.calls if c[0] == 'start_turn'], [('start_turn', 'pc:user', b'\x02\x00')])
+        await link.close()
