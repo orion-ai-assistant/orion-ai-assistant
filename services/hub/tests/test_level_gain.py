@@ -53,8 +53,9 @@ class RawLevelGainTests(unittest.TestCase):
 
     def test_echo_frames_are_lowered_while_the_pc_plays(self):
         gain = RawLevelGain()
-        gain.observe(pcm(.01, 20))  # the microphone hears the PC
-        leftover = pcm(.0005, 20)  # 26 dB quieter after the canceller: echo
+        gain.observe(pcm(.01, 30))  # the microphone hears the PC
+        leftover = pcm(.0005, 15)  # 26 dB quieter after the canceller: echo
+        gain.apply(leftover, gate=True)  # the first 160 ms + ramp stay (a soft sound in a word?)
         self.assertLess(rms(gain.apply(leftover, gate=True)), rms(leftover))
         self.assertGreater(gain.echo_frames, 15)
 
@@ -74,7 +75,8 @@ class RawLevelGainTests(unittest.TestCase):
 
     def test_a_quiet_microphones_echo_is_lowered_too(self):
         gain = RawLevelGain()
-        gain.observe(pcm(.0003, 20))  # the PC's echo at a -70 dBFS microphone
-        leftover = pcm(.00003, 20)  # ~20 dB under it after the canceller
+        gain.observe(pcm(.0003, 30))  # the PC's echo at a -70 dBFS microphone
+        leftover = pcm(.00003, 15)  # ~20 dB under it after the canceller
+        gain.apply(leftover, gate=True)
         self.assertLess(rms(gain.apply(leftover, gate=True)), 2 * rms(leftover))
         self.assertGreater(gain.echo_frames, 15)
