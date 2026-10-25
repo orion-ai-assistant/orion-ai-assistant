@@ -24,7 +24,7 @@ Between scenarios the sandbox returns to the same staged state by copying back a
 folders are not copied). Example:
 
   python scripts/release/drill_interruptions.py --previous-artifacts .tmp/build-work/20261018-081717
-      --update-artifacts .tmp/build-work/20261018-085633 --inputs .tmp/inputs
+      --update-artifacts .tmp/build-work/20261018-085633 --inputs .release/inputs
       --scratch-base C:/Users/<you>/.orion-lifecycle-tests
 """
 import argparse

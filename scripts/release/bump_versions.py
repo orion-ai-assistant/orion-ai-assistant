@@ -6,7 +6,7 @@ After a build (no acceptance yet), each package's bytes are compared with what t
   - the bootstrap is built for each feed (each bundles its own release-source.json) and compared with both.
 A component whose bytes differ gets sequence = published sequence + 1 and the next patch version
 (0.2.6 -> 0.2.7) with a matching package_id, its release json is rewritten and the bump is committed in that
-component's repository (never pushed). A version or sequence already set by hand above the published one is
+component's repository (release.py pushes it once the round is published). A version or sequence already set by hand above the published one is
 kept. An unchanged component is left exactly as it is. release.cmd then builds again: the build cache rebuilds
 only the bumped packages (orion-release.json, and with it the package id, is part of their bytes).
 """
@@ -169,7 +169,7 @@ def build_bootstrap(source, output):
     source_file = output.parent / 'release-source.json'
     source_file.write_text(json.dumps(source), encoding='utf-8')
     result = subprocess.run([sys.executable, str(HERE / 'build_bootstrap.py'),
-                             '--trusted-root', str(HERE / 'trusted-root.json'), '--inputs', str(ROOT / '.tmp/inputs'),
+                             '--trusted-root', str(HERE / 'trusted-root.json'), '--inputs', str(ROOT / '.release/inputs'),
                              '--output', str(output), '--single-key', '--release-source', str(source_file)],
                             capture_output=True, text=True, errors='replace')
     if result.returncode:

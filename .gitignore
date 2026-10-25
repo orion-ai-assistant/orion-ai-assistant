@@ -4,6 +4,8 @@ venv/
 env/
 .local_db/
 .tmp/
+# Release tools and fixed build inputs (release.cmd recreates them).
+.release/
 tmp/
 
 # Python cache

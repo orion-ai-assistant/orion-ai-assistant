@@ -25,7 +25,7 @@ Sekmeyi kapatmak servisleri durdurmaz. Bu komutlar yalnız mevcut izole fixture 
 Hub repo kökünden, mevcut test araçlarıyla:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_automatic_updates.py -q
+.release/tools/Scripts/python.exe -m pytest scripts/release/test_automatic_updates.py -q
 ```
 
 Bu testler kendi geçici registry, veriler, TUF anahtarları ve paketlerini oluşturur. Aktif kullanım sırasında hazırlama, tercih kapatma, 24 saat erteleme, internet kesintisi/geri gelmesi, watcher kapanışı ve kesilmiş indirmenin sonraki açılışta toparlanması sınanır. Testin native sağlık adaptörü sahtedir; gerçek Router/Hub/DB açmaz. Sandbox dosya replace engeli varsa normal PowerShell kullanıcı bağlamında çalıştır; ACL/güven denetimini kapatma.

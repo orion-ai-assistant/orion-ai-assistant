@@ -1,7 +1,7 @@
 """Keep only what the live version of a GitHub Release feed needs; delete the rest.
 
-    .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\prune_feed.py --feed router          # dry run: lists
-    .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\prune_feed.py --feed router --apply  # deletes
+    .release\\tools\\Scripts\\python.exe scripts\\release\\prune_feed.py --feed router          # dry run: lists
+    .release\\tools\\Scripts\\python.exe scripts\\release\\prune_feed.py --feed router --apply  # deletes
 
 A client reads timestamp.json -> N.snapshot.json -> M.targets.json -> <sha256>.<target name>. Kept:
 * every `N.root.json` (clients walk the root chain), `timestamp.json`, the plain bootstrap download and any asset

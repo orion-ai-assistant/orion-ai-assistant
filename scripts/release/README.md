@@ -15,11 +15,11 @@ It uploads candidate artifacts; it does not deploy or enable updates.
 Local equivalents, from the Hub repository:
 
 ```powershell
-uv venv .tmp/stage05-tools --python 3.11
-uv pip install --python .tmp/stage05-tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
-uv pip install --python .tmp/stage05-tools/Scripts/python.exe pytest
-python scripts/release/download_inputs.py .tmp/inputs
-python scripts/release/build_package.py --source . --release scripts/release/hub.json --inputs .tmp/inputs --postgres .tmp/inputs/postgresql-16.15-1-windows-x64-binaries.zip --output .tmp/candidates
+uv venv .release/tools --python 3.11
+uv pip install --python .release/tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
+uv pip install --python .release/tools/Scripts/python.exe pytest
+python scripts/release/download_inputs.py .release/inputs
+python scripts/release/build_package.py --source . --release scripts/release/hub.json --inputs .release/inputs --postgres .release/inputs/postgresql-16.15-1-windows-x64-binaries.zip --output .tmp/candidates
 ```
 
 Use the peer repository root and `release/package.json` for Router or Client.
@@ -47,9 +47,9 @@ selection rejects it explicitly rather than silently substituting CPU weights.
 One command builds, packages and accepts, and prints the wall-clock time of every step:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py                 # build + FULL acceptance
-.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py --accept fast   # build + quick pre-check
-.tmp/stage05-tools/Scripts/python.exe scripts/release/build_release.py --accept none   # build only
+.release/tools/Scripts/python.exe scripts/release/build_release.py                 # build + FULL acceptance
+.release/tools/Scripts/python.exe scripts/release/build_release.py --accept fast   # build + quick pre-check
+.release/tools/Scripts/python.exe scripts/release/build_release.py --accept none   # build only
 ```
 
 Options: `--serial` (one step at a time, also `--jobs N`), `--no-cache` (rebuild everything, the old
@@ -158,8 +158,8 @@ the sandbox of the last passing full acceptance (what a pending publish points t
 containing a file named `PINNED`, and anything younger than one hour; the rest is deleted. By hand:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/accept_packages.py --prune --dry-run --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
-.tmp/stage05-tools/Scripts/python.exe scripts/release/accept_packages.py --prune --keep 2 --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
+.release/tools/Scripts/python.exe scripts/release/accept_packages.py --prune --dry-run --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
+.release/tools/Scripts/python.exe scripts/release/accept_packages.py --prune --keep 2 --scratch-base "$env:LOCALAPPDATA\Orion\lifecycle-tests"
 # also trim the older product-*, stage04-*, router-access-pg-* families:  add --all-prefixes
 ```
 
@@ -467,7 +467,7 @@ hosting/signing remain open; previous Stage 01/03/04/05/06 debts remain recorded
 For a small project one Ed25519 key signs everything (TUF threshold 1). Create it once:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py init
+.release/tools/Scripts/python.exe scripts/release/release_keys.py init
 ```
 
 The encrypted private key goes to `~/.orion-release/release-key.pem` (never in Git; **back it up**,
@@ -476,7 +476,7 @@ losing it means existing installs cannot trust new releases). Commit only
 release json, build the packages, run `accept_packages.py`, then:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/publish_release.py --artifacts .tmp/candidates --accepted-result <accept result.json> --inputs .tmp/inputs
+.release/tools/Scripts/python.exe scripts/release/publish_release.py --artifacts .tmp/candidates --accepted-result <accept result.json> --inputs .release/inputs
 ```
 
 Add `--dry-run` to stage without uploading. Upload needs the `gh` CLI signed in. Packages are published
@@ -736,8 +736,8 @@ set; a package that was not accepted is refused). `--repo`/`--tag` override the 
 
 ```powershell
 # Order matters: the Router feed first, then the Hub feed (which no longer lists a Router target).
-python scripts/release/publish_release.py --feed router --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .tmp/inputs
-python scripts/release/publish_release.py --feed hub    --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .tmp/inputs
+python scripts/release/publish_release.py --feed router --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .release/inputs
+python scripts/release/publish_release.py --feed hub    --artifacts .tmp/candidates/<set> --accepted-result <result.json> --inputs .release/inputs
 ```
 
 Both bundles are built from the same `bootstrap.json` (same `sequence`/`package_id`), so bump it once. The Router

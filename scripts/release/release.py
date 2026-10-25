@@ -1,10 +1,10 @@
 """One command for a release round: build (what changed), accept, sign and publish.
 
-    .tmp\\stage05-tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish] [--no-bump]
+    .release\\tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish] [--no-bump]
 
 1. Version bump (bump_versions.py): build without acceptance, compare every package and each feed's bootstrap
    with what the live feeds list (sha256) and, for what changed, raise sequence/version/package_id in its release
-   json and commit that in its repository (never pushed). `--no-bump` uses the release jsons as they are.
+   json and commit that in its repository (pushed after the publish, step 4). `--no-bump` uses the release jsons as they are.
    `--version 0.3.1` gives every component published in this round (and the bootstrap, changed or not) that version, each
    with sequence = published + 1, changed or not; it must be above every published version.
 2. `build_release.py` (build cache, parallel builds, full acceptance; reuses an identical earlier pass). After a
@@ -14,6 +14,9 @@
    bootstrap bundle is reused when scripts/release/bootstrap.json still has the sequence of the newest staged
    bundle of that feed; bump bootstrap.json to ship a new one.
 The release key passphrase is asked once, first (a wrong one fails before the build). Nothing is published when a step fails.
+4. After a publish, the release commits (version bumps, a renewed root) are pushed in every repository that has them
+   (`--no-push` keeps them local), so the next round, on any PC, starts from the published versions.
+The fixed build inputs (.release/inputs, from inputs.json) are downloaded when missing.
 """
 import argparse
 import json
@@ -32,6 +35,34 @@ BOOTSTRAP = 'orion-bootstrap-windows-x64.zip'
 SCRATCH = Path.home() / '.orion-lifecycle-tests'
 BUMP_CHECK = ROOT / '.tmp/candidates/bump-check'  # step 1's build: compared with the feeds, then discarded
 BOOTSTRAP_CHECK = ROOT / '.tmp/release/bootstrap-check'
+INPUTS = ROOT / '.release/inputs'
+REPOSITORIES = [ROOT, ROOT.parent / 'orion-ai-assistant-flutter', ROOT.parent / 'orion-router']
+
+
+def ensure_inputs():
+    """The fixed Python/PostgreSQL/Redis/FFmpeg archives: kept from an earlier round, else downloaded (hash-checked)."""
+    old = ROOT / '.tmp/inputs'
+    if not INPUTS.exists() and old.is_dir():
+        INPUTS.parent.mkdir(exist_ok=True)
+        old.rename(INPUTS)  # the layout before .release/
+    import download_inputs
+    download_inputs.download(INPUTS)
+
+
+def push_release_commits():
+    """Push every repository whose branch is ahead of its upstream (the bumps this round committed). Never fails
+    the release: it is already published."""
+    for repository in REPOSITORIES:
+        if not (repository / '.git').exists():
+            continue
+        ahead = subprocess.run(['git', '-C', str(repository), 'rev-list', '--count', '@{u}..HEAD'],
+                               capture_output=True, text=True)
+        if ahead.returncode or ahead.stdout.strip() in ('', '0'):
+            continue
+        if subprocess.run(['git', '-C', str(repository), 'push', '-q'], cwd=ROOT).returncode:
+            print(f'WARNING: pushing {repository.name} failed; the release is published. Push it by hand.', flush=True)
+        else:
+            print(f'Pushed {repository.name} ({ahead.stdout.strip()} commit(s)).', flush=True)
 
 
 def run_build(extra, accept='full'):
@@ -71,7 +102,7 @@ def staged_bootstrap(feed):
 
 def publish(feed, candidates, result, dry_run, deferred=None, bootstrap=None):
     command = [sys.executable, str(HERE / 'publish_release.py'), '--feed', feed, '--artifacts', str(candidates),
-               '--inputs', str(ROOT / '.tmp/inputs')]
+               '--inputs', str(INPUTS)]
     command += ['--accepted-result', str(result)] if result else ['--skip-acceptance']
     if deferred is not None:
         command += ['--defer-timestamp', str(deferred)]
@@ -116,10 +147,13 @@ def main():
                         help='give every component published in this round (and the bootstrap when it is rebuilt) '
                              'this version, each with sequence = its published sequence + 1, changed or not; must be '
                              'above every published version')
+    parser.add_argument('--no-push', action='store_true',
+                        help='keep the release commits local (default: push them once the release is published)')
     parser.add_argument('--feeds', nargs='+', choices=['router', 'hub'], default=['router', 'hub'],
                         help='feeds to publish, in this order (default: router, then hub)')
     args = parser.parse_args()
     sys.path.insert(0, str(HERE))
+    ensure_inputs()
     if args.version is not None and args.no_bump:
         parser.error('--version and --no-bump exclude each other')
     live = renewed = None
@@ -185,6 +219,8 @@ def main():
                        check=True)
     if deferred:
         print('Published: ' + ', '.join(d['repo'] for d in deferred) + ' (timestamps uploaded back to back).')
+        if not args.no_push:
+            push_release_commits()
     if deferred and not args.no_prune_feed:
         # Only now that the new versions are live: drop what the live version does not list. A client that was
         # downloading a dropped package retries at its next check and gets the new one. Never fails a release.

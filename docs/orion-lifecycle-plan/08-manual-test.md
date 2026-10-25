@@ -7,7 +7,7 @@
 Hub repo kökünden:
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_rollout_lifecycle.py scripts/release/test_release_packages.py -q
+.release/tools/Scripts/python.exe -m pytest scripts/release/test_rollout_lifecycle.py scripts/release/test_release_packages.py -q
 ```
 
 Redis/Hub modülü isteyen yaşam döngüsü testleri Hub venv ile:
@@ -146,10 +146,10 @@ Client yeni sürüme güncellendikten sonra uygulama penceresinde (eski sürümd
 
 ## İki feed, tek başına Router, bileşen ekleme, kaldırma (19 Ekim 2026 ekleri)
 
-Yeni otomatik testler (Hub repo kökünden, `.tmp/stage05-tools`; işletim sistemi ACL'i yüzünden gerekirse `LOCALAPPDATA`'yı özel bir klasöre yönlendir):
+Yeni otomatik testler (Hub repo kökünden, `.release/tools`; işletim sistemi ACL'i yüzünden gerekirse `LOCALAPPDATA`'yı özel bir klasöre yönlendir):
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe -m pytest scripts/release/test_multi_feed.py scripts/release/test_add_components.py scripts/release/test_user_uninstall.py scripts/release/test_publish_feeds.py scripts/release/test_automatic_updates.py scripts/release/test_bootstrap_update.py scripts/lifecycle/test_product_identity.py -q
+.release/tools/Scripts/python.exe -m pytest scripts/release/test_multi_feed.py scripts/release/test_add_components.py scripts/release/test_user_uninstall.py scripts/release/test_publish_feeds.py scripts/release/test_automatic_updates.py scripts/release/test_bootstrap_update.py scripts/lifecycle/test_product_identity.py -q
 ```
 
 Gerçek makine denemeleri (**temiz hesap/VM**; çalışan kurulumunun üzerinde deneme). Önce yayın sırası: **Router feed'i, sonra Hub feed'i** (`publish_release.py --feed router`, ardından `--feed hub`; bootstrap `bootstrap.json` sequence 5).
@@ -176,7 +176,7 @@ Otomatik: `scripts/release/test_automatic_updates.py -k "launch or retried"`, `s
 Otomatik kanıt (gerçek paketlerle, isteğe bağlı, her yayında değil; birkaç dakika): eski kabul edilmiş paket setini sandbox'a kurar, yenisini hazırlar, güncellemeyi indirme / yedekleme / geçiş / sağlık denetimi sırasında **tüm işlem ağacını öldürerek** keser, Orion'u normal girişten yeniden açar ve sonucu denetler (tamamlandı ya da eski sürüm, `repair_required` yok, güncellemeden önce yazılan PostgreSQL satırı yerinde, Çık birkaç saniye):
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/drill_interruptions.py --previous-artifacts <eski set> --update-artifacts <yeni set> --inputs .tmp/inputs --scratch-base $HOME\.orion-lifecycle-tests
+.release/tools/Scripts/python.exe scripts/release/drill_interruptions.py --previous-artifacts <eski set> --update-artifacts <yeni set> --inputs .release/inputs --scratch-base $HOME\.orion-lifecycle-tests
 ```
 
 Birim testleri: `scripts/release/test_update_visibility.py -k cut_off`, `test_stop_reliability.py`, `test_version_skew.py`, `test_postgres_recovery.py`.

@@ -205,7 +205,7 @@ def finalize(work, output, kinds=tuple(COMPONENTS)):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--output', type=Path, help='candidate directory (default .tmp/candidates/<package ids>)')
-    parser.add_argument('--inputs', type=Path, default=ROOT / '.tmp/inputs')
+    parser.add_argument('--inputs', type=Path, default=ROOT / '.release/inputs')
     parser.add_argument('--cache', type=Path, default=ROOT / '.tmp/build-cache')
     parser.add_argument('--accept', choices=['full', 'fast', 'none'], default='full')
     parser.add_argument('--serial', action='store_true', help='one step at a time (also --jobs 1)')

@@ -45,16 +45,20 @@ içindir. Ayrıntılı teknik başvuru: [scripts/release/README.md](../scripts/r
 
 ## 2. Bir kerelik kurulum (yeni geliştirici PC'si)
 
-PowerShell, Hub deposunun kökünde:
+Yayın araçları ve girdileri depo kökündeki `.release/` klasöründe durur (git'e girmez, `.tmp`'den ayrı:
+`.tmp` silinebilir, `.release` silinirse yeniden kurulur). `release.cmd` ikisini de eksikse kendisi kurar:
+`.release/tools` (Python ortamı, `requirements.txt`'ten) ve `.release/inputs` (sabit sürümlü arşivler,
+`inputs.json`'dan, hash kontrollü indirme). Elle kurmak (ör. testler için pytest) gerekirse, PowerShell, Hub
+deposunun kökünde:
 
 ```powershell
 # Yayın araçlarının Python ortamı
-uv venv .tmp/stage05-tools --python 3.11
-uv pip install --python .tmp/stage05-tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
-uv pip install --python .tmp/stage05-tools/Scripts/python.exe pytest
+uv venv .release/tools --python 3.11
+uv pip install --python .release/tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
+uv pip install --python .release/tools/Scripts/python.exe pytest
 
 # Sabitlenmiş girdiler (Python, PostgreSQL, Redis, FFmpeg arşivleri; hash'leri inputs.json'da)
-.tmp/stage05-tools/Scripts/python.exe scripts/release/download_inputs.py .tmp/inputs
+.release/tools/Scripts/python.exe scripts/release/download_inputs.py .release/inputs
 
 # GitHub CLI oturumu (yükleme için)
 gh auth login
@@ -73,9 +77,9 @@ güvenmemesi demektir.
 
 ```powershell
 # Yalnızca projenin ilk kurulumunda bir kez:
-.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py init
+.release/tools/Scripts/python.exe scripts/release/release_keys.py init
 # Parolanın doğru olduğunu denemek için (hiçbir şeyi değiştirmez):
-.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py check
+.release/tools/Scripts/python.exe scripts/release/release_keys.py check
 ```
 
 `init` iki dosya üretir:
@@ -109,7 +113,7 @@ bootstrap'ına girer. Elle bir şey yapman gerekmez.
 Gerekirse elle de yenilenebilir (aynı anahtar, yeni bir 100 yıl):
 
 ```powershell
-.tmp/stage05-tools/Scripts/python.exe scripts/release/release_keys.py renew-root
+.release/tools/Scripts/python.exe scripts/release/release_keys.py renew-root
 ```
 
 1. Komut `scripts/release/trusted-root.json`'u bir sonraki sürüme yükseltir.
@@ -131,8 +135,9 @@ gerekmez. `release.cmd` derlemeden sonra, kabul testinden önce şunu yapar (`sc
    feed'dekiyle de karşılaştırılır (`.tmp/release/bootstrap-check/<feed>`).
 3. **Baytları değişen** her bileşen için: `sequence` = yayınlanan + 1, `version` yayınlananın bir sonraki
    yaması (0.2.6 → 0.2.7), `package_id` buna göre. Dosya yazılır ve kendi deposunda commit edilir
-   (`-c commit.gpgsign=false`, yalnızca o json; **push edilmez**). Bootstrap'ın `sequence`'ı iki feed için
-   tektir.
+   (`-c commit.gpgsign=false`, yalnızca o json). Yayın başarıyla bitince bu commit'ler (ve yenilenen kök
+   kaydı) her depoda **push edilir** (`--no-push` ile yerelde kalır), böylece bir sonraki tur, hangi PC'de olursa
+   olsun, yayınlanan sürümlerden başlar. Bootstrap'ın `sequence`'ı iki feed için tektir.
 4. **Değişmeyen** bileşenin dosyasına dokunulmaz. **Hiçbir şey değişmediyse** (ve kök yenilenmediyse)
    `release.cmd` burada durur: "Nothing changed since the live release: nothing to publish". Kabul testi
    çalışmaz, hiçbir şey yüklenmez, feed sayacı (N.snapshot) artmaz. `--version` verilirse bu kontrol devre dışıdır.
@@ -209,7 +214,7 @@ Elle çalıştırmak için:
 
 Temizliği kapatmak için `release.cmd --no-prune-feed`.
 
-`release.cmd` şunu çalıştırır: `.tmp\stage05-tools\Scripts\python.exe scripts\release\release.py`.
+`release.cmd` şunu çalıştırır: `.release\tools\Scripts\python.exe scripts\release\release.py`.
 
 Adım adım ne olur:
 1. **Parola** sorulur ve anahtar açılır.
@@ -398,7 +403,8 @@ der; kurulu sürüm değişmez. Bir sonraki denetimde yeni sürümü indirir.
 ## 9. Agent'lar için kurallar
 
 - **Parola:** İmza parolasını asla girme, isteme veya saklama. Kullanıcı `release.cmd`'yi çalıştırır.
-- **Kullanıcının izni gerekenler:** Push, dal birleştirme ve feed'e elle yükleme. Hepsi dışarıya açık
+- **Kullanıcının izni gerekenler:** Push (`release.cmd`'nin yayın sonundaki kendi push'u hariç: onu kullanıcı
+  çalıştırır), dal birleştirme ve feed'e elle yükleme. Hepsi dışarıya açık
   işlemlerdir.
 - **Gerçek kurulum:** Gerçek `%LOCALAPPDATA%\Orion` kurulumuna test yazma. Testler
   `~/.orion-lifecycle-tests` altında çalışır.
