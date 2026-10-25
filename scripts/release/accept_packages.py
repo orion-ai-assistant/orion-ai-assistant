@@ -47,7 +47,7 @@ import sandbox_prune
 from timing import Timings
 
 DEFAULT_CACHE = ROOT / '.tmp/build-cache'
-DEFAULT_KEEP = 3
+DEFAULT_KEEP = 2
 
 
 class FixtureFetcher(FetcherInterface):
