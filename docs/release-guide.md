@@ -192,6 +192,7 @@ Hepsi Hub deposunun kökünden:
 | `.\release.cmd --dry-run` | Her şeyi hazırlar ve imzalar ama yüklemez | İmza/hazırlık denemesi |
 | `.\release.cmd --version 0.3.1` | Bu turda yayınlanan her bileşeni (değişmese de) `0.3.1` yapar (bkz. bölüm 3) | Sürümleri hizalamak |
 | `.\release.cmd --no-bump` | Sürüm dosyalarını olduğu gibi kullanır, otomatik yükseltme yok (bkz. bölüm 3) | Elle sürüm yönetimi |
+| `.\release.cmd --no-push` | Yayından sonra sürüm commit'lerini push etmez, yerelde bırakır | Push'u elle yapmak istersen |
 | `.\release.cmd --force-accept` | Aynı paket seti daha önce geçmiş olsa da kabul testini yeniden çalıştırır | Şüphe varsa |
 
 Seçenekler birleşebilir, ör. `.\release.cmd --feeds router --no-accept`.
@@ -235,8 +236,13 @@ Adım adım ne olur:
 4. **`publish_release.py`:** Önce `--feed router`, sonra `--feed hub`. Her feed için metadata imzalanır ve
    eksik asset'ler yüklenir. İki feed'in `timestamp.json`'u en sonda arka arkaya yüklenir, böylece iki feed
    aynı anda görünür hale gelir.
+5. **Push:** Yayın bittikten sonra dalı upstream'inin önünde olan her depo (Hub, Flutter, Router) push edilir:
+   sürüm commit'leri ve o dalda bekleyen diğer commit'ler. Başarısız olursa yayın bozulmaz, yalnızca uyarı
+   yazılır (`--no-push` ile atlanır).
 
-Ara dosyalar:
+En baştan önce: `.release/tools` yoksa `release.cmd` onu kurar, `.release/inputs` eksikse `release.py` indirir.
+
+Ara dosyalar (`.tmp` altındakilerin hepsi silinebilir; `.release` silinmemeli ama silinirse kendiliğinden yeniden kurulur):
 - `.tmp/build-cache`: önbellek, silinebilir.
 - `.tmp/candidates`: derlenen paket setleri.
 - `.tmp/release/<feed>-v<N>`: hazırlanan feed sürümü.

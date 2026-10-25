@@ -12,7 +12,9 @@ Builds are sequential: Flutter web, Router static dashboard, then the three ZIPs
 The workflow runs real candidate installation acceptance after the security suite.
 It uploads candidate artifacts; it does not deploy or enable updates.
 
-Local equivalents, from the Hub repository:
+Local equivalents, from the Hub repository. `release.cmd` does the first four lines itself when
+`.release/tools` or `.release/inputs` is missing (`.release/` is not in git and, unlike `.tmp/`, is meant
+to stay); after a published round `release.py` pushes the release commits (`--no-push` keeps them local).
 
 ```powershell
 uv venv .release/tools --python 3.11
