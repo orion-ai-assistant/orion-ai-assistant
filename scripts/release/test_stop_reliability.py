@@ -227,18 +227,22 @@ def test_the_entry_script_shows_stop_failures_and_survives_native_stderr():
 def test_hub_and_router_stop_at_the_same_time_and_the_window_closes_first(fakes):
     registry, calls, stop_hub, stop_router = fakes
     threads = []
+    # Each stop returns only once the other one is running too, so one-after-the-other stops break the
+    # barrier (the timeout bounds only that failure) and the launch reports them; no wall-clock budget.
+    both_running = threading.Barrier(2, timeout=30)
     from services.shared.installation_registry import operation_lock
     def hub(root):
         # Like the real packaged stop_hub: it takes the installation operation lock (that this stop holds).
         with operation_lock(registry.path, timeout=0):
             calls.append('hub')
             threads.append(threading.current_thread())
-            time.sleep(.6)
+            both_running.wait()
+    def router(script):
+        calls.append('router')
+        both_running.wait()
     stop_hub.side_effect = hub
-    stop_router.side_effect = lambda script: (calls.append('router'), time.sleep(.6))
-    started = time.monotonic()
-    assert launcher.launch(registry, stop=True) == {'status': 'stopped'}
-    assert time.monotonic() - started < 1.1  # Not 0.6 + 0.6.
+    stop_router.side_effect = router
+    assert launcher.launch(registry, stop=True) == {'status': 'stopped'}  # Not one stop after the other.
     assert calls.index('window') < min(calls.index('hub'), calls.index('router'))
     # The Hub stop re-enters the operation lock this stop holds: a Windows mutex is per thread.
     assert threads == [threading.current_thread()]
