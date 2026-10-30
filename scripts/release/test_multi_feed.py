@@ -270,7 +270,7 @@ def test_every_feed_failing_is_a_failed_check(world):
     fetcher.offline.update({HUB, ROUTER})
     service.check(with_router=True)
     assert service.helper.status() is None
-    assert service.status()['error'] == 'UpdateError'
+    assert service.status()['error'] == 'DownloadError'  # The feed's reason, not a generic UpdateError.
 
 
 def router_scope(service):

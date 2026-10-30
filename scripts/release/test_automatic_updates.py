@@ -98,7 +98,7 @@ def test_failure_preserves_last_success_then_online_retry_after_interval(automat
     service.client_factory = lambda: client
     service.check()
     assert service.status()['last_success'] is None
-    assert service.status()['error'] == 'UpdateError'
+    assert service.status()['error'] == 'DownloadError'
     fetcher.offline = False
     now[0] += INTERVAL + 1
     service.client_factory = factory

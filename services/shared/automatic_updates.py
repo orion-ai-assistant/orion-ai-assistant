@@ -583,7 +583,11 @@ class AutomaticUpdates:
                     state['outcome'] = 'up_to_date'
                     return
                 if failures and checked is None:
-                    raise UpdateError(failures[0])  # Every feed failed: that is a failed check.
+                    # Every feed failed: that is a failed check. Keep the feed's own reason (DownloadError,
+                    # URLError...) so the card says the server was unreachable, not "could not prepare".
+                    error = UpdateError(failures[0])
+                    error.code = failures[0]
+                    raise error
                 if failures:
                     state['feed_errors'] = failures  # Reachable feeds still update; the failure stays visible.
                 else:
@@ -630,7 +634,7 @@ class AutomaticUpdates:
                     update_log.log(self.base, 'check.staged', scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.
-                state['error'] = type(error).__name__
+                state['error'] = getattr(error, 'code', None) or type(error).__name__
                 state['outcome'] = None
                 update_log.log_exception(self.base, 'check', error)
             finally:
