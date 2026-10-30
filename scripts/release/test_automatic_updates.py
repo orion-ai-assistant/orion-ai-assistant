@@ -88,6 +88,23 @@ def test_disable_or_pause_at_admission_prevents_new_preparation(automatic):
     assert host.stopped_calls == 0
 
 
+def test_check_cut_short_by_quit_is_interrupted_not_an_error_and_retries(automatic, monkeypatch):
+    from services.shared.process_lifecycle import LifecycleError
+    service, now, data, host = automatic
+    real = service.helper.prepare
+    def busy(*args, **kwargs):
+        raise LifecycleError('Lifecycle busy or mutex inaccessible')  # Orion is closing and holds the install.
+    monkeypatch.setattr(service.helper, 'prepare', busy)
+    service.check()
+    status = service.status()
+    assert status['error'] is None and status['check_outcome'] == 'interrupted'
+    assert status['newer']['components']['hub']  # What the check found stays on the card.
+    monkeypatch.setattr(service.helper, 'prepare', real)
+    now[0] += 60  # Well inside the 6-hour spacing: the cut-short round was not spent.
+    service.check()
+    assert service.helper.status()['phase'] == 'staged'
+
+
 def test_failure_preserves_last_success_then_online_retry_after_interval(automatic):
     service, now, data, host = automatic
     factory = service.client_factory

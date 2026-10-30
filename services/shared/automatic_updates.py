@@ -538,7 +538,8 @@ class AutomaticUpdates:
             if pending and pending['phase'] not in TERMINAL and pending['phase'] not in WAITING:
                 return self._skip('pending', explicit)  # Downloading or being applied: never race it.
             # Keep the schedule an older check started (it only knew `last_attempt`) before a refresh moves it.
-            state['last_round'] = self.clock() if download else state.get('last_round', state.get('last_attempt', 0))
+            previous_round = state.get('last_round', state.get('last_attempt', 0))
+            state['last_round'] = self.clock() if download else previous_round
             state.update(last_attempt=self.clock(), error=None, bootstrap_error=None, outcome=None,
                          running_pid=os.getpid())
             write_json(self.state_path, state)
@@ -632,6 +633,12 @@ class AutomaticUpdates:
                     self.helper.prepare(Selection(), names, automatic=not manual, automatic_scope=self.scope,
                                         **({'requested_by': 'user'} if manual and consent else {}))
                     update_log.log(self.base, 'check.staged', scope=self.scope)
+            except LifecycleError:
+                # Orion was closing (or another operation held the install): the check was cut short, nothing
+                # failed. Not an error; the round is not spent, so the next round looks again.
+                state['last_round'] = previous_round
+                state['outcome'] = 'interrupted'
+                update_log.log(self.base, 'check.interrupted', scope=self.scope)
             except Exception as error:
                 # Never persist URLs, subprocess output, credentials or server error bodies.
                 state['error'] = getattr(error, 'code', None) or type(error).__name__
