@@ -1,4 +1,8 @@
-"""First sentence immediately, then bounded batches of whatever is ready."""
+"""First sentence immediately, then bounded batches of whatever is ready.
+
+A sentence under MIN_WORDS ("Selam.") is not spoken alone: it waits for the
+next one. The reply's end sends whatever is left, so a short reply still speaks.
+"""
 import asyncio
 from collections import deque
 from contextlib import suppress
@@ -11,9 +15,11 @@ class AdaptiveTts:
     MAX_QUEUED_CHARS = 12_000
     MAX_BATCH_SENTENCES = 3
     MAX_BATCH_CHARS = 600
+    MIN_WORDS = 3
 
     def __init__(self, context, settings, should_stop, arrival_ms):
         self.segmenter = SentenceSegmenter()
+        self.held = ""
         self.queue = deque()
         self.queued_chars = 0
         self.condition = asyncio.Condition()
@@ -60,7 +66,22 @@ class AdaptiveTts:
             self.source += text
             pieces = self.segmenter.feed(text)
         self.committed = self.source[:len(self.source) - len(self.segmenter.pending)]
-        await self._put(pieces)
+        await self._put(self._join_short(pieces))
+
+    def _join_short(self, pieces, final=False):
+        result = []
+        for piece in pieces:
+            if self.held:
+                piece = f"{self.held} {piece}"
+                self.held = ""
+            if len(piece.split()) < self.MIN_WORDS:
+                self.held = piece
+            else:
+                result.append(piece)
+        if final and self.held:
+            result.append(self.held)
+            self.held = ""
+        return result
 
     async def _put(self, pieces):
         for piece in pieces:
@@ -96,7 +117,7 @@ class AdaptiveTts:
 
     async def finish(self):
         if not self.closed:
-            await self._put(self.segmenter.feed("", final=True))
+            await self._put(self._join_short(self.segmenter.feed("", final=True), final=True))
             async with self.condition:
                 self.closed = True
                 self.condition.notify_all()

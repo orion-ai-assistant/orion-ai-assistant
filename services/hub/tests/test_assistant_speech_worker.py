@@ -15,7 +15,7 @@ PCM = {"format": "pcm", "encoding": "pcm_s16le", "sample_rate": 24000, "channels
 
 
 class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
-    async def run_turn(self, mode, fail_audio=False):
+    async def run_turn(self, mode, fail_audio=False, audio=True):
         events = []
         heard = asyncio.Event()
         ended = False
@@ -39,17 +39,17 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
         record = SimpleNamespace(chat_id='chat', user_id='user', channel='events', turn_id='turn',
                                  created_at=datetime.now(timezone.utc).isoformat(), enabled_tools='[]')
         context = JobContext(record, JobCreateRequest(user_id='user', origin_session_id='session',
-            input=JobInput(text='istek', audio=True, speech_mode=mode)), redis)
+            input=JobInput(text='istek', audio=audio, speech_mode=mode)), redis)
         async def llm(*args):
             nonlocal ended
             yield 'thinking', 'PRIVATE THINKING'
-            yield 'content', 'Merhaba. '
+            yield 'content', 'Merhaba, nasıl yardımcı olabilirim? '
             if mode == 'adaptive' and not fail_audio:
                 await asyncio.wait_for(heard.wait(), 1)
             else:
                 self.assertEqual(requests, [])
             yield 'content', 'Sonraki.'
-            yield 'content_snapshot', 'Merhaba. Sonraki.'
+            yield 'content_snapshot', 'Merhaba, nasıl yardımcı olabilirim? Sonraki.'
             ended = True
         conversation = SimpleNamespace(stream=llm, activity=[], transcript=[], rounds=[])
         async def provider(text, *_):
@@ -76,16 +76,22 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]['type'], 'done')
         self.assertEqual(events[-1]['data']['status'], 'completed')
         self.assertFalse(any(event['type'] == 'error' for event in events))
-        self.assertEqual(history.call_args.args[2][-1]['content'], 'Merhaba. Sonraki.')
+        self.assertEqual(history.call_args.args[2][-1]['content'], 'Merhaba, nasıl yardımcı olabilirim? Sonraki.')
         self.assertTrue(all('PRIVATE' not in text for text in requests))
         return events, requests
 
     async def test_adaptive_is_early_and_whole_waits_for_llm(self):
         for mode in ('adaptive', 'whole'):
             events, requests = await self.run_turn(mode)
-            self.assertEqual(requests, ['Merhaba.', 'Sonraki.'] if mode == 'adaptive' else ['Merhaba. Sonraki.'])
+            self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim?', 'Sonraki.'] if mode == 'adaptive'
+                             else ['Merhaba, nasıl yardımcı olabilirim? Sonraki.'])
             self.assertEqual(sum(event['type'] == 'audio_start' for event in events), 1)
             self.assertEqual(sum(event['type'] == 'audio_done' for event in events), 1)
+
+    async def test_plain_chat_without_audio_field_speaks_early_too(self):
+        events, requests = await self.run_turn('adaptive', audio=None)
+        self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim?', 'Sonraki.'])
+        self.assertEqual(sum(event['type'] == 'audio_done' for event in events), 1)
 
     async def test_tts_failure_does_not_fail_or_duplicate_the_text_response(self):
         events, requests = await self.run_turn('adaptive', fail_audio=True)

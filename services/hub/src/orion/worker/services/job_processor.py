@@ -350,6 +350,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
     )
 
     adaptive_tts = None
+    # No "audio" field (the plain chat) means speak, in both speech modes.
+    is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
     try:
         output_tokens: list[str] = []
         thinking_tokens: list[str] = []
@@ -432,7 +434,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     return max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
 
                 if (getattr(context.request.input, "speech_mode", "whole") == "adaptive"
-                        and settings.tts_enabled and context.audio_requested):
+                        and settings.tts_enabled and is_audio_requested):
                     adaptive_tts = AdaptiveTts(context, settings, _check_stop, arrival_ms)
 
                 stream = conversation.stream(messages, settings, _check_stop, llama_stream_chat_typed)
@@ -632,7 +634,6 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             # --- Multimodal: Text-to-Speech (TTS) Integration ---
             await context.emit_text_done(metrics)
             audio_entry = None
-            is_audio_requested = context.audio_requested if context.request.input.audio is not None else True
             should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
             if adaptive_tts:
                 if stopped:

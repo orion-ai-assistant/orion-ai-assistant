@@ -63,15 +63,15 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
         with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('İlk cümle. ')
+            await speech.feed('İlk cümle burada. ')
             await asyncio.wait_for(first.wait(), 1)
             self.assertFalse(speech.closed)
             self.assertEqual(context.emit_audio_stream.call_args_list[0].args[0], 'audio_start')
-            await speech.feed('İkinci. Üçüncü. Dördüncü. Son parça')
+            await speech.feed('İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi. Son parça')
             release.set()
             result = await asyncio.wait_for(speech.finish(), 1)
         self.assertEqual(result, {'saved': True})
-        self.assertEqual(requests, ['İlk cümle.', 'İkinci. Üçüncü. Dördüncü.', 'Son parça'])
+        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi.', 'Son parça'])
         events = context.emit_audio_stream.call_args_list
         self.assertEqual(sum(c.args[0] == 'audio_start' for c in events), 1)
         self.assertEqual(sum(c.args[0] == 'audio_done' for c in events), 1)
@@ -80,6 +80,34 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 4])
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
             self.assertEqual(wav.readframes(3), b'\x01\x02' * 3)
+
+    async def test_short_sentence_waits_for_the_next_one(self):
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Selam. ')
+            await asyncio.sleep(0.05)
+            self.assertEqual(requests, [])
+            await speech.feed('Bugün sana bir fıkra anlatayım. Temel')
+            await asyncio.sleep(0.05)
+            self.assertEqual(requests, ['Selam. Bugün sana bir fıkra anlatayım.'])
+            await speech.feed(' gülmüş.')
+            await speech.finish()
+        self.assertEqual(requests, ['Selam. Bugün sana bir fıkra anlatayım.', 'Temel gülmüş.'])
+
+    async def test_short_reply_is_spoken_at_the_end(self):
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Selam, naber?')
+            await speech.finish()
+        self.assertEqual(requests, ['Selam, naber?'])
 
     async def test_snapshot_does_not_duplicate_committed_sentences(self):
         requests = []
@@ -101,11 +129,11 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             yield
         with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('İlk. ')
+            await speech.feed('İlk cümle burada. ')
             await speech.task
             await speech.feed('Metin devam edebilir. ')
             self.assertIsNone(await speech.finish())
-        self.assertEqual(requests, ['İlk.'])
+        self.assertEqual(requests, ['İlk cümle burada.'])
         self.assertIsInstance(speech.error, RuntimeError)
 
     async def test_stop_while_waiting_for_more_text_cancels_every_task(self):
@@ -139,7 +167,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError('transport failed')
         with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('İlk. ')
+            await speech.feed('İlk cümle burada. ')
             await speech.task
         context.emit_audio.assert_awaited_once()
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
@@ -158,7 +186,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
             speech.MAX_QUEUED_CHARS = 30
-            await speech.feed('İlk. ')
+            await speech.feed('İlk cümle burada. ')
             await asyncio.wait_for(entered.wait(), 1)
             producer = asyncio.create_task(speech.feed('Sonraki cümle. ' * 20))
             await asyncio.sleep(0)
@@ -176,11 +204,11 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             yield b'compressed', {"format": "mp3"}
         with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('İlk. ')
+            await speech.feed('İlk cümle burada. ')
             await speech.task
             await speech.feed('Devam. ')
             await speech.finish()
-        self.assertEqual(requests, ['İlk.'])
+        self.assertEqual(requests, ['İlk cümle burada.'])
         self.assertIsNotNone(speech.error)
         context.emit_audio_stream.assert_not_awaited()
 
