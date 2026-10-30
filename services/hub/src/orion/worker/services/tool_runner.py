@@ -118,7 +118,10 @@ class ToolConversation:
                        if name not in self.failed_tools and not (self.research_used and name in WEB_TOOLS)]
             calls = []
             round_content = ""
-            kwargs = {"stop_checker": stop_checker}
+            # Providers match the cache on the prompt's start, not on a chat. The user's chats all begin
+            # with the same system prompt and tool definitions (about a thousand tokens), so one key per
+            # user keeps every chat and every tool round on the machine that already holds that start.
+            kwargs = {"stop_checker": stop_checker, "cache_key": self.context.user_id}
             if schemas:
                 kwargs["tools"] = schemas
             async with aclosing(stream_fn(messages, settings, **kwargs)) as stream:

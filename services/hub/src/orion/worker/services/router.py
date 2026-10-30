@@ -137,8 +137,13 @@ async def llama_stream_chat_typed(
     settings: RuntimeSettings,
     stop_checker: Callable[[], Awaitable[bool]] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    cache_key: str | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar.
+
+    cache_key (kullanıcı kimliği) bir yönlendirme ipucudur: Router bunu sağlayıcının prompt cache'ine
+    ulaşmak için kullanır, böylece önceki mesajlar ucuz "cached input" fiyatından yazılır. Cache'te
+    eşleşmeyi isteğin başlangıcı (system prompt, araçlar, geçmiş) belirler, sohbet değil.
 
     Yields:
         ("thinking", token) — reasoning / chain-of-thought içeriği
@@ -155,6 +160,8 @@ async def llama_stream_chat_typed(
     }
     if settings.temperature is not None:
         payload["temperature"] = settings.temperature
+    if cache_key:
+        payload["prompt_cache_key"] = cache_key
     thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
     if tools:
         payload["tools"] = tools

@@ -69,28 +69,44 @@ def _without_direct_copy(group):
     return projected
 
 
-def model_history(history, max_messages):
-    """Keep whole user turns, including paired calls/results, at the boundary."""
+# The model window slides in blocks of up to this many turns, not every turn. A provider reuses its
+# prompt cache only while the start of the prompt stays byte-identical; a window that moves each turn
+# changes that start on every request, so a long chat would stop hitting the cache for good.
+HISTORY_SLIDE_TURNS = 4
+
+
+def model_history(history, max_messages, slide=1):
+    """Keep whole user turns, including paired calls/results, at the boundary.
+
+    ``slide`` > 1 lets the window start only at every ``slide``-th turn of the chat (never more than a
+    third of the window), so consecutive requests share their whole prefix until the window moves.
+    """
     groups = []
     for message in history:
         if message.get("role") == "user" or not groups:
             groups.append([])
         if groups:
             groups[-1].append(message)
-    kept = []
-    count = 0
-    for group in reversed(groups):
+    valid = []
+    for group in groups:
         if group[0].get("failed_turn"):
             continue
         ids = [call["id"] for msg in group for call in msg.get("tool_calls", [])]
         results = [msg.get("tool_call_id") for msg in group if msg.get("role") == "tool"]
-        if ids != results:
-            continue
+        if ids == results:
+            valid.append(group)
+    kept = []
+    count = 0
+    for group in reversed(valid):
         group = _without_direct_copy(group)
         if kept and count + len(group) > max_messages:
             break
         kept.insert(0, group)
         count += len(group)
+    # Turn indexes count from the start of the chat, so the window start only moves every ``block`` turns.
+    start = len(valid) - len(kept)
+    block = max(1, min(slide, len(kept) // 3))
+    kept = kept[min(-(-start // block) * block - start, len(kept) - 1):]
     names = {call['id']: call.get('function', {}).get('name')
              for group in kept for msg in group for call in msg.get('tool_calls', [])}
     return [{key: (_model_tool_content(msg, names.get(msg.get('tool_call_id'))) if msg.get('role') == 'tool' else history_content(msg))

@@ -21,7 +21,7 @@ from orion.worker.services.router import llama_stream_chat_typed
 from orion.worker.services.tts_stream import relay_tts
 from orion.worker.services.adaptive_tts import AdaptiveTts
 from orion.worker.services.tool_runner import ToolConversation
-from orion.worker.services.tool_history import model_history
+from orion.worker.services.tool_history import HISTORY_SLIDE_TURNS, model_history
 from orion.worker.services.tool_display import DisplayTimeline
 from orion.kernel.media_store import hydrate_model_media
 from orion.contracts.events import StreamEvent
@@ -155,7 +155,7 @@ async def load_history(
             content = data.get("content")
             if role:
                 history.append(data)
-        return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages))
+        return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages, HISTORY_SLIDE_TURNS))
 
     # Cache Miss — hydrate from PostgreSQL
     logging.info("Worker cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
@@ -177,7 +177,7 @@ async def load_history(
         )
 
     # Return only the last max_messages entries
-    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(db_history), max_messages))
+    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(db_history), max_messages, HISTORY_SLIDE_TURNS))
 
 
 async def append_history(
