@@ -50,6 +50,8 @@ async def persist_failed_turn(redis, chat_id, turn_id, user_message, error, stat
     from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX
     from orion.kernel.registry import insert_messages
     from orion.kernel.job_safety import job_key, TERMINAL_TTL
+    if not await redis.hsetnx(job_key(turn_id), 'history_saved', '1'):
+        return  # A newer turn replaced this one and already saved it.
     state = state or {}
     partial = state.get('partial_text', '')
     assistant = {
@@ -68,7 +70,6 @@ async def persist_failed_turn(redis, chat_id, turn_id, user_message, error, stat
     for message in messages:
         pipe.rpush(CHAT_HISTORY_KEY_PREFIX + chat_id, json.dumps(message))
     pipe.expire(CHAT_HISTORY_KEY_PREFIX + chat_id, TERMINAL_TTL)
-    pipe.hset(job_key(turn_id), 'history_saved', '1')
     await pipe.execute()
     try:
         await insert_messages(chat_id=chat_id, messages=messages)

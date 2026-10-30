@@ -139,6 +139,18 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     application.state.local_entry = local_entry
     application.state.local_http = local_http
     configure_cors(application)
+
+    from fastapi.responses import JSONResponse
+    from redis.exceptions import LockError, LockNotOwnedError
+
+    @application.exception_handler(LockError)
+    async def chat_busy(_request: Request, exc: LockError):
+        # Another device's send or a reset holds the chat; not a server fault.
+        if isinstance(exc, LockNotOwnedError):
+            raise exc
+        return JSONResponse({'detail': 'Sohbet şu an başka bir işlemle meşgul. Biraz sonra tekrar deneyin.'},
+                            status_code=503)
+
     from orion.api.sessions import redact_server_logs
     redact_server_logs()
     application.include_router(auth_router, prefix='/api/v1')

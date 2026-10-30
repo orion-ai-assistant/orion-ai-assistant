@@ -16,6 +16,7 @@ class FailedTurnRetentionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.redis = MagicMock()
         self.redis.hset = AsyncMock()
+        self.redis.hsetnx = AsyncMock(return_value=True)
         self.redis.hgetall = AsyncMock(return_value={'partial_text': 'partial'})
         self.redis.publish = AsyncMock()
         self.redis.pipeline.return_value.execute = AsyncMock()

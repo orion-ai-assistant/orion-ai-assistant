@@ -47,6 +47,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.redis.lrange = AsyncMock(return_value=[])
         self.redis.delete = AsyncMock()
         self.redis.publish = AsyncMock()
+        self.redis.hsetnx = AsyncMock(return_value=True)
         self.redis.pipeline.return_value.execute = AsyncMock()
         self.access = patch.object(job_service, 'check_chat_access', AsyncMock(
             return_value=ChatAccessResult(state='ok', meta={'user_id': 'alice'})))

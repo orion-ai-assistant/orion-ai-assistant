@@ -110,7 +110,8 @@ async def acquire_owner(redis):
                 # Separate installations have independent Redis journals/locks.
                 # Legacy -m launchers identify their installation by cwd; new
                 # launchers also carry an absolute process_child.py path.
-                root = Path(__file__).resolve().parents[5]
+                from .data_paths import install_root
+                root = install_root() or Path(__file__).resolve().parents[3]
                 command = proc.info['cmdline'] or []
                 adapters = [Path(arg) for arg in command if Path(arg).name == 'process_child.py']
                 same_root = (any(path.resolve() == root / 'services/shared/process_child.py' for path in adapters)

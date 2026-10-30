@@ -138,7 +138,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         with wave.open(wav, 'wb') as output:
             output.setnchannels(1); output.setsampwidth(2); output.setframerate(24000)
             output.writeframes(b'\0\0' * 24000)
-        redis = Mock(publish=AsyncMock())
+        redis = Mock(publish=AsyncMock(), hsetnx=AsyncMock(return_value=True))
         context = JobContext(SimpleNamespace(chat_id='chat', turn_id='turn', channel='events'), None, redis)
         live_recording = await context.emit_audio(wav.getvalue(), sample_rate=24000)
         live = json.loads(redis.publish.call_args.args[1])['data']
@@ -172,7 +172,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('audio', ref)
 
     async def test_admission_removes_inline_media_from_queue_state_and_echo(self):
-        redis = Mock(exists=AsyncMock(return_value=False))
+        redis = Mock(exists=AsyncMock(return_value=False), hgetall=AsyncMock(return_value={}))
         redis.pipeline.return_value.execute = AsyncMock()
         request = JobCreateRequest(user_id='alice', chat_id='chat', input={
             'text': 'question', 'attachments': [self.attachment()],

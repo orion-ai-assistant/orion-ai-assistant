@@ -288,7 +288,9 @@ async def rename_chat_endpoint(chat_id: str, payload: ChatRenameRequest, request
 
 @router.delete("/api/v1/chats/{chat_id}")
 async def delete_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    return await delete_chat(request.app.state.redis, current_user, chat_id)
+    # A message sent meanwhile must not write the chat back after it is gone.
+    async with request.app.state.redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
+        return await delete_chat(request.app.state.redis, current_user, chat_id)
 
 @router.get("/api/v1/admin/chats")
 async def admin_list_all_chats(request: Request):
@@ -300,7 +302,8 @@ async def admin_list_all_chats(request: Request):
 async def admin_delete_chat(chat_id: str, request: Request):
     _check_admin_key(request)
     redis: Redis = request.app.state.redis
-    return await delete_chat(redis, user_id=None, chat_id=chat_id, admin=True)
+    async with redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
+        return await delete_chat(redis, user_id=None, chat_id=chat_id, admin=True)
 
 @router.patch("/api/v1/admin/chats/{chat_id}/rename")
 async def admin_rename_chat(chat_id: str, payload: ChatRenameRequest, request: Request):

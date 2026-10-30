@@ -195,6 +195,11 @@ async def append_history(
     """
     if not messages or max_messages <= 0:
         return
+    turn_id = messages[0].get('turn_id')
+    if turn_id and not await redis.hsetnx(job_key(turn_id), 'history_saved', '1'):
+        # A newer turn replaced this one and already saved it.
+        logging.info('History of turn %s in chat %s is already saved', turn_id, chat_id)
+        return
 
     # The live relay (including audio_done) has already completed. Compress only
     # the history copy here, so encoding cannot delay the PCM stream boundary.
@@ -212,9 +217,6 @@ async def append_history(
     pipe = redis.pipeline()
     for message in messages:
         pipe.rpush(key, json.dumps(message))
-    turn_id = messages[0].get('turn_id')
-    if turn_id:
-        pipe.hset(job_key(turn_id), 'history_saved', '1')
     # Cache full UI history; model_history applies a turn-safe context boundary.
     pipe.expire(key, settings.redis_cache_ttl_seconds)
     await pipe.execute()

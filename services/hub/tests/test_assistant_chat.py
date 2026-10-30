@@ -2,9 +2,14 @@ import json
 import unittest
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import HTTPException
+
+from orion.api import routes
 from orion.api.services import assistant_chat, job_service
+from orion.kernel import data_paths
 from orion.contracts.access import ChatAccessResult
 from orion.contracts.http import JobCreateRequest, JobCreateResponse
 from orion.contracts.settings import RuntimeSettings
@@ -15,6 +20,7 @@ class FakeRedis:
     def __init__(self):
         self.values = {}
         self.published = []
+        self.on_lock = {}  # Lock name -> what happens while waiting for it.
 
     async def get(self, key):
         return self.values.get(key)
@@ -31,6 +37,8 @@ class FakeRedis:
     def lock(self, name, **_):
         @asynccontextmanager
         async def held():
+            if name in self.on_lock:
+                self.on_lock.pop(name)()
             yield
         return held()
 
@@ -117,10 +125,93 @@ class AssistantChatTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await assistant_chat.claim_assistant_chat(self.redis, 'alice', 'shared'), 'old')
         self.assertEqual(self.announced(), ['old'])
 
-    async def test_unreadable_database_falls_back_to_a_new_chat(self):
-        with patch.object(assistant_chat, 'get_assistant_chat_db', AsyncMock(side_effect=RuntimeError('down'))), \
-                self.assertLogs(level='ERROR'):
-            self.assertIsNone(await assistant_chat.current_assistant_chat(self.redis, 'alice'))
+    async def test_unreadable_database_does_not_open_a_second_chat(self):
+        with patch.object(assistant_chat, 'get_assistant_chat_db', AsyncMock(side_effect=RuntimeError('down'))),                 self.assertLogs(level='ERROR'):
+            with self.assertRaises(HTTPException) as error:
+                await assistant_chat.create_assistant_message(self.redis, self.request('old'))
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(self.created, [])
+        self.assertEqual(self.announced(), [])
+
+    async def test_a_reset_while_waiting_for_the_chat_opens_a_new_one(self):
+        self.db_chat = 'shared'
+
+        def reset():
+            self.chats.discard('shared')
+            self.db_chat = None
+            self.redis.values.pop('assistant:chat:alice', None)
+        self.redis.on_lock['chat:lifecycle:shared'] = reset
+        created = await assistant_chat.create_assistant_message(self.redis, self.request('shared'))
+        self.assertEqual(created.chat_id, 'new')
+        self.assertEqual([p.chat_id for p in self.created], [None])
+        self.assertEqual(self.announced(), ['new'])
+
+
+class ChatResetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deleting_a_chat_waits_for_a_send_into_it(self):
+        redis = FakeRedis()
+        order = []
+        redis.on_lock['chat:lifecycle:chat'] = lambda: order.append('locked')
+
+        async def delete(*_args):
+            order.append('deleted')
+            return {'status': 'deleted'}
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=redis)))
+        with patch.object(routes, 'delete_chat', delete):
+            await routes.delete_chat_endpoint('chat', request, current_user='alice')
+        self.assertEqual(order, ['locked', 'deleted'])
+
+
+class SupersededHistoryTests(unittest.IsolatedAsyncioTestCase):
+    def redis(self, state, claimed=True):
+        redis = MagicMock()
+        redis.hgetall = AsyncMock(return_value=state)
+        redis.hsetnx = AsyncMock(return_value=claimed)
+        redis.lrange = AsyncMock(return_value=['{"role": "user", "content": "earlier"}'])
+        redis.pipeline.return_value.execute = AsyncMock()
+        return redis
+
+    def pushed(self, redis):
+        return [json.loads(call.args[1]) for call in redis.pipeline.return_value.rpush.call_args_list]
+
+    async def test_a_replaced_turn_keeps_its_question_and_partial_answer(self):
+        redis = self.redis({
+            'status': 'processing', 'active_turn_id': 'old', 'partial_text': 'Yarım',
+            'current_user_message': json.dumps({'role': 'user', 'content': 'ilk soru', 'turn_id': 'old'}),
+            'partial_tools': '[]', 'partial_display': '[]',
+        })
+        with patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
+            await job_service._keep_superseded_turn(redis, 'chat', 3600)
+        expected = [{'role': 'user', 'content': 'ilk soru', 'turn_id': 'old'},
+                    {'role': 'assistant', 'content': 'Yarım', 'turn_id': 'old'}]
+        self.assertEqual(self.pushed(redis), expected)
+        self.assertEqual(insert.call_args.kwargs['messages'], expected)
+        redis.hsetnx.assert_awaited_once_with('orion:job:old', 'history_saved', '1')
+
+    async def test_a_turn_already_saved_or_finished_is_not_saved_again(self):
+        running = {'status': 'queued', 'active_turn_id': 'old',
+                   'current_user_message': json.dumps({'role': 'user', 'content': 'q'})}
+        for redis in (self.redis(running, claimed=False), self.redis({**running, 'status': 'completed'})):
+            with patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
+                await job_service._keep_superseded_turn(redis, 'chat', 3600)
+            self.assertEqual(self.pushed(redis), [])
+            insert.assert_not_awaited()
+
+    async def test_the_replaced_worker_saves_nothing_after_the_new_turn_did(self):
+        redis = self.redis({}, claimed=False)
+        with patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
+            await processor.append_history(redis, 'chat', [{'role': 'user', 'content': 'q', 'turn_id': 'old'},
+                                                          {'role': 'assistant', 'content': 'a', 'turn_id': 'old'}],
+                                           20, RuntimeSettings())
+        self.assertEqual(self.pushed(redis), [])
+        insert.assert_not_awaited()
+
+
+class ContainerPathTests(unittest.TestCase):
+    def test_a_container_layout_has_a_data_folder(self):
+        with patch.object(data_paths, '__file__', '/app/src/orion/kernel/data_paths.py'):
+            self.assertIsNone(data_paths.install_root())
+            self.assertEqual(data_paths.hub_data(), Path('/app/data').resolve())
 
 
 class SupersededTurnTests(unittest.IsolatedAsyncioTestCase):

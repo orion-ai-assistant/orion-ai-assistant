@@ -129,6 +129,9 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     # Legacy metadata can contain a second copy of every attachment.
     payload.input.metadata.pop('attachments', None)
 
+    if payload.chat_id:
+        await _keep_superseded_turn(redis, chat_id, settings.redis_cache_ttl_seconds)
+
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
     meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
@@ -204,6 +207,41 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
 
     return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id,
                              generation_id=turn_id, attachments=payload.input.display_attachments())
+
+
+async def _keep_superseded_turn(redis: Redis, chat_id: str, cache_ttl_seconds: int) -> None:
+    """A new turn replaces a running one: its question stays, as after a stop.
+
+    The Worker of the replaced turn then saves nothing; whichever of the two
+    claims the turn's history first writes it.
+    """
+    from orion.kernel.registry import insert_messages
+    state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
+    turn_id = state.get("active_turn_id")
+    if state.get("status") not in {"queued", "processing"} or not turn_id or not state.get("current_user_message"):
+        return
+    if not await redis.hsetnx(job_key(turn_id), "history_saved", "1"):
+        return
+    assistant = {"role": "assistant", "content": state.get("partial_text", ""), "turn_id": turn_id}
+    if state.get("partial_thinking"):
+        assistant["thinking"] = state["partial_thinking"]
+    for field, key in (("partial_tools", "tool_activity"), ("partial_display", "display_parts")):
+        value = json.loads(state.get(field) or "[]")
+        if value:
+            assistant[key] = value
+    messages = [{**json.loads(state["current_user_message"]), "turn_id": turn_id}, assistant]
+    # An expired cache list must be rebuilt first, or it would hold only this turn.
+    await _load_history_with_hydration(redis, chat_id, cache_ttl_seconds)
+    history_key = get_key(CHAT_HISTORY_KEY_PREFIX, chat_id)
+    pipe = redis.pipeline()
+    for message in messages:
+        pipe.rpush(history_key, json.dumps(message))
+    pipe.expire(history_key, cache_ttl_seconds)
+    await pipe.execute()
+    try:
+        await insert_messages(chat_id=chat_id, messages=messages)
+    except Exception:
+        logger.exception("Superseded turn saved in Redis but not PostgreSQL for chat %s", chat_id)
 
 
 async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None = None) -> JobStopResponse:

@@ -7,6 +7,7 @@ last is answered: a new turn supersedes the chat's active one (the worker stops 
 """
 import logging
 
+from fastapi import HTTPException
 from redis.asyncio import Redis
 
 from orion.contracts.constants import ASSISTANT_CHAT_KEY_PREFIX, ROOM_USER_PREFIX
@@ -41,9 +42,10 @@ async def current_assistant_chat(redis: Redis, user_id: str) -> str | None:
         await redis.delete(_key(user_id))
     try:
         chat_id = await get_assistant_chat_db(user_id)
-    except Exception:
+    except Exception as exc:
+        # Not "no chat yet": a new chat would split the conversation in two.
         logger.exception('Could not read the assistant chat of %s', user_id)
-        return None
+        raise HTTPException(503, 'Asistan sohbeti okunamadı. Biraz sonra tekrar deneyin.') from exc
     if chat_id:
         await _cache(redis, user_id, chat_id)
     return chat_id
@@ -85,18 +87,24 @@ async def create_assistant_message(redis: Redis, payload: JobCreateRequest) -> J
     """
     from orion.api.services.job_service import check_chat_access, create_job
     user_id = payload.user_id
-    async with _lock(redis, user_id):
-        chat_id = await current_assistant_chat(redis, user_id)
-        if not chat_id and payload.chat_id:
-            if (await check_chat_access(redis, user_id, payload.chat_id)).state == 'ok':
-                chat_id = payload.chat_id
-                await _adopt(redis, user_id, chat_id)
-        if not chat_id:
-            payload.chat_id = None
-            created = await create_job(redis, payload)
-            await _adopt(redis, user_id, created.chat_id)
-            return created
-    payload.chat_id = chat_id
-    payload.tool_selection = None  # A draft's tools only apply to a new chat.
-    async with redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
-        return await create_job(redis, payload)
+    device_chat = payload.chat_id
+    for attempt in range(3):
+        async with _lock(redis, user_id):
+            chat_id = await current_assistant_chat(redis, user_id)
+            if not chat_id and device_chat:
+                if (await check_chat_access(redis, user_id, device_chat)).state == 'ok':
+                    chat_id = device_chat
+                    await _adopt(redis, user_id, chat_id)
+            if not chat_id:
+                payload.chat_id = None
+                created = await create_job(redis, payload)
+                await _adopt(redis, user_id, created.chat_id)
+                return created
+        async with redis.lock(f'chat:lifecycle:{chat_id}', timeout=120, blocking_timeout=10):
+            # Reset ("Sohbeti sıfırla") between the two locks: look for the chat again.
+            if attempt < 2 and (await check_chat_access(redis, user_id, chat_id)).state == 'not_found':
+                device_chat = None
+                continue
+            payload.chat_id = chat_id
+            payload.tool_selection = None  # A draft's tools only apply to a new chat.
+            return await create_job(redis, payload)
