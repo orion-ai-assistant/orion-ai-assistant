@@ -114,6 +114,16 @@ flutter test test/phone_microphone_test.dart test/voice_assistant_test.dart
 cd ../../packages/vad_audio && flutter test
 ```
 
+Flutter testlerinde takılmamak için (bir dosya normalde saniyeler sürer; ilk derleme ~1 dk):
+
+- Her koşuya süre sınırı koy: `timeout 300 flutter test <dosya> --timeout 60s`. Başarısız bir widget testi
+  temizliği (`recorder.disposed` gibi) atlayıp `tearDownAll`'da dakikalarca asılı kalabilir.
+- Çıktıyı `| tail` ile bekleme; koşu bitene kadar hiçbir şey görünmez. Arka planda çalıştırıyorsan çıktı dosyasına bak.
+- Yeni testi önce tek başına çalıştır (`--plain-name "<test adı>"`), geçince dosyanın tamamını çalıştır.
+- Flutter testleri varsayılan olarak **Android** platformunda koşar. PC/web davranışını sınayan bir test
+  `variant: TargetPlatformVariant.only(TargetPlatform.windows)` almalı; `debugDefaultTargetPlatformOverride`
+  test gövdesi bitmeden sıfırlanmazsa test hata verir.
+
 ## 7. Kurulu Orion'a geri dönmek
 
 Kaynaktaki Hub/Router'ı durdur (`stop_hub`, `stop_router`), web/telefon `flutter run` terminallerini kapat,
