@@ -30,14 +30,23 @@ Hub akışın tamamını (en fazla 24 MB) toplar ve PCM'yi WAV olarak mevcut mes
 alanına kaydeder. Başarılı `audio` kaydı `audio_done` ve sohbet `done` eventlerinden
 önce yayınlanır. `arrival_ms` ilk ses verisinin istekten itibaren geliş süresidir.
 Kullanıcının durdurduğu PCM akışının iletilmiş kısmı WAV olarak saklanır (`status: stopped`).
-İlk örnek gelmeden durdurulursa kayıt veya yeni TTS isteği oluşmaz. Hatalı akışın
-kısmi sesi tamamlanmış kayıt olarak saklanmaz.
+İlk örnek gelmeden durdurulursa kayıt veya yeni TTS isteği oluşmaz. Cümle bazlı (adaptive)
+üretimde bir parça (1-3 cümlelik istek) hata verirse aynı parça 1 saniye sonra bir kez daha istenir
+(parça yarıda kopmuşsa konuşulan ilk kısım tekrar duyulabilir; yarım örnek asla kalmaz). İkinci deneme de
+olmazsa o parça atlanır ve sonraki cümleler yine seslendirilir; kayıt `status: failed` ile, yalnız
+konuşulan parçaların metniyle sohbete kaydedilir ve dinlenebilir. Şu durumlarda yeniden denenmez ve
+kalan metin seslendirilmez: HTTP 401/403/429 (kota, erişim), oynatılamayan biçim, art arda iki parçanın
+(ikişer denemeyle) başarısız olması. Her başarısız deneme Hub loguna `Speech part N failed (attempt a of b): <hata>`
+olarak yazılır. Tek istekli (whole) akışta hatalı akışın kısmi sesi saklanmaz.
 WAV/MP3/OGG/AAC/FLAC yanıtları PCM gibi beslenmez; tamamlanmış dosya yolu kullanılır.
 
 ## Oynatma ve iptal
 
 Yalnız `origin_session_id` eşleşen, seçili sohbet oturumu otomatik oynatır.
 Diğer oturumlar da gelen PCM parçalarını toplar ve elle dinleyebilir.
+Akış `audio_done` ile `status: failed` biterse (bir sonraki cümle yapılamadı) çalan ses kesilmez:
+gelen örnekler sonuna kadar çalınır; yalnız kullanıcı durdurması (`stopped`) veya eksik/sırası bozuk
+chunk sesi keser.
 Canlı akış ve kayıt aynı oynatıcıyı kullanır; slider’ın toplam süresi parçalar
 geldikçe büyür. Duraklatma ve seek, kaydı silmeden yerel çıkışı yeniden kurar.
 Akış sırasında oynatıcının durdur düğmesi mevcut turn üretimini de keser. Canlı sesi alan oturumda tamamlanmış

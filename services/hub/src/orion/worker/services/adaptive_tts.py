@@ -4,11 +4,12 @@ A sentence under MIN_WORDS ("Selam.") is not spoken alone: it waits for the
 next one. The reply's end sends whatever is left, so a short reply still speaks.
 """
 import asyncio
+import logging
 from collections import deque
 from contextlib import suppress
 
 from orion.worker.services.sentence_segmenter import SentenceSegmenter
-from orion.worker.services.tts_stream import relay_tts_batches
+from orion.worker.services.tts_stream import PartialSpeech, relay_tts_batches
 
 
 class AdaptiveTts:
@@ -32,8 +33,13 @@ class AdaptiveTts:
     async def _run(self, *args):
         try:
             return await relay_tts_batches(*args, self.groups())
+        except PartialSpeech as partial:
+            self.error = partial.error
+            logging.warning("Adaptive speech stopped after a part failed; what was spoken is kept: %r", partial.error)
+            return partial.audio  # The sentences that did play stay in the chat.
         except Exception as error:
             self.error = error
+            logging.warning("Adaptive speech failed: %r", error)
             return None  # The text response continues; never resynthesize it.
         finally:
             async with self.condition:

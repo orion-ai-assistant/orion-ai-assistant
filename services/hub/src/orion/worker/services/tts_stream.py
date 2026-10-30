@@ -1,12 +1,19 @@
 import asyncio
 import base64
 import io
+import logging
 import wave
 import struct
 from contextlib import suppress
 from collections.abc import Awaitable, Callable
 
 from orion.worker.services.router import stream_tts
+
+# A speech part that fails is asked for once more after this pause; two parts in a row that fail
+# even then mean the service is down, and the rest of the reply stays text.
+PART_ATTEMPTS = 2
+RETRY_DELAY = 1.0
+MAX_FAILED_IN_A_ROW = 2
 
 
 def _batch_wav_pcm(data):
@@ -38,6 +45,22 @@ def _batch_wav_pcm(data):
     return bytes(result)
 
 
+class UnsupportedSpeech(RuntimeError):
+    """The provider answers in a format early speech cannot play; asking again changes nothing."""
+
+
+class PartialSpeech(Exception):
+    """A later part of the speech failed after the first had already played.
+
+    ``audio`` is the recording of what was spoken (status "failed"); the caller keeps it in the chat.
+    """
+
+    def __init__(self, error, audio):
+        super().__init__(str(error))
+        self.error = error
+        self.audio = audio
+
+
 async def relay_tts(context, settings, text: str, should_stop: Callable[[], Awaitable[bool]], arrival_ms: Callable[[], int]):
     async def single():
         yield 0, text
@@ -63,38 +86,79 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
         pending = b""
         last_sentence = None
         texts = []
-        async def audio_chunks():
-            async for sentence_index, batch in batches:
-                texts.append(batch)
-                stream = stream_tts(batch, settings, context.voice)
-                buffered = bytearray()
-                batch_info = None
-                try:
-                    async for chunk, info in stream:
-                        batch_info = info
-                        if adaptive and info["format"] != "pcm":
-                            if info["format"] != "wav":
-                                raise RuntimeError("Early speech requires PCM or WAV sentence audio")
-                            buffered.extend(chunk)
-                            if len(buffered) > 24_000_000:
-                                raise RuntimeError("TTS batch exceeds size limit")
-                        else:
-                            yield chunk, info, sentence_index
-                finally:
-                    await stream.aclose()
-                if adaptive and batch_info and batch_info["format"] == "wav":
-                    pcm = await asyncio.to_thread(_batch_wav_pcm, buffered)
-                    info = {"format": "pcm", "sample_rate": 24000, "channels": 1,
+        failed = []  # errors of the parts that could not be spoken even after a second try
+
+        async def one_batch(batch, sentence_index):
+            """Stream one sentence batch; whole PCM samples only, so a failed part never leaves half a sample."""
+            stream = stream_tts(batch, settings, context.voice)
+            buffered = bytearray()
+            batch_info = None
+            carry = b""
+            try:
+                async for chunk, chunk_info in stream:
+                    batch_info = chunk_info
+                    if adaptive and chunk_info["format"] != "pcm":
+                        if chunk_info["format"] != "wav":
+                            raise UnsupportedSpeech("Early speech requires PCM or WAV sentence audio")
+                        buffered.extend(chunk)
+                        if len(buffered) > 24_000_000:
+                            raise RuntimeError("TTS batch exceeds size limit")
+                    elif adaptive:
+                        data = carry + chunk
+                        even = len(data) & ~1
+                        carry = data[even:]
+                        if even:
+                            yield data[:even], chunk_info, sentence_index
+                    else:
+                        yield chunk, chunk_info, sentence_index
+            finally:
+                await stream.aclose()
+            if adaptive and batch_info and batch_info["format"] == "wav":
+                pcm = await asyncio.to_thread(_batch_wav_pcm, buffered)
+                wav_info = {"format": "pcm", "sample_rate": 24000, "channels": 1,
                             "bits_per_sample": 16, "encoding": "pcm_s16le"}
-                    for offset in range(0, len(pcm), 4096):
-                        yield pcm[offset:offset + 4096], info, sentence_index
-                if pending:
-                    raise RuntimeError("Incomplete PCM sample at speech batch boundary")
-                if adaptive:
+                for offset in range(0, len(pcm), 4096):
+                    yield pcm[offset:offset + 4096], wav_info, sentence_index
+            elif carry:
+                raise RuntimeError("Incomplete PCM sample at speech batch boundary")
+
+        async def audio_chunks():
+            failed_in_a_row = 0
+            async for sentence_index, batch in batches:
+                spoken = False
+                hopeless = False
+                for attempt in range(1, PART_ATTEMPTS + 1 if adaptive else 2):
+                    try:
+                        async for item in one_batch(batch, sentence_index):
+                            yield item
+                        spoken = True
+                        break
+                    except Exception as error:
+                        if not adaptive:
+                            raise
+                        logging.warning("Speech part %s failed (attempt %d of %d): %r",
+                                        sentence_index, attempt, PART_ATTEMPTS, error)
+                        # A quota or access error will not clear within a second, and a format the player cannot
+                        # play stays that way; do not ask again.
+                        hopeless = isinstance(error, UnsupportedSpeech) or getattr(error, "status", None) in (401, 403, 429)
+                        if attempt == PART_ATTEMPTS or hopeless:
+                            failed.append(error)
+                            break
+                        await asyncio.sleep(RETRY_DELAY)
+                if spoken:
+                    texts.append(batch)
+                    failed_in_a_row = 0
+                else:
+                    failed_in_a_row += 1
+                if adaptive and pcm_started:
+                    # Lets a playing device flush what it has, also after a part that failed half way.
                     await context.emit_audio_stream("audio_batch_done", {
                         "sentence_index": sentence_index,
                         "chunk_count": sequence, "total_bytes": total,
                     })
+                if not spoken and (hopeless or failed_in_a_row >= MAX_FAILED_IN_A_ROW):
+                    return  # The service is not answering; the rest stays text.
+
         stream = audio_chunks()
         status = "failed"
         async def recording(status):
@@ -146,6 +210,13 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                         pending = pending[aligned:]
             if pending:
                 raise RuntimeError("Incomplete PCM sample")
+            if failed:
+                # Every part that could be spoken was; what failed stays text.
+                error = failed[-1]
+                audio = await recording("failed")
+                if audio:
+                    raise PartialSpeech(error, audio) from error
+                raise error
             if not info or not total:
                 raise RuntimeError("TTS returned no audio")
             status = "completed"
@@ -156,9 +227,14 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                 # Only samples already relayed are retained. Never synthesize new text.
                 return await recording(status) if pcm_started else None
             raise
-        except Exception:
+        except PartialSpeech:
+            raise
+        except Exception as error:
             if adaptive and pcm_started:
-                await recording("failed")
+                # What was already spoken stays playable and is kept in the chat.
+                audio = await recording("failed")
+                if audio:
+                    raise PartialSpeech(error, audio) from error
             raise
         finally:
             await stream.aclose()
