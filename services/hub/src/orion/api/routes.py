@@ -108,6 +108,24 @@ async def assistant_capabilities(current_user: str = Depends(get_current_user)):
     return {"speech_modes": ["whole", "adaptive"], "speech_protocol": 1}
 
 
+class AssistantChatClaim(BaseModel):
+    chat_id: str = Field(min_length=1, max_length=120)
+
+
+@router.get("/api/v1/assistant/chat")
+async def get_assistant_chat(request: Request, current_user: str = Depends(get_current_user)):
+    from orion.api.services.assistant_chat import current_assistant_chat
+    return {"chat_id": await current_assistant_chat(request.app.state.redis, current_user)}
+
+
+@router.post("/api/v1/assistant/chat")
+async def claim_assistant_chat_endpoint(payload: AssistantChatClaim, request: Request,
+                                        current_user: str = Depends(get_current_user)):
+    """A device's earlier assistant chat; the answer is the shared one."""
+    from orion.api.services.assistant_chat import claim_assistant_chat
+    return {"chat_id": await claim_assistant_chat(request.app.state.redis, current_user, payload.chat_id)}
+
+
 @router.post("/api/v1/audio/normalize")
 async def normalize_audio_endpoint(payload: dict, current_user: str = Depends(get_current_user)):
     from orion.contracts.http import Attachment
@@ -151,7 +169,10 @@ async def create_chat_message_endpoint(payload: JobCreateRequest, request: Reque
         payload.user_id = current_user
     redis = request.app.state.redis
     await activity.require_not_draining(redis)  # An explicit "update now" is about to stop the Hub.
-    if payload.chat_id:
+    if payload.assistant:
+        from orion.api.services.assistant_chat import create_assistant_message
+        created = await create_assistant_message(redis, payload)
+    elif payload.chat_id:
         async with redis.lock(f'chat:lifecycle:{payload.chat_id}', timeout=120, blocking_timeout=10):
             created = await create_job(redis, payload)
     else:

@@ -159,6 +159,8 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
         )
         # --- Chat Messages ---
         await conn.execute("alter table orion_chats add column if not exists tool_selection jsonb")
+        # The user's one "Asistanla konuş" conversation, shared by their devices.
+        await conn.execute("alter table orion_chats add column if not exists assistant boolean not null default false")
         await conn.execute(
             """
             create table if not exists orion_chat_messages (
@@ -380,6 +382,36 @@ async def upsert_chat(chat_id: str, user_id: str, title: str = "New Chat") -> No
             do update set updated_at = now()
             """,
             chat_id, user_id, title,
+        )
+    finally:
+        await conn.close()
+
+
+async def get_assistant_chat_db(user_id: str) -> str | None:
+    """The user's "Asistanla konuş" chat, if they have one."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        return await conn.fetchval(
+            "select id from orion_chats where user_id = $1 and assistant order by updated_at desc limit 1",
+            user_id,
+        )
+    finally:
+        await conn.close()
+
+
+async def set_assistant_chat_db(chat_id: str, user_id: str) -> None:
+    """Make `chat_id` the user's only "Asistanla konuş" chat."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        await conn.execute(
+            "update orion_chats set assistant = (id = $1) where user_id = $2 and (assistant or id = $1)",
+            chat_id, user_id,
         )
     finally:
         await conn.close()

@@ -534,6 +534,9 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
     if owner_id:
         pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, owner_id), chat_id)
     await pipe.execute()
+    if owner_id:
+        from orion.api.services.assistant_chat import forget_assistant_chat
+        await forget_assistant_chat(redis, owner_id, chat_id)
 
     # Broadcast to other devices
     if owner_id:

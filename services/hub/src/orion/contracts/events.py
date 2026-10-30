@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class StreamEvent(BaseModel):
-    type: Literal["accepted", "token", "snapshot", "thinking", "text_done", "done", "error", "warning", "user_message", "chat_rename", "chat_delete", "chat_history_changed", "audio", "audio_start", "audio_chunk", "audio_batch_done", "audio_done", "chat_title_warning", "tool_call", "tool_result"]
+    type: Literal["accepted", "token", "snapshot", "thinking", "text_done", "done", "error", "warning", "user_message", "chat_rename", "chat_delete", "chat_history_changed", "assistant_chat", "audio", "audio_start", "audio_chunk", "audio_batch_done", "audio_done", "chat_title_warning", "tool_call", "tool_result"]
     chat_id: str
     turn_id: str | None = None
     generation_id: str | None = None
@@ -108,6 +108,10 @@ class StreamEvent(BaseModel):
     @classmethod
     def chat_delete(cls, chat_id: str) -> "StreamEvent":
         return cls(type="chat_delete", chat_id=chat_id, data={})
+
+    @classmethod
+    def assistant_chat(cls, chat_id: str) -> "StreamEvent":
+        return cls(type="assistant_chat", chat_id=chat_id, data={})
 
     @classmethod
     def audio(

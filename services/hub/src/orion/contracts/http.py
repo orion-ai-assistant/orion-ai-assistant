@@ -79,6 +79,8 @@ class JobCreateRequest(BaseModel):
     tool_selection: ToolSelection | None = None
     user_id: str = Field(min_length=1, max_length=120)
     chat_id: str | None = Field(default=None, max_length=120)
+    # "Asistanla konuş": every device of the user shares one conversation.
+    assistant: bool = False
     input: JobInput
     stream_mode: Literal["once", "continuous"] = "once"
 

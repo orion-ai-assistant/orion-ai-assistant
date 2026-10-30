@@ -330,6 +330,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             context.turn_id,
             context.chat_id,
         )
+        # A newer turn superseded it; every device still shows it as pending.
+        await context.emit_done("stopped")
         return
 
     await redis.hset(
@@ -617,6 +619,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     context.chat_id,
                     context.turn_id,
                 )
+                # Superseded (possibly from another device): close it everywhere.
+                await context.emit_done("stopped")
                 return
 
             # Determine final status:
