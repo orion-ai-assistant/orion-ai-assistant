@@ -43,6 +43,17 @@ curl -s -o /dev/null -w "router=%{http_code}\n" http://localhost:20128          
 ```
 
 Notlar:
+- Bilgisayar yeni açıldıysa (veya Postgres düzgün kapanmadıysa) Router'ın PostgreSQL'i önce kurtarma yapar;
+  `start_router` "Readiness timeout" verebilir ama Router arkada açılır. `curl http://localhost:20128`
+  307 dönene kadar bekle, sonra `start_hub` çalıştır. Hub "Connected to another PostgreSQL cluster" derse
+  aynı yarış yüzündendir; Router hazır olunca yeniden dene.
+- `start_router` panel kaynakları (`orion-router/dashboard`) değiştiyse paneli kendisi derler. Dosyalar
+  o sırada düzenleniyorsa "Dashboard kaynakları derleme sırasında değişti" der; düzenleme bitince yeniden dene.
+  Panelde kod değiştirdikten sonra elle derlemek için `python -m bin.dashboard_build` (Router deposunda).
+- `stop_router` Router'ın PostgreSQL'ini de kapatır; veritabanına psql ile bakmadan önce Router'ı başlat.
+- Router'ın pytest tarzı testleri için repo `.venv`'inde pytest yok; geçici ortamla çalıştır:
+  `PYTHONPATH=<router>/.venv/Lib/site-packages uv run --no-project --python <router>/.venv/Scripts/python.exe --with pytest --with pytest-asyncio python -m pytest dev/test-orion-router/<dosya> -q`
+  (`unittest` tarzı dosyalar doğrudan `.venv/Scripts/python.exe -m unittest dev/test-orion-router/<dosya>.py` ile çalışır).
 - `manager.py start --local` kullanma: paketli Router'ı başlatmaya çalışır ve "Packaged runtime requires an
   explicit installation registry" ile durur.
 - Kaynak Hub, kaynak Router'a TLS ile sabitlenmiştir (ilk güven). Kurulu Router'a bağlanırsa
