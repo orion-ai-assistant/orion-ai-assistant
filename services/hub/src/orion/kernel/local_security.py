@@ -23,8 +23,10 @@ from cryptography.x509.oid import NameOID
 
 def security_dir():
     from services.shared.runtime_layout import component, data_root
-    root = Path(__file__).resolve().parents[5]
-    if component(root):
+    parents = Path(__file__).resolve().parents
+    # A container install (/app/src/orion/...) is shallower than a release root.
+    root = parents[5] if len(parents) > 5 else None
+    if root and component(root):
         return data_root(root) / 'files/security'
     configured = os.getenv('ORION_SECURITY_DIR')
     if configured:

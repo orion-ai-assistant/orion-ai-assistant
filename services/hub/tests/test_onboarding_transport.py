@@ -17,22 +17,27 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
     async def test_one_link_includes_pairing_and_optional_account_invitation(self):
         app = FastAPI()
         app.include_router(owner_router)
+        app.state.redis = AsyncMock()
         store = Mock()
         store.create_pairing.return_value = ('ABCDEFGH', 1234)
-        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':'a'*64,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
+        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':'a'*64,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.owner_routes.invitation_address', return_value='https://192.168.1.20:8911'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://localhost') as client:
-                for allowed in (False, True):
-                    response = await client.post('/api/v1/owner/secure/pairing', json={'allow_registration':allowed})
-                    self.assertEqual(response.status_code, 200)
-                    data = response.json()
-                    raw = data['link'].split('data=',1)[1]
+                response = await client.post('/api/v1/owner/secure/pairing', json={})
+                self.assertEqual(response.status_code, 200)
+                data = response.json()
+                # The web link (for a browser) and the app link carry the same QR payload.
+                self.assertTrue(data['link'].startswith('https://192.168.1.20:8911/connect#data='))
+                self.assertTrue(data['app_link'].startswith('orion://pair?data='))
+                for link in (data['link'], data['app_link']):
+                    raw = link.split('data=',1)[1]
                     decoded = json.loads(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)))
                     self.assertEqual(decoded, data['qr'])
-                    self.assertEqual(decoded['url'], 'https://192.168.1.20:8443')
-                    self.assertEqual(decoded['code'], 'ABCDEFGH')
-                    self.assertEqual('invitation_token' in decoded, allowed)
-                    self.assertTrue(data['link'].startswith('orion://pair?data='))
+                self.assertEqual(decoded['url'], 'https://192.168.1.20:8443')
+                self.assertEqual(decoded['code'], 'ABCDEFGH')
+                # Every link carries an invitation; creating an account with it stays optional.
+                self.assertIn('invitation_token', decoded)
                 invite.assert_awaited_once()
+                app.state.redis.set.assert_awaited_once()
 
     async def test_mobile_root_explains_usage_without_exposing_protected_api(self):
         app = MobileBoundary(FastAPI())

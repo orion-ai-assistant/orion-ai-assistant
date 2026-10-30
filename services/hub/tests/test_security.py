@@ -1,5 +1,7 @@
 ﻿import asyncio
+import contextlib
 import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -23,9 +25,12 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             return self.users.get(name)
         self.lookup = patch.object(auth, 'get_user_by_username', side_effect=lookup)
         self.lookup.start()
-        self.env = patch.dict(os.environ, {'ADMIN_API_KEY': ''})
+        # Keep the developer's own owner password (files/security) out of the test.
+        self.security_dir = tempfile.TemporaryDirectory()
+        self.env = patch.dict(os.environ, {'ADMIN_API_KEY': '', 'ORION_SECURITY_DIR': self.security_dir.name})
         self.env.start()
         self.redis = Mock()
+        self.redis.lock = Mock(side_effect=lambda *args, **kwargs: contextlib.nullcontext())
         self.redis.eval = AsyncMock(return_value=[1, 30])
         self.redis.hgetall = AsyncMock(return_value={'user_id': 'alice', 'chat_id': 'a'})
         self.redis.ping = AsyncMock(return_value=True)
@@ -40,6 +45,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         self.lookup.stop()
         self.env.stop()
+        self.security_dir.cleanup()
 
     async def test_empty_admin_key_never_grants_admin_or_global_access(self):
         for headers in ({}, {'X-Admin-Key': 'random'}):

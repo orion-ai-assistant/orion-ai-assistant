@@ -1,6 +1,8 @@
+import contextlib
 import hashlib
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -23,6 +25,9 @@ class FakeRedis:
         self.pipeline = Mock()
         self.pubsub = Mock()
 
+    def lock(self, *args, **kwargs):
+        return contextlib.nullcontext()
+
     async def eval(self, script, count, key, ttl):
         self.counts[key] = self.counts.get(key, 0) + 1
         return [self.counts[key], ttl]
@@ -34,6 +39,8 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.users = {name: {"id": name, "password_hash": "hash", "is_active": True}
                       for name in ("alice", "bob", "k\u00fcr\u015fat")}
         self.redis = FakeRedis()
+        self.security_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.security_dir.cleanup)
         app = FastAPI()
         app.state.redis = self.redis
         app.include_router(auth_routes.router, prefix="/api/v1")
@@ -44,7 +51,8 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(auth_routes, "hash_password", return_value="hash"),
             patch.object(auth_routes, "verify_password", side_effect=lambda password, hashed: password == "correct"),
             patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())),
-            patch.dict(os.environ, {"ADMIN_API_KEY": ""}),
+            # Keep the developer's own owner password (files/security) out of the test.
+            patch.dict(os.environ, {"ADMIN_API_KEY": "", "ORION_SECURITY_DIR": self.security_dir.name}),
         ]
         for item in self.patches:
             item.start()

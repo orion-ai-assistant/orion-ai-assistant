@@ -17,7 +17,11 @@ class RouterBootstrapTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.environment = patch.dict(os.environ, {'ORION_SECURITY_DIR': str(self.root / 'hub-security'), 'LOCALAPPDATA': str(self.root / 'user-data'), 'ORION_ROUTER_CONNECTION_FILE': str(self.root / 'selected.json'), 'ROUTER_HOST': 'router'})
+        # Importing services.shared.environment loads the developer's .env.global.local, whose
+        # ORION_INSTALLATION_REGISTRY names this PC's real install (and its real Router). Point
+        # it at an absent registry so only the installation this test registers is seen.
+        self.environment = patch.dict(os.environ, {'ORION_SECURITY_DIR': str(self.root / 'hub-security'), 'LOCALAPPDATA': str(self.root / 'user-data'), 'ORION_ROUTER_CONNECTION_FILE': str(self.root / 'selected.json'), 'ROUTER_HOST': 'router',
+                                                   'ORION_INSTALLATION_REGISTRY': os.path.normpath(str(self.root / 'user-data' / 'Orion' / 'install.json'))})
         self.environment.start()
         self.router = self.root / 'router'
         self.router.mkdir()

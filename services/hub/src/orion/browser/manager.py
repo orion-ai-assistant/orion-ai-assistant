@@ -375,6 +375,12 @@ class BrowserManager:
                         scheme = {'chrome': 'chrome', 'brave': 'brave', 'edge': 'edge'}.get(selected, 'chrome')
                         raise BrowserUnavailable(f'Tarayıcınızı açın ve {scheme}://inspect/#remote-debugging sayfasında uzaktan hata ayıklamayı etkinleştirin.')
 
+                # Retain the user's actual selection even when the browser denies
+                # the request, so refresh/resume does not silently switch to Chrome.
+                config = self._read(self.config)
+                if config.get('mode') != 'existing' or config.get('browser') != selected:
+                    self._write(self.config, {'mode': 'existing', 'browser': selected,
+                                              'enabled': False, 'manual': False})
                 # Connect to CDP (this triggers the "Uzaktan hata ayıklamaya izin verilsin mi?" dialog in browser)
                 asyncio.create_task(asyncio.to_thread(auto_approve_browser_dialogs, selected))
                 connection = await get_connection(endpoint[1], authorize=True)

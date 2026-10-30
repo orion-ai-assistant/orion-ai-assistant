@@ -295,7 +295,8 @@ class BrowserToolTests(unittest.IsolatedAsyncioTestCase):
             result = await browser.browser_control(browser.BrowserInput(
                 action='read', tab_id='tab-1'), SimpleNamespace(user_id='alice', chat_id='chat'))
         self.assertEqual(result['page']['url'], 'https://example.com')
-        manager.tab.assert_called_once_with('browser:chat', target_id='tab-1')
+        # Without visible=True the agent works in the tab without bringing it to the front.
+        manager.tab.assert_called_once_with('browser:chat', target_id='tab-1', inactive=True)
 
     async def test_list_tabs_reads_existing_targets(self):
         manager = BrowserManager('alice')

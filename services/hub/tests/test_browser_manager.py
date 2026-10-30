@@ -38,6 +38,7 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
                     self.fail('Must not attach during login')
             launch.assert_not_awaited()
         with patch('orion.browser.manager.require_desktop'), \
+                patch('orion.browser.manager.auto_approve_browser_dialogs'), \
                 patch.object(self.manager, 'endpoint', AsyncMock(return_value=('', 'ws://127.0.0.1:1234/devtools/browser/test'))), \
                 patch('orion.browser.manager.get_connection', AsyncMock(return_value=AsyncMock())):
             await self.manager.resume()
@@ -115,7 +116,10 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_endpoint_discovery_rejects_untrusted_coordinates(self):
         from orion.browser.manager import discover_endpoint
-        with patch('orion.browser.manager.user_data_dir', return_value=self.root):
+        listening = MagicMock()
+        listening.return_value.__enter__.return_value.connect_ex.return_value = 0
+        with patch('orion.browser.manager.user_data_dir', return_value=self.root), \
+                patch('socket.socket', listening):
             file = self.root / 'DevToolsActivePort'
             for content in ('0\n/devtools/browser/a', '65536\n/devtools/browser/a', '1234\n//attacker/a', '1234\n/devtools/browser/a?redirect=x'):
                 file.write_text(content)
@@ -124,97 +128,78 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(discover_endpoint('chrome')[1], 'ws://127.0.0.1:9333/devtools/browser/abc-123')
 
     async def test_connection_denial_does_not_enable_new_mode(self):
-        from orion.browser.manager import get_connection
         endpoint = ('http://127.0.0.1:1234', 'ws://127.0.0.1:1234/devtools/browser/denied')
-        with patch('orion.browser.manager.require_desktop'), \
-                patch('orion.browser.manager.open_inspect_window', AsyncMock(return_value=None)), \
-                patch('orion.browser.manager.discover_endpoint', return_value=endpoint), \
-                patch('orion.browser.manager.CDPSession.connect', AsyncMock(side_effect=OSError('denied'))):
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.enable_remote_debugging') as enable,                 patch('orion.browser.manager.auto_approve_browser_dialogs'),                 patch('orion.browser.manager.discover_endpoint', return_value=endpoint),                 patch('orion.browser.bridge.SharedConnection.rpc',
+                      AsyncMock(side_effect=BrowserUnavailable('denied'))) as rpc:
             with self.assertRaises(BrowserUnavailable):
                 await self.manager.open_manual('chrome')
+        enable.assert_not_called()
+        rpc.assert_awaited_once_with('connect')
         self.assertFalse(self.manager._read(self.manager.config).get('enabled'))
 
     async def test_failed_brave_setup_retains_selection(self):
-        with patch('orion.browser.manager.require_desktop'), \
-                patch('orion.browser.manager.open_inspect_window', AsyncMock(return_value=None)), \
-                patch('orion.browser.manager.discover_endpoint', return_value=('', 'ws://127.0.0.1:1234/devtools/browser/brave')), \
-                patch('orion.browser.manager.get_connection', AsyncMock(side_effect=BrowserUnavailable('denied'))):
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.enable_remote_debugging'),                 patch('orion.browser.manager.auto_approve_browser_dialogs'),                 patch('orion.browser.manager.discover_endpoint', return_value=('', 'ws://127.0.0.1:1234/devtools/browser/brave')),                 patch('orion.browser.manager.get_connection', AsyncMock(side_effect=BrowserUnavailable('denied'))):
             with self.assertRaises(BrowserUnavailable):
                 await self.manager.open_manual('brave')
         self.assertEqual(self.manager.browser_choice(), 'brave')
         self.assertFalse(self.manager._read(self.manager.config)['enabled'])
 
-    async def test_setup_opens_inspect_and_minimizes_only_new_window_after_approval(self):
+    async def test_setup_enables_remote_debugging_only_when_endpoint_is_missing(self):
         endpoint = ('', 'ws://127.0.0.1:1234/devtools/browser/brave')
         connection = AsyncMock()
-        with patch('orion.browser.manager.require_desktop'), \
-                patch('orion.browser.manager.open_inspect_window', AsyncMock(return_value=876)) as inspect, \
-                patch('orion.browser.manager.discover_endpoint', return_value=endpoint), \
-                patch('orion.browser.manager.get_connection', AsyncMock(side_effect=[BrowserUnavailable('not connected'), connection])) as connect, \
-                patch('orion.browser.manager.minimize_window') as minimize:
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.enable_remote_debugging', return_value=True) as enable,                 patch('orion.browser.manager.auto_approve_browser_dialogs'),                 patch('orion.browser.manager.discover_endpoint', side_effect=[None, endpoint]),                 patch('orion.browser.manager.get_connection', AsyncMock(return_value=connection)) as connect:
             await self.manager.open_manual('brave')
-        inspect.assert_awaited_once_with('brave')
-        self.assertEqual(connect.await_args_list[0].args, (endpoint[1],))
-        self.assertEqual(connect.await_args_list[1].kwargs, {'authorize': True})
-        minimize.assert_called_once_with(876)
-        self.assertEqual(self.manager.browser_choice(), 'brave')
+        enable.assert_called_once_with('brave')
+        connect.assert_awaited_once_with(endpoint[1], authorize=True)
+        connection.send.assert_awaited_once_with('Browser.getVersion')
+        self.assertEqual(self.manager._read(self.manager.config), {
+            'mode': 'existing', 'browser': 'brave', 'enabled': True, 'manual': False, 'autoconnect': True})
 
-    async def test_first_brave_setup_uses_brave_page_and_toggles_only_named_checkbox(self):
-        from orion.browser.manager import open_inspect_window
-        from orion.browser.desktop import enable_remote_debugging_checkbox
-        with patch('orion.browser.manager.find_binary', return_value='brave.exe'), \
-                patch('orion.browser.manager.browser_windows', side_effect=[[], [(876, 'brave')]]), \
-                patch('orion.browser.manager.navigate_to_inspect_page'), \
-                patch('orion.browser.manager.subprocess.Popen') as launch:
-            self.assertEqual(await open_inspect_window('brave'), 876)
-        # Now opens a plain new window; URL is set via UIA omnibox, not command-line arg.
-        self.assertEqual(launch.call_args.args[0], ['brave.exe', '--new-window'])
-        with patch('orion.browser.desktop.os.name', 'nt'), \
-                patch('orion.browser.desktop.subprocess.run', return_value=MagicMock(returncode=0)) as invoke:
-            self.assertTrue(enable_remote_debugging_checkbox(876))
+    async def test_setup_without_endpoint_after_toggle_explains_inspect_page(self):
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.enable_remote_debugging', return_value=False),                 patch('orion.browser.manager.discover_endpoint', return_value=None),                 patch('orion.browser.manager.get_connection', AsyncMock()) as connect:
+            with self.assertRaisesRegex(BrowserUnavailable, 'brave://inspect/#remote-debugging'):
+                await self.manager.open_manual('brave')
+        connect.assert_not_awaited()
+
+    def test_first_brave_setup_uses_brave_page_and_toggles_only_named_checkbox(self):
+        from orion.browser.desktop import enable_remote_debugging
+        endpoint = ('', 'ws://127.0.0.1:1234/devtools/browser/brave')
+        with patch('orion.browser.desktop.os.name', 'nt'),                 patch('orion.browser.manager.find_binary', return_value='brave.exe'),                 patch('orion.browser.desktop.browser_windows', side_effect=[[(5, 'brave')], [(5, 'brave'), (876, 'brave')]]),                 patch('orion.browser.desktop.subprocess.Popen') as launch,                 patch('orion.browser.desktop.subprocess.run', return_value=MagicMock(returncode=0)) as invoke,                 patch('orion.browser.desktop.close_window') as close,                 patch('orion.browser.manager.discover_endpoint', return_value=endpoint):
+            self.assertTrue(enable_remote_debugging('brave'))
+        self.assertEqual(launch.call_args.args[0], ['brave.exe', '--new-window', 'brave://inspect/#remote-debugging'])
         command = invoke.call_args.args[0]
         script = base64.b64decode(command[-1]).decode('utf-16-le')
         self.assertIn('Allow remote debugging for this browser instance', script)
         self.assertIn('$WindowHandle = 876', script)
+        self.assertIn('$TargetUrl = "brave://inspect/#remote-debugging"', script)
         self.assertIn('TogglePattern', script)
-
+        # Only the window Orion opened is closed; the user's own window 5 is untouched.
+        close.assert_called_once_with(876)
 
     async def test_first_setup_tries_checkbox_before_connecting(self):
         endpoint = ('', 'ws://127.0.0.1:1234/devtools/browser/brave')
         order = []
         def discover(_):
-            # Before opening/toggling, the opt-in endpoint is unavailable.
+            # Before toggling, the opt-in endpoint is unavailable.
             return endpoint if 'toggle' in order else None
-        async def open_window(_):
-            order.append('inspect')
-            return 876
         def toggle(*_, **__):
             order.append('toggle')
             return True
         async def connect(*_, **__):
             order.append('connect')
             return AsyncMock()
-        with patch('orion.browser.manager.require_desktop'), \
-                patch('orion.browser.manager.discover_endpoint', side_effect=discover), \
-                patch('orion.browser.manager.open_inspect_window', side_effect=open_window), \
-                patch('orion.browser.manager.auto_approve_browser_dialogs'), \
-                patch('orion.browser.manager.enable_remote_debugging_checkbox', side_effect=toggle), \
-                patch('orion.browser.manager.get_connection', side_effect=connect), \
-                patch('orion.browser.manager.minimize_window'):
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.discover_endpoint', side_effect=discover),                 patch('orion.browser.manager.auto_approve_browser_dialogs'),                 patch('orion.browser.manager.enable_remote_debugging', side_effect=toggle),                 patch('orion.browser.manager.get_connection', side_effect=connect):
             await self.manager.open_manual('brave')
-        # connect is called twice: once by ensure_launched, once to close the inspect tab via CDP
-        self.assertEqual(order[:3], ['inspect', 'toggle', 'connect'])
+        self.assertEqual(order, ['toggle', 'connect'])
 
     async def test_repeated_connect_uses_existing_session_without_opening_settings(self):
         endpoint = ('', 'ws://127.0.0.1:1234/devtools/browser/chrome')
         connection = AsyncMock()
-        with patch('orion.browser.manager.require_desktop'), \
-                patch('orion.browser.manager.discover_endpoint', return_value=endpoint), \
-                patch('orion.browser.manager.get_connection', AsyncMock(return_value=connection)), \
-                patch('orion.browser.manager.open_inspect_window', AsyncMock()) as inspect:
+        with patch('orion.browser.manager.require_desktop'),                 patch('orion.browser.manager.discover_endpoint', return_value=endpoint),                 patch('orion.browser.manager.auto_approve_browser_dialogs'),                 patch('orion.browser.manager.get_connection', AsyncMock(return_value=connection)),                 patch('orion.browser.manager.enable_remote_debugging') as enable:
             await self.manager.open_manual('chrome')
-        inspect.assert_not_awaited()
+        enable.assert_not_called()
         self.assertTrue(self.manager._read(self.manager.config)['enabled'])
+
 
     async def test_current_browser_suggested_before_saved_choice(self):
         self.manager.directory.mkdir()
@@ -246,9 +231,11 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         self.manager._write(self.manager.config, {'mode': 'existing', 'browser': 'brave', 'enabled': True})
         with patch('orion.browser.manager.os.name', 'nt'), \
                 patch('orion.browser.manager.running_browser_choices', return_value={'brave'}), \
+                patch('orion.browser.manager.watch_browser_reconnect', AsyncMock()) as watch, \
                 patch('orion.browser.manager.subprocess.Popen') as launch:
             await restore_saved_browsers()
         launch.assert_not_called()
+        watch.assert_awaited_once()
 
     async def test_resume_reconnects_and_checks_response_before_clearing_pause(self):
         from orion.browser.cdp import CDPConnectionLost
@@ -259,6 +246,7 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         connection.send.side_effect = CDPConnectionLost('closed')
         endpoint = 'ws://127.0.0.1:1234/devtools/browser/brave'
         with patch('orion.browser.manager.require_desktop'), \
+                patch('orion.browser.manager.auto_approve_browser_dialogs'), \
                 patch.object(self.manager, 'endpoint', AsyncMock(return_value=('', endpoint))), \
                 patch('orion.browser.manager.get_connection', AsyncMock(return_value=connection)) as connect:
             with self.assertRaises(BrowserUnavailable):

@@ -186,13 +186,14 @@ class MediaEfficiencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_browser_read_is_compact_with_explicit_detail_option(self):
         page = AsyncMock()
+        page.snapshot.return_value = {'url': 'https://example.com'}
         manager = MagicMock()
         manager.tab.return_value.__aenter__ = AsyncMock(return_value=page)
         for detailed in (False, True):
             with patch.object(browser, 'BrowserManager', return_value=manager):
                 await browser.browser_control(browser.BrowserInput(action='read', detailed=detailed),
                                               SimpleNamespace(user_id='u', chat_id='c'))
-            page.snapshot.assert_awaited_with(compact=not detailed)
+            page.snapshot.assert_awaited_with(compact=not detailed, viewport_only=True)
 
     async def test_resume_missing_music_tab_does_not_open_empty_page(self):
         with patch.object(music, '_find_existing_ytmusic_tab', AsyncMock(return_value=None)), \

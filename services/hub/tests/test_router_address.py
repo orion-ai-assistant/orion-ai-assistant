@@ -50,12 +50,18 @@ class RouterAddressTests(unittest.TestCase):
             self.assertEqual(get_router_base_urls(), ['https://orionrouter.local:9443'])
 
     def test_native_and_docker_https_defaults_and_tls_port(self):
-        with patch('services.shared.environment.os.path.exists', return_value=False):
+        exists = os.path.exists
+        def docker(present):
+            # Only the Docker marker is faked; every other path (e.g. a packaged
+            # release marker) keeps its real answer.
+            return patch('services.shared.environment.os.path.exists',
+                         side_effect=lambda path: present if path == '/.dockerenv' else exists(path))
+        with docker(False):
             self.assertEqual(get_router_base_urls(), ['https://127.0.0.1:9443'])
-        with patch('services.shared.environment.os.path.exists', return_value=True):
+        with docker(True):
             self.assertEqual(get_router_base_urls(), ['https://router:9443'])
         with patch.dict(os.environ, {'ORION_ROUTER_TLS_PORT': '10443'}):
-            with patch('services.shared.environment.os.path.exists', return_value=False):
+            with docker(False):
                 self.assertEqual(get_router_base_urls(), ['https://127.0.0.1:10443'])
         self.assertEqual(self.security.routers(), [])
 

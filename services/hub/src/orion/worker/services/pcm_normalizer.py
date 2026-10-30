@@ -28,10 +28,10 @@ class PcmNormalizer:
         while self.samples:
             # Integer phase avoids drift and makes chunk boundaries irrelevant.
             position, fraction = divmod(self.output_frames * self.rate, 24000)
-            if final:
-                if self.output_frames >= self.frames * 24000 // self.rate:
-                    break
-            elif position + 1 >= self.frames:
+            # The stream never exceeds its final length, even before the final chunk.
+            if self.output_frames >= self.frames * 24000 // self.rate:
+                break
+            if not final and position + 1 >= self.frames:
                 break
             left = self.samples[position - self.offset]
             right = self.samples[min(position + 1, self.frames - 1) - self.offset]

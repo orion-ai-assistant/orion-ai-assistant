@@ -27,7 +27,8 @@ class InstallerBrowserLifecycleTests(unittest.TestCase):
             with patch.object(config, 'SERVICES_DIR', str(root)), patch.object(config, '_load_global_env', return_value={}), \
                     patch.dict(os.environ, {'ORION_INSTALL_MODE': 'local'}), \
                     patch.object(services.subprocess, 'run', return_value=Mock(stdout='')), \
-                    patch.object(services.docker_utils, 'get_running_containers', return_value={}):
+                    patch.object(services.docker_utils, 'get_running_containers', return_value={}),                     patch('services.shared.native_services.component_status', return_value='unverified'):
+                # The real checkout's Hub runtime record (if it runs from here) must not leak in.
                 self.assertEqual({d['id'] for d in services.get_services()}, {'orion-hub', 'tts'})
                 self.assertEqual(config.find_manifest('missing'), (None, None))
 
