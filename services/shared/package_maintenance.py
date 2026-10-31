@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import re
 import shutil
 import uuid
 
@@ -9,9 +10,12 @@ from .automatic_updates import read_json, write_json
 from .installation_registry import operation_lock
 from .installation_paths import canonical_path, validate_private_directory
 from .legacy_conversion import revision
+from .process_lifecycle import LifecycleError
 from .release_packages import verify_package_record
 from .update_helper import UpdateHelper, UpdateError, inventory, StoppedPackages
 from .update_gate import TERMINAL
+
+TRASH = '.trash-'  # A folder being deleted: renamed first, so a half-deleted release never looks like a release.
 
 
 # An update in these phases has not switched anything yet (the active version is unchanged), exactly what an
@@ -183,3 +187,91 @@ def purge_old_code(registry, package_id, *, expected_revision):
             shutil.rmtree(tree)
             write_json(audit, {'schema': 1, 'phase': 'completed', 'package_id': package_id})
             return {'status': 'code-removed', 'package_id': package_id, 'data_preserved': True}
+
+
+def prune_old_releases(registry, helper=None):
+    """Automatic cleanup after updates: only the active version of each component stays on disk.
+
+    Deleted: release trees (`<Component>/releases/orion-<kind>-*`) and their lifecycle state folders
+    (`<Component>/state/releases/...`) that no component uses, and the folders of finished update operations
+    except the latest one. Kept: everything the registry or a pending update names, data, models, the bootstrap
+    and anything Orion did not name this way. A busy installation (another operation holds the lock), an
+    unreadable journal or an update in an undecided phase deletes nothing. Returns the removed folder names."""
+    try:
+        # Under the lock only the decision and the renames (milliseconds); the slow delete runs after it, so a
+        # check or "update now" is never refused as busy while a gigabyte is being deleted.
+        with operation_lock(registry.path, timeout=0):
+            moved = _retire(registry, helper or UpdateHelper(registry))
+    except LifecycleError:
+        return []
+    removed = []
+    for name, trash in moved:
+        shutil.rmtree(trash, ignore_errors=True)
+        if not trash.exists():
+            removed.append(name)
+    return removed
+
+
+def _retire(registry, helper):
+    """(name, trash path) of every unused folder, already renamed out of the way."""
+    record = registry.read()
+    try:
+        tx = helper.status()
+    except UpdateError:
+        return []  # An explicit repair needs everything it may refer to.
+    records = [record]
+    if tx and tx['phase'] not in TERMINAL:
+        if tx['phase'] == 'repair_required' or tx['proposed'] is None:
+            return []  # Undecided, or a release tree is still being downloaded.
+        records += [tx['previous'], tx['proposed']]
+    keep, folders = set(), {}
+    for item in (c for r in records for c in r['components'] if c['distribution'] == 'packaged'):
+        for field in ('code_path', 'state_path'):
+            path = canonical_path(item[field])
+            keep.add(path)
+            if path.parent.name == 'releases' and (field == 'code_path' or path.parent.parent.name == 'state'):
+                folders[path.parent] = item['kind']
+    removed = []
+    for folder, kind in folders.items():
+        name = re.compile(r'orion-' + kind + r'-[0-9A-Za-z._-]+')
+        for path in _children(folder):
+            if path not in keep and (name.fullmatch(path.name) or path.name.startswith(TRASH)):
+                removed += _delete(path)
+    active = (tx or {}).get('operation_id')
+    for path in _children(helper.base):
+        if path.name.startswith(TRASH):
+            removed += _delete(path)
+            continue
+        try:
+            finished = (str(uuid.UUID(path.name)) == path.name and path.name != active
+                        and read_json(path / 'journal.json', {}).get('phase') in TERMINAL)
+        except (ValueError, OSError, AttributeError):
+            finished = False  # Not an operation folder, or a journal that cannot tell: kept.
+        if finished:
+            removed += _delete(path)
+    return removed
+
+
+def _children(folder):
+    if not folder.is_dir():
+        return []
+    result = []
+    for path in folder.iterdir():
+        try:
+            result.append(canonical_path(path, must_exist=True))  # Links and junctions are refused, never followed.
+        except ValueError:
+            continue
+    return [path for path in result if path.is_dir()]
+
+
+def _delete(path):
+    """Rename out of the way; the caller deletes. A folder in use (a running executable, an open file) cannot be
+    renamed on Windows, so it is left alone; a delete cut short leaves a `.trash-` folder the next round finishes."""
+    if path.name.startswith(TRASH):
+        return [(path.name, path)]
+    trash = path.with_name(TRASH + uuid.uuid4().hex)
+    try:
+        path.rename(trash)
+    except OSError:
+        return []
+    return [(path.name, trash)]

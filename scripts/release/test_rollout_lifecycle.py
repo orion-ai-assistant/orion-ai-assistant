@@ -226,6 +226,55 @@ def test_active_or_recovery_release_is_never_cleaned(router_installed):
     assert (data / 'persistent/tls.key').exists()
 
 
+def test_completed_update_leaves_only_the_active_release(router_installed):
+    helper, factory, name, data, host = router_installed
+    registry = helper.registry
+    old = registry.read()['components'][0]
+    helper.prepare(factory('update-cache'), [name])
+    staged = helper.status()['proposed']['components'][0]
+    # Staged, not applied: the active and the staged release are both needed.
+    assert maintenance.prune_old_releases(registry, helper) == []
+    assert Path(old['code_path']).exists() and Path(staged['code_path']).exists()
+    first = helper.status()['operation_id']
+    assert helper.resume()['phase'] == 'completed'
+    new = registry.read()['components'][0]
+    # A second, older finished update folder and a leftover of an interrupted delete.
+    older = helper.base / str(uuid.uuid4())
+    older.mkdir()
+    (older / 'journal.json').write_text(json.dumps({'phase': 'completed'}))
+    (older / 'backup-router-x').mkdir()
+    leftover = Path(new['code_path']).parent / (maintenance.TRASH + 'cut-short')
+    (leftover / 'lib').mkdir(parents=True)
+    unknown = Path(new['code_path']).parent / 'not-ours'
+    unknown.mkdir()
+    removed = maintenance.prune_old_releases(registry, helper)
+    assert sorted(removed) == sorted([old['package']['id'], older.name, leftover.name])
+    assert not Path(old['code_path']).exists() and not older.exists() and not leftover.exists()
+    assert Path(new['code_path']).exists() and Path(new['state_path']).exists()
+    assert (helper.base / first).exists()  # The latest update folder stays (its journal is the update status).
+    assert unknown.exists()  # Only what Orion names `orion-<kind>-...` is ever removed.
+    assert (data / 'persistent/tls.key').read_bytes() == b'fixture TLS sentinel'
+    assert maintenance.prune_old_releases(registry, helper) == []
+
+
+def test_prune_deletes_nothing_while_busy_or_downloading(router_installed):
+    helper, factory, name, data, host = router_installed
+    registry = helper.registry
+    stale = Path(registry.read()['components'][0]['code_path']).parent / 'orion-router-0.0.1-windows-x86_64-cpu'
+    stale.mkdir()
+    from services.shared.process_lifecycle import LifecycleError
+    with patch.object(maintenance, 'operation_lock', side_effect=LifecycleError('busy')):
+        assert maintenance.prune_old_releases(registry, helper) == []
+    record = helper.status
+    helper.status = lambda: {'phase': 'downloading', 'proposed': None, 'previous': registry.read()}
+    assert maintenance.prune_old_releases(registry, helper) == []
+    helper.status = lambda: {'phase': 'repair_required', 'proposed': registry.read(), 'previous': registry.read()}
+    assert maintenance.prune_old_releases(registry, helper) == []
+    assert stale.exists()
+    helper.status = record
+    assert maintenance.prune_old_releases(registry, helper) == [stale.name]
+
+
 def test_router_bridge_queues_only_its_registered_installation(router_installed):
     helper, factory, name, data, host = router_installed
     path = Path(__file__).resolve().parents[3] / 'orion-router/core/updater.py'

@@ -981,6 +981,14 @@ def watch(automatic):
                     bootstrap_update.prune(automatic.registry, automatic.bootstrap_root)
                 except Exception as error:
                     update_log.log_exception(base, 'watch.prune', error)
+            try:
+                # Hub, Client and Router alike: after an update only the active version stays on disk.
+                from .package_maintenance import prune_old_releases
+                removed = prune_old_releases(automatic.registry, automatic.helper)
+                if removed:
+                    update_log.log(base, 'watch.prune-releases', removed=','.join(removed))
+            except Exception as error:
+                update_log.log_exception(base, 'watch.prune-releases', error)
 
 
 WATCH_PAUSE = 5  # seconds between watcher rounds
