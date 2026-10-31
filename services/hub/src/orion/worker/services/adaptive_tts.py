@@ -129,7 +129,11 @@ class AdaptiveTts:
                     return
                 batch = [self.queue.popleft()]
                 length = len(batch[0])
-                while not first and self.queue and len(batch) < self.MAX_BATCH_SENTENCES:
+                # A short reply that has already ended (all of it came before the first part was asked for) goes in
+                # one request. A longer one still starts with its first sentence alone, so its audio starts soon.
+                whole = (first and self.closed and len(self.queue) < self.MAX_BATCH_SENTENCES
+                         and length + sum(1 + len(part) for part in self.queue) <= self.MAX_BATCH_CHARS)
+                while (not first or whole) and self.queue and len(batch) < self.MAX_BATCH_SENTENCES:
                     if length + 1 + len(self.queue[0]) > self.MAX_BATCH_CHARS:
                         break
                     part = self.queue.popleft()

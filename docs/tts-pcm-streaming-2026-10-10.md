@@ -2,7 +2,9 @@
 
 `speech_mode: whole`: LLM metni tamamlandıktan sonra tek TTS isteği açılır. `adaptive` (düz sohbetin
 varsayılanı): metin geldikçe parçalara bölünür, ilk parça hemen, sonrakiler sırayla en çok 3 cümle / 600 karakter
-olarak istenir (`adaptive_tts.py`, `sentence_segmenter.py`). Kesim yerleri, önem sırasıyla:
+olarak istenir (`adaptive_tts.py`, `sentence_segmenter.py`). Yanıtın tamamı ilk parça istenmeden gelmişse ve tek isteğe
+sığıyorsa tek istekte gider. İlk parça yanıtın bitmesini beklemez (2026-10-31'de 250 ms bekleme denendi: kısa
+yanıtların çoğu tek istek oldu ama ilk ses gecikti; istek sayısı yerine hız seçildi). Kesim yerleri, önem sırasıyla:
 1. Satır sonu: modelin ayrı satıra yazdığı her şey (liste maddesi, `Tavşan: “...”`, başlık) ayrı parçadır.
    Sonraki satır küçük harfle başlıyorsa satır yalnız kaydırılmıştır, cümle sürer.
 2. Cümle sonu: `. ! ? …` (arkasında kapanış tırnağı olabilir). Açık bir tırnağın içinde kesilmez
@@ -77,7 +79,10 @@ Akış sırasında oynatıcının durdur düğmesi mevcut turn üretimini de kes
 kayıt ikinci kez otomatik başlamaz. Geçmiş yükleme ve yeniden bağlantı canlı
 PCM kuyruğunu tekrar oynatmaz; kayıt üzerinden elle dinleme kullanılabilir.
 
-İlk tampon 8640 bayt / 180 ms'dir; kısa seslerde `audio_done` bekleyen tamponu açar.
+İlk tampon 8640 bayt / 180 ms'dir; kısa seslerde `audio_done` bekleyen tamponu açar. Çalan ses biterse (sonraki
+parça geç geldi) devam etmeden önce 300 ms birikir; parça (`audio_batch_done`) veya akış sonu bekleyen tamponu hemen
+açar. 2026-10-31'de Gemini yükteyken sesi çalındığından ancak biraz hızlı verdi; 180 ms'lik tamponla her parçanın önünde
+kısa bir kesik duyuluyordu.
 Eksik/sırası bozuk chunk, durdurma, sayfa/sohbet değişimi ve bağlantı kesilmesi
 yerel çıkış kuyruğunu temizler. Pencere odağı veya görünürlüğü değişince ses kesilmez.
 Durdurma kaydedilmiş örnekleri silmez; sonradan tekrar oynatılabilir. Mikrofon düğmesi yerel sesi kesip mevcut işi

@@ -205,6 +205,31 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await speech.finish()
         self.assertEqual(requests, ['Selam, naber?'])
 
+    async def test_short_reply_that_arrived_whole_is_one_request(self):
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Merhaba! Ben iyiyim, teşekkürler. Sen nasılsın? Bugün nasıl geçti?')
+            await asyncio.wait_for(speech.finish(), 1)
+        self.assertEqual(requests, ['Merhaba! Ben iyiyim, teşekkürler.\nSen nasılsın? Bugün nasıl geçti?'])
+
+    async def test_first_sentence_leaves_at_once_while_the_reply_goes_on(self):
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Bugün sana uzun bir fıkra anlatacağım. Bir')
+            await asyncio.sleep(0.05)
+            self.assertEqual(requests, ['Bugün sana uzun bir fıkra anlatacağım.'])
+            await speech.feed(' gün Nasreddin Hoca pazara gitmiş.')
+            await speech.finish()
+        self.assertEqual(requests, ['Bugün sana uzun bir fıkra anlatacağım.', 'Bir gün Nasreddin Hoca pazara gitmiş.'])
+
     async def test_emoji_is_never_asked_for_on_its_own(self):
         context = self.context()
         requests = []
@@ -315,7 +340,9 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         with patch('orion.worker.services.tts_stream.stream_tts', provider), \
                 patch('orion.worker.services.tts_stream.RETRY_DELAY', 0):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('Birinci cümle burada. İkinci cümle de burada. Üçüncü cümle geliyor. ')
+            await speech.feed('Birinci cümle burada. ')
+            await asyncio.sleep(0.05)  # the first part is asked for before the rest of the reply arrives
+            await speech.feed('İkinci cümle de burada. Üçüncü cümle geliyor. ')
             kept = await speech.finish()
         self.assertEqual(len(requests), 3)  # the failed batch was asked for twice, nothing else was resynthesized
         self.assertEqual(kept, {'saved': True})
