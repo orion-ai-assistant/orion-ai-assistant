@@ -46,7 +46,9 @@ konuşma süresine değil veri gelmeyen süreye uygulanır.
 
 Hub akışın tamamını (en fazla 24 MB) toplar ve PCM'yi WAV olarak mevcut mesaj ses
 alanına kaydeder. Başarılı `audio` kaydı `audio_done` ve sohbet `done` eventlerinden
-önce yayınlanır. `arrival_ms` ilk ses verisinin istekten itibaren geliş süresidir.
+önce yayınlanır. `arrival_ms` (arayüzde ♫) mesajın oluşturulmasından ilk ses verisinin Hub'a gelişine kadar geçen
+süredir: Hub'ın Router'a iletmesi, modelin ilk cümleyi yazması ve TTS'in ilk sesi dahildir, cihazdaki 180 ms tampon
+dahil değildir. 2026-10-31'de tipik 2,8 sn'nin ~2,5 sn'si sağlayıcılardandı (model 1,4 sn, TTS 1,0 sn).
 Kullanıcının durdurduğu PCM akışının iletilmiş kısmı WAV olarak saklanır (`status: stopped`).
 İlk örnek gelmeden durdurulursa kayıt veya yeni TTS isteği oluşmaz. Cümle bazlı (adaptive)
 üretimde her parçanın (1-3 cümlelik istek) sesi geldiği anda çalınır. Parça hiç ses gelmeden hata verirse aynı
@@ -60,7 +62,10 @@ başarısız olması. Router, `response_format: pcm` isteyene her zaman `audio/p
 biçim belirtilmediğinde çalışır (2026-10-31: ham PCM'in ilk örneği MP3 başlığına benzeyince yanıt `audio/mpeg`
 diye etiketlenip o parça düşüyordu). Her başarısız deneme Hub loguna `Speech part N failed (attempt a of b): <hata>`
 olarak yazılır; başarılı her parça için `Speech part N: ... first audio after X ms, P pieces over Y ms` satırı
-sağlayıcının akıtıp akıtmadığını gösterir. İlk ses için bekleme `max(tts_timeout_seconds, 30 + karakter/10)`
+sağlayıcının akıtıp akıtmadığını gösterir. 2026-10-31 ölçümleri: `gemini-3.1-flash-tts-preview`,
+`gemini-3.8-flash-tts` ve `gemini-3.8-flash-lite-tts` ilk sesi 0,5-1,1 sn'de verip sesi çalınma hızının 3-6 katı hızla
+akıttı (yükteyken bir kez ancak 1,2 katı); `gemini-2.5-flash-preview-tts` akıtmadı, parçanın tüm sesini 2,6-15 sn sonra
+tek seferde verdi. İlk ses için bekleme `max(tts_timeout_seconds, 30 + karakter/10)`
 saniyedir: Router yanıtı ancak ilk ses gelince başlatır ve Gemini yükteyken kısa bir cümle için 20 sn bekletti.
 Hub, Router'a TTS isteğinde `Connection: keep-alive` gönderir: `Connection: close` ile Python 3.11'deki Router büyük
 ses gövdesinin sonunu TLS kapanışında arada bir düşürüyordu (deneyde 150'de 6, hep aynı baytta). Tek istekli (whole) akışta hatalı akışın kısmi sesi saklanmaz.

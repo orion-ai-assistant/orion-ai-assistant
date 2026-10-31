@@ -28,6 +28,18 @@ SANs. Missing SANs cause same-key renewal; old SANs are preserved for shared
 Docker listeners. No private key or raw paired token is exposed by management
 APIs.
 
+Reads and writes of this directory (key, certificate, Router access seed, manual
+Router keys) hold `identity_lock` (`kernel/local_security.py`), a file lock on
+`identity.lock` shared by the Hub's processes (API, worker). It is not reentrant:
+callers resolve anything that needs it again outside the locked block. Threads of
+one process first queue on an in-process `threading.Lock`; another process's hold
+is asked again every 10 ms and the lock gives up after 10 s. On Windows the lock
+must not use `msvcrt.LK_LOCK`: it retries only once a second. Every chat message
+reads a Router credential under this lock (the model catalog fetches its two
+sections at once), so until 2026-10-31 nearly every message waited 1.1 s before
+reaching the Router, and 3.7 s after a long idle. `tests/test_identity_lock.py`
+fails if three threads take longer than 0.5 s.
+
 Open `/manage/security` on the local owner listener to create a 120-second
 single-use QR, revoke devices or establish Router trust by UUID and full SPKI
 fingerprint. A Router must pass pin verification on its actual connection and
