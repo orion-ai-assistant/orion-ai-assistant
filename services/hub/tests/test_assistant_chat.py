@@ -146,6 +146,26 @@ class AssistantChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([p.chat_id for p in self.created], [None])
         self.assertEqual(self.announced(), ['new'])
 
+    async def test_the_chat_list_leaves_the_shared_chat_out(self):
+        self.db_chat = 'shared'
+        chats = [{'chat_id': 'old'}, {'chat_id': 'shared'}]
+        self.assertEqual(await assistant_chat.hide_assistant_chat(self.redis, 'alice', chats), [{'chat_id': 'old'}])
+
+    async def test_a_user_without_one_is_not_looked_up_on_every_list(self):
+        stored = AsyncMock(return_value=None)
+        with patch.object(assistant_chat, 'get_assistant_chat_db', stored):
+            for _ in range(3):
+                self.assertEqual(await assistant_chat.hide_assistant_chat(self.redis, 'alice', [{'chat_id': 'old'}]),
+                                 [{'chat_id': 'old'}])
+        self.assertEqual(stored.await_count, 1)
+        created = await assistant_chat.create_assistant_message(self.redis, self.request())
+        self.assertEqual(await assistant_chat.current_assistant_chat(self.redis, 'alice'), created.chat_id)
+
+    async def test_an_unreadable_database_still_lists_the_chats(self):
+        with patch.object(assistant_chat, 'get_assistant_chat_db', AsyncMock(side_effect=RuntimeError('down'))),                 self.assertLogs(level='ERROR'):
+            chats = await assistant_chat.hide_assistant_chat(self.redis, 'alice', [{'chat_id': 'shared'}])
+        self.assertEqual(chats, [{'chat_id': 'shared'}])
+
 
 class ChatResetTests(unittest.IsolatedAsyncioTestCase):
     async def test_deleting_a_chat_waits_for_a_send_into_it(self):

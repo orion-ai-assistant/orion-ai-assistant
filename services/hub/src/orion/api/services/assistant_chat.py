@@ -4,6 +4,7 @@ PostgreSQL (`orion_chats.assistant`) is the source of truth and Redis caches the
 pointer. A new pointer is announced on the user's stream (`assistant_chat`), so
 a device showing another conversation switches to it. Whichever device speaks
 last is answered: a new turn supersedes the chat's active one (the worker stops it).
+The chat list leaves it out; only that page shows it.
 """
 import logging
 
@@ -36,6 +37,9 @@ async def _cache(redis: Redis, user_id: str, chat_id: str) -> None:
 async def current_assistant_chat(redis: Redis, user_id: str) -> str | None:
     from orion.api.services.job_service import check_chat_access
     cached = await redis.get(_key(user_id))
+    if cached == '':
+        # Known to have none: every chat list asks, the database need not.
+        return None
     if cached:
         if (await check_chat_access(redis, user_id, cached)).state == 'ok':
             return cached
@@ -46,9 +50,19 @@ async def current_assistant_chat(redis: Redis, user_id: str) -> str | None:
         # Not "no chat yet": a new chat would split the conversation in two.
         logger.exception('Could not read the assistant chat of %s', user_id)
         raise HTTPException(503, 'Asistan sohbeti okunamadı. Biraz sonra tekrar deneyin.') from exc
-    if chat_id:
-        await _cache(redis, user_id, chat_id)
+    # Only `_adopt` makes a chat the assistant chat, and it replaces this.
+    await _cache(redis, user_id, chat_id or '')
     return chat_id
+
+
+async def hide_assistant_chat(redis: Redis, user_id: str, chats: list[dict]) -> list[dict]:
+    """The chat list without the assistant chat."""
+    try:
+        hidden = await current_assistant_chat(redis, user_id)
+    except HTTPException:
+        # The list still opens, with the chat in it until the database answers.
+        return chats
+    return [chat for chat in chats if chat.get('chat_id') != hidden] if hidden else chats
 
 
 async def forget_assistant_chat(redis: Redis, user_id: str, chat_id: str) -> None:

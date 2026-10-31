@@ -300,7 +300,9 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
 
     Redis is the hot path. PostgreSQL is used only when the Redis index or
     metadata has expired, then the recovered chats are hydrated back into Redis.
+    The assistant chat is left out: it has its own page.
     """
+    from orion.api.services.assistant_chat import hide_assistant_chat
     settings = await get_runtime_settings(redis, user_id)
     cache_ttl = settings.redis_cache_ttl_seconds
     chat_ids = await redis.zrevrange(get_key(CHAT_USER_INDEX_PREFIX, user_id), 0, -1)
@@ -310,14 +312,14 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
             pipe.hgetall(get_key(CHAT_META_KEY_PREFIX, chat_id))
         cached_chats = [meta for meta in await pipe.execute() if meta]
         if len(cached_chats) == len(chat_ids):
-            return cached_chats
+            return await hide_assistant_chat(redis, user_id, cached_chats)
 
     # Redis cache miss or incomplete metadata: recover from durable storage.
     try:
         db_chats = await get_user_chats_db(user_id)
     except Exception:
         logger.exception("get_user_chats_db failed for user %s, falling back to Redis ZSET", user_id)
-        return cached_chats if chat_ids else []
+        return await hide_assistant_chat(redis, user_id, cached_chats) if chat_ids else []
 
     if db_chats:
         hydrated_chats = []
@@ -337,7 +339,7 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
             pipe.expire(get_key(CHAT_META_KEY_PREFIX, chat_id), cache_ttl)
             pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, user_id), {chat_id: _chat_timestamp(chat["updated_at"])})
         await pipe.execute()
-        return hydrated_chats
+        return await hide_assistant_chat(redis, user_id, hydrated_chats)
     return []
 
 
