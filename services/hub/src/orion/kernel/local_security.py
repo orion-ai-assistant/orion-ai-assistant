@@ -11,6 +11,7 @@ from pathlib import Path
 import secrets
 import socket
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -43,15 +44,29 @@ def spki_fingerprint(certificate_der):
     return hashlib.sha256(key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
 
 
+# Threads of one process queue here first. msvcrt.LK_LOCK retries only once a second, and two threads reading a
+# Router credential at once (the model catalog's two sections) cost every message a second (2026-10-31).
+_thread_lock = threading.Lock()
+
+
 @contextlib.contextmanager
 def identity_lock(directory):
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / 'identity.lock').open('a+b') as handle:
+    with _thread_lock, (directory / 'identity.lock').open('a+b') as handle:
         handle.seek(0)
         if os.name == 'nt':
             import msvcrt
             handle.write(b'0'); handle.flush(); handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            # Another process (API or worker) may hold it: ask again every 10 ms, give up after 10 s like LK_LOCK.
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
         else:
             import fcntl
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
