@@ -10,7 +10,11 @@ olarak istenir (`adaptive_tts.py`, `sentence_segmenter.py`). Kesim yerleri, öne
    konuşma etiketi (`“Muuuu!” diye`) cümleye dahildir. Kısaltma, tek harf ve ondalık sayıda kesilmez.
 3. İki nokta cümle sonu değildir: `:` ile biten bir satır (`Hoca şaşkınlıkla sormuş:`) sonraki satırla birlikte
    okunur. Yalnız yanıtın ilk satırı (`Tabii, işte bir tane daha:`) tek başına gider ki ilk ses çabuk gelsin.
-4. 3 kelimeden kısa parça bir sonrakine eklenir; 600 karakteri aşan cümle kelime sınırından bölünür.
+4. 3 kelimeden kısa parça ve harf/rakam içermeyen parça (yalnız emoji, `---`) bir sonrakine eklenir; 600 karakteri
+   aşan cümle kelime sınırından bölünür.
+5. Yanıtın sonunda kalan kısa parça, son parça henüz istenmemişse ona eklenir. İstenmişse kelime içeriyorsa tek
+   başına gider (kısa yanıt da seslendirilir), yalnız emojiyse seslendirilmez, yazıda kalır (2026-10-31: sondaki `🙌`
+   tek başına bir istek olup 1,2 sn ses üretmişti). Yanıtta seslendirilecek hiçbir şey yoksa ne istek ne uyarı olur.
 
 Bir istekteki cümleler satır sonuyla birleştirilir (sesin yapıyı görmesi için); sohbete kaydedilen metin düzdür.
 Hub, mevcut güvenilir Router session/TLS ve kullanıcı sağlayıcı ayarlarını kullanır.

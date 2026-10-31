@@ -139,18 +139,21 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(speech.closed)
             self.assertEqual(context.emit_audio_stream.call_args_list[0].args[0], 'audio_start')
             await speech.feed('İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi. Son parça')
+            finishing = asyncio.ensure_future(speech.finish())
+            await asyncio.sleep(0.01)  # the reply ends while the first part is still being spoken
             release.set()
-            result = await asyncio.wait_for(speech.finish(), 1)
+            result = await asyncio.wait_for(finishing, 1)
         self.assertEqual(result, {'saved': True})
-        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.\nÜçüncü cümle geldi.\nDördüncü cümle geldi.', 'Son parça'])
+        # The short tail goes with the last part, which was not asked for yet, instead of in a request of its own.
+        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.\nÜçüncü cümle geldi.\nDördüncü cümle geldi. Son parça'])
         events = context.emit_audio_stream.call_args_list
         self.assertEqual(sum(c.args[0] == 'audio_start' for c in events), 1)
         self.assertEqual(sum(c.args[0] == 'audio_done' for c in events), 1)
         chunks = [c.args[1] for c in events if c.args[0] == 'audio_chunk']
-        self.assertEqual([c['sequence'] for c in chunks], [0, 1, 2])
-        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 4])
+        self.assertEqual([c['sequence'] for c in chunks], [0, 1])
+        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1])
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
-            self.assertEqual(wav.readframes(3), b'\x01\x02' * 3)
+            self.assertEqual(wav.readframes(2), b'\x01\x02' * 2)
 
     async def test_opening_line_goes_alone_and_lead_ins_stay_with_their_line(self):
         context = self.context()
@@ -201,6 +204,36 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await speech.feed('Selam, naber?')
             await speech.finish()
         self.assertEqual(requests, ['Selam, naber?'])
+
+    async def test_emoji_is_never_asked_for_on_its_own(self):
+        context = self.context()
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Merhaba! İyiyim, teşekkür ederim. 🎉\n')
+            await asyncio.sleep(0.05)
+            await speech.feed('🎉 🎉 🎉\nSes dosyanı buraya yükleyebilirsen hemen transkripte ederim. ')
+            await asyncio.sleep(0.05)  # that part is asked for before the reply ends
+            await speech.feed('🙌')
+            await speech.finish()
+        # The emoji line waits for the next sentence; the last emoji has nothing left to join and is not spoken.
+        self.assertEqual(requests, ['Merhaba! İyiyim, teşekkür ederim.',
+                                    '🎉 🎉 🎉 🎉 Ses dosyanı buraya yükleyebilirsen hemen transkripte ederim.'])
+        self.assertIsNone(speech.error)
+
+    async def test_reply_with_nothing_to_say_asks_nothing_and_warns_nothing(self):
+        context = self.context()
+        provider = AsyncMock()
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('👍')
+            self.assertIsNone(await asyncio.wait_for(speech.finish(), 1))
+        provider.assert_not_called()
+        context.emit_audio_stream.assert_not_called()
+        self.assertIsNone(speech.error)
 
     async def test_snapshot_does_not_duplicate_committed_sentences(self):
         requests = []

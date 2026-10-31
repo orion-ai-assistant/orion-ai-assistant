@@ -1,7 +1,9 @@
 """First sentence immediately, then bounded batches of whatever is ready.
 
-A sentence under MIN_WORDS ("Selam.") is not spoken alone: it waits for the
-next one. The reply's end sends whatever is left, so a short reply still speaks.
+A sentence under MIN_WORDS ("Selam.") or one with nothing to say ("🎉") is not
+spoken alone: it waits for the next one. At the reply's end what is left joins
+the last part if that is not asked for yet; otherwise it goes alone when it has
+words (so a short reply still speaks) and is dropped when it is only emoji.
 """
 import asyncio
 import logging
@@ -22,6 +24,7 @@ class AdaptiveTts:
         self.segmenter = SentenceSegmenter()
         self.held = ""
         self.started = False
+        self.asked = False  # a part was handed to the speech service
         self.queue = deque()
         self.queued_chars = 0
         self.condition = asyncio.Condition()
@@ -75,6 +78,10 @@ class AdaptiveTts:
         self.committed = self.source[:len(self.source) - len(self.segmenter.pending)]
         await self._put(self._join_short(pieces))
 
+    @staticmethod
+    def _speakable(piece):
+        return any(ch.isalnum() for ch in piece)
+
     def _join_short(self, pieces, final=False):
         result = []
         for piece in pieces:
@@ -83,14 +90,23 @@ class AdaptiveTts:
                 self.held = ""
             # A lead-in such as "Hoca şaşkınlıkla sormuş:" is spoken together with the line it introduces. Only the
             # reply's opening line ("Tabii, işte bir tane daha:") goes alone, so the first audio comes quickly.
-            if len(piece.split()) < self.MIN_WORDS or (piece.endswith(":") and self.started):
+            if (len(piece.split()) < self.MIN_WORDS or not self._speakable(piece)
+                    or (piece.endswith(":") and self.started)):
                 self.held = piece
             else:
                 result.append(piece)
                 self.started = True
         if final and self.held:
-            result.append(self.held)
-            self.held = ""
+            tail, self.held = self.held, ""
+            if result:
+                result[-1] = f"{result[-1]} {tail}"
+            elif self.queue:
+                # The last part is not asked for yet: the tail goes with it instead of in a request of its own.
+                self.queue[-1] = f"{self.queue[-1]} {tail}"
+                self.queued_chars += 1 + len(tail)
+            elif self._speakable(tail):
+                result.append(tail)
+            # Otherwise the tail is only emoji or marks ("🙌" made 1.2 s of sound alone); it stays in the text.
         return result
 
     async def _put(self, pieces):
@@ -120,6 +136,7 @@ class AdaptiveTts:
                     batch.append(part)
                     length += 1 + len(part)
                 self.queued_chars -= sum(map(len, batch))
+                self.asked = True
                 self.condition.notify_all()
             # One sentence or line per row, so the voice keeps the reply's structure (a pause between speakers).
             yield index, "\n".join(batch)
@@ -129,6 +146,10 @@ class AdaptiveTts:
     async def finish(self):
         if not self.closed:
             await self._put(self._join_short(self.segmenter.feed("", final=True), final=True))
+            if not self.queue and not self.asked:
+                # Nothing in the reply can be spoken (only emoji or code): no request, and no warning either.
+                await self.cancel()
+                return None
             async with self.condition:
                 self.closed = True
                 self.condition.notify_all()
