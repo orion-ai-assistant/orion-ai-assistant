@@ -171,6 +171,22 @@ internal static class Installation
         return status == null || status == "stopped" || status == "failed" ? null : state;
     }
 
+    // The installed Router panel's favicon.ico (every size, orion-router dashboard/public); null without a local Router.
+    internal static string RouterFavicon(string registry)
+    {
+        var record = Read(registry);
+        if (record == null || !(record.ContainsKey("components") && record["components"] is IEnumerable)) return null;
+        foreach (object item in (IEnumerable)record["components"])
+        {
+            var component = item as Dictionary<string, object>;
+            if (component == null) continue;
+            string code = Text(component, "code_path");
+            if (Text(component, "kind") != "router" || Text(component, "management") == "connect-only" || string.IsNullOrEmpty(code)) continue;
+            try { return Path.Combine(code, @"dashboard\out\favicon.ico"); } catch (ArgumentException) { }
+        }
+        return null;
+    }
+
     internal static string Text(Dictionary<string, object> map, string key)
     {
         object value;
@@ -187,6 +203,8 @@ internal sealed class Host : Form
     private IntPtr stopping = IntPtr.Zero;                        // The Orion.ps1 -Stop run of "Quit".
     private bool exitRequested, reopen, ending, closed;
     private DateTime lastOpen = DateTime.MinValue;
+    private string routerFavicon;                                 // The file routerBig/routerSmall are from.
+    private IntPtr routerBig, routerSmall;
 
     internal Host(string id, string folder, string script, string registry)
     {
@@ -294,6 +312,7 @@ internal sealed class Host : Form
     private void Tick()
     {
         if (closed) return;
+        RouterWindowIcon();
         if (File.Exists(exitMarker))
         {
             // The launcher stopped every service (also one that was not started from here): end.
@@ -336,6 +355,30 @@ internal sealed class Host : Form
         // window without services): no idle host. Asked only then: while an update replaces the services
         // nothing runs either, and the update watcher inside this host's job must keep running.
         if (finished && startsDone && !AnyRunning()) Exit();
+    }
+
+    // The Router panel's window (Edge --app, services.shared.flutter_launcher) has the page's 16 px favicon as its
+    // only icon, and Windows stretches it to the taskbar's 32 px or more: blurred. The window gets the installed
+    // panel's favicon.ico at the sizes Windows asks for, again whenever Edge sets its own (a page load).
+    private void RouterWindowIcon()
+    {
+        IntPtr window = IntPtr.Zero, current;
+        while ((window = Native.FindWindowExW(IntPtr.Zero, window, "Chrome_WidgetWin_1", "Orion Router")) != IntPtr.Zero)
+        {
+            if (Native.SendMessageTimeoutW(window, Native.WM_GETICON, (IntPtr)1, IntPtr.Zero, 0x2, 200, out current) == IntPtr.Zero
+                || (current == routerBig && current != IntPtr.Zero)) continue;
+            string file = Installation.RouterFavicon(registry);
+            if (file != routerFavicon)
+            {
+                // A Router update brings its own file; the icons of the previous one are kept (a window may show them).
+                routerFavicon = file;
+                routerBig = file == null ? IntPtr.Zero : Native.ExtractIcon(file, SystemInformation.IconSize.Width);
+                routerSmall = file == null ? IntPtr.Zero : Native.ExtractIcon(file, SystemInformation.SmallIconSize.Width);
+            }
+            if (routerBig == IntPtr.Zero || routerSmall == IntPtr.Zero) return;  // A Router without the file: Edge's icon stays.
+            Native.SendMessageTimeoutW(window, Native.WM_SETICON, (IntPtr)1, routerBig, 0x2, 200, out current);
+            Native.SendMessageTimeoutW(window, Native.WM_SETICON, (IntPtr)0, routerSmall, 0x2, 200, out current);
+        }
     }
 
     private bool AnyRunning()
@@ -422,18 +465,13 @@ internal static class Ui
     internal static Icon OrionIcon(int size)
     {
         string file = Assembly.GetExecutingAssembly().Location;
-        var handles = new IntPtr[1];
-        var ids = new int[1];
-        try
+        IntPtr handle = Native.ExtractIcon(file, size);
+        if (handle != IntPtr.Zero)
         {
-            if (Native.PrivateExtractIconsW(file, 0, size, size, handles, ids, 1, 0) == 1 && handles[0] != IntPtr.Zero)
-            {
-                var icon = (Icon)System.Drawing.Icon.FromHandle(handles[0]).Clone();
-                Native.DestroyIcon(handles[0]);
-                return icon;
-            }
+            var icon = (Icon)System.Drawing.Icon.FromHandle(handle).Clone();
+            Native.DestroyIcon(handle);
+            return icon;
         }
-        catch (Exception) { }
         try { return System.Drawing.Icon.ExtractAssociatedIcon(file); } catch (Exception) { return SystemIcons.Application; }
     }
 
@@ -468,7 +506,7 @@ internal static class Ui
 
 internal static class Native
 {
-    internal const int WM_COPYDATA = 0x004A;
+    internal const int WM_COPYDATA = 0x004A, WM_GETICON = 0x007F, WM_SETICON = 0x0080;
     internal static readonly string PowerShell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
         @"System32\WindowsPowerShell\v1.0\powershell.exe");
 
@@ -503,7 +541,12 @@ internal static class Native
     internal static extern IntPtr SendMessageTimeoutW(IntPtr window, int message, IntPtr wParam, ref CopyData lParam,
         int flags, int timeout, out IntPtr result);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    internal static extern uint PrivateExtractIconsW(string file, int index, int cx, int cy, IntPtr[] icons, int[] ids, uint count, uint flags);
+    internal static extern IntPtr SendMessageTimeoutW(IntPtr window, int message, IntPtr wParam, IntPtr lParam,
+        int flags, int timeout, out IntPtr result);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern IntPtr FindWindowExW(IntPtr parent, IntPtr after, string className, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint PrivateExtractIconsW(string file, int index, int cx, int cy, IntPtr[] icons, int[] ids, uint count, uint flags);
     [DllImport("user32.dll")] internal static extern bool DestroyIcon(IntPtr icon);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool ShutdownBlockReasonCreate(IntPtr window, string reason);
     [DllImport("user32.dll")] internal static extern bool ShutdownBlockReasonDestroy(IntPtr window);
@@ -523,6 +566,15 @@ internal static class Native
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     [DllImport("kernel32.dll")] private static extern bool GetExitCodeProcess(IntPtr process, out int code);
     [DllImport("kernel32.dll")] internal static extern bool CloseHandle(IntPtr handle);
+
+    // The icon of an .exe or .ico nearest `size` px, which the caller owns; Zero when there is none.
+    internal static IntPtr ExtractIcon(string file, int size)
+    {
+        var handles = new IntPtr[1];
+        var ids = new int[1];
+        try { return PrivateExtractIconsW(file, 0, size, size, handles, ids, 1, 0) == 1 ? handles[0] : IntPtr.Zero; }
+        catch (Exception) { return IntPtr.Zero; }
+    }
 
     internal static void DpiAware()
     {
