@@ -128,6 +128,16 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
             await stream.aclose()
         self.assertTrue(self.closed)
 
+    async def test_request_asks_the_router_to_keep_the_connection_until_the_audio_is_read(self):
+        from orion.worker.services import router
+        settings = SimpleNamespace(tts_model='gemini-test', tts_voice='', tts_timeout_seconds=15, tts_model_voices={})
+        with patch.object(router, 'get_session', AsyncMock()), \
+                patch.object(router, 'get_model_provider', AsyncMock(return_value='gemini')), \
+                patch.object(router, 'get_router_base_urls', lambda: ['https://router']), \
+                patch.object(router, '_get_router_api_key', lambda settings: 'key'):
+            _, headers, _, _, _, _ = await router._tts_request('hello', settings, None, 'pcm')
+        self.assertEqual(headers['Connection'], 'keep-alive')
+
     async def test_quota_error_preserves_http_status(self):
         request = await self.request(status=429)
         with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=request)):

@@ -14,6 +14,19 @@ PCM = {"format": "pcm", "sample_rate": 24000, "channels": 1,
        "bits_per_sample": 16, "encoding": "pcm_s16le"}
 
 
+JOKE = (
+    "Tabii, işte bir tane daha:\n"
+    "Nasreddin Hoca bir gün pazara koşmuş ve bir tezgâhta satılan “Akıllı Çocuk” adlı tavuk yumurtasını görmüş. "
+    "Satıcı, “Bu yumurta çok akıllı! İçinden çıkan çocuk bütün sorulara cevap veriyor” demiş.\n"
+    "Hoca hemen alıp evine götürmüş, yumurtayı kırmış. İçinden bir tavşan çıkmış ve:\n"
+    "Tavşan: “Baba, ben akıllı bir tavşanım, sorulara hemen cevap veririm.”\n"
+    "Hoca şaşkınlıkla sormuş:\n"
+    "Hoca: “Peki, neden tavuk gibi göründün?”\n"
+    "Tavşan: “Çünkü satıcı ‘Akıllı Çocuk’ demişti, ben de akıllı olmaya çalışıyorum!” 😄\n"
+    "Umarım güldürmüştür! Başka bir şey istersen söyle."
+)
+
+
 class SegmentTests(unittest.TestCase):
     def test_token_boundaries_abbreviations_decimal_url_and_final_tail(self):
         source = "Dr. Ayşe 3.14 dedi. https://orion.test/a?x=1 Sonra geldim! Noktasız son"
@@ -34,6 +47,64 @@ class SegmentTests(unittest.TestCase):
         result += segmenter.feed('` örnek. ', final=True)
         self.assertNotIn('foo', ' '.join(result))
         self.assertNotIn('bar', ' '.join(result))
+
+    def test_lines_are_cut_where_the_model_broke_them_and_quotes_stay_whole(self):
+        expected = [
+            'Tabii, işte bir tane daha:',
+            'Nasreddin Hoca bir gün pazara koşmuş ve bir tezgâhta satılan “Akıllı Çocuk” adlı tavuk yumurtasını görmüş.',
+            'Satıcı, “Bu yumurta çok akıllı! İçinden çıkan çocuk bütün sorulara cevap veriyor” demiş.',
+            'Hoca hemen alıp evine götürmüş, yumurtayı kırmış.',
+            'İçinden bir tavşan çıkmış ve:',
+            'Tavşan: “Baba, ben akıllı bir tavşanım, sorulara hemen cevap veririm.”',
+            'Hoca şaşkınlıkla sormuş:',
+            'Hoca: “Peki, neden tavuk gibi göründün?”',
+            'Tavşan: “Çünkü satıcı ‘Akıllı Çocuk’ demişti, ben de akıllı olmaya çalışıyorum!”',
+            '😄',
+            'Umarım güldürmüştür!',
+            'Başka bir şey istersen söyle.',
+        ]
+        for width in (1, 3, 8, 10_000):
+            with self.subTest(width=width):
+                segmenter = SentenceSegmenter()
+                out = []
+                for offset in range(0, len(JOKE), width):
+                    out.extend(segmenter.feed(JOKE[offset:offset + width]))
+                out.extend(segmenter.feed('', final=True))
+                self.assertEqual(out, expected)
+
+    def test_a_line_that_goes_on_in_lowercase_was_only_wrapped(self):
+        segmenter = SentenceSegmenter()
+        self.assertEqual(segmenter.feed('Hoca hemen alıp evine\n'), [])  # waits: new line or the same sentence?
+        self.assertEqual(segmenter.feed('götürmüş. Sonra gitmiş.', final=True),
+                         ['Hoca hemen alıp evine götürmüş.', 'Sonra gitmiş.'])
+
+    def test_heading_and_list_lines_end_without_punctuation(self):
+        segmenter = SentenceSegmenter()
+        result = segmenter.feed('## Dilekler\n1️⃣ Süt veren inekler\n2️⃣ Bereketli bahçeler\nBitti.', final=True)
+        self.assertEqual(result, ['Dilekler', '1️⃣ Süt veren inekler', '2️⃣ Bereketli bahçeler', 'Bitti.'])
+
+    def test_quoted_exclamation_followed_by_a_dialogue_tag_stays_in_the_sentence(self):
+        # The speech used to break after “Muuuu!” and start the next request at "diye bağırmış".
+        source = 'Hoca inekleri gördükçe “Muuuu!” diye bağırmış. Sonra gitmiş. “Gidiyorum.” dedi Hoca. Bitti!'
+        expected = ['Hoca inekleri gördükçe “Muuuu!” diye bağırmış.', 'Sonra gitmiş.', '“Gidiyorum.” dedi Hoca.', 'Bitti!']
+        for width in (1, 2, 5, 1000):
+            with self.subTest(width=width):
+                segmenter = SentenceSegmenter()
+                out = []
+                for offset in range(0, len(source), width):
+                    out.extend(segmenter.feed(source[offset:offset + width]))
+                out.extend(segmenter.feed('', final=True))
+                self.assertEqual(out, expected)
+
+    def test_quoted_exclamation_followed_by_a_new_sentence_still_ends_it(self):
+        segmenter = SentenceSegmenter()
+        result = segmenter.feed('Dedi ki: “Evet!” Sonra gitti. Neden olmasın?', final=True)
+        self.assertEqual(result, ['Dedi ki: “Evet!”', 'Sonra gitti.', 'Neden olmasın?'])
+
+    def test_sentence_waits_for_the_next_word_before_a_quoted_exclamation_ends_it(self):
+        segmenter = SentenceSegmenter()
+        self.assertEqual(segmenter.feed('Bağırdı: “Hayır!” '), [])
+        self.assertEqual(segmenter.feed('diye durdu. Sonra '), ['Bağırdı: “Hayır!” diye durdu.'])
 
     def test_bold_first_sentence_is_available_before_final(self):
         segmenter = SentenceSegmenter()
@@ -71,7 +142,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             result = await asyncio.wait_for(speech.finish(), 1)
         self.assertEqual(result, {'saved': True})
-        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi.', 'Son parça'])
+        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.\nÜçüncü cümle geldi.\nDördüncü cümle geldi.', 'Son parça'])
         events = context.emit_audio_stream.call_args_list
         self.assertEqual(sum(c.args[0] == 'audio_start' for c in events), 1)
         self.assertEqual(sum(c.args[0] == 'audio_done' for c in events), 1)
@@ -80,6 +151,28 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 4])
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
             self.assertEqual(wav.readframes(3), b'\x01\x02' * 3)
+
+    async def test_opening_line_goes_alone_and_lead_ins_stay_with_their_line(self):
+        context = self.context()
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            for offset in range(0, len(JOKE), 6):
+                await speech.feed(JOKE[offset:offset + 6])
+            await speech.finish()
+        # The first audio is only the short opening line.
+        self.assertEqual(requests[0], 'Tabii, işte bir tane daha:')
+        rows = [row for request in requests for row in request.split('\n')]
+        self.assertIn('İçinden bir tavşan çıkmış ve: Tavşan: “Baba, ben akıllı bir tavşanım, sorulara hemen cevap veririm.”', rows)
+        self.assertIn('Hoca şaşkınlıkla sormuş: Hoca: “Peki, neden tavuk gibi göründün?”', rows)
+        self.assertIn('Satıcı, “Bu yumurta çok akıllı! İçinden çıkan çocuk bütün sorulara cevap veriyor” demiş.', rows)
+        self.assertIn('😄 Umarım güldürmüştür!', rows)
+        # Nothing is lost or repeated, and the saved text has no line breaks.
+        self.assertEqual(' '.join(rows).split(), ' '.join(JOKE.split()).split())
+        self.assertNotIn('\n', context.emit_audio.call_args.kwargs['text'])
 
     async def test_short_sentence_waits_for_the_next_one(self):
         requests = []
@@ -226,7 +319,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_part_that_fails_once_is_asked_for_again_and_the_reply_keeps_playing(self):
         # The third part broke a few KB in, as in the joke that stopped after 17 seconds.
-        provider, requests = self.scripted({3: (b'\x01\x02' * 2048, RuntimeError('connection lost'))})
+        provider, requests = self.scripted({3: (b'', RuntimeError('connection lost'))})  # before any audio
         speech, context, kept = await self.speak(
             provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. Dördüncü cümle burada. ')
         self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.', 'Üçüncü cümle burada.',
@@ -270,8 +363,23 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         })
         speech, context, kept = await self.speak(provider, 'Birinci cümle burada. ')
         audio = self.relayed(context)
-        self.assertEqual(audio, b'\x01\x02' + b'\x04\x05\x06\x07')
-        self.assertEqual(len(audio) % 2, 0)
+        self.assertEqual(audio, b'\x01\x02')  # the odd last byte of the broken part is dropped
+        self.assertEqual(requests, ['Birinci cümle burada.'])  # it had started playing: not asked for again
+
+    async def test_part_that_breaks_after_it_started_is_not_played_twice(self):
+        provider, requests = self.scripted({
+            2: (b'\x05\x06' * 10, RuntimeError('connection lost')),
+            3: (b'\x07\x08' * 10, None),
+        })
+        speech, context, kept = await self.speak(
+            provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. ')
+        # The second part was partly heard, so it is not asked for again; the third still plays.
+        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.', 'Üçüncü cümle burada.'])
+        self.assertEqual(self.relayed(context).count(b'\x05\x06' * 10), 1)
+        text = context.emit_audio.call_args.kwargs['text']
+        self.assertIn('İkinci cümle burada.', text)
+        self.assertIn('Üçüncü cümle burada.', text)
+        self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
 
     async def test_odd_sized_network_chunks_are_realigned_across_a_part(self):
         data = bytes(range(1, 31))
@@ -306,20 +414,30 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(released.is_set())
             self.assertTrue(speech.task.done())
 
-    async def test_non_pcm_provider_fails_once_without_resynthesis(self):
+    async def test_part_answered_in_a_format_the_player_cannot_use_is_asked_for_again(self):
+        # The Router once labelled PCM that looked like an MP3 header as audio/mpeg; a second try is fine audio.
+        provider, requests = self.scripted({1: (b'compressed', None)})
+        formats = {1: {"format": "mp3"}}
+        scripted = provider
+        async def provider(text, *args):
+            number = len(requests) + 1
+            async for data, info in scripted(text, *args):
+                yield data, formats.get(number, info)
+        speech, context, kept = await self.speak(provider, 'İlk cümle burada. İkinci cümle burada. ')
+        self.assertEqual(requests, ['İlk cümle burada.', 'İlk cümle burada.', 'İkinci cümle burada.'])
+        self.assertIsNone(speech.error)
+        self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'completed')
+
+    async def test_provider_that_never_answers_in_pcm_ends_without_any_audio_event(self):
         context = self.context()
         requests = []
         async def provider(text, *_):
             requests.append(text)
             yield b'compressed', {"format": "mp3"}
-        with patch('orion.worker.services.tts_stream.stream_tts', provider):
-            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
-            await speech.feed('İlk cümle burada. ')
-            await speech.task
-            await speech.feed('Devam. ')
-            await speech.finish()
-        self.assertEqual(requests, ['İlk cümle burada.'])
+        speech, context, kept = await self.speak(provider, 'İlk cümle burada. Devam ediyor burada. ', context)
+        self.assertEqual(len(requests), 4)  # two parts, asked twice each, then the speech ends
         self.assertIsNotNone(speech.error)
+        self.assertIsNone(kept)
         context.emit_audio_stream.assert_not_awaited()
 
 

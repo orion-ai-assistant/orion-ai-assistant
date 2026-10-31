@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import logging
+import time
 import wave
 import struct
 from contextlib import suppress
@@ -43,10 +44,6 @@ def _batch_wav_pcm(data):
         value = round(mono[left] + (mono[right] - mono[left]) * (source - left))
         struct.pack_into("<h", result, i * 2, max(-32768, min(32767, value)))
     return bytes(result)
-
-
-class UnsupportedSpeech(RuntimeError):
-    """The provider answers in a format early speech cannot play; asking again changes nothing."""
 
 
 class PartialSpeech(Exception):
@@ -94,12 +91,19 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
             buffered = bytearray()
             batch_info = None
             carry = b""
+            asked = time.monotonic()
+            first_audio = last_audio = None
+            pieces = size = 0
             try:
                 async for chunk, chunk_info in stream:
                     batch_info = chunk_info
+                    last_audio = time.monotonic()
+                    first_audio = first_audio or last_audio
+                    pieces += 1
+                    size += len(chunk)
                     if adaptive and chunk_info["format"] != "pcm":
                         if chunk_info["format"] != "wav":
-                            raise UnsupportedSpeech("Early speech requires PCM or WAV sentence audio")
+                            raise RuntimeError("Early speech requires PCM or WAV sentence audio")
                         buffered.extend(chunk)
                         if len(buffered) > 24_000_000:
                             raise RuntimeError("TTS batch exceeds size limit")
@@ -121,32 +125,40 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                     yield pcm[offset:offset + 4096], wav_info, sentence_index
             elif carry:
                 raise RuntimeError("Incomplete PCM sample at speech batch boundary")
+            if first_audio:
+                # Shows whether the provider streams (pieces spread over time) or answers in one burst.
+                logging.info("Speech part %s: %d chars, first audio after %d ms, %d pieces over %d ms, %d bytes",
+                             sentence_index, len(batch), (first_audio - asked) * 1000, pieces,
+                             (last_audio - first_audio) * 1000, size)
 
         async def audio_chunks():
             failed_in_a_row = 0
             async for sentence_index, batch in batches:
                 spoken = False
                 hopeless = False
+                heard = 0  # pieces of this part that already reached the listener
                 for attempt in range(1, PART_ATTEMPTS + 1 if adaptive else 2):
                     try:
                         async for item in one_batch(batch, sentence_index):
+                            heard += 1
                             yield item
                         spoken = True
                         break
                     except Exception as error:
                         if not adaptive:
                             raise
-                        logging.warning("Speech part %s failed (attempt %d of %d): %r",
-                                        sentence_index, attempt, PART_ATTEMPTS, error)
-                        # A quota or access error will not clear within a second, and a format the player cannot
-                        # play stays that way; do not ask again.
-                        hopeless = isinstance(error, UnsupportedSpeech) or getattr(error, "status", None) in (401, 403, 429)
-                        if attempt == PART_ATTEMPTS or hopeless:
+                        logging.warning("Speech part %s failed (attempt %d of %d, %d pieces already played): %r",
+                                        sentence_index, attempt, PART_ATTEMPTS, heard, error)
+                        # A quota or access error will not clear within a second; do not ask again.
+                        hopeless = getattr(error, "status", None) in (401, 403, 429)
+                        # A part that was already partly heard is not asked for again: its start would play twice.
+                        if heard or attempt == PART_ATTEMPTS or hopeless:
                             failed.append(error)
                             break
                         await asyncio.sleep(RETRY_DELAY)
-                if spoken:
+                if spoken or heard:
                     texts.append(batch)
+                if spoken:
                     failed_in_a_row = 0
                 else:
                     failed_in_a_row += 1
@@ -178,7 +190,7 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                     wav.writeframes(audio)
                 audio, fmt = output.getvalue(), "wav"
             return await context.emit_audio(
-                audio, format=fmt, sample_rate=info.get("sample_rate"), text=" ".join(texts),
+                audio, format=fmt, sample_rate=info.get("sample_rate"), text=" ".join(texts).replace("\n", " "),
                 arrival_ms=first_arrival, streamed=pcm_started, status=status,
             )
 

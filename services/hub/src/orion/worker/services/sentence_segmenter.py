@@ -46,7 +46,11 @@ class SentenceSegmenter:
                     self.pending = self.pending[:inline] + " " * (closing + 1 - inline) + self.pending[closing + 1:]
                     continue
             boundary = None
-            for match in re.finditer(r'[.!?…]+["”’)\]*_~]*', self.pending[:limit]):
+            # A line break ends a line the model wrote on its own (a list item, "Tavşan: ...", a lead-in);
+            # sentences are looked for only up to it.
+            newline = self.pending.find("\n", 0, limit)
+            line_end = newline if newline >= 0 else limit
+            for match in re.finditer(r'[.!?…]+["”’)\]*_~]*', self.pending[:line_end]):
                 end = match.end()
                 if end == len(self.pending) and not final:
                     continue  # Need lookahead for decimals/URLs/abbreviations.
@@ -59,8 +63,29 @@ class SentenceSegmenter:
                 if punctuation == "." and (word.lower() in self.ABBREVIATIONS or
                     re.fullmatch(r'[A-ZÇĞİÖŞÜ]', word) or re.fullmatch(r'(?:[A-Za-zÇĞİÖŞÜçğıöşü]\.)+[A-Za-zÇĞİÖŞÜçğıöşü]', word)):
                     continue
+                # “Muuuu!” diye bağırmış: a closing quote after the punctuation followed by a lowercase word is a
+                # dialogue tag, not the end of the sentence. Only a closing quote waits for the next word, so a plain
+                # "Bir bakayım!" before a tool call is still spoken at once.
+                if any(mark in punctuation for mark in '"”’)]') and end != newline:
+                    following = self.pending[end:].lstrip()
+                    if not following and not final:
+                        continue  # the next word has not arrived yet
+                    if following[:1].islower():
+                        continue
+                # Satıcı, “Bu yumurta çok akıllı! İçinden ... veriyor” demiş: never cut inside an open quotation.
+                if self.pending[:end].count("“") > self.pending[:end].count("”"):
+                    continue
                 boundary = end
                 break
+            if boundary is None and newline >= 0:
+                following = self.pending[newline + 1:].lstrip(" \t")
+                if not following and not final:
+                    break  # is the next line a new one, or the same sentence wrapped?
+                if following[:1].islower():
+                    # Only wrapped: the sentence goes on in the next line.
+                    self.pending = self.pending[:newline] + " " + self.pending[newline + 1:]
+                    continue
+                boundary = newline + 1
             if boundary is None and limit >= self.MAX_CHARS:
                 boundary = self.pending.rfind(" ", 0, self.MAX_CHARS + 1)
                 if boundary < self.MAX_CHARS // 2:

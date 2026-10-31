@@ -1,6 +1,18 @@
 # TTS PCM streaming — Hub, dashboard, Flutter
 
-LLM metni tamamlandıktan sonra tek TTS isteği açılır. Cümle bazlı üretim yoktur.
+`speech_mode: whole`: LLM metni tamamlandıktan sonra tek TTS isteği açılır. `adaptive` (düz sohbetin
+varsayılanı): metin geldikçe parçalara bölünür, ilk parça hemen, sonrakiler sırayla en çok 3 cümle / 600 karakter
+olarak istenir (`adaptive_tts.py`, `sentence_segmenter.py`). Kesim yerleri, önem sırasıyla:
+1. Satır sonu: modelin ayrı satıra yazdığı her şey (liste maddesi, `Tavşan: “...”`, başlık) ayrı parçadır.
+   Sonraki satır küçük harfle başlıyorsa satır yalnız kaydırılmıştır, cümle sürer.
+2. Cümle sonu: `. ! ? …` (arkasında kapanış tırnağı olabilir). Açık bir tırnağın içinde kesilmez
+   (`“Bu yumurta çok akıllı! İçinden ...” demiş.` tek parça); kapanış tırnağından sonra küçük harfle süren
+   konuşma etiketi (`“Muuuu!” diye`) cümleye dahildir. Kısaltma, tek harf ve ondalık sayıda kesilmez.
+3. İki nokta cümle sonu değildir: `:` ile biten bir satır (`Hoca şaşkınlıkla sormuş:`) sonraki satırla birlikte
+   okunur. Yalnız yanıtın ilk satırı (`Tabii, işte bir tane daha:`) tek başına gider ki ilk ses çabuk gelsin.
+4. 3 kelimeden kısa parça bir sonrakine eklenir; 600 karakteri aşan cümle kelime sınırından bölünür.
+
+Bir istekteki cümleler satır sonuyla birleştirilir (sesin yapıyı görmesi için); sohbete kaydedilen metin düzdür.
 Hub, mevcut güvenilir Router session/TLS ve kullanıcı sağlayıcı ayarlarını kullanır.
 Yeni bir WebSocket açılmaz; sohbet ses eventleri mevcut kullanıcı kapsamlı SSE/Redis
 kanalından yayınlanır. Stop mevcut turn kapsamlı HTTP endpoint'ini kullanır.
@@ -31,13 +43,21 @@ alanına kaydeder. Başarılı `audio` kaydı `audio_done` ve sohbet `done` even
 önce yayınlanır. `arrival_ms` ilk ses verisinin istekten itibaren geliş süresidir.
 Kullanıcının durdurduğu PCM akışının iletilmiş kısmı WAV olarak saklanır (`status: stopped`).
 İlk örnek gelmeden durdurulursa kayıt veya yeni TTS isteği oluşmaz. Cümle bazlı (adaptive)
-üretimde bir parça (1-3 cümlelik istek) hata verirse aynı parça 1 saniye sonra bir kez daha istenir
-(parça yarıda kopmuşsa konuşulan ilk kısım tekrar duyulabilir; yarım örnek asla kalmaz). İkinci deneme de
-olmazsa o parça atlanır ve sonraki cümleler yine seslendirilir; kayıt `status: failed` ile, yalnız
-konuşulan parçaların metniyle sohbete kaydedilir ve dinlenebilir. Şu durumlarda yeniden denenmez ve
-kalan metin seslendirilmez: HTTP 401/403/429 (kota, erişim), oynatılamayan biçim, art arda iki parçanın
-(ikişer denemeyle) başarısız olması. Her başarısız deneme Hub loguna `Speech part N failed (attempt a of b): <hata>`
-olarak yazılır. Tek istekli (whole) akışta hatalı akışın kısmi sesi saklanmaz.
+üretimde her parçanın (1-3 cümlelik istek) sesi geldiği anda çalınır. Parça hiç ses gelmeden hata verirse aynı
+parça 1 saniye sonra bir kez daha istenir. Çalmaya başlamış bir parça koparsa yeniden istenmez (başı iki kez
+duyulurdu), sonraki cümlelere geçilir; yarım örnek kalmaz. (2026-10-31'de parçayı tamamlanana kadar tutmayı
+denedik: Gemini 3.1 TTS sesi parça parça verdiği için düz sohbette ses geç başladı, geri alındı.) Parça iki
+denemede de olmazsa atlanır ve sonraki cümleler yine seslendirilir; kayıt `status: failed` ile, duyulan parçaların
+metniyle sohbete kaydedilir ve dinlenebilir. Şu durumlarda yeniden denenmez ve
+kalan metin seslendirilmez: HTTP 401/403/429 (kota, erişim) ve art arda iki parçanın (ikişer denemeyle)
+başarısız olması. Router, `response_format: pcm` isteyene her zaman `audio/pcm` döner; bayt tahmini yalnız
+biçim belirtilmediğinde çalışır (2026-10-31: ham PCM'in ilk örneği MP3 başlığına benzeyince yanıt `audio/mpeg`
+diye etiketlenip o parça düşüyordu). Her başarısız deneme Hub loguna `Speech part N failed (attempt a of b): <hata>`
+olarak yazılır; başarılı her parça için `Speech part N: ... first audio after X ms, P pieces over Y ms` satırı
+sağlayıcının akıtıp akıtmadığını gösterir. İlk ses için bekleme `max(tts_timeout_seconds, 30 + karakter/10)`
+saniyedir: Router yanıtı ancak ilk ses gelince başlatır ve Gemini yükteyken kısa bir cümle için 20 sn bekletti.
+Hub, Router'a TTS isteğinde `Connection: keep-alive` gönderir: `Connection: close` ile Python 3.11'deki Router büyük
+ses gövdesinin sonunu TLS kapanışında arada bir düşürüyordu (deneyde 150'de 6, hep aynı baytta). Tek istekli (whole) akışta hatalı akışın kısmi sesi saklanmaz.
 WAV/MP3/OGG/AAC/FLAC yanıtları PCM gibi beslenmez; tamamlanmış dosya yolu kullanılır.
 
 ## Oynatma ve iptal

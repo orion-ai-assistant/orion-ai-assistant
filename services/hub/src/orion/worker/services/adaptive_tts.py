@@ -21,6 +21,7 @@ class AdaptiveTts:
     def __init__(self, context, settings, should_stop, arrival_ms):
         self.segmenter = SentenceSegmenter()
         self.held = ""
+        self.started = False
         self.queue = deque()
         self.queued_chars = 0
         self.condition = asyncio.Condition()
@@ -80,10 +81,13 @@ class AdaptiveTts:
             if self.held:
                 piece = f"{self.held} {piece}"
                 self.held = ""
-            if len(piece.split()) < self.MIN_WORDS:
+            # A lead-in such as "Hoca şaşkınlıkla sormuş:" is spoken together with the line it introduces. Only the
+            # reply's opening line ("Tabii, işte bir tane daha:") goes alone, so the first audio comes quickly.
+            if len(piece.split()) < self.MIN_WORDS or (piece.endswith(":") and self.started):
                 self.held = piece
             else:
                 result.append(piece)
+                self.started = True
         if final and self.held:
             result.append(self.held)
             self.held = ""
@@ -117,7 +121,8 @@ class AdaptiveTts:
                     length += 1 + len(part)
                 self.queued_chars -= sum(map(len, batch))
                 self.condition.notify_all()
-            yield index, " ".join(batch)
+            # One sentence or line per row, so the voice keeps the reply's structure (a pause between speakers).
+            yield index, "\n".join(batch)
             index += len(batch)
             first = False
 

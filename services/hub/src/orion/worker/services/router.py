@@ -137,13 +137,8 @@ async def llama_stream_chat_typed(
     settings: RuntimeSettings,
     stop_checker: Callable[[], Awaitable[bool]] | None = None,
     tools: list[dict[str, Any]] | None = None,
-    cache_key: str | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar.
-
-    cache_key (kullanıcı kimliği) bir yönlendirme ipucudur: Router bunu sağlayıcının prompt cache'ine
-    ulaşmak için kullanır, böylece önceki mesajlar ucuz "cached input" fiyatından yazılır. Cache'te
-    eşleşmeyi isteğin başlangıcı (system prompt, araçlar, geçmiş) belirler, sohbet değil.
 
     Yields:
         ("thinking", token) — reasoning / chain-of-thought içeriği
@@ -160,8 +155,6 @@ async def llama_stream_chat_typed(
     }
     if settings.temperature is not None:
         payload["temperature"] = settings.temperature
-    if cache_key:
-        payload["prompt_cache_key"] = cache_key
     thinking_level = (getattr(settings, "thinking_level", "") or "").strip()
     if tools:
         payload["tools"] = tools
@@ -487,6 +480,10 @@ async def _tts_request(
         "Authorization": f"Bearer {api_key}",
         "x-orion-api-key": api_key,
         "Content-Type": "application/json",
+        # The Router session closes its own end after each response (force_close). Without this header it also
+        # sends "Connection: close", and a Router on Python 3.11 then drops the tail of a large audio body when it
+        # closes the TLS connection right after streaming it (about 4 of 100 parts, always cut at the same byte).
+        "Connection": "keep-alive",
     }
     if provider:
         headers["x-orion-provider"] = provider
@@ -579,7 +576,10 @@ async def stream_tts(
     payload["stream"] = True
     if provider != "gemini":
         payload["response_format"] = "wav"
-    timeout = ClientTimeout(total=None, connect=1.0, sock_read=float(settings.tts_timeout_seconds))
+    # The Router answers only when the first audio exists, and a provider under load took 20 s for one short sentence
+    # (2026-10-31, Gemini 3.1 TTS). The wait grows with the text; the setting can only make it longer.
+    wait = max(float(settings.tts_timeout_seconds), 30.0 + len(text) / 10)
+    timeout = ClientTimeout(total=None, connect=1.0, sock_read=wait)
     started = False
     last_error = None
     for url in urls:
@@ -635,4 +635,4 @@ async def stream_tts(
             if started:
                 raise
             last_error = exc
-    raise TtsStreamError("TTS service unavailable") from last_error
+    raise TtsStreamError(f"TTS service unavailable: {last_error!r}") from last_error
