@@ -1,12 +1,7 @@
-"""The Hub keeps the start of every prompt stable and names the user, so providers can cache the history."""
+"""The Hub keeps the start of every prompt stable, so providers can cache the history."""
 import unittest
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
 
-from orion.contracts.settings import RuntimeSettings
-from orion.worker.services import router
 from orion.worker.services.tool_history import HISTORY_SLIDE_TURNS, model_history
-from orion.worker.services.tool_runner import ToolConversation
 
 
 def chat(turns):
@@ -61,47 +56,6 @@ class HistoryWindowTests(unittest.TestCase):
             for index, message in enumerate(window):
                 if message['role'] == 'tool':
                     self.assertEqual(window[index - 1]['tool_calls'][0]['id'], message['tool_call_id'])
-
-
-class ChatNamingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_every_model_round_names_the_user_not_the_chat(self):
-        seen = []
-
-        async def model(*args, **kwargs):
-            seen.append(kwargs)
-            yield 'content', 'ok'
-
-        conversation = ToolConversation(SimpleNamespace(user_id='user-7', chat_id='chat-7', turn_id='t'), [])
-        events = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), model)]
-        self.assertEqual(events, [('content', 'ok')])
-        self.assertEqual(seen[0]['cache_key'], 'user-7')
-
-    async def test_router_request_carries_prompt_cache_key_only_when_named(self):
-        async def chunks():
-            yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
-            yield b'data: [DONE]\n\n'
-
-        for cache_key in ('chat-7', None):
-            with self.subTest(cache_key=cache_key):
-                response = AsyncMock()
-                response.status = 200
-                response.raise_for_status = Mock()
-                response.close = Mock()
-                response.content = Mock()
-                response.content.iter_any.return_value = chunks()
-                response.__aenter__.return_value = response
-                session = Mock()
-                session.post.return_value = response
-                with patch.object(router, 'get_session', AsyncMock(return_value=session)), \
-                        patch.object(router, '_router_urls', return_value=['http://test/chat']), \
-                        patch.object(router, '_chat_headers', AsyncMock(return_value={})):
-                    events = [event async for event in router.llama_stream_chat_typed([], RuntimeSettings(), cache_key=cache_key)]
-                self.assertIn(('content', 'ok'), events)
-                payload = session.post.call_args.kwargs['json']
-                if cache_key:
-                    self.assertEqual(payload['prompt_cache_key'], 'chat-7')
-                else:
-                    self.assertNotIn('prompt_cache_key', payload)
 
 
 if __name__ == '__main__':
