@@ -26,13 +26,14 @@ class FlutterBrowserAccessTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.get('/api/v1/browser', headers=headers)
         return response, manager
 
-    async def test_configured_flutter_origin_reaches_account_browser_api(self):
-        response, manager = await self.request()
-        self.assertEqual(response.status_code, 200)
-        manager.status.assert_awaited_once()
+    async def test_orion_window_and_development_ports_reach_account_browser_api(self):
+        for origin in ['http://localhost:8090', 'http://localhost:8096']:
+            response, manager = await self.request(origin)
+            self.assertEqual(response.status_code, 200, origin)
+            manager.status.assert_awaited_once()
 
-    async def test_other_origins_remote_and_forwarded_peers_never_reach_manager(self):
-        for args in [dict(origin='http://localhost:8091'), dict(origin='https://evil.example'),
+    async def test_websites_remote_and_forwarded_peers_never_reach_manager(self):
+        for args in [dict(origin='https://evil.example'),
                      dict(origin='http://localhost.evil.example:8090'), dict(peer='192.168.1.50'), dict(forwarded=True)]:
             response, manager = await self.request(**args)
             self.assertEqual(response.status_code, 403)

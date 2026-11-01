@@ -97,3 +97,23 @@ class BrowserRoutesTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post('/api/v1/browser/router/open', json={'router_id': '00000000-0000-4000-8000-000000000002'})
         self.assertEqual(response.status_code, 403)
         window.assert_not_called()
+
+
+class DesktopOriginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pages_on_this_pc_may_ask_for_a_window_but_websites_may_not(self):
+        from orion.api.access_boundary import AccessBoundary
+        inner = FastAPI()
+
+        @inner.post('/api/v1/browser/panel/open')
+        async def opened():
+            return {'opened': True}
+
+        app = AccessBoundary(inner, public=True)
+        with patch('orion.api.access_boundary.is_desktop_peer', return_value=True):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1)), base_url='http://localhost:8910') as client:
+                # Orion's own window and a Flutter development port alike; the route still needs the user's token.
+                for origin, status in [('http://localhost:8090', 200), ('http://localhost:8096', 200),
+                                       ('http://127.0.0.1:8095', 200), ('https://attacker.example', 403),
+                                       ('http://localhost.attacker.example', 403), ('http://localhost:8096/page', 403)]:
+                    response = await client.post('/api/v1/browser/panel/open', headers={'Origin': origin})
+                    self.assertEqual(response.status_code, status, origin)

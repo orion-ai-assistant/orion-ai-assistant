@@ -10,7 +10,7 @@ from pydantic import BaseModel, StrictBool
 from typing import Literal
 
 from orion.api.auth_routes import get_current_user
-from orion.api.access_boundary import is_desktop_peer, local_flutter_origin
+from orion.api.access_boundary import is_desktop_peer, local_browser_origin
 from services.shared.installation_registry import Registry
 from services.shared import update_now, update_ui
 from services.shared.automatic_updates import AutomaticUpdates, record_check_failure, runtime_command, spawn_watcher
@@ -27,7 +27,7 @@ def local_control(request):
         return False
     origin = request.headers.get('origin')
     expected = f'{request.url.scheme}://{request.url.netloc}'
-    flutter = bool(origin and local_flutter_origin(origin))
+    flutter = bool(origin and local_browser_origin(origin))
     return not ((origin and origin != expected and not flutter)
                 or (request.headers.get('sec-fetch-site') == 'cross-site' and not flutter))
 

@@ -61,6 +61,9 @@ class PcAudioAccessTests(unittest.IsolatedAsyncioTestCase):
         result = await self.request('GET', local_entry=False, Authorization='Bearer test-user')
         self.assertNotEqual(result.status_code, 200)
 
-    async def test_browser_owner_routes_keep_same_origin_requirement(self):
+    async def test_browser_routes_accept_pages_on_this_pc_only(self):
         result = await self.request('OPTIONS', '/api/v1/browser', **{'Access-Control-Request-Method': 'POST'})
+        self.assertEqual(result.status_code, 200)
+        result = await self.request('OPTIONS', '/api/v1/browser', origin='https://evil.example',
+                                    **{'Access-Control-Request-Method': 'POST'})
         self.assertEqual(result.status_code, 403)

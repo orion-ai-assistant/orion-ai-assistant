@@ -52,7 +52,7 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forwarded_origin_and_mobile_listener_cannot_grant_authority(self):
         for headers in ({'X-Forwarded-For': '127.0.0.1'}, {'Origin': 'https://evil.example'},
-                        {'Origin': 'http://127.0.0.1:6666'}, {'Sec-Fetch-Site': 'cross-site'}):
+                        {'Origin': 'http://127.0.0.1.evil.example'}, {'Sec-Fetch-Site': 'cross-site'}):
             async with self.client(headers=headers) as client:
                 self.assertEqual((await client.put('/api/v1/updates', json={'automatic_updates': True})).status_code, 403)
         self.app.state.mobile = True

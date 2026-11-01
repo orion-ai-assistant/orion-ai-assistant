@@ -16,14 +16,16 @@ USER_SETTINGS = {'/api/v1/admin/settings', '/api/v1/admin/settings/schema'}
 DESKTOP_MANAGEMENT = ('/api/v1/browser', '/api/v1/google-ai/session')
 
 
-def local_flutter_origin(origin):
-    """Only the configured loopback Flutter UI may control a desktop browser."""
-    from services.shared.environment import get_env
+def local_browser_origin(origin):
+    """A page served by this PC (Orion's window or a Flutter development port), never a site.
+
+    The desktop features that check this also require the user's sign-in token, which no other page can
+    read; the origin only keeps websites open in the same browser out."""
     try:
         parsed = urlsplit(origin)
-        port = int(get_env('ORION_FLUTTER_PORT', default='8090', required=False))
-        return (parsed.scheme == 'http' and parsed.hostname in {'localhost', '127.0.0.1', '::1'}
-                and parsed.port == port and not parsed.username and not parsed.password
+        parsed.port  # Reject malformed ports.
+        return (parsed.scheme in {'http', 'https'} and parsed.hostname in {'localhost', '127.0.0.1', '::1'}
+                and not parsed.username and not parsed.password
                 and not parsed.path and not parsed.query and not parsed.fragment)
     except (ValueError, TypeError):
         return False
@@ -152,17 +154,7 @@ class AccessBoundary:
         desktop_access = (browser_path and is_desktop_peer(scope)) or pc_audio_access
         if pc_audio_access and headers.get(b'origin'):
             # Flutter's loopback development port differs from the Hub port.
-            # Only local browser origins may call this authenticated PC feature.
-            try:
-                origin = urlsplit(headers[b'origin'].decode('latin1'))
-                origin.port
-                valid_origin = (origin.scheme in {'http', 'https'}
-                    and origin.hostname in {'localhost', '127.0.0.1', '::1'}
-                    and not origin.username and not origin.password
-                    and not origin.path and not origin.query and not origin.fragment)
-            except ValueError:
-                valid_origin = False
-            if not valid_origin:
+            if not local_browser_origin(headers[b'origin'].decode('latin1')):
                 return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
         denied = (user_api_on_private or (self.public and not public_path(path) and not desktop_access)
                   or (not self.public and path not in {'/health', '/ready'} and not local))
@@ -189,7 +181,7 @@ class AccessBoundary:
             request = Request(scope)
             origin = request.headers.get('origin')
             expected = f'{request.url.scheme}://{request.url.netloc}'
-            flutter = bool(origin and local_flutter_origin(origin))
+            flutter = bool(origin and local_browser_origin(origin))
             if (origin and origin != expected and not flutter) or (request.headers.get('sec-fetch-site') == 'cross-site' and not flutter):
                 return await JSONResponse({'detail': 'Geçersiz istek kaynağı.'}, status_code=403)(scope, receive, send)
         scope.setdefault('state', {})['local_owner_access'] = local and not self.public
