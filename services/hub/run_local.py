@@ -130,6 +130,8 @@ def _main(runtime):
     # No browser entry for other devices: they use the Orion app on the mobile port.
     local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
     env['ORION_LOCAL_PORT'] = str(local_port)
+    if get_env('ORION_HUB_MODE', default='', required=False).strip().lower() == 'relay':
+        return _relay_main(runtime, env, local_port)
     mobile_port = get_env('ORION_MOBILE_PORT', default='8443', required=False)
     try:
         sys.path.insert(0, os.path.join(_hub_dir, 'src'))
@@ -381,6 +383,76 @@ def _main(runtime):
         pass
     finally:
         handle_shutdown()
+
+def _relay_main(runtime, env, local_port):
+    """A computer that uses another PC's Hub: only the window's loopback app and the window itself.
+
+    No database, Redis, worker, Router, phone listener or LAN advertisement (see orion.api.relay_server)."""
+    from services.shared.process_lifecycle import assert_port_free, wait_health, living
+    from services.shared.runtime_layout import data_root
+    hub_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(hub_dir, '..', '..'))
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, [os.path.join(hub_dir, 'src'), repo_root, env.get('PYTHONPATH', '')]))
+    env['PYTHONUNBUFFERED'] = '1'
+    mutable_hub = data_root(repo_root) / 'services/hub'
+    mutable_hub.mkdir(parents=True, exist_ok=True)
+    pid_path = str(mutable_hub / 'hub.pid')
+    venv_py = os.path.join(hub_dir, '.venv', 'Scripts', 'python.exe') if os.name == 'nt' else os.path.join(hub_dir, '.venv', 'bin', 'python')
+    py_bin = venv_py if os.path.exists(venv_py) else sys.executable
+    hide_flags = 0x08000000 if os.name == 'nt' else 0
+    log_file = open(str(mutable_hub / 'hub.log'), 'a', encoding='utf-8')
+    log_lock = threading.Lock()
+    stopping = threading.Event()
+    pids = [os.getpid()]
+    local_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--relay',
+                 '--host', '127.0.0.1', '--port', str(local_port)]
+    print('[*] Light Hub: this PC uses another Hub through the Orion window', flush=True)
+
+    def launch():
+        if 'local' not in runtime.children:
+            assert_port_free(local_port)
+        process = runtime.launch('local', local_cmd, python=True, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, creationflags=hide_flags)
+        threading.Thread(target=stream_logs, args=(process, '[RELAY]', log_file, log_lock), daemon=True).start()
+        return process
+    local_proc = launch()
+    pids.append(local_proc.pid)
+    try:
+        from services.shared.flutter_launcher import start_flutter
+        flutter_proc = start_flutter(repo_root, py_bin, get_env, {local_port}, log_file, stopping, runtime=runtime)
+        if flutter_proc is not None:
+            pids.append(flutter_proc.pid)
+    except (OSError, ValueError) as error:
+        print(f'[!] Flutter UI could not start: {error}', flush=True)
+    wait_health(local_proc, local_port)
+    runtime.ready()
+    write_pids(pid_path, pids)
+    signal.signal(signal.SIGINT, lambda *args: stopping.set())
+    signal.signal(signal.SIGTERM, lambda *args: stopping.set())
+    if hasattr(signal, 'SIGBREAK'):
+        signal.signal(signal.SIGBREAK, lambda *args: stopping.set())
+    try:
+        while not stopping.wait(.2):
+            if runtime.requested():
+                break
+            runtime.refresh_children()
+            if not living(runtime.children['local']['process']):
+                runtime.status = 'starting'
+                runtime.save()
+                wait_health(launch(), local_port)
+                runtime.ready()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stopping.set()
+        runtime.stop_children()
+        log_file.close()
+        if os.path.exists(pid_path):
+            try:
+                os.remove(pid_path)
+            except OSError:
+                pass
+
 
 def main():
     from services.shared.process_lifecycle import Runtime

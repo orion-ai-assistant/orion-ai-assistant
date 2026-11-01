@@ -104,7 +104,9 @@ class HubDirectory:
 async def current_hub(request: Request):
     from orion.api.access_boundary import is_local
     return {**await asyncio.to_thread(local_identity), 'registration_allowed': is_local(request.scope) and not getattr(request.app.state, 'mobile', False), 'desktop': desktop_available(request),
-            'local_entry': request.app.state.local_entry}
+            'local_entry': request.app.state.local_entry,
+            # The window can also reach other Hubs through this one (orion.api.relay); 'relay' Hubs have only that.
+            'mode': 'full'}
 
 
 def desktop_available(request):
@@ -114,7 +116,11 @@ def desktop_available(request):
 
 @router.get('/hubs')
 async def hubs(request: Request):
-    # Only this Hub: other Hubs are reached through the Orion app's QR pairing, never a browser page.
+    # This Hub, and on this PC's window the Hubs it paired with (reached through this one, orion.api.relay).
     current = await asyncio.to_thread(local_identity)
     self_url = f'http://127.0.0.1:{os.getenv("ORION_LOCAL_PORT", "8910")}/hub' if getattr(request.app.state, 'local_http', False) else '/'
-    return {'hubs': [{**current, 'url': self_url}], 'current_id': current['id']}
+    listed = [{**current, 'url': self_url}]
+    if getattr(request.app.state, 'local_http', False):
+        from orion.api.relay import window_hubs
+        listed += await asyncio.to_thread(window_hubs)
+    return {'hubs': listed, 'current_id': current['id']}

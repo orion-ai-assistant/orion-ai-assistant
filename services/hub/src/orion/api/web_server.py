@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--local', action='store_true')
     parser.add_argument('--http-loopback', action='store_true', help='Explicit local HTTP exception, never public/LAN')
+    parser.add_argument('--relay', action='store_true', help='Light Hub that only relays this PC to another Hub')
     parser.add_argument('--host')
     parser.add_argument('--port', type=int)
     args = parser.parse_args()
@@ -27,6 +28,10 @@ def main():
     if not 1 <= port <= 65535:
         raise ValueError('HTTPS port must be between 1 and 65535')
     target = 'orion.api.main:local_app' if args.local else 'orion.api.main:app'
+    if args.relay:
+        if not (args.local and args.http_loopback):
+            raise ValueError('The relay Hub is only the guarded local HTTP app')
+        target = 'orion.api.relay_server:app'
     if args.http_loopback:
         if not args.local:
             raise ValueError('Use --local for the guarded local HTTP app')

@@ -273,6 +273,9 @@ from orion.api.shortcuts import OwnerShortcut
 local_app = create_app(public=True, discovery_enabled=False, local_entry=True, local_http=True)
 local_app.state.panel_app = create_app(discovery_enabled=False, local_http=True)
 local_app.add_middleware(OwnerShortcut, panel_app=local_app.state.panel_app)
+# The window reaches other Hubs through this one, which pairs with them like the phone app.
+from orion.api.relay import RelayGateway
+local_app.add_middleware(RelayGateway)
 from orion.api.https_boundary import LocalTransportBoundary
 local_app.add_middleware(LocalTransportBoundary)
 from orion.api.mobile_security import LegacyDeviceBoundary
