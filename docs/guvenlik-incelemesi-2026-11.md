@@ -30,13 +30,18 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
 
 **Hub**
 - **Tarayıcı aracı yerel adreslere gidebiliyordu.** Yapay zekâ, kullanıcının oturum açık tarayıcısında `127.0.0.1:8910/panel`, Router paneli veya ev ağındaki cihazları açabiliyordu. Artık yalnızca genel internet adresleri açılabiliyor; DNS cevabı da kontrol ediliyor (`worker/tools/web_browser/tools.py`). Tam liste: [yapay-zeka-tarayici-sinirlari.md](../services/hub/docs/yapay-zeka-tarayici-sinirlari.md).
-- **Yeni sahip şifresi en az 8 karakter.** Varsayılan `orion` kullanıcı kararıyla kalıyor; değiştirmek kullanıcıya bırakıldı. Eşleşmiş ve hesabı olan bir telefon bu şifreyle QR üretebilir. Bu bilinçli bir kolaylık: Flutter önce `orion`'u dener.
+- **Yeni sahip şifresi en az 8 karakter.** Varsayılan `orion` kullanıcı kararıyla kalıyor; değiştirmek kullanıcıya bırakıldı.
+- **Her telefon `orion` ile QR üretip yeni kişi ekleyebiliyordu.** Flutter varsayılan şifreyi kendiliğinden deniyordu; eşleşmiş ve hesabı olan her telefon böylece yeni cihaz ekleyebiliyordu. Kullanıcı kararı: yeni cihazı yalnızca Hub'ın kurulu olduğu PC kabul eder; "sahip telefonu" ya da onay akışı yok, eşleşen telefonların hepsi eşit.
+  - `POST /api/v1/pair/create` şifre almıyor, yalnızca bu PC'deki Orion penceresine (`is_desktop_peer`, hesap girişi gerekli) QR veriyor. Telefonlar 403 alıyor, şifreyi bilseler de (`mobile_security.py`).
+  - `pair/capabilities` QR oluşturmayı yalnızca bu PC'ye sunuyor. Flutter telefonda "Oluştur" yerine "Hub'ın kurulu olduğu bilgisayardaki Orion penceresinden eklenir" yazıyor. PC penceresi QR'ı şifre sormadan açıyor; `orion` deneme kodu kaldırıldı (`device_connection.dart`).
+  - Yeni cihazın "bağlanmak istiyor" bildirimi zaten yalnızca bu PC'ye gidiyordu; öyle kalıyor.
+  - Yönetim panelindeki QR ve panel girişi şifreyle kalıyor.
 - **Süresi çok uzun ayarlanmış eski tip oturum anahtarları.** JWT gizli anahtarını ele geçiren biri süresiz anahtar üretebiliyordu. Oturumsuz anahtarlar en fazla 24 saat geçerli.
 - **Yönetim sayfaları çerçeve içinde açılabiliyordu.** Artık `X-Frame-Options: DENY` ve `frame-ancestors 'none'` gönderiliyor.
 
 ## Açık kalanlar (önem sırasıyla)
 
-1. **Varsayılan şifreler `orion` kalıyor (kullanıcı kararı).** Router bunu yalnızca kendi bilgisayarındaki panelde (20128) kabul eder; ağdan (9443) panele girmek için önce şifre değiştirilmeli. Panel bunu telefonda açıkça yazıyor. Hub, eşleşmiş telefonlardan kabul eder.
+1. **Varsayılan şifreler `orion` kalıyor (kullanıcı kararı).** Router bunu yalnızca kendi bilgisayarındaki panelde (20128) kabul eder; ağdan (9443) panele girmek için önce şifre değiştirilmeli. Panel bunu telefonda açıkça yazıyor. Hub sahip şifresini yalnızca bu PC'deki yönetim panelinde kabul eder; QR oluşturmak için şifre artık kullanılmıyor.
 2. **Bu PC'deki her program hesap açıp tarayıcıyı yönetebilir.** Planlanan çözüm (kullanıcının fikri, ileride): **ana kullanıcı / misafir** ayrımı. Misafir hesaplar PC'yi kontrol eden işlevleri çağıramaz: tarayıcı yönetimi, PC sesi, güncelleme, Windows ile başlatma. Tarayıcı bağlanırken hangi hesapların kontrol edebileceği seçilebilir. Şimdilik yapılmadı.
    Durum: 8910'da davetsiz yerel kayıt mümkün ve hesap hemen aktif oluyor. Her hesap PC'deki asıl tarayıcıyı (oturumlarıyla birlikte) yönetebiliyor. Tek kullanıcılı bir PC'de risk düşük; başka bir Windows kullanıcısı veya localhost'a erişen bir tarayıcı eklentisi için yüksek.
 3. **Kopyalanan eşleştirme bağlantısı ev ağında ele geçirilebilir.** Sertifika kendinden imzalı olduğu için telefon her seferinde uyarı veriyor; araya giren biri kendi sertifikasını aynı uyarıyla gösterebilir. QR okutmak bu riski taşımaz. Öneri: bağlantıyı yalnızca gerektiğinde kullan; daha kısa geçerlilik.

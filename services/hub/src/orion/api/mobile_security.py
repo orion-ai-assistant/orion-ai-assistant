@@ -117,7 +117,7 @@ async def pairing_capabilities(request: Request, current_user: str = Depends(get
     from orion.api.access_boundary import is_desktop_peer, host_can_open_windows
     local = is_desktop_peer(request.scope)
     # Server-side only: lets the client offer "open in app window" without any URL.
-    return JSONResponse({'can_manage_local': local, 'can_open_panel': local and host_can_open_windows(),'can_create_pairing': local or request.scope.get('scheme') == 'https',
+    return JSONResponse({'can_manage_local': local, 'can_open_panel': local and host_can_open_windows(), 'can_create_pairing': local,
                          'management_url': f'http://127.0.0.1:{int(os.getenv("ORION_LOCAL_PORT", "8910"))}/panel' if local else None},
                         headers={'Cache-Control': 'no-store'})
 
@@ -287,25 +287,17 @@ async def create_pairing(request: Request, payload: CreatePairing | None = None)
     return await build_pairing(request, payload.request_id if payload else None)
 
 
-class RemotePairing(BaseModel):
-    password: str = Field(min_length=1, max_length=512)
-
-
 @pairing_router.post('/api/v1/pair/create')
-async def create_remote_pairing(payload: RemotePairing, request: Request, current_user: str = Depends(get_current_user)):
-    from orion.api.access_boundary import FORWARDED
-    from orion.api.login_limits import limit_attempts
-    from orion.api.security import valid_admin_key
-    if request.scope.get('scheme') != 'https' or any(header in request.headers for header in FORWARDED):
-        raise HTTPException(403, 'Uzaktan QR oluşturmak için doğrudan HTTPS bağlantısı gerekli.')
-    await limit_attempts(request, 'owner-pair-account', current_user, 5)
-    await limit_attempts(request, 'owner', request.client.host if request.client else 'unknown', 5)
-    await limit_attempts(request, 'owner-pair-global', 'all', 20)
-    if not await asyncio.to_thread(valid_admin_key, payload.password):
-        raise HTTPException(403, 'Yönetici şifresi yanlış.')
-    # The default password stays usable here by choice: only a paired phone with an
-    # account reaches this route (the Router, open to the whole network, refuses it).
-    return JSONResponse(await build_pairing(request), headers={'Cache-Control': 'no-store'})
+async def create_desktop_pairing(request: Request, payload: CreatePairing | None = None,
+                                 current_user: str = Depends(get_current_user)):
+    """Only the Orion window on this PC adds devices; being at the PC is the proof, not a password.
+
+    Paired phones are all equal and never create QR codes, whatever the owner password."""
+    from orion.api.access_boundary import is_desktop_peer
+    if not is_desktop_peer(request.scope):
+        raise HTTPException(403, 'Yeni cihaz yalnızca Hub’ın kurulu olduğu bilgisayardaki Orion penceresinden eklenir.')
+    return JSONResponse(await build_pairing(request, payload.request_id if payload else None),
+                        headers={'Cache-Control': 'no-store'})
 
 
 async def build_pairing(request: Request, request_id: str | None = None):
