@@ -148,6 +148,10 @@ class WorkerSupervisorTests(unittest.TestCase):
             stack.enter_context(patch.object(run_local.socket, 'socket'))
             stack.enter_context(patch.object(run_local.os.path, 'isfile', return_value=True))
             stack.enter_context(patch('services.shared.native_services.hub_database'))
+            stack.enter_context(patch('services.shared.native_services.hub_database_passwords',
+                                      return_value={'POSTGRES_PASSWORD': 'app', 'POSTGRES_ADMIN_PASSWORD': 'admin'}))
+            stack.enter_context(patch('services.shared.postgres_auth.prepare'))
+            stack.enter_context(patch('services.shared.postgres_auth.secure', return_value=True))
             stack.enter_context(patch('services.shared.process_lifecycle.owns_listener', return_value=True))
             stack.enter_context(patch('services.shared.process_lifecycle.wait_health'))
             stack.enter_context(patch.object(run_local, 'worker_ready', return_value=True))

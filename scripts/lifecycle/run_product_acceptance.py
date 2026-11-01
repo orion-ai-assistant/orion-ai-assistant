@@ -53,6 +53,14 @@ socket.socket.bind = bind
 '''
 
 
+def router_password(db, root):
+    """The Router keeps its own random PostgreSQL passwords (core/postgres_auth.py); the fixed one only before it."""
+    credentials = root / 'persistent/postgres.json'
+    if db.user == 'router_user' and credentials.is_file():
+        db.password = json.loads(credentials.read_text(encoding='utf-8'))['admin']
+    return db
+
+
 def port():
     with socket.socket() as channel:
         channel.bind(('127.0.0.1', 0))
@@ -172,6 +180,7 @@ def setup(kind, scratch, source_root=None, postgres_archive=None):
         finally:
             db.stop()
         db.database = 'orion'
+        db.password = env['POSTGRES_PASSWORD']  # The Hub requires it once postgres_auth switched to passwords.
         argv = [str(py), '-m', 'services.shared.native_services']
         start = argv + ['start-hub', str(root), '']
         stop = argv + ['stop-hub', str(root), '']
@@ -352,7 +361,7 @@ def main():
             list(workers.map(lambda i: call(start + (['-Startup'] if args.launcher and i == 0 else []), f'concurrent-start-{i}'), range(3)))
         first = Runtime(root, component).read()
         assert first['status'] == 'ready'
-        assert db.ready()
+        assert router_password(db, root).ready()
         if args.unicode_root:
             assert db.sql("SELECT 'T\u00fcrk\u00e7e \u0130\u0131\u015e\u015f\u011e\u011f \u4e2d\u6587'") == 'T\u00fcrk\u00e7e \u0130\u0131\u015e\u015f\u011e\u011f \u4e2d\u6587'
             db.sql('CREATE EXTENSION IF NOT EXISTS pg_trgm')
@@ -424,7 +433,7 @@ def main():
         identity = (root / '.orion-lifecycle' / component / 'identity.json').read_bytes()
         call(start, 'restart')
         assert identity == (root / '.orion-lifecycle' / component / 'identity.json').read_bytes()
-        assert db.ready()
+        assert router_password(db, root).ready()
         if args.registered_paths:
             assert db.sql('SELECT value FROM orion_lifecycle_acceptance') == 'synthetic-preserved'
             assert identity_files and all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in identity_files.items())

@@ -70,9 +70,41 @@ def python_at(root):
 def hub_database(root, get_env):
     from services.shared.native_postgres import Postgres
     from .runtime_layout import data_root
+    # The installation's own password wins over a default "orion" any process may still carry.
+    saved = _saved_database_passwords(root).get('POSTGRES_PASSWORD')
     return Postgres(Path(root) / '.local_db/postgres/bin' / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'),
                     data_root(root) / '.local_db/postgres/data', get_env('POSTGRES_PORT'),
-                    get_env('POSTGRES_USER'), get_env('POSTGRES_DB'), get_env('POSTGRES_PASSWORD'))
+                    get_env('POSTGRES_USER'), get_env('POSTGRES_DB'), saved or get_env('POSTGRES_PASSWORD'))
+
+
+def _saved_database_passwords(root):
+    from dotenv import dotenv_values
+    from .runtime_layout import data_root
+    path = data_root(root) / 'services/.env.global.local'
+    saved = dotenv_values(path) if path.is_file() else {}
+    return {key: value for key, value in saved.items() if key.startswith('POSTGRES_') and value and value != 'orion'}
+
+
+def hub_database_passwords(root):
+    """This installation's PostgreSQL passwords (postgres_auth.py), kept with its other machine-specific values
+    in <data>/services/.env.global.local. The shipped default "orion" is replaced by a random one once.
+
+    Read from that file directly: in a source checkout .env.global (with the default) is loaded first and wins."""
+    from .postgres_auth import new_password
+    from .runtime_layout import data_root
+    path = data_root(root) / 'services/.env.global.local'
+    saved = _saved_database_passwords(root)
+    values, created = {}, {}
+    for key in ('POSTGRES_PASSWORD', 'POSTGRES_ADMIN_PASSWORD'):
+        # A deliberately configured password (file, then process) stays.
+        chosen = next((value for value in (saved.get(key), os.environ.get(key)) if value and value != 'orion'), None)
+        values[key] = chosen or created.setdefault(key, new_password())
+    if created:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as configuration:
+            configuration.write('\n# PostgreSQL passwords of this installation (random, services/shared/postgres_auth.py)\n'
+                                + ''.join(f'{key}={value}\n' for key, value in created.items()))
+    return values
 
 
 def component_status(root, component):

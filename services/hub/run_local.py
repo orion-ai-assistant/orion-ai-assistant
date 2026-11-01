@@ -191,11 +191,25 @@ def _main(runtime):
     all_pids = [os.getpid()]  # Include this process (run_local.py) itself
     
     from services.shared.process_lifecycle import assert_port_free, wait_health, owns_listener, LifecycleError
-    from services.shared.native_services import hub_database
+    from services.shared import postgres_auth
+    from services.shared.native_services import hub_database, hub_database_passwords
+    passwords = hub_database_passwords(base_dir)
+    # API and worker log in with the app's password; only this supervisor needs the superuser's.
+    os.environ['POSTGRES_PASSWORD'] = env['POSTGRES_PASSWORD'] = passwords['POSTGRES_PASSWORD']
+    env.pop('POSTGRES_ADMIN_PASSWORD', None)
     database = hub_database(base_dir, get_env)
+    admin, app = ('postgres', passwords['POSTGRES_ADMIN_PASSWORD']), (database.user, database.password)
+    postgres_auth.prepare(database, admin, app, database.database)
     # No API, worker or Redis accepts work until the authenticated DB is ready.
     database.ensure()
     runtime.database = database
+    try:
+        protected = postgres_auth.secure(database, admin, app, database.database)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f'[!] PostgreSQL password setup failed: {error}', flush=True)
+        protected = False
+    if not protected:
+        print('[!] PostgreSQL still accepts logins without a password from this PC', flush=True)
     def before_stop():
         # Only drops the API's connections to the user's own browsers; the Job ends every Hub child anyway.
         # A failure here (API already gone, Windows ending the session) must not abort the stop: it left

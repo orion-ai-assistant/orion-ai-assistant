@@ -45,7 +45,7 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
    - `services/.env.global.local` (JWT anahtarı)
    - Router `persistent/` ve `tls/`
    Kurulu sürümün klasörleri korumalı. Tek kullanıcılı PC'de pratik risk düşük.
-5. **Hub (5445) ve Router (5433) Postgres `trust` ile açılıyor.** Bu hem kaynak kodda hem kurulu sürümde böyle: `local_db_setup.py`, Router `bin/common.py`, `initdb --auth=trust`. İki taraf da bir şifre gönderiyor ama veritabanı onu kontrol etmiyor. Bu PC'deki her program veya Windows kullanıcısı şifresiz süper kullanıcı olarak bağlanabilir; `COPY ... FROM PROGRAM` ile Orion'un hesabıyla komut da çalıştırabilir. Yalnızca 127.0.0.1'den erişilebiliyor. Doğrusu `scram-sha-256` ve kurulumda üretilen rastgele bir şifre (veri klasöründe saklanır); mevcut kurulumlar için yerinde geçiş yapılmalı.
+5. ~~Hub (5445) ve Router (5433) Postgres `trust` ile açılıyordu~~ — **düzeltildi** (aşağıdaki bölüm).
 6. **Router'da eski düz metin sağlayıcı anahtarı satırı.** `router_configs` içinde şifrelenmiş havuza taşındıktan sonra silinmiyor.
 7. **LLM/embed'de Host denetimi yok.** `llama-server`'a ara katman eklenemiyor. Tarayıcı yanıtı okuyamıyor, ama DNS rebinding ile model kullanılabilir. Tam çözüm `--api-key` ile Router'ın anahtar göndermesi (iki depoda değişiklik).
 8. **Daha düşük önemdekiler:**
@@ -62,6 +62,28 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
    - Orion kuralından 8911'i çıkar.
    - Eski "Orion Hub HTTP shortcuts" kuralını sil.
    - `.orion-lifecycle-tests` altındaki test kurulumlarından kalan yaklaşık 250 `python.exe` iznini sil. Bunlar her porta, ortak ağlar dahil izin veriyor.
+
+## Veritabanı erişimi (düzeltildi)
+
+Önceden Hub (5445) ve Router (5433) PostgreSQL'i `initdb --auth=trust` ile açılıyordu. Bu PC'deki her program veya Windows hesabı şifresiz süper kullanıcı olarak girebiliyordu. Bu yolla bütün sohbetleri okuyabilir ve `COPY ... FROM PROGRAM` ile Orion'un hesabıyla komut çalıştırabilirdi. Router'ın şifresi her kurulumda aynıydı ve koda gömülüydü (`router_pass`); Hub'ınki `orion` idi.
+
+Şimdi (`services/shared/postgres_auth.py`; Router'da aynısı `core/postgres_auth.py`):
+- **Yalnızca şifreyle giriş:** `pg_hba.conf` yalnızca bu PC'den (`127.0.0.1`, `::1`) ve yalnızca SCRAM şifresiyle girişe izin verir. Sunucu her zaman `listen_addresses=localhost` ile başlar.
+- **Her kurulumun kendi rastgele şifreleri:** biri süper kullanıcı (yalnızca kurulum ve hazır olma kontrolü için), biri uygulama için. Saklandıkları yerler:
+  - Hub: `<veri>/services/.env.global.local` (`POSTGRES_PASSWORD`, `POSTGRES_ADMIN_PASSWORD`)
+  - Router: `<veri>/persistent/postgres.json`
+  
+  İkisi de kurulu sürümde yalnızca kullanıcının okuyabildiği klasörde. Şifreler bir kez üretilir; güncellemeler bunlara dokunmaz.
+- **Uygulama kullanıcısı süper kullanıcı değil** (Hub: `orion`, Router: yeni `router_app`). Kendi veritabanının ve tablolarının sahibi, ama program çalıştıramaz (`COPY ... FROM PROGRAM`), sunucu dosyası okuyamaz (`pg_read_file`) ve kendine yetki veremez. Router'ın mevcut tabloları ilk açılışta `router_app`'e devredilir.
+- **Kilitlenme yok:** Şifre dosyası kaybolur ya da elle değişirse `prepare()` sunucuyu bir kez kurulum erişimiyle (yine yalnızca bu PC'den) açar, `secure()` yeni şifreleri uygular. Geçiş başarısız olursa eski açık erişim yerinde kalır, uygulama çalışmaya devam eder ve günlüğe uyarı yazılır.
+- **Doğrulanan:**
+  - Gerçek PostgreSQL ile testler: `scripts/lifecycle/test_postgres_auth.py`. Kapsam: geçişte veri korunuyor; şifresiz ve yanlış şifreli girişler reddediliyor; uygulama kullanıcısı program çalıştıramıyor ve dosya okuyamıyor; şifre dosyası kaybolunca erişim geri kuruluyor.
+  - Bu PC'deki gerçek Hub ve Router veritabanlarının kopyalarında geçiş başarılı. Router'ın 24 tablosu `router_app`'e geçti ve Router şema kurulumu bu kullanıcıyla çalıştı.
+- **Sınırlar:**
+  - Geçişten sonra Router eski bir sürüme geri döndürülürse bağlanamaz, çünkü eski kod sabit şifreyi kullanır.
+  - Kaynak klasöründe (D:) şifre dosyaları diğer Windows hesaplarınca okunabilir (açık konu 4).
+  - Docker'daki veritabanı dışarı açık değildir ama varsayılan şifreyle kurulur.
+  - Router geliştirme modu (`bin/dev.py`) değişmedi.
 
 ## Doğrulama
 

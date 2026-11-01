@@ -218,14 +218,17 @@ class Postgres:
             # the log that pg_ctl holds open made that walk retry for 30 s (a failed first start after power loss).
             log = self.data.parent / 'server.log'
             if os.name == 'nt':
+                # listen_addresses: never another network, whatever postgresql.conf says.
                 command = [str(self.executable), '-D', str(self.data), '-p', str(self.port), '-c', 'fsync=on',
-                           '-c', 'full_page_writes=on', '-c', 'synchronous_commit=on']
+                           '-c', 'full_page_writes=on', '-c', 'synchronous_commit=on',
+                           '-c', 'listen_addresses=localhost']
                 self.job, self._server = owned_server(command, self.data, self.directory, log)
                 if not self._ready_soon(40, server=self._server):  # pg_ctl's 30 s start wait + its 10 s readiness check.
                     raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
                 return
             command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(log),
-                       '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on', '-w', '-t', '30']
+                       '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on '
+                       '-c listen_addresses=localhost', '-w', '-t', '30']
             self.job, result = owned_start(command, self.data, self.directory, timeout=35)
             if result.returncode or not self._ready_soon():
                 raise LifecycleError('PostgreSQL failed readiness; dependent services not started')

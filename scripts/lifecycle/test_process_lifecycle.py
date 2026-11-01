@@ -326,6 +326,9 @@ def test_postgres_failure_prevents_hub_accepting_work():
             patch.dict(os.environ, env), patch('orion.kernel.local_installation.register_native_hub'), \
             patch('services.shared.browser_shutdown.allow_hub_browsers'), \
             patch('services.shared.native_services.hub_database', return_value=fake), \
+            patch('services.shared.native_services.hub_database_passwords',
+                  return_value={'POSTGRES_PASSWORD': 'app', 'POSTGRES_ADMIN_PASSWORD': 'admin'}), \
+            patch('services.shared.postgres_auth.prepare'), \
             patch('builtins.open', __import__('unittest.mock').mock.mock_open()), \
             patch.object(run_local.subprocess, 'Popen') as launch:
         with pytest.raises(lifecycle.LifecycleError, match='DB unavailable'):
