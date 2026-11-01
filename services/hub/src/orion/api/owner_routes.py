@@ -45,6 +45,8 @@ async def authenticate_owner_session(request: Request):
         return
     if record.get('fingerprint') == fingerprint() and record.get('scope') in {'people', 'admin'}:
         request.state.owner_scope = record['scope']
+        if request.headers.get('X-Orion-Background-Refresh') == '1':
+            return  # A page refreshing itself is not the owner's activity; the idle limit keeps running.
         try:
             await request.app.state.redis.expire(key, SESSION_SECONDS)
         except Exception:

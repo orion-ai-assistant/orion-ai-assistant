@@ -22,6 +22,7 @@ class Redis:
     def __init__(self):
         self.values, self.counts = {}, {}
         self.remaining = 30
+        self.extended = []
     async def eval(self, script, keys, key, ttl):
         assert ttl == 30
         self.counts[key] = self.counts.get(key, 0) + 1
@@ -32,6 +33,8 @@ class Redis:
         return self.values.get(key)
     async def delete(self, key):
         self.values.pop(key, None)
+    async def expire(self, key, seconds):
+        self.extended.append(key)
 
 
 class OwnerTests(unittest.IsolatedAsyncioTestCase):
@@ -161,6 +164,16 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('/api/v1/owner/session')).status_code, 401)
         await self.redis.delete('auth:owner:' + hashlib.sha256(token.encode()).hexdigest())
         self.assertEqual((await self.client.get('/api/v1/owner/session', headers=headers)).status_code, 401)
+
+    async def test_a_page_refreshing_itself_does_not_postpone_the_idle_lock(self):
+        response = await self.client.post('/api/v1/owner/login', json={
+            'password': 'owner-password', 'scope': 'admin', 'tab_session': True})
+        headers = {'X-Orion-Owner-Session': response.json()['token']}
+        background = await self.client.get('/api/v1/owner/session', headers={**headers, 'X-Orion-Background-Refresh': '1'})
+        self.assertEqual(background.status_code, 200)
+        self.assertEqual(self.redis.extended, [])
+        self.assertEqual((await self.client.get('/api/v1/owner/session', headers=headers)).status_code, 200)
+        self.assertEqual(len(self.redis.extended), 1)
 
     async def test_owner_wrong_password_countdown_uses_remaining_ttl(self):
         for _ in range(5):

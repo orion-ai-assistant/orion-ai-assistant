@@ -19,8 +19,8 @@
     if (action) { const button = document.createElement('button'); button.className = 'secondary'; button.textContent = label; button.onclick = () => run(action); record.append(button); }
     container.append(record);
   }
-  async function refresh() {
-    const [devices, routers, addresses] = await Promise.all([api('/devices'), api('/routers'), api('/addresses').catch(() => null)]);
+  async function refresh(background = false) {
+    const [devices, routers, addresses] = await Promise.all([api('/devices', {background}), api('/routers', {background}), api('/addresses', {background}).catch(() => null)]);
     document.getElementById('local-browser-link').value = addresses?.local_browser_url || 'http://localhost/hub';
     document.getElementById('lan-browser-link').value = addresses?.lan_browser_url || '';
     const browserLink = document.getElementById('open-lan-browser');
@@ -84,4 +84,6 @@
   });
   document.getElementById('secure-refresh').onclick = () => run(refresh);
   document.addEventListener('owner-unlocked', () => run(refresh));
+  // A device can pair, or a Router can be trusted, from another tab or device.
+  OwnerAPI.whileVisible(() => refresh(true));
 })();

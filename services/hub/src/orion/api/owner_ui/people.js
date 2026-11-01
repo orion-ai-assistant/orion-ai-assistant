@@ -21,12 +21,12 @@ document.addEventListener('DOMContentLoaded', () => {
         container.append(row);
     };
     let refreshing = false;
-    const refresh = async () => {
+    const refresh = async (background = false) => {
         if (refreshing || !OwnerGate.unlocked) return;
         refreshing = true;
         try {
         error.hidden = true;
-        const data = await api('/people');
+        const data = await api('/people', {background});
         const address = document.getElementById('public-url');
         address.textContent = 'Davet adresi: ' + data.public_url;
         const users = document.getElementById('people-list'); users.replaceChildren();
@@ -46,13 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     document.addEventListener('owner-unlocked', () => refresh().catch(showError));
     // An invitation can be accepted on another device or in another tab.
-    const updateWhenVisible = () => {
-        if (!document.hidden && OwnerGate.unlocked) refresh().catch(showError);
-    };
-    const timer = setInterval(updateWhenVisible, 5000);
-    document.addEventListener('visibilitychange', updateWhenVisible);
-    window.addEventListener('focus', updateWhenVisible);
-    window.addEventListener('pagehide', () => clearInterval(timer), {once: true});
+    OwnerAPI.whileVisible(() => refresh(true));
     document.getElementById('refresh-people').onclick = () => refresh().catch(showError);
     document.getElementById('invite-form').onsubmit = async event => {
         event.preventDefault(); error.hidden = true;
