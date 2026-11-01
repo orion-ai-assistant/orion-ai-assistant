@@ -61,6 +61,7 @@ class Setup:
         self.lines = []
         self.process = None
         self.result = None
+        self.log_path = None
         self.finished = threading.Event()
         self.seen = time.monotonic()
 
@@ -72,13 +73,27 @@ class Setup:
                 'plans': {mode: install_plan.plan(mode, record, hub_mode=hub_mode) for mode in install_plan.MODES},
                 'running': self.process is not None and self.result is None}
 
-    def browse(self):
-        script = ('Add-Type -AssemblyName System.Windows.Forms;$d=New-Object System.Windows.Forms.FolderBrowserDialog;'
-                  '$d.Description="Orion nereye kurulsun?";if($d.ShowDialog() -eq "OK"){$d.SelectedPath}')
-        result = subprocess.run(['powershell', '-NoProfile', '-STA', '-Command', script], capture_output=True,
-                                text=True, timeout=600, creationflags=NO_WINDOW)
-        chosen = result.stdout.strip()
-        return str(Path(chosen) / 'Orion') if chosen else None
+    def browse(self, current=None):
+        # Windows' own "Select folder" dialog, in front of this window (services/shared/pick_folder.ps1).
+        start = Path(current).parent if current else default_root().parent
+        result = subprocess.run(['powershell', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File',
+                                 str(ROOT / 'services/shared/pick_folder.ps1')], capture_output=True, timeout=3600,
+                                env=dict(os.environ, ORION_PICK_START=str(start)), creationflags=NO_WINDOW)
+        chosen = result.stdout.decode('utf-8', 'replace').strip()
+        if not chosen:
+            return None
+        return chosen if Path(chosen).name.lower() == 'orion' else str(Path(chosen) / 'Orion')
+
+    def uninstall(self):
+        """Orion's own removal dialog (the one Settings > Apps opens); the page reads the state again after."""
+        if self.process is not None and self.result is None:
+            raise ValueError('Kurulum sürerken kaldırılamaz.')
+        from services.shared.uninstall import SCRIPT, _powershell
+        script = registry_path().parent / 'bootstrap' / SCRIPT
+        if existing() is None or not script.is_file():
+            raise ValueError('Kaldırılacak bir Orion kurulumu bulunamadı.')
+        subprocess.Popen([_powershell(), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                          '-File', str(script), '-Registry', str(registry_path())], creationflags=NO_WINDOW)
 
     def install(self, choice):
         mode = choice.get('mode')
@@ -104,7 +119,8 @@ class Setup:
         # From an administrator window Orion would run elevated; the window opens it through Explorer instead.
         if not record and not elevated():
             command.append('--launch')
-        self.lines.append('Kurulum başladı: ' + ', '.join(row['title'] for row in rows if row['action'] == 'install'))
+        self.log_path = registry_path().parent / 'logs' / time.strftime('kurulum-%Y%m%d-%H%M%S.log')
+        self._line('Kurulum başladı: ' + ', '.join(row['title'] for row in rows if row['action'] == 'install'))
         self.process = subprocess.Popen(command, cwd=self.bundle, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, encoding='utf-8', errors='replace', creationflags=NO_WINDOW)
         threading.Thread(target=self._follow, daemon=True).start()
@@ -122,14 +138,25 @@ class Setup:
                     continue
             except ValueError:
                 pass
-            self.lines.append(line[:400])
+            self._line(line)
         code = self.process.wait()
         if code == 0 and elevated():
             shortcut = Path(os.path.expandvars(r'%USERPROFILE%\Desktop\Orion.lnk'))
             if shortcut.is_file():
                 subprocess.Popen(['explorer.exe', str(shortcut)])
-        self.result = {'ok': code == 0, 'code': code, 'status': status}
-        self.finished.set()
+        if code != 0:
+            self._line(f'Kurulum {code} koduyla bitti. Bu kayıt: {self.log_path}')
+        # The window stays until the user closes it, so a failure can be read (and copied).
+        self.result = {'ok': code == 0, 'code': code, 'status': status, 'log': str(self.log_path)}
+
+    def _line(self, line):
+        self.lines.append(line[:400])
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open('a', encoding='utf-8') as log:
+                log.write(line + '\n')
+        except OSError:
+            pass  # The page still shows it.
 
 
 PAGE = r'''<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>Orion kurulumu</title>
@@ -153,6 +180,7 @@ ul{list-style:none;padding:0;margin:0}li{padding:6px 0;border-bottom:1px solid v
 <h2>1. Nereye kurulsun?</h2>
 <div class="row"><input id="root" type="text"><button class="ghost" id="browse" type="button">Değiştir</button></div>
 <p id="rootnote"></p>
+<p id="removerow" hidden><button class="ghost" id="remove" type="button">Kurulu Orion’u kaldır…</button></p>
 <h2>2. Bu bilgisayar ne olacak?</h2>
 <div class="card"><label class="choice"><input type="radio" name="mode" value="merkez" checked><b>Orion merkezi</b>
 <p>Orion bu bilgisayarda çalışır: hesaplar, sohbetler, yapay zekâ bağlantısı. Telefonlar ve diğer bilgisayarlar buna bağlanır.</p></label></div>
@@ -173,19 +201,25 @@ const mode=()=>document.querySelector('input[name=mode]:checked').value;
 const words={install:'kurulacak',present:'zaten kurulu, kullanılacak',conflict:'diğer türde kurulu'};
 function draw(){const rows=state.plans[mode()];document.getElementById('plan').innerHTML=rows.map(r=>`<li class="${r.action}"><span class="tag">${words[r.action]}</span><b>${r.title}</b><p>${r.detail}</p></li>`).join('');
 const conflict=rows.some(r=>r.action==='conflict'),done=rows.every(r=>r.action==='present');
-document.getElementById('error').textContent=conflict?'Bu bilgisayarda diğer türde bir Orion kurulu. Önce Ayarlar > Uygulamalar’dan onu kaldır.':done?'Bu türün bütün parçaları zaten kurulu.':'';
+document.getElementById('error').textContent=conflict?'Bu bilgisayarda diğer türde bir Orion kurulu. Önce yukarıdan onu kaldır.':done?'Bu türün bütün parçaları zaten kurulu.':'';
 document.getElementById('go').disabled=conflict||done}
 async function load(){state=await call('/state');const root=document.getElementById('root');root.value=state.root;root.disabled=state.fixed_root;document.getElementById('browse').hidden=state.fixed_root;
 document.getElementById('rootnote').textContent=state.fixed_root?'Bu bilgisayarda Orion zaten kurulu; eksik parçalar aynı yere eklenir.':'';
+document.getElementById('removerow').hidden=!state.fixed_root;
 if(state.existing.includes('router')&&!state.existing.includes('hub'))document.querySelector('input[value=merkez]').checked=true;draw()}
 document.querySelectorAll('input[name=mode]').forEach(e=>e.onchange=draw);
-document.getElementById('browse').onclick=async()=>{const v=await call('/browse',{});if(v.root)document.getElementById('root').value=v.root};
+document.getElementById('browse').onclick=async()=>{const b=document.getElementById('browse');b.disabled=true;try{const v=await call('/browse',{root:document.getElementById('root').value});if(v.root)document.getElementById('root').value=v.root}catch(e){document.getElementById('error').textContent=e.message}finally{b.disabled=false}};
+// The removal dialog is Orion's own window; this page follows what it leaves behind.
+document.getElementById('remove').onclick=async()=>{try{await call('/uninstall',{});document.getElementById('rootnote').textContent='Kaldırma penceresi açıldı. Bitince bu sayfa kendini yeniler.';
+const before=state.existing.join();let n=0;const t=setInterval(async()=>{await load();if(state.existing.join()!==before||++n>200)clearInterval(t)},3000)}catch(e){document.getElementById('error').textContent=e.message}};
 document.getElementById('go').onclick=async()=>{try{await call('/install',{mode:mode(),root:document.getElementById('root').value,start_with_windows:document.getElementById('startup').checked,automatic_updates:document.getElementById('updates').checked});
 document.getElementById('form').hidden=true;document.getElementById('progress').hidden=false;started=Date.now();poll()}catch(e){document.getElementById('error').textContent=e.message}};
 async function poll(){const v=await call('/progress');document.getElementById('log').textContent=v.lines.join('\n');document.getElementById('elapsed').textContent=Math.round((Date.now()-started)/1000)+' sn';
 if(!v.result)return setTimeout(poll,1000);
 document.getElementById('phase').textContent=v.result.ok?'Orion kuruldu. Açılıyor…':'Kurulum tamamlanamadı';document.getElementById('phase').className=v.result.ok?'':'error';
-const close=document.getElementById('close');close.hidden=false;close.onclick=()=>call('/done',{}).finally(()=>window.close())}
+document.getElementById('elapsed').textContent=v.result.ok?'':'Ayrıntılar aşağıda; aynısı şu dosyada: '+v.result.log;
+const close=document.getElementById('close');close.hidden=false;close.onclick=()=>call('/done',{}).finally(()=>window.close());
+if(v.result.ok)setTimeout(()=>close.onclick(),5000)}
 setInterval(()=>fetch(base+'/alive').catch(()=>{}),20000);load().catch(e=>document.getElementById('error').textContent=e.message);
 </script></body></html>'''
 
@@ -237,7 +271,11 @@ def handler(setup, port):
             try:
                 body = json.loads(self.rfile.read(min(int(self.headers.get('Content-Length') or 0), 65536)) or b'{}')
                 if path == '/browse':
-                    return self._send(200, {'root': setup.browse()})
+                    current = body.get('root') if isinstance(body, dict) else None
+                    return self._send(200, {'root': setup.browse(current if isinstance(current, str) else None)})
+                if path == '/uninstall':
+                    setup.uninstall()
+                    return self._send(200, {'ok': True})
                 if path == '/install':
                     setup.install(body if isinstance(body, dict) else {})
                     return self._send(200, {'ok': True})
@@ -271,8 +309,10 @@ def serve(bundle, *, show=True):
     print('Orion kurulum penceresi acildi. Kurulumu o pencereden bitir.', flush=True)
     try:
         while not setup.finished.wait(5):
-            # The page pings while it is open; without it for an hour (and no install running), give up.
-            if time.monotonic() - setup.seen > 3600 and setup.process is None:
+            # The page pings every 20 s while it is open. Closed after the install ended: done. Never opened
+            # or left alone for an hour before installing: give up.
+            idle = time.monotonic() - setup.seen
+            if (setup.result is not None and idle > 60) or (setup.process is None and idle > 3600):
                 break
         if setup.process is not None and setup.result is None:
             setup.process.wait()
@@ -281,12 +321,24 @@ def serve(bundle, *, show=True):
     return 0 if (setup.result or {}).get('ok') else (3 if setup.result is None else 1)
 
 
+def remove_later(folder):
+    """A throw-away bundle (adding to an existing install) goes once this process, which runs from it, has exited."""
+    subprocess.Popen(f'cmd /c ping -n 4 127.0.0.1 >nul & rmdir /s /q "{Path(folder)}"', cwd=os.getenv('TEMP'),
+                     creationflags=NO_WINDOW | getattr(subprocess, 'DETACHED_PROCESS', 0))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, default=ROOT)
     parser.add_argument('--no-window', action='store_true', help='Print the address instead of opening it')
+    parser.add_argument('--remove-bundle', action='store_true', help='Delete --bundle at the end (a temporary copy)')
     args = parser.parse_args(argv)
-    return serve(args.bundle, show=not args.no_window)
+    try:
+        return serve(args.bundle, show=not args.no_window)
+    finally:
+        # Only ever a folder under TEMP (get-orion.ps1 makes it there).
+        if args.remove_bundle and os.getenv('TEMP') and Path(os.environ['TEMP']).resolve() in args.bundle.resolve().parents:
+            remove_later(args.bundle.resolve())
 
 
 if __name__ == '__main__':

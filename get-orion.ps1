@@ -44,9 +44,35 @@ if (-not $existing -and (Test-Path -LiteralPath $target)) {
     Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $target) { $target = Join-Path $orion ('Bootstrap-Installer-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) }
 }
+function Get-OrionFile([string]$Uri, [string]$OutFile) {
+    # Invoke-WebRequest shows nothing with progress off (and is very slow with it on): count the MB ourselves.
+    $response = [Net.HttpWebRequest]::Create($Uri).GetResponse()
+    try {
+        $total = $response.ContentLength
+        $in = $response.GetResponseStream()
+        $out = [IO.File]::Create($OutFile)
+        try {
+            $buffer = New-Object byte[] 262144
+            $done = 0
+            $shown = -1
+            while (($read = $in.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $out.Write($buffer, 0, $read)
+                $done += $read
+                $mb = [math]::Floor($done / 1MB)
+                if ($mb -ne $shown) {
+                    $shown = $mb
+                    if ($total -gt 0) { Write-Host -NoNewline ("`r  {0} / {1} MB  ({2}%)   " -f $mb, [math]::Ceiling($total / 1MB), [math]::Floor(100 * $done / $total)) }
+                    else { Write-Host -NoNewline ("`r  {0} MB   " -f $mb) }
+                }
+            }
+        } finally { $out.Dispose(); $in.Dispose() }
+    } finally { $response.Dispose() }
+    Write-Host ''
+}
 try {
-    Write-Host 'Downloading the Orion installer...'
-    Invoke-WebRequest -UseBasicParsing -Uri ($base + 'orion-bootstrap-windows-x64.zip') -OutFile $bundle
+    Write-Host 'Orion kurulumu indiriliyor...'
+    Get-OrionFile ($base + 'orion-bootstrap-windows-x64.zip') $bundle
+    Write-Host 'Aciliyor...'
     New-Item -ItemType Directory -Force -Path $orion | Out-Null
     Expand-Archive -LiteralPath $bundle -DestinationPath $target
 } finally {
@@ -55,15 +81,13 @@ try {
 # No type given and no older switch: the setup window asks and installs.
 $silent = $Mode -or $NoRouter -or $WithRouter -or $NoStart
 if (-not $silent) {
-    try {
-        Write-Host 'Orion kurulum penceresi aciliyor...'
-        & (Join-Path $target 'runtime/python/python.exe') -B -m scripts.release.setup_window --bundle $target
-        $code = $LASTEXITCODE
-    } finally {
-        if ($existing) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-    if ($code -eq 3) { Write-Host 'Kurulum yapilmadi.' }
-    elseif ($code -ne 0) { throw "Orion installation failed (exit $code). Your data is kept; see $orion." }
+    # The window runs on its own: this console is free (and can be closed) as soon as it opens. A throw-away
+    # copy (adding to an existing install) removes itself when the window ends.
+    $window = @('-B', '-m', 'scripts.release.setup_window', '--bundle', ('"' + $target + '"'))
+    if ($existing) { $window += '--remove-bundle' }
+    Start-Process -FilePath (Join-Path $target 'runtime/python/python.exe') -ArgumentList $window `
+        -WorkingDirectory $target -WindowStyle Hidden
+    Write-Host 'Orion kurulum penceresi aciliyor. Kurulumu o pencereden bitir; bu pencereyi kapatabilirsin.'
     return
 }
 try {

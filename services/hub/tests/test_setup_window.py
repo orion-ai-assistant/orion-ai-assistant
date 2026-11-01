@@ -14,6 +14,7 @@ from scripts.release import setup_window
 def window(tmp_path, monkeypatch):
     monkeypatch.setattr(setup_window, 'existing', lambda: None)
     monkeypatch.setattr(setup_window, 'elevated', lambda: False)
+    monkeypatch.setattr(setup_window, 'registry_path', lambda: tmp_path / 'Orion' / 'install.json')
     started = []
 
     class Process:
@@ -60,8 +61,37 @@ def test_installing_needs_the_page_itself(window):
     command = started[0]
     assert command[command.index('--mode') + 1] == 'baglan' and command[command.index('--root') + 1] == 'D:/Orion'
     assert '--no-start-with-windows' in command and '--launch' in command and '--add-missing' not in command
-    setup.finished.wait(5)
-    assert setup.result == {'ok': True, 'code': 0, 'status': {'status': 'installed'}}
+    for _ in range(50):
+        if setup.result:
+            break
+        threading.Event().wait(0.1)
+    assert setup.result['ok'] is True and setup.result['status'] == {'status': 'installed'}
+    assert not setup.finished.is_set()  # The window stays until the user closes it.
+
+
+def test_a_failure_stays_on_screen_and_in_a_file(window, monkeypatch, tmp_path):
+    setup, base, _ = window
+    monkeypatch.setattr(setup_window, 'registry_path', lambda: tmp_path / 'Orion' / 'install.json')
+
+    class Failing:
+        stdout = iter(['Traceback: something broke\n'])
+        def wait(self):
+            return 1
+    monkeypatch.setattr(setup_window.subprocess, 'Popen', lambda command, **kwargs: Failing())
+    assert request(base + '/' + setup.token + '/install', {'mode': 'baglan'}, {'X-Orion-Setup': '1'})[0] == 200
+    for _ in range(50):
+        if setup.result:
+            break
+        threading.Event().wait(0.1)
+    assert setup.result['ok'] is False and not setup.finished.is_set()
+    status, progress = request(base + '/' + setup.token + '/progress')
+    assert status == 200 and 'Traceback: something broke' in progress['lines']
+    assert 'Traceback: something broke' in (tmp_path / 'Orion' / 'logs').glob('kurulum-*.log').__next__().read_text(encoding='utf-8')
+
+
+def test_uninstall_opens_only_with_an_installation(window):
+    setup, base, _ = window
+    assert request(base + '/' + setup.token + '/uninstall', {}, {'X-Orion-Setup': '1'})[0] == 400
 
 
 def test_an_existing_installation_only_gets_what_it_lacks(window, monkeypatch):
