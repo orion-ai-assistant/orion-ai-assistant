@@ -32,12 +32,17 @@ class Element {
 const chatArea = new Element('main');
 const context = vm.createContext({
     window: {}, AppState: {currentChatId: 'chat'},
+    // Markdown renders after a short timer; run it at once so snapshots stay synchronous.
+    requestAnimationFrame: callback => callback(), setTimeout: callback => { callback(); }, clearTimeout() {},
+    OrionI18n: {t: key => key},
     document: {
         getElementById: id => id === 'chat-area' ? chatArea : null,
         createElement: tag => new Element(tag),
         createTextNode: text => new Element('#text', text),
     },
 });
+// Answer segments are MarkdownView nodes that keep their raw source; without marked they render plain text.
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/markdown.js'), 'utf8') + '\nglobalThis.MarkdownView = window.MarkdownView;', context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.js'), 'utf8') + '\nglobalThis.ui = UI;', context);
 const ui = context.ui;
 
@@ -56,13 +61,14 @@ ui.appendThinkingToken('chat', 'second thought');
 ui.appendToken('chat', 'second answer');
 ui.replaceMessageContent('chat', 'first answersecond final');
 const live = chatArea.children[0];
-assert.deepEqual(live.children.map(child => child.tagName), ['details', '#text', 'details', '#text']);
+assert.deepEqual(live.children.map(child => child.className), ['think-block', 'markdown-content', 'think-block', 'markdown-content']);
 assert.equal(live.children[0].open, false);
 assert.equal(live.children[2].open, false);
 assert.equal(live.children[0].querySelector('.think-body').textContent, 'first thought');
 assert.equal(live.children[2].querySelector('.think-body').textContent, 'second thought');
 assert.equal(live.children[1].textContent, 'first answer');
 assert.equal(live.children[3].textContent, 'second final');
+assert.deepEqual([live.children[1].markdownSource, live.children[3].markdownSource], ['first answer', 'second final']);
 
 ui.appendStaticBotMessage('first answersecond final', null, null, null, [], [
     {type: 'thinking', content: 'first thought'},
@@ -71,7 +77,9 @@ ui.appendStaticBotMessage('first answersecond final', null, null, null, [], [
     {type: 'content', content: 'second final'},
 ]);
 const history = chatArea.children[1];
-assert.deepEqual(history.children.map(child => child.tagName), ['details', '#text', 'details', '#text']);
+// The trailing meta row holds the message copy button.
+assert.deepEqual(history.children.map(child => child.className), ['think-block', 'markdown-content', 'think-block', 'markdown-content', 'message-meta']);
 assert.equal(history.children[0].querySelector('.think-body').textContent, 'first thought');
 assert.equal(history.children[2].querySelector('.think-body').textContent, 'second thought');
+assert.deepEqual([history.children[1].markdownSource, history.children[3].markdownSource], ['first answer', 'second final']);
 console.log('Separate thinking blocks survive live snapshots and history rendering');

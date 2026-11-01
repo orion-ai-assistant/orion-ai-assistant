@@ -7,11 +7,14 @@ const source = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/ui.j
 test('message copy preserves raw Markdown and prevents duplicate actions', async () => {
     const copied = [];
     const nodes = [];
+    const toasts = [];
+    const text = {copyMessage: 'Mesajı kopyala', messageCopied: 'Mesaj kopyalandı'};
     const context = {window: {},
-        document: {getElementById: () => null, createElement: () => ({setAttribute() {}, appendChild(node) { nodes.push(node); }})},
+        document: {getElementById: () => null, createElement: () => ({setAttribute() {}, appendChild(node) { nodes.push(node); }}),
+            body: {appendChild: node => toasts.push(node)}},
         navigator: {clipboard: {writeText: async text => copied.push(text)}},
-        OrionI18n: {t: () => 'Mesajı kopyala'},
-        setTimeout: () => {},
+        OrionI18n: {t: key => text[key]},
+        setTimeout: () => {}, clearTimeout: () => {},
     };
     vm.runInNewContext(source + ';globalThis.ui = UI;', context);
     const div = {querySelector: selector => selector === '.message-copy' ? nodes[0] : {appendChild: node => nodes.push(node)}, appendChild: node => nodes.push(node)};
@@ -21,7 +24,11 @@ test('message copy preserves raw Markdown and prevents duplicate actions', async
     assert.equal(nodes.length, 1);
     await nodes[0].onclick();
     assert.deepEqual(copied, [raw]);
-    assert.equal(nodes[0].textContent, '✓');
+    // Copy feedback is a toast (c6eb556), no longer a ✓ swapped into the button.
+    assert.equal(toasts.length, 1);
+    assert.equal(toasts[0].textContent, 'Mesaj kopyalandı');
+    assert.equal(toasts[0].hidden, false);
+    assert.equal(nodes[0].title, 'Mesajı kopyala', 'a successful copy keeps the normal title');
 });
 
 test('completed message keeps its own text when the next response reuses chat state', async () => {

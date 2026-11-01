@@ -163,8 +163,11 @@ class MobileAuthenticationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(claims['device_id'], self.device)
 
     async def test_device_can_revoke_only_itself(self):
-        response = await self.client.delete('/api/v1/devices/self', headers={'X-Device-Token': self.token})
+        # Session revocation is the database's job; without this the test depended on the live Hub database.
+        with patch('orion.kernel.registry.revoke_sessions', AsyncMock()) as sessions:
+            response = await self.client.delete('/api/v1/devices/self', headers={'X-Device-Token': self.token})
         self.assertEqual(response.status_code, 200)
+        sessions.assert_awaited_once_with(device_id=self.device)
         self.assertIsNone(self.store.authenticate(self.token))
         self.assertEqual((await self.client.delete('/api/v1/devices/self', headers={'X-Device-Token': self.token})).status_code, 401)
 

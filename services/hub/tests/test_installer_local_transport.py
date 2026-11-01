@@ -1,11 +1,14 @@
 """Installer browser entry stays local without certificate trust configuration."""
 import importlib
+import os
 import unittest
 from unittest.mock import patch
 
 import httpx
 
-with patch('signal.signal'):
+# Importing the installer points ORION_INSTALLATION_REGISTRY at this PC's real installation;
+# keep that out of every later test (a Worker test would wait on the real update gate).
+with patch('signal.signal'), patch.dict(os.environ):
     installer = importlib.import_module('installer.app.__main__')
 
 

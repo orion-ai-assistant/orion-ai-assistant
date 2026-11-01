@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../src/orion/api/ui/js/main.js'), 'utf8');
-const handlers = {}, selector = '.message.bot, .message.user';
+const handlers = {}, windowHandlers = {}, selector = '.message.bot, .message.user';
 let selected, prevented = 0;
 const node = (text, excluded = false) => ({textContent: text, parentElement: {closest: () => excluded ? {} : null}});
 const content = node('Answer'), tool = node('Function name'), timing = node('2.93 sn', true);
@@ -14,7 +14,8 @@ const context = {NodeFilter: {SHOW_TEXT: 4, FILTER_REJECT: 2, FILTER_ACCEPT: 1},
     document: {addEventListener: (type, handler) => handlers[type] = handler,
         createTreeWalker(message, _, filter) {const nodes = message.nodes.filter(n => filter.acceptNode(n) === 1); let index = 0; return {nextNode: () => nodes[index++]};},
         createRange: () => ({setStart(node) {this.start = node;}, setEnd(node) {this.end = node;}})},
-    window: {getSelection: () => selection}};
+    window: {getSelection: () => selection, addEventListener: (type, handler) => windowHandlers[type] = handler},
+    UI: {}};
 vm.runInNewContext(source.slice(source.indexOf('// Drag selection')), context);
 function select(message) {
     const target = {closest: value => value === selector ? message : null};
@@ -32,4 +33,8 @@ assert.equal(prevented, 2, 'Inputs retain native Select All');
 handlers.pointerdown({target: {closest: () => null}});
 handlers.keydown({key: 'a', ctrlKey: true, target: {closest: () => null}, preventDefault() {prevented++;}});
 assert.equal(prevented, 2);
+handlers.pointerdown({target: {closest: value => value.startsWith('.chat-area') ? {} : null}});
+assert.equal(context.UI._scrollPointerDown, true, 'Pressing inside the chat holds auto-scroll');
+windowHandlers.blur();
+assert.equal(context.UI._scrollPointerDown, false, 'Leaving the window releases it');
 console.log('Assistant and user Select All are scoped; tool names included and audio timing excluded');
