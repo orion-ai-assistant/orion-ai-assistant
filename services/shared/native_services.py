@@ -168,6 +168,9 @@ def start_router(script, env=None):
     # Unupgraded legacy launchers cannot promise the new ownership contract.
     if not (root / 'core/process_lifecycle.py').is_file():
         raise LifecycleError('Router lifecycle upgrade required; existing Router left untouched')
+    if env is None:
+        from services.shared.launcher import router_environment
+        env = router_environment()
     return ensure_started(root, 'router-prod', [router_python(root), str(root / 'cli.py'), 'prod'], env=env)
 
 

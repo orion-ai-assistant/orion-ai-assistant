@@ -109,10 +109,16 @@ _hub_only = {}  # Within launch_environment: Hub configuration keys -> the value
 def router_environment():
     """The environment a Router is started with: this process's environment without the Hub's configuration.
 
-    Hub and Router are separate applications. The Hub's .env.global still names Docker-era hosts
-    (STT_HOST=stt, TTS_HOST=tts, ...): inherited by the Router, they replaced its own .env values and every
-    request to a local voice service failed with "getaddrinfo failed"."""
-    env = dict(os.environ)
+    Hub and Router are separate applications and each reads its own settings. The Hub's .env.global names
+    Docker hosts (TTS_HOST=tts, ...) and the Hub's database (POSTGRES_PORT, ...): inherited by the Router,
+    they replaced its own .env values and every request to a local voice service failed with
+    "getaddrinfo failed".
+
+    Two sources put Hub settings into this process: launch_environment() (recorded in _hub_only) and
+    services.shared.environment, which loads the Hub's files when imported (its LOADED)."""
+    import sys
+    loaded = getattr(sys.modules.get(__package__ + '.environment'), 'LOADED', {})
+    env = {key: value for key, value in os.environ.items() if loaded.get(key) != value}
     for key, before in _hub_only.items():
         if before is None:
             env.pop(key, None)

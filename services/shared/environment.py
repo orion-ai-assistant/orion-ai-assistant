@@ -9,6 +9,11 @@ except ImportError:
     load_dotenv = None
 
 
+# Values this process took from the Hub's env files (not from its parent). A Router started from here
+# reads its own .env and must not inherit them: see launcher.router_environment().
+LOADED: dict[str, str] = {}
+
+
 def load_environment():
     if not load_dotenv:
         return
@@ -41,11 +46,16 @@ def load_environment():
             if env_file.exists():
                 values.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
         for key, value in values.items():
-            os.environ.setdefault(key, value)
+            if key not in os.environ:
+                os.environ[key] = LOADED[key] = value
         return
+    from dotenv import dotenv_values
     for env_file in env_files:
         if env_file.exists():
-            load_dotenv(env_file)
+            # Like load_dotenv: the first file and the process environment win.
+            for key, value in dotenv_values(env_file).items():
+                if value is not None and key not in os.environ:
+                    os.environ[key] = LOADED[key] = value
 
 
 load_environment()
@@ -107,21 +117,12 @@ def get_router_base_urls() -> list[str]:
         if len(trusted) != 1:
             raise RuntimeError('Birden fazla güvenilen Router var; panelden kullanacağınız Router’ı seçin.')
         return [trusted[0]['url']]
+    # Fallback before any Router is selected: the Docker container name, or this PC when run natively.
     host = get_env("ROUTER_HOST")
     port = get_env("ORION_ROUTER_TLS_PORT", default="9443", required=False)
     if host and port:
         if not os.path.exists("/.dockerenv") and host == "router":
             host = "127.0.0.1"
         return [f"https://{host}:{port}"]
-    raise RuntimeError("Missing ROUTER_HOST or ROUTER_PORT")
-
-
-def get_tts_base_urls() -> list[str]:
-    host = get_env("TTS_HOST", default="tts", required=False)
-    port = get_env("TTS_PORT", default=8810, required=False)
-    if host and port:
-        if not os.path.exists("/.dockerenv") and host == "tts":
-            host = "127.0.0.1"
-        return [f"http://{host}:{port}"]
-    return ["http://127.0.0.1:8810"]
+    raise RuntimeError("Missing ROUTER_HOST")
 
