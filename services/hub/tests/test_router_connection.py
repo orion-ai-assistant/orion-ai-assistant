@@ -124,6 +124,25 @@ class RouterConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.path.read_bytes(), original)
             self.assertEqual(self.security.routers(), [RECORD])
 
+    async def test_choosing_a_router_that_needs_a_code_keeps_the_working_one(self):
+        from orion.kernel.router_accounts import EnrollmentRequired
+        self.trust()
+        await self.manager.refresh()
+        original = self.path.read_bytes()
+        other = {**RECORD, 'id': OTHER, 'url': 'https://other.test:9443'}
+        self.manager.directory.list.return_value = [other]
+        self.verifier.return_value = {'v': 1, **other}
+        with patch('orion.kernel.router_accounts.ensure_connection', AsyncMock(side_effect=EnrollmentRequired())):
+            result = await self.choose(api.Selection(id=OTHER, fp=FP))
+        self.assertTrue(result['needs_code'])
+        self.assertEqual(result['selected']['id'], ID)
+        self.assertEqual(self.path.read_bytes(), original)
+        with patch('orion.kernel.router_accounts.ensure_connection', AsyncMock()), patch(
+                'orion.kernel.router_accounts.request_router', AsyncMock(return_value={})):
+            result = await self.choose(api.Selection(id=OTHER, fp=FP))
+        self.assertTrue(result['access_ready'])
+        self.assertEqual(store.read_connection()['id'], OTHER)
+
     async def test_saved_router_updates_address_but_preserves_uuid_and_pin(self):
         self.trust()
         await self.manager.refresh()
@@ -179,7 +198,10 @@ class RouterConnectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as unknown:
             await self.choose(api.Selection(manual_url='https://localhost:9443', fp=FP))
         self.assertEqual(unknown.exception.status_code, 400)
-        result = await self.choose(api.Selection(manual_url='https://localhost:9443/v1/', manual_id=ID, fp=FP))
+        # The selection is saved once the Router admits this Hub.
+        with patch('orion.kernel.router_accounts.ensure_connection', AsyncMock()), patch(
+                'orion.kernel.router_accounts.request_router', AsyncMock(return_value={})):
+            result = await self.choose(api.Selection(manual_url='https://localhost:9443/v1/', manual_id=ID, fp=FP))
         self.verifier.assert_awaited_once_with('https://127.0.0.1:9443', ID, FP)
         self.assertTrue(result['identity_verified'])
         self.assertEqual(store.read_connection()['mode'], 'manual')

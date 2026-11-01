@@ -36,10 +36,16 @@
                 try { await update(); } catch (_) { /* The next tick or a manual refresh shows errors. */ }
                 finally { running = false; }
             };
-            const timer = setInterval(tick, interval);
+            let timer = setInterval(tick, interval);
             document.addEventListener('visibilitychange', tick);
             window.addEventListener('focus', tick);
-            window.addEventListener('pagehide', () => clearInterval(timer), {once: true});
+            window.addEventListener('pagehide', () => { clearInterval(timer); timer = null; });
+            // Back/Forward restores a page from the browser's cache without loading it again.
+            window.addEventListener('pageshow', event => {
+                if (!event.persisted || timer !== null) return;
+                timer = setInterval(tick, interval);
+                tick();
+            });
         }
     };
 })();

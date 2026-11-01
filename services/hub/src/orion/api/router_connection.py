@@ -197,14 +197,18 @@ async def select(payload: Selection, request: Request):
                     'name': identity.get('name') or record['name'], 'url': base, 'fp': fingerprint,
                     'last_seen': time.time()}
         await asyncio.to_thread(SecurityStore().trust_router, identity, base)
+        if payload.code:
+            from orion.kernel.router_accounts import connect_router, RouterAccountError
+            try:
+                await connect_router(selected, payload.code)
+            except RouterAccountError as error:
+                raise HTTPException(400, str(error)) from error
+        # A same-PC Router admits the Hub without a code; otherwise the owner is asked for one next.
+        state = await access_state(selected)
+        if not state['access_ready']:
+            # Users keep the Router that works until the new one has admitted this Hub.
+            return {'selected': await asyncio.to_thread(read_connection), 'identity_verified': True, **state}
         await asyncio.to_thread(write_connection, selected)
         from orion.kernel.router_models import clear_catalog_cache
         clear_catalog_cache()
-    if payload.code:
-        from orion.kernel.router_accounts import selected_router, connect_router, RouterAccountError
-        try:
-            await connect_router(await selected_router(), payload.code)
-        except RouterAccountError as error:
-            raise HTTPException(400, str(error)) from error
-    # A same-PC Router admits the Hub without a code; otherwise the owner is asked for one next.
-    return {'selected': selected, 'identity_verified': True, **await access_state(selected)}
+    return {'selected': selected, 'identity_verified': True, **state}

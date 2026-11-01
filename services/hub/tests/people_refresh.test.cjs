@@ -63,3 +63,26 @@ test('An automatic refresh never postpones the owner idle lock', async () => {
     assert.equal(sent[1].get('X-Orion-Background-Refresh'), null);
     assert.ok(JSON.parse(stored.get(api.sessionKey)).expires > expires);
 });
+
+test('A page restored with Back keeps refreshing itself', async () => {
+    const windowListeners = {}, timers = new Set();
+    let updates = 0;
+    const context = {
+        document: {hidden: false, addEventListener() {}, currentScript: {src: 'http://localhost:8910/panel/owner-assets/base.js'}},
+        setInterval(callback) { const timer = {callback}; timers.add(timer); return timer; },
+        clearInterval(timer) { timers.delete(timer); },
+        Date, URL, Headers
+    };
+    context.window = {addEventListener(event, callback) { windowListeners[event] = callback; }, OwnerGate: {unlocked: true}};
+    vm.createContext(context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/orion/api/owner_ui/base.js'), 'utf8'), context);
+    context.window.OwnerAPI.whileVisible(async () => { updates++; });
+    windowListeners.pagehide();
+    assert.equal(timers.size, 0, 'a page that is left stops polling');
+    windowListeners.pageshow({persisted: true});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(timers.size, 1);
+    assert.equal(updates, 1, 'the restored page shows current data at once');
+    windowListeners.pageshow({persisted: true});
+    assert.equal(timers.size, 1, 'never two timers');
+});
