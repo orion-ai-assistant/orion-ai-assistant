@@ -29,7 +29,7 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
 - **TTS ses adı ile dosya yolu açığı.** Ses adı doğrudan dosya yoluna ekleniyordu; `../` ile klasör dışındaki `.pt` dosyaları okunabiliyor, yazılabiliyor ve silinebiliyordu. Bu dosyalar `pickle` ile açıldığı için kod çalıştırma riski vardı. Ad artık harf, rakam, boşluk ve `. _ -` ile sınırlı (`engines.valid_voice_name`).
 
 **Hub**
-- **Tarayıcı aracı yerel adreslere gidebiliyordu.** Yapay zekâ, kullanıcının oturum açık tarayıcısında `127.0.0.1:8910/panel`, Router paneli veya ev ağındaki cihazları açabiliyordu. Artık yalnızca genel internet adresleri açılabiliyor; DNS cevabı da kontrol ediliyor (`worker/tools/web_browser/tools.py`).
+- **Tarayıcı aracı yerel adreslere gidebiliyordu.** Yapay zekâ, kullanıcının oturum açık tarayıcısında `127.0.0.1:8910/panel`, Router paneli veya ev ağındaki cihazları açabiliyordu. Artık yalnızca genel internet adresleri açılabiliyor; DNS cevabı da kontrol ediliyor (`worker/tools/web_browser/tools.py`). Tam liste: [yapay-zeka-tarayici-sinirlari.md](../services/hub/docs/yapay-zeka-tarayici-sinirlari.md).
 - **Yeni sahip şifresi en az 8 karakter.** Varsayılan `orion` kullanıcı kararıyla kalıyor; değiştirmek kullanıcıya bırakıldı. Eşleşmiş ve hesabı olan bir telefon bu şifreyle QR üretebilir. Bu bilinçli bir kolaylık: Flutter önce `orion`'u dener.
 - **Süresi çok uzun ayarlanmış eski tip oturum anahtarları.** JWT gizli anahtarını ele geçiren biri süresiz anahtar üretebiliyordu. Oturumsuz anahtarlar en fazla 24 saat geçerli.
 - **Yönetim sayfaları çerçeve içinde açılabiliyordu.** Artık `X-Frame-Options: DENY` ve `frame-ancestors 'none'` gönderiliyor.
