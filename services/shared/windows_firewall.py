@@ -15,7 +15,7 @@ import sys
 
 TCP_RULE = 'Orion private network (TCP)'
 UDP_RULE = 'Orion private network discovery (UDP)'
-DEFAULT_PORTS = {'ORION_MOBILE_PORT': 8443, 'ORION_PUBLIC_PORT': 8911, 'ORION_ROUTER_TLS_PORT': 9443}
+DEFAULT_PORTS = {'ORION_MOBILE_PORT': 8443, 'ORION_ROUTER_TLS_PORT': 9443}
 MDNS_PORT = 5353
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 

@@ -1,7 +1,6 @@
-"""Bounded LAN browsing for the web login screen; never proxies credentials."""
+"""Bounded DNS-SD browsing (Routers) and this Hub's identity for the Flutter app; never proxies credentials."""
 import asyncio
 import os
-import socket
 import time
 import uuid
 from pathlib import Path
@@ -10,7 +9,7 @@ from fastapi import APIRouter, Request
 from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncZeroconf
 
-from orion.api.discovery import SERVICE_TYPE, LAN_NETWORKS, device_id, lan_addresses
+from orion.api.discovery import LAN_NETWORKS, lan_addresses
 import ipaddress
 
 router = APIRouter(prefix='/api/v1/discovery')
@@ -45,7 +44,7 @@ def service_record(info, api_path='/api/v1'):
 
 
 class HubDirectory:
-    def __init__(self, service_type=SERVICE_TYPE, api_path='/api/v1'):
+    def __init__(self, service_type, api_path='/api/v1'):
         self.service_type = service_type
         self.api_path = api_path
         self.lock = asyncio.Lock()
@@ -108,23 +107,6 @@ async def current_hub(request: Request):
             'local_entry': request.app.state.local_entry}
 
 
-@router.get('/connection')
-async def connection(request: Request):
-    """The local settings screen shows current LAN URLs, not permanent aliases."""
-    from fastapi import HTTPException
-    from orion.api.access_boundary import is_local
-    from services.shared.environment import get_env
-    if not is_local(request.scope):
-        raise HTTPException(403, 'Bağlantı bilgisi yalnızca bu bilgisayarda açılabilir.')
-    port = int(get_env('ORION_PUBLIC_PORT', default='8911', required=False))
-    if port == int(get_env('ORION_LOCAL_PORT', default='8910', required=False)):
-        port = 8911
-    addresses = await asyncio.to_thread(lan_addresses)
-    return {**await asyncio.to_thread(local_identity),
-            'urls': [f'https://{address}:{port}/' for address in addresses],
-            'encrypted': True}
-
-
 def desktop_available(request):
     from orion.api.access_boundary import is_desktop_peer
     return is_desktop_peer(request.scope)
@@ -132,18 +114,7 @@ def desktop_available(request):
 
 @router.get('/hubs')
 async def hubs(request: Request):
-    from orion.api.access_boundary import FORWARDED
-    try:
-        peer = ipaddress.ip_address(request.client.host)
-        local_network = peer.is_loopback or any(peer in net for net in LAN_NETWORKS)
-    except (AttributeError, ValueError):
-        local_network = False
-    # Public/tunnel clients may use this Hub, but do not receive its LAN directory.
-    local_network = local_network and not any(name in request.headers for name in FORWARDED)
-    records = list(await request.app.state.hub_directory.list()) if local_network else []
+    # Only this Hub: other Hubs are reached through the Orion app's QR pairing, never a browser page.
     current = await asyncio.to_thread(local_identity)
-    # Current origin stays usable even without multicast or in Docker.
-    records = [record for record in records if record['id'] != current['id']]
-    self_url = f'http://127.0.0.1:{os.getenv("ORION_LOCAL_PORT", "8910")}/hub' if getattr(request.app.state, 'local_http', False) else '/hub' if request.app.state.local_entry else '/'
-    records.insert(0, {**current, 'url': self_url})
-    return {'hubs': records, 'current_id': current['id']}
+    self_url = f'http://127.0.0.1:{os.getenv("ORION_LOCAL_PORT", "8910")}/hub' if getattr(request.app.state, 'local_http', False) else '/'
+    return {'hubs': [{**current, 'url': self_url}], 'current_id': current['id']}

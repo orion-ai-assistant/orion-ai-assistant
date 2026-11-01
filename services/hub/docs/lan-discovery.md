@@ -1,14 +1,18 @@
 # Yerel giriş ve LAN keşfi
 
-Native Hub başlatıcısı yerel arayüz ile ağ bağlantısını ayırır:
+Native Hub başlatıcısı yerel arayüz ile ağ bağlantısını ayırır. Sohbet yalnızca
+Orion uygulamasındadır (bu PC'de Flutter penceresi, telefonda Flutter uygulaması);
+Hub hiçbir porttan tarayıcıya sohbet sayfası sunmaz.
 
 | Listener | Amaç | TLS koruması |
 | --- | --- | --- |
-| `127.0.0.1:80` | `localhost/` başlangıç, `/hub` sohbet, `/panel` yönetim | TLS şifrelemesi ve sunucu kimliği doğrulaması yok |
-| `127.0.0.1:8910` | `/manage` gerçek yönetim HTML’i, yerel sohbet ve directory | Yalnızca gerçek loopback HTTP; native token kabul etmez |
-| `0.0.0.0:8911` | Diğer PC/telefon tarayıcısı için public web API ve HTML dashboard | HTTPS; normal tarayıcı sertifika doğrulaması |
-| `127.0.0.1:8909` | Eski doğrudan yönetim girişi | HTTPS |
-| `0.0.0.0:8443` | Native mobil pairing, REST/SSE/WS | HTTPS ve SPKI pinning |
+| `127.0.0.1:80` | `localhost/` ve `/hub` Flutter'ı açar (307), `/panel` yönetim | TLS şifrelemesi ve sunucu kimliği doğrulaması yok |
+| `127.0.0.1:8910` | Flutter penceresinin API'si, `/manage` ve `/panel` yönetim; `/`, `/hub`, `/dashboard` Flutter'a yönlenir | Yalnızca gerçek loopback HTTP; native token kabul etmez |
+| `127.0.0.1:8909` | Eski doğrudan yönetim girişi; Router bağlantı döngüsü burada çalışır | HTTPS |
+| `0.0.0.0:8443` | Orion uygulaması: pairing, REST/SSE/WS; `/connect` kopyalanan bağlantıyı uygulamaya verir | HTTPS ve SPKI pinning |
+
+Eskiden diğer cihazların tarayıcısı için açılan `0.0.0.0:8911` (eski HTML sohbet)
+2026-11-01'de kaldırıldı; ayrıntı: [Flutter ana arayüz geçişi](../../../docs/flutter-primary-ui-migration.md).
 
 Portlar env ile değiştirilebilir. Yerel giriş her zaman loopback'e bağlanır;
 eski `ORION_HTTP_BIND_HOST`, `ORION_ADDRESS_GATEWAY`, `ORION_HTTP_EXTERNAL_PORT`
@@ -20,7 +24,6 @@ servisinin sahibi olan uygulamada bu servisi kapat.
 ORION_LOCAL_SHORTCUTS=1
 ORION_LOCAL_SHORTCUT_PORT=80
 ORION_LOCAL_PORT=8910
-ORION_WEB_PORT=8911
 ORION_ROUTER_LOCAL_PORT=20128
 ORION_MDNS=1
 # ORION_MDNS_NAME=Hiro
@@ -35,7 +38,7 @@ arayüzüne yönlendirir. HTTP yönetim `/manage` ve `/panel` sayfalarında ger�
 HTML sunar. Peer loopback değilse, Host yerel değilse veya herhangi bir forwarded
 header varsa HTTP reddedilir; Docker private-peer override bunu aşamaz.
 Native device token ve cihaza bağlı JWT, yerel HTTP’de de reddedilir.
-`ORION_MDNS=0` ağda duyuru ve taramayı kapatır; manuel bağlantı kullanılabilir.
+`ORION_MDNS=0` ağda duyuru ve taramayı kapatır; QR ile eşleştirme kullanılabilir.
 
 ## Ortak adresler kaldırıldı, DNS-SD kaldı
 
@@ -43,47 +46,23 @@ Native device token ve cihaza bağlı JWT, yerel HTTP’de de reddedilir.
 alias kaydı/election ve gateway adapter kaldırıldı. Hosts/tarayıcı ayarı gerekmez.
 Servis keşfinin teknik `.local.` eki korunur; bu tarayıcı kısayolu değildir.
 
-Hub tipi `_orion._tcp.local.` (NSD'de `_orion._tcp`), TXT `id`, `name`,
-`path=/api/v1`, `version`, `scheme=https`. SRV hostname UUID'den türetilen
-`orion-<UUID hex>.local.`, port gerçek public API portudur. UUID kalıcı
-TLS security dizinindeki `hub-id` dosyasındadır; eski mDNS kimliği ilk geçişte
-korunur. Silmek kimliği değiştirir. Bozuk dosya değiştirilmez.
+Hub ağda yalnızca Orion uygulaması dinleyicisini duyurur: `_orion-mobile._tcp`
+(8443, TXT `id`, `name`, `v=1`, `scheme=https`, `fp`). Eski tarayıcı kaydı
+`_orion._tcp` artık duyurulmaz ve taranmaz. Yalnızca aktif fiziksel RFC1918
+IPv4'ler kullanılır; Docker/WSL/vEthernet/VPN arayüzleri filtrelenir.
 
-Yalnızca aktif fiziksel RFC1918 IPv4'ler duyurulur. Docker/WSL/vEthernet/VPN
-arayüzleri filtrelenir. IPv6-only ve Docker bridge için otomatik keşif yoktur.
-Listener hazır olduğunda duyuru başlar; arayüz/IP değişimi 30 saniyede kontrol
-edilir. Kapanışta goodbye gönderilir. mDNS hatası Hub'ı durdurmaz.
-
-## Yerel web istemcisi
-
-İlk `/hub` açılışında bu cihaz seçilir ve ağ taraması beklenmez. Son başarılı
-girişin UUID'si `orion_last_hub` anahtarıyla saklanır. Token anahtarı
-`orion_token:<UUID>`; farklı Hub'lara parola/token/davet taşınmaz. İlk yeni
-localhost origin'inde yeniden giriş gerekebilir, mevcut hesaplar korunur.
-
-Değiştir/Yenile Python mDNS taramasını çağırır. Kayıtlı cihaz kapalıysa giriş
-kapalı kalır, başka cihaza sessizce geçilmez. Davet ait olduğu Hub'da kalır.
+## Flutter penceresi ve Hub kimliği
 
 - `GET /api/v1/discovery/self`: id/name/desktop/local_entry.
-- `GET /api/v1/discovery/hubs`: current_id, hubs [{id,name,url,conflict?}].
-- `GET /api/v1/discovery/connection`: yalnızca loopback; güncel LAN URL listesi.
+- `GET /api/v1/discovery/hubs`: current_id ve yalnızca bu Hub'ın kaydı
+  (`http://127.0.0.1:8910/hub`). Flutter penceresi açılırken Hub'ın hazır olduğunu
+  bununla bekler. Başka Hub listelenmez; başka Hub'a Orion uygulaması QR ile bağlanır.
 
-`http://127.0.0.1:8910/api/v1/discovery/hubs` yerel browser bootstrap için
-açıktır. Self kaydı HTTP loopback `/hub` adresidir; keşfedilen LAN kayıtları
-gerçek HTTPS web portunu (varsayılan 8911) içerir. Mobil trust için bu directory
-kullanılmaz: `_orion-mobile._tcp` ile 8443 ve QR/SPKI pairing kullanılır.
-
-Tarama en fazla 64 servis çözer, 5 saniye cache kullanır. Aynı UUID farklı
-endpoint'lerden duyurulursa conflict olur. Yerel istemci başka Hub seçtiğinde
-adres çubuğu localhost'ta kalır. `/api/v1/peers/<UUID>/...` yalnızca keşifteki
-RFC1918 endpoint'e, UUID eşitliği kontrolünden sonra public API isteklerini
-aktarır. Cookie/admin anahtarı/HTML, discovery scan ve browser kontrolü aktarılmaz.
-Yönlendirmeler izlenmez, env proxy kullanılmaz. Gövde limiti 32 MiB.
-SSE ve sesli yazma WebSocket'i aktarılır; bu adapter LAN'dan kullanılamaz.
+Eski `/api/v1/discovery/connection` (LAN tarayıcı adresleri) ve
+`/api/v1/peers/<UUID>/...` (yerel tarayıcıdan başka Hub'a aktarım) kaldırıldı.
 
 Panel `/panel` altında kalır; ayrı `/panel` HttpOnly/SameSite cookie ve mevcut
-yetki kontrolleri korunur. Panel linkleri `/hub`, `/panel/manage`, `/panel/admin`,
-`/panel/router` kullanır. Desktop browser seçimi yalnızca bu PC'de ve yetkili
+yetki kontrolleri korunur. Desktop browser seçimi yalnızca bu PC'de ve yetkili
 kullanıcıyla kullanılabilir; başka Hub için proxy açılmaz.
 
 ## Router bağlantısı
@@ -98,7 +77,7 @@ Bu kontrol model çalıştırmaz. Tek sonuç ilk bağlantıda otomatik kaydedili
 çoklu sonuç yöneticiye seçtirilir. Elle yazılmış `ROUTER_BASE_URL` ayarı otomatik değiştirilmez; UUID tabanlı eski
 Router hostname'i yalnızca aynı UUID'nin IP/port kaydına taşınabilir.
 
-Kaydedilmiş UUID başka cihazla değiştirilmez. Public Hub arka plan görevi her
+Kaydedilmiş UUID başka cihazla değiştirilmez. Yönetim API'si (8909) arka plan görevi her
 30 saniyede güncel IP/portu çözüp native API/worker ortak bağlantı kaydını atomik
 günceller. Bulunamazsa endpoint kapatılır; 75 saniyeden eski endpoint kullanılmaz.
 API/owner süreçlerinin seçimleri Redis lock ile koordine edilir. API anahtarı bu
@@ -107,6 +86,9 @@ Docker kullanımı için ortak kalıcı data yolu ayrıca bağlanmalıdır; brid
 otomatik mDNS keşfi desteklenmez.
 
 ## Güvenlik ve gerçek cihaz kontrolü
+
+> Not (2026-11-01): Bu bölüm Faz 6 dönemine aittir. `_orion._tcp` web kaydı ve
+> 8911 tarayıcı girişi o tarihten beri yoktur.
 
 Faz 6 revizyonu (2026-10-04) için kesin kaynak
 [üç repo ortak sözleşmesidir](../../../files/orion-yerel-giris-kesif-sozlesmesi.md).

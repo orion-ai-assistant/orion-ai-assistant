@@ -63,29 +63,6 @@ services:
     networks:
       - orion-network
 
-  public_api:
-    build:
-      context: ../../
-      dockerfile: services/hub/api.Dockerfile
-    command: ["python", "-m", "orion.api.web_server", "--public"]
-    restart: unless-stopped
-    environment:
-      ORION_SECURITY_DIR: /app/security
-    volumes:
-      - hub_security:/app/security
-    ports:
-      - "${ORION_PUBLIC_PORT:-8910}:${HUB_CONTAINER_PORT}"
-    env_file:
-      - ../.env.global
-      - ../.env.global.local
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    networks:
-      - orion-network
-
   worker:
     build:
       context: ../../

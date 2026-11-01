@@ -111,7 +111,7 @@ def environment(scratch):
     env.update(PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1',
                ORION_TEST_EGRESS_LOG=str(scratch / 'blocked-egress.log'),
                ORION_MDNS='0', ORION_ROUTER_MDNS='0', ORION_FLUTTER_AUTOSTART='0',
-               ORION_LOCAL_SHORTCUTS='0', ORION_PUBLIC_BIND_HOST='127.0.0.1',
+               ORION_LOCAL_SHORTCUTS='0',
                ORION_MOBILE_BIND_HOST='127.0.0.1', ORION_ROUTER_TLS_HOST='127.0.0.1',
                LOCAL_IP='127.0.0.1', HOST_IP='127.0.0.1')
     return env
@@ -133,7 +133,7 @@ def setup(kind, scratch, source_root=None, postgres_archive=None):
         binaries(ROOT / '.local_db/redis', root / '.local_db/redis')
         data = root / '.local_db/postgres/data'
         ctl = root / '.local_db/postgres/bin/pg_ctl.exe'
-        env.update(HUB_PORT=str(port()), ORION_PUBLIC_PORT=str(port()),
+        env.update(HUB_PORT=str(port()),
                    ORION_LOCAL_PORT=str(port()), ORION_MOBILE_PORT=str(port()),
                    POSTGRES_HOST='127.0.0.1', POSTGRES_PORT=str(dbport),
                    POSTGRES_USER='orion', POSTGRES_PASSWORD='fixture-password', POSTGRES_DB='orion',

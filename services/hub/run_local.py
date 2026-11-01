@@ -127,13 +127,8 @@ def _main(runtime):
     # Environment config
     hub_port = get_env("HUB_PORT")
     env = os.environ.copy()
-    # A separate LAN/tunnel entry point never exposes local owner pages/APIs.
-    public_port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
+    # No browser entry for other devices: they use the Orion app on the mobile port.
     local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
-    public_port = int(get_env('ORION_WEB_PORT', default=public_port, required=False))
-    if public_port == local_port:
-        public_port = 8911
-    env['ORION_PUBLIC_PORT'] = str(public_port)
     env['ORION_LOCAL_PORT'] = str(local_port)
     mobile_port = get_env('ORION_MOBILE_PORT', default='8443', required=False)
     try:
@@ -142,10 +137,8 @@ def _main(runtime):
         register_native_hub(_repo_root, int(mobile_port))
     except (OSError, ValueError, ImportError) as error:
         print(f'[!] Local desktop registration unavailable: {type(error).__name__}; phone QR remains available')
-    if len({int(hub_port), int(public_port), int(mobile_port), local_port}) != 4:
-        raise RuntimeError('Hub HTTPS ports must differ')
-    if str(public_port) == str(hub_port):
-        raise RuntimeError('ORION_PUBLIC_PORT must differ from HUB_PORT')
+    if len({int(hub_port), int(mobile_port), local_port}) != 3:
+        raise RuntimeError('Hub ports must differ')
     if not env.get('JWT_SECRET_KEY') or env.get('JWT_SECRET_KEY') == 'super-secret-default-key-for-dev':
         import secrets
         env['JWT_SECRET_KEY'] = secrets.token_urlsafe(48)
@@ -177,13 +170,11 @@ def _main(runtime):
     hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
     py_bin = hub_venv_py if os.path.exists(hub_venv_py) else sys.executable
     api_cmd = [py_bin, '-m', 'orion.api.web_server', '--host', '127.0.0.1', '--port', str(hub_port)]
-    public_cmd = [py_bin, '-m', 'orion.api.web_server', '--public', '--host',
-                  get_env('ORION_PUBLIC_BIND_HOST', default='0.0.0.0', required=False), '--port', str(public_port)]
     mobile_cmd = [py_bin, '-m', 'orion.api.mobile_server']
     local_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(local_port)]
     shortcuts_enabled = get_env('ORION_LOCAL_SHORTCUTS', default='1', required=False).lower() not in {'0', 'false', 'off', 'no'}
     shortcuts_port = int(get_env('ORION_LOCAL_SHORTCUT_PORT', default='80', required=False))
-    if shortcuts_enabled and shortcuts_port in {int(public_port), int(hub_port), int(mobile_port), local_port}:
+    if shortcuts_enabled and shortcuts_port in {int(hub_port), int(mobile_port), local_port}:
         raise RuntimeError('Local shortcut port must differ from other Hub listeners')
     # Always local, even with legacy LAN/gateway environment settings present.
     shortcuts_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(shortcuts_port)]
@@ -235,8 +226,7 @@ def _main(runtime):
         if time.monotonic() >= deadline:
             raise LifecycleError('Redis readiness failed')
         time.sleep(.1)
-    for label, port in [('api', hub_port), ('public', public_port), ('local', local_port),
-                         ('mobile', mobile_port)] + ([('shortcuts', shortcuts_port)] if shortcuts_enabled else []):
+    for label, port in [('api', hub_port), ('local', local_port), ('mobile', mobile_port)] + ([('shortcuts', shortcuts_port)] if shortcuts_enabled else []):
         if label not in runtime.children:
             assert_port_free(port)
 
@@ -246,11 +236,7 @@ def _main(runtime):
     all_pids.append(api_proc.pid)
     threading.Thread(target=stream_logs, args=(api_proc, "[API]", log_file, log_lock), daemon=True).start()
 
-    public_proc = runtime.launch('public', public_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
-    processes.append(public_proc)
-    all_pids.append(public_proc.pid)
-    threading.Thread(target=stream_logs, args=(public_proc, '[API]', log_file, log_lock), daemon=True).start()
-    print(f'[*] PC owner home: https://localhost:{hub_port}/; phone/tunnel entry point: port {public_port}')
+    print(f'[*] PC owner home: https://localhost:{hub_port}/')
     local_proc = runtime.launch('local', local_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
     processes.append(local_proc)
     all_pids.append(local_proc.pid)
@@ -263,7 +249,7 @@ def _main(runtime):
         all_pids.append(shortcut_proc.pid)
         threading.Thread(target=stream_logs, args=(shortcut_proc, '[API]', log_file, log_lock), daemon=True).start()
         suffix = '' if shortcuts_port == 80 else f':{shortcuts_port}'
-        print(f'[*] Local entry: http://localhost{suffix}/; chat: /hub; owner panel: /panel; Router: /orionrouter')
+        print(f'[*] Local entry: http://localhost{suffix}/ (opens the Orion app); owner panel: /panel; Router: /orionrouter')
     
     mobile_proc = runtime.launch('mobile', mobile_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
     processes.append(mobile_proc)
@@ -298,7 +284,7 @@ def _main(runtime):
     try:
         from services.shared.flutter_launcher import start_flutter
         flutter_proc = start_flutter(repo_root, py_bin, get_env,
-            {int(hub_port), int(public_port), int(mobile_port), local_port,
+            {int(hub_port), int(mobile_port), local_port,
              shortcuts_port, int(redis_port), int(pg_port),
              int(get_env('ORION_ROUTER_TLS_PORT', default='9443', required=False)),
              int(get_env('ORION_ROUTER_LOCAL_PORT', default='20128', required=False)),
@@ -313,7 +299,6 @@ def _main(runtime):
     from orion.kernel.local_security import tls_identity
     identity = tls_identity()
     wait_health(api_proc, hub_port, certificate=identity['cert'])
-    wait_health(public_proc, public_port, certificate=identity['cert'])
     wait_health(local_proc, local_port)
     wait_health(mobile_proc, mobile_port, certificate=identity['cert'], identity=identity['id'])
     if shortcuts_enabled:
@@ -358,7 +343,7 @@ def _main(runtime):
                 break
             runtime.refresh_children()
             for label, command, port, tls in [
-                    ('api', api_cmd, hub_port, True), ('public', public_cmd, public_port, True),
+                    ('api', api_cmd, hub_port, True),
                     ('local', local_cmd, local_port, False), ('mobile', mobile_cmd, mobile_port, True)
                     ] + ([('shortcuts', shortcuts_cmd, shortcuts_port, False)] if shortcuts_enabled else []):
                 from services.shared.process_lifecycle import living

@@ -110,14 +110,14 @@ class WorkerSupervisorTests(unittest.TestCase):
                 proc.wait(timeout=10)
 
     def test_main_updates_pid_and_stops_current_worker_on_signal(self):
-        apis = [Mock(pid=pid) for pid in range(200, 204)]
+        apis = [Mock(pid=pid) for pid in range(200, 203)]
         for proc in apis:
             proc.poll.return_value = None
         redis = Mock(pid=199)
         redis.child = {'process': {}}
         redis.poll.return_value = None
         children = [redis] + apis + [self.worker, self.replacement]
-        runtime = Mock(children={label: {'process': {}} for label in ('api', 'public', 'local', 'mobile')})
+        runtime = Mock(children={label: {'process': {}} for label in ('api', 'local', 'mobile')})
         runtime.requested.return_value = False
         runtime.launch.side_effect = children
         handlers = {}
@@ -133,7 +133,7 @@ class WorkerSupervisorTests(unittest.TestCase):
             now[0] = waits[0] - 1
             return False
 
-        settings = {'ORION_FLUTTER_AUTOSTART': '0', 'HUB_PORT': '8900', 'ORION_PUBLIC_PORT': '8911',
+        settings = {'ORION_FLUTTER_AUTOSTART': '0', 'HUB_PORT': '8900',
                     'ORION_LOCAL_PORT': '8910', 'ORION_MOBILE_PORT': '8443',
                     'ORION_LOCAL_SHORTCUTS': '0', 'REDIS_PORT': '6379',
                     'POSTGRES_PORT': '5432'}

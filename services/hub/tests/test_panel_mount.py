@@ -53,8 +53,7 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('orion_owner_panel=', response.headers['set-cookie'])
         self.client.cookies.set('orion_owner', 'old-direct-port-cookie', path='/')
         with patch.object(invitations, 'list_people', AsyncMock(return_value=[])), \
-             patch.object(invitations, 'list_invitations', AsyncMock(return_value=[])), \
-             patch('orion.api.owner_routes.invitation_address', return_value='https://orion.local'):
+             patch.object(invitations, 'list_invitations', AsyncMock(return_value=[])):
             response = await self.client.get('/panel/api/v1/owner/people')
             self.assertEqual(response.status_code, 200)
         self.assertEqual((await self.client.get('/panel/api/v1/admin/chats')).status_code, 401)

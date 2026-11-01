@@ -1,5 +1,9 @@
 # Faz 6 — üç repository için ortak güvenli bağlantı sözleşmesi
 
+> **Güncelleme 2026-11-01:** 8911 tarayıcı girişi, `_orion._tcp` duyurusu ve tarayıcı davetleri
+> kaldırıldı. Diğer cihazlar yalnızca Orion uygulamasıyla (8443) bağlanır. Ayrıntı:
+> [Flutter ana arayüz geçişi](../../../docs/flutter-primary-ui-migration.md).
+
 4 Ekim 2026. Kaynak, kullanıcının bu çalışma için paylaştığı **Orion Faz 6 —
 Güvenli Yerel Bağlantı, Pairing ve TLS** planıdır. Önceki devir belgelerindeki
 yaprak sertifika DER pini kararı bu plan tarafından değiştirilmiştir.

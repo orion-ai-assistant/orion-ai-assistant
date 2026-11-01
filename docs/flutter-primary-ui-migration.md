@@ -2,6 +2,8 @@
 
 Hub sunucusu, API, worker ve Router korunur. Eski HTML kaynakları referans olarak saklanır. Kullanıcının sonraki kararıyla yerel `/hub` ve `/hub/` artık Flutter'a yönlenir.
 
+> **1 Kasım 2026 — eski tarayıcı sohbeti tamamen kapatıldı.** Aşağıdaki "uzak web/QR bağlantıları eski girişi kullanır" notları artık geçerli değil; güncel durum için en alttaki [Tarayıcı girişinin kaldırılması](#tarayıcı-girişinin-kaldırılması--1-kasım-2026) bölümüne bak.
+
 | Akış / ayar | Eski Hub | Flutter | Bu geçiş |
 | --- | --- | --- | --- |
 | Giriş, kayıt, sohbet, geçmiş, yeniden adlandırma, silme, durdurma | Var | Var | Mevcut API ve hesap oturumu |
@@ -59,3 +61,29 @@ Sonraki kullanıcı onayıyla Router panel seçimi uygulandı. Hub, istemcinin g
 Diğer cihazlara loopback adresleri verilmez. Doğrulanmış güncel HTTPS bağlantı adresi (VPN/DNS dahil), yoksa Router'ın bildirdiği HTTPS LAN panel adresi kullanılır. Aynı bilgisayardaki Flutter paneli uygulama penceresinde açar; yalnızca Router UUID'sini gönderir ve sunucu adres seçimini tekrar doğrular. Telefon/uzak istemci HTTPS bağlantısını kendi tarayıcısında açar. Hub–Router API, model ve dosya trafiğinin tamamı mevcut pinned TLS politikasını kullanır.
 
 Flutter web `build/web` çıktısından sunulur; Python sunucu kendiliğinden yeniden derlemez. `8090` yalnızca loopback'e bağlıdır; telefondaki tarayıcıdan bu Flutter yayınına IP yazarak erişim henüz açılmamıştır.
+
+## Tarayıcı girişinin kaldırılması — 1 Kasım 2026
+
+Kullanıcı kararı: Orion yalnızca uygulamadan kullanılır (bu PC'de Flutter penceresi, telefonda Flutter uygulaması). Eski HTML sohbet (`services/hub/src/orion/api/ui/`) kaynak olarak durur ama hiçbir porttan sunulmaz.
+
+| Adres | Önce | Şimdi |
+| --- | --- | --- |
+| `https://<LAN-IP>:8911/` | Eski HTML sohbet, `/connect`, `_orion._tcp` duyurusu | Dinleyici yok; Hub bu portu açmaz, güvenlik duvarı kuralına eklenmez |
+| `localhost:8910/`, `localhost/` | "Bu cihaz" karşılama sayfası | Flutter'a 307 (query korunur) |
+| `localhost:8910/hub`, `/dashboard[/...]` | `/hub` Flutter'a, `/dashboard/js/...` eski dosyalara | Hepsi Flutter'a 307 |
+| `localhost:8910/api/...`, `/panel` | Flutter API, yönetim | Değişmedi |
+| `https://<LAN-IP>:8443/` | Bilgi sayfası + 8911 linki | Yalnızca bilgi sayfası |
+| `https://<LAN-IP>:8443/connect#data=...` | Yoktu (8911'deydi) | Kopyalanan eşleştirme bağlantısı; yalnızca "Orion uygulamasında aç" (`orion://pair?data=...`) sunar |
+
+Bunlarla birlikte kaldırılanlar:
+
+- Paneldeki "Hub'ı tarayıcıdan aç" kartı ve `GET /api/v1/owner/secure/addresses`.
+- Tarayıcı için davet bağlantısı (`POST /api/v1/owner/invitations`, `ORION_PUBLIC_URL`). Yeni hesap, tek QR ile telefon bağlanırken Orion uygulamasında açılır; panel davetleri yalnızca listeler ve iptal eder.
+- `/api/v1/discovery/connection`, `/api/v1/peers/<UUID>/...` (yerel tarayıcıdan başka Hub'a aktarım) ve `_orion._tcp` LAN taraması. `/api/v1/discovery/hubs` yalnızca bu Hub'ı döner; Flutter penceresi açılışta Hub'ı bununla bekler.
+- `ORION_PUBLIC_PORT`, `ORION_WEB_PORT`, `ORION_PUBLIC_BIND_HOST` ayarları ve Docker `public_api` servisi.
+
+Router bağlantı döngüsü (30 sn'de bir Router adresini tazeleyen `RouterAssociation`) eskiden yalnızca 8911 sürecinde çalışıyordu; artık yönetim API'si (8909) sürecinde çalışır.
+
+Neden kopyalanan bağlantı 8443'te: WhatsApp gibi uygulamalar yalnızca `http(s)` bağlantılarını tıklanabilir yapar; `orion://` doğrudan paylaşılamaz. 8443 telefon uygulaması için zaten açık ve güvenlik duvarında izinli. Eşleştirme verisi URL fragment'inde kalır, sunucuya gitmez. Sertifika kendinden imzalı olduğu için telefon tarayıcısı önce uyarı gösterebilir; QR okutmak bu adımı atlar.
+
+Güncelleme sonrası not: kurulu PC'deki eski güvenlik duvarı kuralı 8911'i içermeye devam edebilir (kural yalnızca kurulumda yazılır). O portu dinleyen süreç olmadığı için açık bir giriş oluşmaz; yeni kurulumda kural 8911'siz yazılır.

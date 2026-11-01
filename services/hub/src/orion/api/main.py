@@ -64,32 +64,29 @@ async def service_lifespan(app: FastAPI):
         finally:
             await app.state.redis.close()
         return
-    if app.state.public and not app.state.mobile:
-        from orion.api.discovery import HubDiscovery
-        discovery = HubDiscovery(app.version)
-        async def start_discovery():
-            await wait_for_admission()
-            if app.state.discovery_enabled:
-                discovery.start()
-                association.start()
-        discovery_task = asyncio.create_task(start_discovery())
+    if app.state.public:
         try:
             yield
         finally:
-            discovery_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await discovery_task
-            await discovery.close()
-            await association.close()
             await app.state.redis.close()
         return
     from orion.browser.bridge import BrowserBridge
     from orion.browser.manager import restore_saved_browsers
     bridge = await BrowserBridge().start()
     restore_task = asyncio.create_task(admitted(restore_saved_browsers()))
+    async def start_association():
+        await wait_for_admission()
+        # One process keeps the Router selection fresh: the owner API listener.
+        if app.state.discovery_enabled:
+            association.start()
+    association_task = asyncio.create_task(start_association())
     try:
         yield
     finally:
+        association_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await association_task
+        await association.close()
         restore_task.cancel()
         with suppress(asyncio.CancelledError):
             await restore_task
@@ -237,8 +234,9 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
         @application.api_route('/dashboard', methods=['GET', 'HEAD'], include_in_schema=False)
         @application.api_route('/dashboard/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
         async def public_dashboard(request: Request, path: str = ''):
+            # Old chat bookmarks: the local entry opens the Flutter app.
             port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
-            target = f'http://127.0.0.1:{port}' + ('/' + path.lstrip('/') if path else '/hub')
+            target = f'http://127.0.0.1:{port}/hub'
             if request.url.query:
                 target += '?' + request.url.query
             return RedirectResponse(target)
@@ -246,34 +244,10 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
         application.mount('/owner-assets', StaticFiles(directory=owner_dir), name='owner-assets')
         application.mount('/admin', StaticFiles(directory=os.path.join(os.path.dirname(__file__), 'admin_ui'), html=True), name='admin')
     elif not mobile:
+        # The Flutter app's API on this PC; its pages are served by the launcher (8090).
         application.include_router(browser_router)
-        from orion.api.hub_directory import router as discovery_router, HubDirectory
+        from orion.api.hub_directory import router as discovery_router
         application.include_router(discovery_router)
-        application.state.hub_directory = HubDirectory()
-        @application.get('/connect', include_in_schema=False)
-        async def connection_landing():
-            return FileResponse(os.path.join(ui_dir, 'connect.html'), headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
-
-        @application.api_route('/hub', methods=['GET', 'HEAD'], include_in_schema=False)
-        @application.api_route('/hub/', methods=['GET', 'HEAD'], include_in_schema=False)
-        @application.api_route('/', methods=['GET', 'HEAD'], include_in_schema=False)
-        async def public_home():
-            with open(os.path.join(ui_dir, 'index.html'), encoding='utf-8') as page:
-                html = page.read()
-            html = re.sub(r'(href|src)="((?:css|js)/[^"]*)"', r'\1="/\2"', html)
-            return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
-
-        @application.api_route('/dashboard', methods=['GET', 'HEAD'], include_in_schema=False)
-        @application.api_route('/dashboard/{path:path}', methods=['GET', 'HEAD'], include_in_schema=False)
-        async def legacy_dashboard(request: Request, path: str = ''):
-            # Keep old invitations/bookmarks and asset URLs on this origin.
-            target = ('/hub' if local_entry and not path else '/') + path.lstrip('/')
-            if request.url.query:
-                target += '?' + request.url.query
-            return RedirectResponse(target)
-
-        for asset in ('css', 'js'):
-            application.mount('/' + asset, StaticFiles(directory=os.path.join(ui_dir, asset)), name=asset)
     if mobile:
         application.add_middleware(MobileBoundary)
     else:
@@ -286,17 +260,15 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
 
 
 app = create_app()
-public_app = create_app(public=True)
 mobile_app = create_app(public=True, mobile=True, discovery_enabled=False)
 
 # The local launcher is never a LAN entry or a Router address service.
-# Only the HTTPS web listener (8911 by default) advertises DNS-SD.
+# No browser page of this Hub is served to other devices: they use the Orion app.
 from orion.api.shortcuts import OwnerShortcut
 
 local_app = create_app(public=True, discovery_enabled=False, local_entry=True, local_http=True)
 local_app.state.panel_app = create_app(discovery_enabled=False, local_http=True)
-local_app.add_middleware(OwnerShortcut, panel_app=local_app.state.panel_app,
-                         directory=local_app.state.hub_directory)
+local_app.add_middleware(OwnerShortcut, panel_app=local_app.state.panel_app)
 from orion.api.https_boundary import LocalTransportBoundary
 local_app.add_middleware(LocalTransportBoundary)
 from orion.api.mobile_security import LegacyDeviceBoundary

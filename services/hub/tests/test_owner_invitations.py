@@ -97,40 +97,27 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             await self.login(scope='admin')
             self.assertEqual((await self.client.get('/api/v1/admin/settings/schema')).status_code, 200)
 
-    async def test_private_dashboard_redirects_to_public_port_and_owner_assets_stay_local(self):
-        with patch.dict(os.environ, {'ORION_PUBLIC_PORT': '8910'}):
-            for path in ['/dashboard', '/dashboard/', '/dashboard/js/main.js?version=1']:
-                result = await self.client.get(path)
-                self.assertEqual(result.status_code, 307)
-                self.assertEqual(result.headers['location'], 'http://127.0.0.1:8910' + ('/js/main.js?version=1' if 'js/' in path else '/hub'))
-            page = await self.client.get('/')
-            self.assertIn('href="http://127.0.0.1:8910/panel/"', page.text)
+    async def test_private_dashboard_redirects_to_local_app_entry_and_owner_assets_stay_local(self):
+        for path in ['/dashboard', '/dashboard/', '/dashboard/js/main.js?version=1']:
+            result = await self.client.get(path)
+            self.assertEqual(result.status_code, 307)
+            self.assertEqual(result.headers['location'], 'http://127.0.0.1:8910/hub' + ('?version=1' if '?' in path else ''))
+        page = await self.client.get('/')
+        self.assertIn('href="http://127.0.0.1:8910/panel/"', page.text)
         self.assertEqual((await self.client.get('/owner-assets/auth_wait.js')).status_code, 200)
         page = await self.client.get('/manage/')
         self.assertIn('/owner-assets/auth_wait.js', page.text)
 
-    async def test_invitation_without_address_uses_current_pc_ip(self):
+    async def test_browser_invitation_links_are_not_created(self):
+        # New accounts join through the app's pairing QR; there is no browser sign-up page to link to.
+        self.assertEqual((await self.client.post('/api/v1/owner/invitations', json={'label': 'Phone'})).status_code, 404)
         await self.login()
-        probe = Mock()
-        probe.__enter__ = Mock(return_value=probe)
-        probe.__exit__ = Mock(return_value=False)
-        probe.getsockname.return_value = ('192.168.1.102', 1234)
-        with patch.dict(os.environ, {'ORION_PUBLIC_URL': '', 'ORION_PUBLIC_PORT': '8910'}), patch.object(owner_routes.os.path, 'exists', return_value=False), patch.object(owner_routes.socket, 'socket', return_value=probe), patch.object(invitations, 'create_invitation', AsyncMock()):
-            response = await self.client.post('/api/v1/owner/invitations', json={'label': 'Phone'})
-        self.assertEqual(response.status_code, 201)
-        self.assertTrue(response.json()['url'].startswith('https://192.168.1.102:8911/dashboard/#invite='))
-        probe.send.assert_not_called()
-
-    def test_configured_tunnel_address_takes_precedence(self):
-        with patch.dict(os.environ, {'ORION_PUBLIC_URL': 'https://orion.example/'}), patch.object(owner_routes.socket, 'socket') as probe:
-            self.assertEqual(owner_routes.invitation_address(), 'https://orion.example')
-            probe.assert_not_called()
-
-    def test_no_network_does_not_generate_localhost_invitation(self):
-        with patch.dict(os.environ, {'ORION_PUBLIC_URL': ''}), patch.object(owner_routes.os.path, 'exists', return_value=False), patch.object(owner_routes.socket, 'socket', side_effect=OSError), patch.object(owner_routes.socket, 'getaddrinfo', return_value=[(0,0,0,'',('127.0.0.1',0))]):
-            with self.assertRaises(HTTPException) as failure:
-                owner_routes.invitation_address()
-        self.assertEqual(failure.exception.status_code, 503)
+        self.assertEqual((await self.client.post('/api/v1/owner/invitations', json={'label': 'Phone'})).status_code, 404)
+        self.assertFalse(hasattr(owner_routes, 'invitation_address'))
+        with patch.object(invitations, 'list_people', AsyncMock(return_value=[])), patch.object(invitations, 'list_invitations', AsyncMock(return_value=[])):
+            people = await self.client.get('/api/v1/owner/people')
+        self.assertEqual(people.status_code, 200)
+        self.assertNotIn('public_url', people.json())
 
     async def test_owner_password_required_and_shared_with_admin(self):
         self.assertEqual((await self.client.get('/api/v1/owner/people')).status_code, 401)
@@ -229,34 +216,16 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_csrf_requests_rejected_even_with_valid_owner_session(self):
         await self.login()
         for origin in ['https://evil.example', 'http://localhost:7777', 'null']:
-            response = await self.client.post('/api/v1/owner/invitations', headers={'Origin': origin}, json={'public_url': 'https://orion.example'})
+            response = await self.client.put('/api/v1/owner/people/alice', headers={'Origin': origin}, json={'is_active': False})
             self.assertEqual(response.status_code, 403)
 
-    async def test_invitation_link_qr_and_only_hash_storage(self):
-        await self.login()
-        with patch.object(invitations, 'create_invitation', AsyncMock()) as create:
-            response = await self.client.post('/api/v1/owner/invitations', json={'public_url': 'https://orion.example', 'label': '<script>bad</script>', 'expires_minutes': 30})
-        self.assertEqual(response.status_code, 201)
-        data = response.json()
-        self.assertTrue(data['url'].startswith('https://orion.example/dashboard/#invite='))
-        token = data['url'].split('=', 1)[1]
-        self.assertGreaterEqual(len(token), 40)
-        self.assertIn('<svg', data['qr_svg'])
-        self.assertNotIn('owner-password', data['url'])
-        self.assertEqual(response.headers['cache-control'], 'no-store')
+    async def test_invitation_tokens_are_stored_only_as_hashes(self):
+        token = 'b' * 43
         conn = Mock(execute=AsyncMock(), close=AsyncMock())
         with patch.object(invitations, 'connection', AsyncMock(return_value=conn)), patch.object(invitations, '_ensure_tables', AsyncMock()):
             await invitations.create_invitation('id', token, 'label', datetime.now(timezone.utc))
         self.assertEqual(conn.execute.call_args.args[2], hashlib.sha256(token.encode()).hexdigest())
         self.assertNotIn(token, str(conn.execute.call_args))
-
-    async def test_bad_share_addresses_and_unauthenticated_creation_rejected(self):
-        response = await self.client.post('/api/v1/owner/invitations', json={'public_url': 'https://example.com'})
-        self.assertEqual(response.status_code, 401)
-        await self.login()
-        for url in ['https://localhost:8910', 'javascript:alert(1)', 'https://secret@example.com', 'https://example.com/?x=1', 'http://127.0.0.1', 'https://example.com/dashboard']:
-            response = await self.client.post('/api/v1/owner/invitations', json={'public_url': url})
-            self.assertEqual(response.status_code, 422, url)
 
     async def test_existing_users_can_be_approved_and_disabled(self):
         await self.login()
@@ -289,15 +258,13 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(public=True)
         app.state.redis = self.redis
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)), base_url='https://localhost:8910') as client:
-            home = await client.get('/')
-            self.assertEqual(home.status_code, 200)
-            self.assertNotIn('location', home.headers)
+            # No browser chat page on any listener other than this PC's launcher (which opens Flutter).
+            for path in ['/', '/hub', '/connect', '/js/main.js']:
+                self.assertEqual((await client.get(path)).status_code, 404, path)
+            self.assertEqual((await client.get('/dashboard/')).status_code, 403)
             for path in ['/manage/', '/admin/', '/owner-assets/people.js', '/api/v1/owner/people', '/api/v1/auth/users/alice/approval', '/api/v1/admin/chats', '/docs']:
                 self.assertEqual((await client.get(path)).status_code, 404 if path == '/docs' else 403, path)
             self.assertEqual((await client.get('/api/v1/browser')).status_code, 401)
-            legacy = await client.get('/dashboard/')
-            self.assertEqual(legacy.status_code, 307)
-            self.assertEqual(legacy.headers['location'], '/')
             favicon = await client.get('/favicon.ico')
             self.assertEqual(favicon.status_code, 200)
             self.assertIn('image/svg+xml', favicon.headers['content-type'])

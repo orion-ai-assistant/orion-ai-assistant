@@ -27,16 +27,14 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
         error.hidden = true;
         const data = await api('/people', {background});
-        const address = document.getElementById('public-url');
-        address.textContent = 'Davet adresi: ' + data.public_url;
         const users = document.getElementById('people-list'); users.replaceChildren();
-        if (!data.users.length) users.textContent = 'Henüz kullanıcı yok. İlk kişiyi davet ederek başlayabilirsin.';
+        if (!data.users.length) users.textContent = 'Henüz kullanıcı yok. İlk kişi tek QR ile telefonunu bağlarken hesabını oluşturabilir.';
         data.users.forEach(user => renderRecord(users, user.id, `${user.is_active ? 'Aktif' : 'Onay bekliyor veya erişimi kapalı'} · ${date(user.created_at)}`, user.is_active ? 'Erişimi kapat' : 'Erişim ver', async () => {
             if (user.is_active && !confirm(`${user.id} kullanıcısının erişimi kapatılsın mı?`)) return;
             await api('/people/' + encodeURIComponent(user.id), {method: 'PUT', body: JSON.stringify({is_active: !user.is_active})});
         }));
         const invites = document.getElementById('invitation-list'); invites.replaceChildren();
-        if (!data.invitations.length) invites.textContent = 'Henüz davet oluşturmadın.';
+        if (!data.invitations.length) invites.textContent = 'Henüz davet yok. Her tek QR bir davet içerir.';
         data.invitations.forEach(invite => {
             const available = !invite.revoked && !invite.used_by && new Date(invite.expires_at) > new Date();
             const status = invite.used_by ? `${invite.used_by} tarafından kullanıldı` : invite.revoked ? 'İptal edildi' : available ? 'Kullanılabilir' : 'Süresi doldu';
@@ -48,28 +46,4 @@ document.addEventListener('DOMContentLoaded', () => {
     // An invitation can be accepted on another device or in another tab.
     OwnerAPI.whileVisible(() => refresh(true));
     document.getElementById('refresh-people').onclick = () => refresh().catch(showError);
-    document.getElementById('invite-form').onsubmit = async event => {
-        event.preventDefault(); error.hidden = true;
-        const button = document.getElementById('invite-submit'); button.disabled = true;
-        try {
-            const data = await api('/invitations', {method: 'POST', body: JSON.stringify({label: document.getElementById('invite-label').value, expires_minutes: Number(document.getElementById('invite-duration').value)})});
-            document.getElementById('invite-link').value = data.url;
-            const svg = new Blob([data.qr_svg], {type: 'image/svg+xml'}), image = document.createElement('img');
-            image.alt = 'Davet bağlantısı QR kodu'; image.width = image.height = 230;
-            image.src = URL.createObjectURL(svg); image.onload = () => URL.revokeObjectURL(image.src);
-            document.getElementById('invite-qr').replaceChildren(image);
-            document.getElementById('invite-result').hidden = false;
-            document.getElementById('invite-feedback').textContent = `Son geçerlilik: ${date(data.expires_at)}`;
-            await refresh();
-        } catch (failure) { showError(failure); } finally { button.disabled = false; }
-    };
-    document.getElementById('copy-invite').onclick = async () => {
-        const link = document.getElementById('invite-link');
-        try { await navigator.clipboard.writeText(link.value); document.getElementById('invite-feedback').textContent = 'Bağlantı kopyalandı.'; }
-        catch (_) { link.focus(); link.select(); document.getElementById('invite-feedback').textContent = 'Bağlantıyı seçtim. Kopyalayıp gönderebilirsin.'; }
-    };
-    document.getElementById('share-invite').onclick = async () => {
-        if (!navigator.share) return document.getElementById('copy-invite').click();
-        try { await navigator.share({title: 'Orion daveti', url: document.getElementById('invite-link').value}); } catch (_) { /* share cancellation is harmless */ }
-    };
 });

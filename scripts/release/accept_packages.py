@@ -63,7 +63,7 @@ class FixtureFetcher(FetcherInterface):
                 yield block
 
 
-LOOPBACK = {'ORION_PUBLIC_BIND_HOST': '127.0.0.1', 'ORION_MOBILE_BIND_HOST': '127.0.0.1',
+LOOPBACK = {'ORION_MOBILE_BIND_HOST': '127.0.0.1',
             'ORION_ROUTER_TLS_HOST': '127.0.0.1'}
 
 
@@ -259,7 +259,7 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         client = ReleaseClient(trusted_root=bootstrap, cache=scratch / 'cache',
             metadata_url='https://fixture.invalid/metadata/', targets_url='https://fixture.invalid/targets/',
             fetcher=FixtureFetcher(repository))
-        settings = {'hub': {'HUB_PORT': port(), 'ORION_PUBLIC_PORT': port(), 'ORION_LOCAL_PORT': port(),
+        settings = {'hub': {'HUB_PORT': port(), 'ORION_LOCAL_PORT': port(),
             'ORION_MOBILE_PORT': port(), 'ORION_FLUTTER_PORT': port(), 'ORION_BROWSER_BRIDGE_PORT': port(),
             'POSTGRES_PORT': port(), 'REDIS_PORT': port(), 'POSTGRES_HOST': '127.0.0.1',
             'REDIS_HOST': '127.0.0.1', 'POSTGRES_DB': 'orion', 'POSTGRES_USER': 'orion',

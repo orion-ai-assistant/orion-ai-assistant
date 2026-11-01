@@ -58,14 +58,13 @@ def is_local(scope) -> bool:
 
 
 def public_path(path: str) -> bool:
-    if path in {'/', '/hub', '/hub/', '/favicon.ico', '/dashboard', '/connect'} or path.startswith(('/dashboard/', '/css/', '/js/')):
+    if path in {'/', '/favicon.ico'}:
         return True
     if private_path(path):
         return False
-    return (path in {'/health', '/api/v1/pair/request', '/api/v1/pair/create', '/api/v1/pair/capabilities', '/api/v1/pair/requests/stream', '/api/v1/discovery/self', '/api/v1/discovery/hubs', '/api/v1/discovery/connection', '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/me', '/api/v1/auth/invitations/preview', '/api/v1/assistant/capabilities', '/api/v1/assistant/chat'}
+    return (path in {'/health', '/api/v1/pair/request', '/api/v1/pair/create', '/api/v1/pair/capabilities', '/api/v1/pair/requests/stream', '/api/v1/discovery/self', '/api/v1/discovery/hubs', '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/me', '/api/v1/auth/invitations/preview', '/api/v1/assistant/capabilities', '/api/v1/assistant/chat'}
             or path.startswith('/api/v1/pair/requests/')
             or path.rstrip('/') in USER_SETTINGS
-            or path == '/dashboard' or path.startswith('/dashboard/')
             or any(path == prefix or path.startswith(prefix + '/') for prefix in
                    ('/api/v1/chats', '/api/v1/chat', '/api/v1/tools', '/api/v1/models', '/api/v1/audio', '/api/v1/router/providers', '/api/v1/router/access', '/api/v1/updates')))
 
@@ -81,10 +80,6 @@ def is_desktop_peer(scope) -> bool:
         from orion.api.discovery import lan_addresses
         addresses = lan_addresses()
         allowed_hosts = {'localhost', '127.0.0.1', '::1', *addresses}
-        if host and host.startswith('orion-'):
-            from orion.api.hub_directory import local_identity
-            from orion.api.discovery import canonical_hostname
-            allowed_hosts.add(canonical_hostname(local_identity()['id']).rstrip('.'))
         if peer.is_loopback:
             return host in allowed_hosts
         server = ipaddress.ip_address(scope['server'][0]) if scope.get('server') else None
@@ -173,7 +168,7 @@ class AccessBoundary:
             detail = 'Bu bölüm yalnızca bu PC üzerinden kullanılabilir.'
             if user_api_on_private:
                 from services.shared.environment import get_env
-                port = get_env('ORION_PUBLIC_PORT', default='8910', required=False)
+                port = get_env('ORION_LOCAL_PORT', default='8910', required=False)
                 detail = f'Bu port yalnızca yönetim içindir. Hub bağlantısını genel kullanım portuna ({port}) değiştirin.'
             return await JSONResponse({'detail': detail}, status_code=403)(scope, receive, send)
         if self.public and desktop_access and browser_path:

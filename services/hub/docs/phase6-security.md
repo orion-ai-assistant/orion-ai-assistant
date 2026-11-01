@@ -1,5 +1,9 @@
 # Hub Phase 6 local security
 
+> **Update 2026-11-01:** the LAN browser listener (8911) is gone; no Hub port serves the old
+> HTML chat. Other devices use the Orion app on 8443. See
+> [Flutter primary UI migration](../../../docs/flutter-primary-ui-migration.md).
+
 Hub uses two explicit transport policies. Native/mobile and LAN connections
 require HTTPS/SPKI. This PC's local UI has a guarded HTTP exception:
 

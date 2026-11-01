@@ -52,7 +52,7 @@
     node('copy').onclick = async () => { try { await navigator.clipboard.writeText(link); } catch { const input = document.createElement('textarea'); input.value = link; document.body.appendChild(input); input.select(); document.execCommand('copy'); input.remove(); } };
     window.addEventListener('pagehide', reset);
     perform(async () => {
-        try { await api('/secure/addresses'); }
+        try { await api('/secure/devices'); }
         catch (error) {
             if (error.status !== 401) throw error;
             const info = await api('/secure/password-info');

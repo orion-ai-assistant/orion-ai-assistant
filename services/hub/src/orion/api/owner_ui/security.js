@@ -20,15 +20,7 @@
     container.append(record);
   }
   async function refresh(background = false) {
-    const [devices, routers, addresses] = await Promise.all([api('/devices', {background}), api('/routers', {background}), api('/addresses', {background}).catch(() => null)]);
-    document.getElementById('local-browser-link').value = addresses?.local_browser_url || 'http://localhost/hub';
-    document.getElementById('lan-browser-link').value = addresses?.lan_browser_url || '';
-    const browserLink = document.getElementById('open-lan-browser');
-    browserLink.hidden = !addresses;
-    if (addresses) browserLink.href = addresses.lan_browser_url;
-    else browserLink.removeAttribute('href');
-    document.getElementById('copy-lan-browser').disabled = !addresses;
-    if (!addresses) document.getElementById('address-copy-status').textContent = 'Ağ adresi bulunamadı. PC’nin ağ bağlantısını kontrol et.';
+    const [devices, routers] = await Promise.all([api('/devices', {background}), api('/routers', {background})]);
     const deviceList = document.getElementById('secure-devices'); deviceList.replaceChildren();
     for (const device of devices.devices) row(deviceList, device.name, device.id + (device.revoked ? ' · Erişim kaldırıldı' : ''), device.revoked ? null : async () => { await api('/devices/' + encodeURIComponent(device.id), {method: 'DELETE'}); await refresh(); }, 'Erişimi kaldır');
     const routerList = document.getElementById('secure-routers'); routerList.replaceChildren();
@@ -70,18 +62,6 @@
   }); }
   document.getElementById('copy-pair-json').onclick = () => copyPair('pair-json');
   document.getElementById('copy-pair-link').onclick = () => copyPair('pair-link');
-  document.getElementById('copy-lan-browser').onclick = () => run(async () => {
-    const field = document.getElementById('lan-browser-link');
-    const status = document.getElementById('address-copy-status');
-    field.focus(); field.select();
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
-      await navigator.clipboard.writeText(field.value);
-      status.textContent = 'Bağlantı kopyalandı. Diğer cihazın tarayıcısında açabilirsin.';
-    } catch (_) {
-      status.textContent = 'Metin seçildi. Ctrl+C veya cihazının kopyalama komutuyla kopyala.';
-    }
-  });
   document.getElementById('secure-refresh').onclick = () => run(refresh);
   document.addEventListener('owner-unlocked', () => run(refresh));
   // A device can pair, or a Router can be trusted, from another tab or device.

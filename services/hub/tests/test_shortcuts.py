@@ -1,8 +1,9 @@
+from pathlib import Path
 import unittest
 from unittest.mock import patch, AsyncMock
 
 import httpx
-from orion.api.main import local_app, public_app
+from orion.api.main import local_app
 
 
 class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
@@ -60,8 +61,8 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 401)
             self.assertEqual(response.headers['access-control-allow-origin'], 'http://localhost:8021')
 
-    async def test_http_manage_is_real_html_and_directory_keeps_lan_https(self):
-        with patch('orion.api.hub_directory.local_identity', return_value={'id': 'self', 'name': 'PC'}), patch.object(local_app.state.hub_directory, 'list', AsyncMock(return_value=[{'id': 'remote', 'name': 'Remote', 'url': 'https://192.168.1.20:8911/'}])):
+    async def test_http_manage_is_real_html_and_directory_lists_only_this_hub(self):
+        with patch('orion.api.hub_directory.local_identity', return_value={'id': 'self', 'name': 'PC'}):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://127.0.0.1:8910') as client:
                 page = await client.get('/manage')
                 self.assertEqual(page.status_code, 200)
@@ -70,8 +71,7 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                 for path in ['/owner-assets/gate.js', '/router/', '/admin/']:
                     self.assertEqual((await client.get(path)).status_code, 200, path)
                 hubs = (await client.get('/api/v1/discovery/hubs')).json()['hubs']
-                self.assertEqual(hubs[0]['url'], 'http://127.0.0.1:8910/hub')
-                self.assertEqual(hubs[1]['url'], 'https://192.168.1.20:8911/')
+                self.assertEqual([hub['url'] for hub in hubs], ['http://127.0.0.1:8910/hub'])
 
     async def test_http_local_exception_never_accepts_native_credentials(self):
         from orion.api.security import create_access_token
@@ -100,14 +100,9 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('SameSite=strict', cookie)
                 self.assertNotIn('Secure', cookie)
 
-    async def test_local_landing_chat_panel_and_assets(self):
+    async def test_local_entry_opens_flutter_and_keeps_panel(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
-            home = await client.get('/')
-            self.assertEqual(home.status_code, 200)
-            self.assertIn('href="/hub"', home.text)
-            self.assertIn('href="/panel"', home.text)
-            self.assertNotIn('auth-modal', home.text)
-            for path in ['/hub', '/hub/']:
+            for path in ['/', '/hub', '/hub/', '/dashboard', '/dashboard/', '/dashboard/js/main.js']:
                 page = await client.get(path)
                 self.assertEqual(page.status_code, 307)
                 self.assertEqual(page.headers['location'], 'http://localhost:8090/')
@@ -119,8 +114,10 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('href="/panel/"', page.text)
                 self.assertNotIn('orion.local', page.text)
                 self.assertNotIn(':8909', page.text)
-            for path in ['/js/main.js', '/css/styles.css', '/favicon.ico']:
-                self.assertEqual((await client.get(path)).status_code, 200, path)
+            # The old browser chat is kept as source only: none of its files are served.
+            for path in ['/js/main.js', '/css/styles.css', '/connect', '/api/v1/peers/test/auth/login']:
+                self.assertEqual((await client.get(path)).status_code, 404, path)
+            self.assertEqual((await client.get('/favicon.ico')).status_code, 200)
             self.assertEqual((await client.get('/api/v1/owner/people')).status_code, 401)
             self.assertEqual((await client.get('/panel/api/v1/owner/people')).status_code, 401)
         self.assertFalse(local_app.state.discovery_enabled)
@@ -144,16 +141,19 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn('auth-password', response.text)
 
     async def test_bookmark_redirect_keeps_query_on_local_chat(self):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost', follow_redirects=True) as client:
-            self.assertEqual(str((await client.get('/dashboard/?hub=old')).url), 'http://localhost:8090/?hub=old')
-            self.assertEqual(str((await client.get('/dashboard/js/main.js?v=1')).url), 'http://localhost/js/main.js?v=1')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
+            for path in ['/dashboard/?hub=old', '/dashboard/js/main.js?hub=old', '/?hub=old']:
+                response = await client.get(path)
+                self.assertEqual(response.status_code, 307, path)
+                self.assertEqual(response.headers['location'], 'http://localhost:8090/?hub=old', path)
 
-    async def test_lan_ip_dashboard_remains_available_but_not_owner_panel(self):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=public_app, client=('192.168.1.100', 1234)), base_url='https://192.168.1.107:8911') as client:
-            self.assertEqual((await client.get('/')).status_code, 200)
-            for path in ['/panel', '/manage/', '/admin/', '/api/v1/owner/people', '/api/v1/peers/test/auth/login']:
-                self.assertEqual((await client.get(path)).status_code, 403, path)
-            self.assertEqual((await client.get('/api/v1/discovery/connection')).status_code, 403)
+    def test_no_lan_browser_listener_exists(self):
+        from orion.api import main
+        from services.hub import run_local
+        self.assertFalse(hasattr(main, 'public_app'))
+        source = Path(run_local.__file__).read_text(encoding='utf-8')
+        self.assertNotIn("'--public'", source)
+        self.assertNotIn('ORION_PUBLIC_PORT', source)
 
     async def test_flutter_shortcut_respects_port_and_leaves_fragment_to_browser(self):
         with patch.dict('os.environ', {'ORION_FLUTTER_PORT': '8123'}):
@@ -166,15 +166,6 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                     # Fragments never reach HTTP. RFC 9110 section 10.2.2
                     # requires browsers to inherit them when Location has none.
                     self.assertNotIn('#', response.headers['location'])
-
-    async def test_connection_shows_current_lan_urls_only(self):
-        with patch('orion.api.hub_directory.lan_addresses', return_value=['192.168.1.107']), \
-             patch('orion.api.hub_directory.local_identity', return_value={'id': 'self', 'name': 'Hiro'}), \
-             patch.dict('os.environ', {'ORION_PUBLIC_PORT': '8910'}):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
-                data = (await client.get('/api/v1/discovery/connection')).json()
-                self.assertEqual(data['urls'], ['https://192.168.1.107:8911/'])
-                self.assertTrue(data['encrypted'])
 
     async def test_router_shortcut_targets_explicit_local_loopback_http(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:

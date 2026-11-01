@@ -29,30 +29,21 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(is_desktop_peer({**scope, 'headers': scope['headers'] + [(b'x-forwarded-for', b'192.168.1.20')]}))
             self.assertFalse(is_desktop_peer({**scope, 'headers': [(b'host', b'attacker.example')]}))
 
-    async def test_public_directory_deduplicates_self_without_authentication(self):
-        app = create_app(public=True)
-        app.state.hub_directory.list = AsyncMock(return_value=[{'id': ID, 'name': 'Self', 'url': 'https://192.168.1.20:8910/'}])
+    async def test_directory_lists_only_this_hub_without_authentication(self):
+        app = create_app(public=True, discovery_enabled=False, local_entry=True, local_http=True)
         with patch.object(hub_directory, 'local_identity', return_value={'id': ID, 'name': 'Self'}):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('192.168.1.21', 1234)), base_url='https://192.168.1.20:8910') as client:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('127.0.0.1', 1234)), base_url='http://localhost:8910') as client:
                 response = await client.get('/api/v1/discovery/hubs')
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()['hubs'], [{'id': ID, 'name': 'Self', 'url': '/'}])
+                self.assertEqual(response.json()['hubs'], [{'id': ID, 'name': 'Self', 'url': 'http://127.0.0.1:8910/hub'}])
                 self.assertEqual((await client.get('/api/v1/discovery/self')).json()['id'], ID)
-                self.assertEqual((await client.get('/api/v1/browser')).status_code, 403)
+                # The old browser address list (LAN HTTPS URLs) no longer exists.
+                self.assertEqual((await client.get('/api/v1/discovery/connection')).status_code, 404)
+        self.assertFalse(hasattr(app.state, 'hub_directory'))
 
     async def test_concurrent_scans_share_cached_result(self):
-        directory = hub_directory.HubDirectory()
+        directory = hub_directory.HubDirectory('_orionrouter._tcp.local.', '/v1')
         directory.scan = AsyncMock(return_value=[])
         import asyncio
         await asyncio.gather(*(directory.list() for _ in range(8)))
         directory.scan.assert_awaited_once()
-
-    async def test_internet_clients_do_not_trigger_lan_scan(self):
-        app = create_app(public=True)
-        app.state.hub_directory.list = AsyncMock(return_value=[])
-        with patch.object(hub_directory, 'local_identity', return_value={'id': ID, 'name': 'Self'}):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=('203.0.113.1', 1234)), base_url='https://orion.example') as client:
-                response = await client.get('/api/v1/discovery/hubs')
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(len(response.json()['hubs']), 1)
-        app.state.hub_directory.list.assert_not_awaited()

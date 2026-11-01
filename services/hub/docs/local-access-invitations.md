@@ -1,5 +1,9 @@
 # Local owner home and invite-only registration
 
+> **Update 2026-11-01:** browser invitations and the LAN browser entry (8911) were removed.
+> New accounts join through the app's single pairing QR; the panel only lists and revokes
+> invitations. See [Flutter primary UI migration](../../../docs/flutter-primary-ui-migration.md).
+
 Open `http://localhost:8909/` on the owner PC. Home links to the dashboard,
 People and invitations (`/manage/`), and the existing technical admin (`/admin/`).
 Both management screens explicitly ask for the same configured `ADMIN_API_KEY`

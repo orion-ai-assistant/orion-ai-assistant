@@ -8,11 +8,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
-from starlette.responses import JSONResponse, HTMLResponse, StreamingResponse
+from starlette.responses import FileResponse, JSONResponse, HTMLResponse, StreamingResponse
 
 from orion.api.owner_routes import require_owner
 from orion.api.auth_routes import get_current_user
@@ -185,16 +186,6 @@ async def change_owner_password(payload: ChangeOwnerPassword, request: Request):
     return JSONResponse({'ok': True, 'reauthenticate': True}, headers={'Cache-Control': 'no-store'})
 
 
-@owner_router.get('/addresses')
-async def connection_addresses(request: Request):
-    require_owner(request)
-    from orion.api.owner_routes import invitation_address
-    local_port = int(os.getenv('ORION_LOCAL_PORT', '8910'))
-    local_url = 'http://localhost/hub' if request.url.port in {None, 80} else f'http://localhost:{local_port}/hub'
-    return {'local_browser_url': local_url,
-            'lan_browser_url': invitation_address() + '/'}
-
-
 class Claim(BaseModel):
     code: str = Field(min_length=8, max_length=8, pattern=r'^[A-Z2-9]{8}$')
     device_name: str = Field(min_length=1, max_length=120)
@@ -335,8 +326,8 @@ async def build_pairing(request: Request, request_id: str | None = None):
         payload['invitation_token'] = invitation
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
     app_link = 'orion://pair?data=' + encoded
-    from orion.api.owner_routes import invitation_address
-    link = invitation_address() + '/connect#data=' + encoded
+    # Messaging apps make only http(s) links tappable: the app listener's /connect page hands it to the app.
+    link = payload['url'] + '/connect#data=' + encoded
     import qrcode
     import qrcode.image.svg
     output = BytesIO()
@@ -450,19 +441,11 @@ class MobileBoundary:
             return await deny(403, 'Mobile authentication requires TLS')
         path = scope['path']
         if path == '/' and scope['type'] == 'http' and scope.get('method') in {'GET', 'HEAD'}:
-            from html import escape
-            from urllib.parse import urlsplit
-            host = urlsplit('https://' + dict(scope.get('headers', [])).get(b'host', b'').decode('latin1')).hostname
-            try:
-                import ipaddress
-                address = ipaddress.ip_address(host)
-                if address.is_unspecified or address.is_multicast:
-                    raise ValueError('Invalid browser address')
-            except (ValueError, TypeError):
-                host = local_address()
-            host = '[' + host + ']' if ':' in host else host
-            url = escape(f'https://{host}:{int(os.getenv("ORION_WEB_PORT", "8911"))}/', quote=True)
-            return await HTMLResponse('<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orion Hub</title><body><h1>Orion Hub</h1><p>Bu adres telefon uygulamasının güvenli bağlantısı içindir. Orion uygulamasında PC ekranındaki QR kodunu okut veya bağlantı linkini aç. Sonraki açılışlarda Hub hatırlanır.</p><p>Tarayıcıdan kullanmak için <a href="'+url+'">Hub giriş ekranını aç</a>.</p></body></html>', headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})(scope, receive, send)
+            return await HTMLResponse('<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orion Hub</title><body><h1>Orion Hub</h1><p>Bu adres Orion uygulamasının güvenli bağlantısı içindir; tarayıcıdan sohbet açılmaz. Orion uygulamasında PC ekranındaki QR kodunu okut veya PC’den gönderilen bağlantıyı aç. Sonraki açılışlarda Hub hatırlanır.</p></body></html>', headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer'})(scope, receive, send)
+        if path == '/connect' and scope['type'] == 'http' and scope.get('method') in {'GET', 'HEAD'}:
+            # A copied pairing link opens here; it only hands its fragment to the Orion app.
+            page = Path(__file__).with_name('ui') / 'connect.html'
+            return await FileResponse(page, headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})(scope, receive, send)
         from orion.api.access_boundary import public_path, is_desktop_peer
         desktop_browser = (path == '/api/v1/browser' or path.startswith('/api/v1/browser/')) and is_desktop_peer(scope)
         if path not in {'/api/v1/pair/claim', '/api/v1/pair/local', '/api/v1/tls/identity', '/api/v1/devices/self'} and not public_path(path) and not desktop_browser:

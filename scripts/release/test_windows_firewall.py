@@ -16,12 +16,14 @@ def record(tmp_path, hub_env='', router_env=''):
 
 
 def test_ports_default_and_honor_installed_overrides(tmp_path):
-    assert firewall.tcp_ports(record(tmp_path)) == [8443, 8911, 9443]
+    assert firewall.tcp_ports(record(tmp_path)) == [8443, 9443]
     custom = record(tmp_path / 'custom', 'ORION_MOBILE_PORT=18443\nJWT_SECRET_KEY=x\n', 'ORION_ROUTER_TLS_PORT=19443\n')
-    assert firewall.tcp_ports(custom) == [8911, 18443, 19443]
+    assert firewall.tcp_ports(custom) == [18443, 19443]
     standalone = {'components': [c for c in custom['components'] if c['kind'] == 'router']}
     assert firewall.tcp_ports(standalone) == [19443]
-    assert firewall.tcp_ports(record(tmp_path / 'bad', 'ORION_MOBILE_PORT=abc\nORION_PUBLIC_PORT=80\n')) == [8443, 9443]
+    # A browser-listener port left in an older install's settings never opens the firewall.
+    assert firewall.tcp_ports(record(tmp_path / 'old', 'ORION_PUBLIC_PORT=8911\nORION_WEB_PORT=8911\n')) == [8443, 9443]
+    assert firewall.tcp_ports(record(tmp_path / 'bad', 'ORION_MOBILE_PORT=abc\n')) == [8443, 9443]
 
 
 class Runner:
@@ -38,7 +40,7 @@ class Runner:
                 return SimpleNamespace(returncode=3, stdout='')
             return SimpleNamespace(returncode=0, stdout='\n'.join(map(str, self.rule)))
         if self.admin_code == 0 and 'add rule' in command:
-            self.rule = [8443, 8911, 9443]
+            self.rule = [8443, 9443]
         if 'add rule' not in command and self.admin_code == 0:
             self.rule = None
         return SimpleNamespace(returncode=self.admin_code, stdout='')
@@ -50,7 +52,7 @@ def test_rules_added_once_then_unchanged(tmp_path, monkeypatch):
     rec, runner = record(tmp_path), Runner()
     assert firewall.ensure_rules(rec, run=runner) == 'added'
     command = next(c for c in runner.calls if 'add rule' in c)
-    assert 'profile=private' in command and 'remoteip=localsubnet' in command and 'localport=8443,8911,9443' in command
+    assert 'profile=private' in command and 'remoteip=localsubnet' in command and 'localport=8443,9443' in command
     assert 'program=' not in command  # port rule survives package updates
     assert firewall.ensure_rules(rec, run=runner) == 'unchanged'
     assert firewall.remove_rules(run=runner) == 'removed'

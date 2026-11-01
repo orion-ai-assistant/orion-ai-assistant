@@ -20,13 +20,13 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
         app.state.redis = AsyncMock()
         store = Mock()
         store.create_pairing.return_value = ('ABCDEFGH', 1234)
-        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':'a'*64,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.owner_routes.invitation_address', return_value='https://192.168.1.20:8911'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
+        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':'a'*64,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://localhost') as client:
                 response = await client.post('/api/v1/owner/secure/pairing', json={})
                 self.assertEqual(response.status_code, 200)
                 data = response.json()
-                # The web link (for a browser) and the app link carry the same QR payload.
-                self.assertTrue(data['link'].startswith('https://192.168.1.20:8911/connect#data='))
+                # The tappable link opens the app listener's /connect page; both links carry the same QR payload.
+                self.assertTrue(data['link'].startswith('https://192.168.1.20:8443/connect#data='))
                 self.assertTrue(data['app_link'].startswith('orion://pair?data='))
                 for link in (data['link'], data['app_link']):
                     raw = link.split('data=',1)[1]
@@ -44,7 +44,16 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://192.168.1.20:8443') as client:
             response = await client.get('/')
             self.assertEqual(response.status_code, 200)
-            self.assertIn('https://192.168.1.20:8911/', response.text)
+            self.assertNotIn('8911', response.text)
+            self.assertNotIn('<a ', response.text, 'No browser chat to link to')
+            landing = await client.get('/connect')
+            self.assertEqual(landing.status_code, 200)
+            self.assertEqual(landing.headers['referrer-policy'], 'no-referrer')
+            self.assertIn('orion://pair?data=', landing.text)
+            self.assertNotIn('/dashboard', landing.text)
+            self.assertNotIn('Tarayıcıda devam', landing.text)
+            for path in ['/hub', '/dashboard/', '/js/main.js']:
+                self.assertEqual((await client.get(path)).status_code, 403, path)
             with patch('orion.api.mobile_security.SecurityStore') as factory:
                 factory.return_value.authenticate.return_value = None
                 self.assertEqual((await client.get('/api/v1/chats')).status_code, 401)

@@ -1,18 +1,18 @@
-"""Loopback-only launcher, chat client and mounted owner panel."""
-from pathlib import Path
+"""Loopback-only launcher: chat pages open the Flutter app, the owner panel stays mounted."""
 from urllib.parse import urlsplit
 
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from orion.api.access_boundary import is_local
-from orion.api.local_peer import PeerClient
+
+# Every browser entry to the chat, old bookmarks included, opens the Flutter app.
+FLUTTER_PATHS = {'/', '/hub', '/hub/', '/dashboard', '/dashboard/'}
 
 
 class OwnerShortcut:
-    def __init__(self, app, panel_app=None, directory=None):
+    def __init__(self, app, panel_app=None):
         self.app = app
         self.panel_app = panel_app
-        self.peers = PeerClient(directory)
 
     async def __call__(self, scope, receive, send):
         if scope['type'] not in {'http', 'websocket'}:
@@ -28,7 +28,7 @@ class OwnerShortcut:
             return await JSONResponse({'detail': 'Yerel giriş için localhost kullanın.'},
                                       status_code=404 if removed else 403)(scope, receive, send)
         path = scope['path']
-        if scope['type'] == 'http' and scope['method'] in {'GET', 'HEAD'} and path in {'/hub', '/hub/'}:
+        if scope['type'] == 'http' and scope['method'] in {'GET', 'HEAD'} and (path in FLUTTER_PATHS or path.startswith('/dashboard/')):
             from services.shared.environment import get_env
             from services.shared.flutter_launcher import flutter_url
             target = flutter_url(get_env) + '/'
@@ -56,10 +56,4 @@ class OwnerShortcut:
                 mounted['path'] += '/'
                 mounted['raw_path'] = b'/panel/'
             return await self.panel_app(mounted, receive, send)
-        if path.startswith('/api/v1/peers/'):
-            return await self.peers(scope, receive, send)
-        if scope['type'] == 'http' and path == '/' and scope['method'] in {'GET', 'HEAD'}:
-            page = Path(__file__).with_name('owner_ui') / 'local.html'
-            return await FileResponse(page, headers={'Cache-Control': 'no-store',
-                                                     'Referrer-Policy': 'no-referrer'})(scope, receive, send)
         return await self.app(scope, receive, send)

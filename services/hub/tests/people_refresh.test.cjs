@@ -6,7 +6,7 @@ const path = require('node:path');
 
 test('Invitation redemption on another device appears without pressing Refresh', async () => {
     const listeners = {}, nodes = new Map();
-    let tick, data = {public_url: 'http://orion.local', users: [], invitations: []}, requests = 0;
+    let tick, data = {users: [], invitations: []}, requests = 0;
     const element = () => ({children: [], hidden: false, textContent: '', append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; }});
     const backgrounds = [];
     const context = {
