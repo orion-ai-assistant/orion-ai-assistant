@@ -252,10 +252,27 @@ def compatible(releases, *, installed_sequences=None, mobile_api=None):
     return versions
 
 
+def _updater_class():
+    """python-tuf's Updater, keeping its current root.json as a copy instead of a symlink.
+
+    tuf==6.0.0 links metadata/root.json to root_history/<version>.root.json with os.symlink, which Windows
+    allows only to administrators or with Developer Mode on: a normal user's first install failed with
+    WinError 1314. The copy has the same bytes and is replaced atomically, like every other metadata file.
+    """
+    from tuf.ngclient import Updater
+
+    class CopyRootUpdater(Updater):
+        def _update_root_symlink(self):
+            version = self._trusted_set.root.version
+            current = Path(self._dir, 'root_history', f'{version}.root.json')
+            self._persist_file(os.path.join(self._dir, 'root.json'), current.read_bytes())
+    return CopyRootUpdater
+
+
 class ReleaseClient:
     """Explicit check/download API. Does not schedule, activate or update registry."""
     def __init__(self, *, trusted_root, cache, metadata_url, targets_url, fetcher=None):
-        from tuf.ngclient import Updater
+        Updater = _updater_class()
         # Production transport is HTTPS. Tests inject a bounded local fetcher.
         for url in (metadata_url, targets_url):
             parsed = urlsplit(url)
