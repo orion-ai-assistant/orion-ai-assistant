@@ -30,21 +30,22 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
 
 **Hub**
 - **Tarayıcı aracı yerel adreslere gidebiliyordu.** Yapay zekâ, kullanıcının oturum açık tarayıcısında `127.0.0.1:8910/panel`, Router paneli veya ev ağındaki cihazları açabiliyordu. Artık yalnızca genel internet adresleri açılabiliyor; DNS cevabı da kontrol ediliyor (`worker/tools/web_browser/tools.py`).
-- **Varsayılan sahip şifresi (`orion`) telefondan QR/davet üretebiliyordu.** Hesabı olan herkes şifreyi bildiği için yeni cihaz ve hesap ekleyebiliyordu. Artık reddediliyor; önce bu PC'deki panelden şifre değiştirilmeli. Yeni sahip şifresi en az 8 karakter.
+- **Yeni sahip şifresi en az 8 karakter.** Varsayılan `orion` kullanıcı kararıyla kalıyor; değiştirmek kullanıcıya bırakıldı. Eşleşmiş ve hesabı olan bir telefon bu şifreyle QR üretebilir. Bu bilinçli bir kolaylık: Flutter önce `orion`'u dener.
 - **Süresi çok uzun ayarlanmış eski tip oturum anahtarları.** JWT gizli anahtarını ele geçiren biri süresiz anahtar üretebiliyordu. Oturumsuz anahtarlar en fazla 24 saat geçerli.
 - **Yönetim sayfaları çerçeve içinde açılabiliyordu.** Artık `X-Frame-Options: DENY` ve `frame-ancestors 'none'` gönderiliyor.
 
 ## Açık kalanlar (önem sırasıyla)
 
-1. **Router yönetici şifresi bu PC'de hâlâ `orion`.** Ağdan artık kullanılamıyor, ama Router panelinden değiştirilmeli. Hub sahip şifresi için de aynısı geçerli.
-2. **Bu PC'deki her program hesap açıp tarayıcıyı yönetebilir.** 8910'da davetsiz yerel kayıt mümkün ve hesap hemen aktif oluyor. Her hesap PC'deki asıl tarayıcıyı (oturumlarıyla birlikte) yönetebiliyor. Tek kullanıcılı bir PC'de risk düşük; başka bir Windows kullanıcısı veya localhost'a erişen bir tarayıcı eklentisi için yüksek. Öneri: tarayıcı yönetimi yalnızca sahibin onayladığı hesaplara açılsın. Bu bir kullanıcı deneyimi kararı.
+1. **Varsayılan şifreler `orion` kalıyor (kullanıcı kararı).** Router bunu yalnızca kendi bilgisayarındaki panelde (20128) kabul eder; ağdan (9443) panele girmek için önce şifre değiştirilmeli. Panel bunu telefonda açıkça yazıyor. Hub, eşleşmiş telefonlardan kabul eder.
+2. **Bu PC'deki her program hesap açıp tarayıcıyı yönetebilir.** Planlanan çözüm (kullanıcının fikri, ileride): **ana kullanıcı / misafir** ayrımı. Misafir hesaplar PC'yi kontrol eden işlevleri çağıramaz: tarayıcı yönetimi, PC sesi, güncelleme, Windows ile başlatma. Tarayıcı bağlanırken hangi hesapların kontrol edebileceği seçilebilir. Şimdilik yapılmadı.
+   Durum: 8910'da davetsiz yerel kayıt mümkün ve hesap hemen aktif oluyor. Her hesap PC'deki asıl tarayıcıyı (oturumlarıyla birlikte) yönetebiliyor. Tek kullanıcılı bir PC'de risk düşük; başka bir Windows kullanıcısı veya localhost'a erişen bir tarayıcı eklentisi için yüksek.
 3. **Kopyalanan eşleştirme bağlantısı ev ağında ele geçirilebilir.** Sertifika kendinden imzalı olduğu için telefon her seferinde uyarı veriyor; araya giren biri kendi sertifikasını aynı uyarıyla gösterebilir. QR okutmak bu riski taşımaz. Öneri: bağlantıyı yalnızca gerektiğinde kullan; daha kısa geçerlilik.
 4. **Kaynak klasöründe gizli dosyalar herkese açık (bu PC).** D: sürücüsünden gelen izinler yüzünden aşağıdaki dosyalar diğer Windows kullanıcılarınca okunabilir ve değiştirilebilir:
    - `files/security/` (Hub TLS anahtarı, sahip şifresi özeti)
    - `services/.env.global.local` (JWT anahtarı)
    - Router `persistent/` ve `tls/`
    Kurulu sürümün klasörleri korumalı. Tek kullanıcılı PC'de pratik risk düşük.
-5. **Router Postgres `trust` ile açılıyor (127.0.0.1:5433).** Bu PC'deki her program şifresiz admin olarak bağlanabilir; `COPY ... FROM PROGRAM` ile komut da çalıştırabilir. Hub Postgres şifreli.
+5. **Hub (5445) ve Router (5433) Postgres `trust` ile açılıyor.** Bu hem kaynak kodda hem kurulu sürümde böyle: `local_db_setup.py`, Router `bin/common.py`, `initdb --auth=trust`. İki taraf da bir şifre gönderiyor ama veritabanı onu kontrol etmiyor. Bu PC'deki her program veya Windows kullanıcısı şifresiz süper kullanıcı olarak bağlanabilir; `COPY ... FROM PROGRAM` ile Orion'un hesabıyla komut da çalıştırabilir. Yalnızca 127.0.0.1'den erişilebiliyor. Doğrusu `scram-sha-256` ve kurulumda üretilen rastgele bir şifre (veri klasöründe saklanır); mevcut kurulumlar için yerinde geçiş yapılmalı.
 6. **Router'da eski düz metin sağlayıcı anahtarı satırı.** `router_configs` içinde şifrelenmiş havuza taşındıktan sonra silinmiyor.
 7. **LLM/embed'de Host denetimi yok.** `llama-server`'a ara katman eklenemiyor. Tarayıcı yanıtı okuyamıyor, ama DNS rebinding ile model kullanılabilir. Tam çözüm `--api-key` ile Router'ın anahtar göndermesi (iki depoda değişiklik).
 8. **Daha düşük önemdekiler:**
