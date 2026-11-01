@@ -136,6 +136,10 @@ def tls_identity(directory=None, renew=False):
         return {'v': 1, 'id': hub_id, 'name': name, 'fp': fp, 'cert': str(cert_path), 'key': str(key_path)}
 
 
+# A pairing QR is valid this long and only once; a missed one is replaced by opening a new QR.
+PAIRING_SECONDS = 180
+
+
 class SecurityStore:
     def __init__(self, path=None):
         self.path = Path(path) if path else security_dir() / 'devices.sqlite3'
@@ -150,6 +154,9 @@ class SecurityStore:
                 CREATE TABLE IF NOT EXISTS router_bootstrap(source TEXT PRIMARY KEY, id TEXT NOT NULL, fp TEXT NOT NULL, status TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS router_revocations(id TEXT PRIMARY KEY);
             ''')
+            # A device paired with a QR may open one account, whenever it likes (older stores lack the column).
+            if 'may_register' not in {row['name'] for row in db.execute('PRAGMA table_info(devices)')}:
+                db.execute('ALTER TABLE devices ADD COLUMN may_register INTEGER NOT NULL DEFAULT 0')
         if os.name != 'nt':
             self.path.chmod(0o600)
 
@@ -167,7 +174,7 @@ class SecurityStore:
     def digest(value):
         return hashlib.sha256(value.encode()).hexdigest()
 
-    def create_pairing(self, ttl=120):
+    def create_pairing(self, ttl=PAIRING_SECONDS):
         code = ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(8))
         expires = time.time() + ttl
         with self.connect() as db:
@@ -175,7 +182,7 @@ class SecurityStore:
             db.execute('INSERT INTO pairing VALUES (?,?)', (self.digest(code), expires))
         return code, expires
 
-    def claim(self, code, name, platform, peer):
+    def claim(self, code, name, platform, peer, may_register=False):
         now = time.time()
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -193,8 +200,25 @@ class SecurityStore:
                 db.commit()  # Persist rate limiting, while leaving every valid code intact.
                 raise ValueError('Invalid or expired pairing code')
             device_id, token = str(uuid.uuid4()), 'orion_device_' + secrets.token_urlsafe(32)
-            db.execute('INSERT INTO devices(id,name,platform,token_hash,created) VALUES (?,?,?,?,?)', (device_id, name, platform, self.digest(token), now))
+            db.execute('INSERT INTO devices(id,name,platform,token_hash,created,may_register) VALUES (?,?,?,?,?,?)',
+                       (device_id, name, platform, self.digest(token), now, int(may_register)))
             return device_id, token
+
+    def may_register(self, device_id):
+        with self.connect() as db:
+            return bool(db.execute('SELECT 1 FROM devices WHERE id=? AND revoked=0 AND may_register=1',
+                                   (device_id,)).fetchone())
+
+    def take_registration(self, device_id):
+        """Uses up the device's one account; False when it has none left (atomic)."""
+        with self.connect() as db:
+            return db.execute('UPDATE devices SET may_register=0 WHERE id=? AND revoked=0 AND may_register=1',
+                              (device_id,)).rowcount == 1
+
+    def return_registration(self, device_id):
+        """The account could not be created after all (name taken, database down)."""
+        with self.connect() as db:
+            db.execute('UPDATE devices SET may_register=1 WHERE id=? AND revoked=0', (device_id,))
 
     def authenticate(self, token):
         if not token or len(token) > 256:

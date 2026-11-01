@@ -100,8 +100,10 @@ async def register(request: RegisterRequest, http_request: Request):
     await limit_attempts(http_request, 'registration', http_request.client.host, 10)
     local_registration = (not getattr(http_request.app.state, 'mobile', False)
                           and is_local(http_request.scope))
-    if not request.invitation_token and not local_registration:
-        raise HTTPException(403, 'Hesap oluşturmak için PC sahibinden davet bağlantısı alın.')
+    # A phone paired with a QR from the Hub's PC may open one account, whenever it likes.
+    device_id = getattr(http_request.state, 'device_id', None) if not local_registration else None
+    if not request.invitation_token and not local_registration and not device_id:
+        raise HTTPException(403, 'Hesap açmak için telefonu Hub’ın bilgisayarındaki QR ile bağla.')
     if request.username == "global":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -115,18 +117,39 @@ async def register(request: RegisterRequest, http_request: Request):
     if request.invitation_token:
         await invitations.redeem_invitation(request.invitation_token, request.username, password_hash)
     else:
+        from orion.kernel.local_security import SecurityStore
         from orion.kernel.registry import create_local_user
+        store = SecurityStore()
+        # Taken before the account exists, so two requests cannot both use it; given back on failure.
+        if device_id and not await asyncio.to_thread(store.take_registration, device_id):
+            raise HTTPException(403, 'Bu telefonla zaten bir hesap açıldı. Başka bir hesap için yeni bir QR okut.')
         try:
             created = await create_local_user(request.username, password_hash)
         except RuntimeError as error:
+            if device_id:
+                await asyncio.to_thread(store.return_registration, device_id)
             raise HTTPException(503, 'Hesap veritabanına erişilemiyor.') from error
         if not created:
+            if device_id:
+                await asyncio.to_thread(store.return_registration, device_id)
             raise HTTPException(409, 'Bu kullanıcı adı zaten kullanılıyor.')
     from orion.kernel.router_accounts import provision_if_available
     await provision_if_available(request.username)
     return {'access_token': await sessions.issue({'id': request.username, 'password_hash': password_hash},
                                                  bound_device(http_request)),
             'token_type': 'bearer'}
+
+
+@router.get('/registration')
+async def registration(http_request: Request):
+    """Whether this client may open an account now: the app shows or explains the form with it."""
+    if not getattr(http_request.app.state, 'mobile', False) and is_local(http_request.scope):
+        return {'allowed': True}
+    device_id = getattr(http_request.state, 'device_id', None)
+    if not device_id:
+        return {'allowed': False}
+    from orion.kernel.local_security import SecurityStore
+    return {'allowed': await asyncio.to_thread(SecurityStore().may_register, device_id)}
 
 
 @router.post("/login", response_model=Token)

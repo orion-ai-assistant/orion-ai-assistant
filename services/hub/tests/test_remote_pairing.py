@@ -22,7 +22,7 @@ class DesktopOnlyPairingTests(unittest.IsolatedAsyncioTestCase):
         self.auth = patch('orion.api.auth_routes.authenticate_token', AsyncMock(return_value='friend')); self.auth.start()
         self.key = patch('orion.api.security.valid_admin_key', return_value=True); self.mock_key = self.key.start()
         self.store = patch('orion.api.mobile_security.SecurityStore'); self.mock_store = self.store.start()
-        self.mock_store.return_value.create_pairing.return_value = ('single-use-code', 12345)
+        self.mock_store.return_value.create_pairing.return_value = ('ABCDEFGH', 12345)
         self.identity = patch('orion.api.mobile_security.tls_identity', return_value={'id': 'hub-id', 'fp': 'a' * 64, 'name': 'Hiro'}); self.identity.start()
         self.address = patch('orion.api.mobile_security.local_address', return_value='192.168.1.10'); self.address.start()
         self.lan = patch('orion.api.discovery.lan_addresses', return_value=['192.168.1.10']); self.lan.start()
@@ -40,14 +40,15 @@ class DesktopOnlyPairingTests(unittest.IsolatedAsyncioTestCase):
         async with httpx.AsyncClient(transport=transport, base_url=base_url) as http:
             return (await http.get('/api/v1/pair/capabilities', headers={'Authorization': 'Bearer account-token'})).json()
 
-    async def test_pc_window_creates_qr_and_invite_without_password(self):
+    async def test_pc_window_creates_one_qr_without_password(self):
         response = await self.create()
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
-        self.assertEqual(data['qr']['code'], 'single-use-code'); self.assertIn('invitation_token', data['qr'])
-        self.assertTrue(data['qr_png']); self.assertTrue(data['link'].startswith('https://192.168.1.10:8443/connect#data='))
+        self.assertEqual(data['qr']['code'], 'ABCDEFGH'); self.assertNotIn('invitation_token', data['qr'])
+        self.assertTrue(data['qr_png']); self.assertTrue(data['link'].startswith('https://orion-ai-assistant.github.io/p#'))
         self.assertEqual(response.headers['cache-control'], 'no-store'); self.assertNotIn('set-cookie', response.headers)
-        self.mock_key.assert_not_called(); self.mock_invites.assert_awaited_once()
+        # The device that scans it may open an account itself: no separate invitation.
+        self.mock_key.assert_not_called(); self.mock_invites.assert_not_awaited()
 
     async def test_pc_window_answers_a_new_device_request(self):
         response = await self.create(json={'request_id': 'phone-request'})

@@ -5,7 +5,6 @@ import os
 import time
 import base64
 import secrets
-from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from io import BytesIO
 from pathlib import Path
@@ -235,7 +234,9 @@ async def claim(payload: Claim, request: Request):
     if not getattr(request.app.state, 'mobile', False) or request.scope['scheme'] != 'https':
         raise HTTPException(403, 'Pairing requires the mobile HTTPS listener')
     try:
-        device_id, token = await asyncio.to_thread(SecurityStore().claim, payload.code, payload.device_name, payload.platform, request.client.host)
+        # A QR (only this PC shows one) also lets the device open one account, now or later.
+        device_id, token = await asyncio.to_thread(SecurityStore().claim, payload.code, payload.device_name,
+                                                   payload.platform, request.client.host, True)
     except PermissionError as error:
         raise HTTPException(429, str(error), headers={'Retry-After': '120'}) from error
     except ValueError as error:
@@ -303,33 +304,48 @@ async def create_desktop_pairing(request: Request, payload: CreatePairing | None
 async def build_pairing(request: Request, request_id: str | None = None):
     if request_id and not await request.app.state.redis.exists('orion:pairing:request:' + request_id):
         raise HTTPException(410, 'Eşleştirme isteğinin süresi doldu.')
+    from orion.kernel.local_security import PAIRING_SECONDS
     hub = tls_identity()
-    host = local_address()
-    host = '[' + host + ']' if ':' in host else host
-    from orion.api import invitations
-    invitation = secrets.token_urlsafe(32)
-    await invitations.create_invitation(str(uuid4()), invitation, 'Telefon bağlantısı · isteğe bağlı yeni hesap',
-                                        datetime.now(timezone.utc) + timedelta(minutes=15))
+    address = local_address()
+    port = int(os.getenv('ORION_MOBILE_PORT', '8443'))
     code, expires = SecurityStore().create_pairing()
     pairing_id = str(uuid4())
     from hashlib import sha256
-    await request.app.state.redis.set('orion:pairing:code:' + sha256(code.encode()).hexdigest(), json.dumps({'pairing_id': pairing_id, 'request_id': request_id}), ex=120)
-    payload = {'v': 1, 'id': hub['id'], 'url': f'https://{host}:{int(os.getenv("ORION_MOBILE_PORT", "8443"))}',
-               'fp': hub['fp'], 'code': code, 'name': hub['name']}
-    if invitation:
-        payload['invitation_token'] = invitation
-    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
-    app_link = 'orion://pair?data=' + encoded
-    # Messaging apps make only http(s) links tappable: the app listener's /connect page hands it to the app.
-    link = payload['url'] + '/connect#data=' + encoded
+    await request.app.state.redis.set('orion:pairing:code:' + sha256(code.encode()).hexdigest(),
+                                      json.dumps({'pairing_id': pairing_id, 'request_id': request_id}), ex=PAIRING_SECONDS)
+    host = '[' + address + ']' if ':' in address else address
+    # Manual entry and older apps: the same pairing in readable form.
+    payload = {'v': 1, 'id': hub['id'], 'url': f'https://{host}:{port}', 'fp': hub['fp'], 'code': code, 'name': hub['name']}
+    token = pairing_token(address, port, code, hub['fp'])
+    # Messaging apps make only links with a domain name tappable. The page reads the part after "#",
+    # which browsers never send to any server, and Android opens the Orion app for it directly.
+    link = os.getenv('ORION_PAIR_LINK_BASE', 'https://orion-ai-assistant.github.io/p').rstrip('#') + '#' + token
     import qrcode
     import qrcode.image.svg
     output = BytesIO()
-    qrcode.make(app_link, image_factory=qrcode.image.svg.SvgPathImage).save(output)
+    qrcode.make(link, image_factory=qrcode.image.svg.SvgPathImage).save(output)
     png = BytesIO()
-    qrcode.make(app_link).save(png, format='PNG')
-    return {'qr': payload, 'link': link, 'app_link': app_link, 'request_id': request_id, 'qr_svg': output.getvalue().decode(),
-            'qr_png': base64.b64encode(png.getvalue()).decode('ascii'), 'pairing_id': pairing_id, 'expires_at': expires, 'expires_in': 120}
+    qrcode.make(link).save(png, format='PNG')
+    return {'qr': payload, 'link': link, 'app_link': 'orion://pair?l=' + token, 'request_id': request_id,
+            'qr_svg': output.getvalue().decode(), 'qr_png': base64.b64encode(png.getvalue()).decode('ascii'),
+            'pairing_id': pairing_id, 'expires_at': expires, 'expires_in': PAIRING_SECONDS}
+
+
+CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+
+def pairing_token(address, port, code, fp):
+    """The shortest link that still pins the Hub: kind (2 = IPv4, 3 = IPv6), address, port, the 8-character
+    code in 5 bytes and the first 16 bytes of the SHA-256 SPKI fingerprint. The app checks the certificate
+    against that prefix and takes the Hub's id, name and full fingerprint from /api/v1/tls/identity."""
+    import ipaddress
+    ip = ipaddress.ip_address(address)
+    number = 0
+    for character in code:
+        number = number * 32 + CODE_ALPHABET.index(character)
+    raw = (bytes([2 if ip.version == 4 else 3]) + ip.packed + port.to_bytes(2, 'big')
+           + number.to_bytes(5, 'big') + bytes.fromhex(fp)[:16])
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
 
 
 @owner_router.get('/pairing/events')

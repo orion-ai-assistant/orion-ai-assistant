@@ -90,6 +90,25 @@ Hub, Hub'ın ağa açılan kapıları, yerel model servisleri (TTS, STT, LLM, em
   - Docker'daki veritabanı dışarı açık değildir ama varsayılan şifreyle kurulur.
   - Router geliştirme modu (`bin/dev.py`) değişmedi.
 
+## Telefon eşleştirme (düzeltildi)
+
+Yeni cihazı yalnızca Hub'ın kurulu olduğu PC ekler (Orion penceresi veya yönetim paneli). Telefonlar QR oluşturamaz.
+
+- **Tek izin, tek süre:**
+  - QR'da tek bir 8 karakterlik kod var. Kod 3 dakika ve tek kullanımlık (`PAIRING_SECONDS`).
+  - Ayrı 15 dakikalık hesap daveti kaldırıldı.
+  - Kodu okutan cihaz bağlanır ve **bir hesap açma hakkı** kazanır. Hakkın süresi yok; hesap açılınca biter, cihaz panelden kaldırılınca gider.
+  - İlgili kod: `devices.may_register`, `auth/register`, `GET /api/v1/auth/registration`.
+- **Kısa, tıklanabilir bağlantı:** `https://orion-ai-assistant.github.io/p#<38 karakter>`, toplam 77 karakter. WhatsApp IP adresli bağlantıları tıklanabilir yapmadığı için bir alan adı gerekiyordu.
+  - `#` sonrası tarayıcıdan hiçbir sunucuya gitmez. Biçimi: adres, port, kod ve SPKI parmak izinin ilk 16 baytı (`pairing_token`).
+  - Uygulama önce Hub'a bu öneke sabitlenmiş bir bağlantıyla kimliğini sorar (`/api/v1/tls/identity`), sonra tam parmak izini saklar.
+- **Uygulama doğrudan açılır (Android App Links):**
+  - Uygulama kimliği `com.lonelyfrog.orionai`.
+  - Sayfanın `.well-known/assetlinks.json` dosyası imza sertifikasının SHA-256'sını içerir. Şu an geliştirme PC'sinin debug anahtarı var; Google Play'e çıkınca Play'in imza sertifikası da eklenmeli.
+  - Uygulama yüklü değilse sayfa kurulum açıklaması gösterir.
+  - Sayfanın kaynağı: `orion-ai-assistant/orion-ai-assistant.github.io`.
+- **Yayın imzası:** `android/key.properties` varsa APK o anahtarla (lonelyfrog yükleme anahtarı) imzalanır; yoksa debug anahtarıyla.
+
 ## Doğrulama
 
 - Tüm değişiklikler için testler eklendi:

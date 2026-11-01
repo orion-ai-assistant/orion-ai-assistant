@@ -13,11 +13,18 @@ class RegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.limit.start()
         self.create = patch('orion.kernel.registry.create_local_user', AsyncMock(return_value=True))
         self.mock_create = self.create.start()
+        # The session store is the Hub's real database: never written from a test.
+        self.issue = patch('orion.api.sessions.issue', AsyncMock(return_value='session-token'))
+        self.issue.start()
+        self.provision = patch('orion.kernel.router_accounts.provision_if_available', AsyncMock())
+        self.provision.start()
         self.addAsyncCleanup(self.cleanup)
 
     async def cleanup(self):
         self.create.stop()
         self.limit.stop()
+        self.issue.stop()
+        self.provision.stop()
 
     async def test_local_account_can_register_without_invitation(self):
         response = await self.register()

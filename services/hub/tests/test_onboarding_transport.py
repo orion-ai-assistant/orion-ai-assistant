@@ -14,30 +14,44 @@ ID = '12345678-1234-4321-8123-123456789abc'
 
 
 class OnboardingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_one_link_includes_pairing_and_optional_account_invitation(self):
+    async def test_one_short_link_carries_only_the_pairing(self):
         app = FastAPI()
         app.include_router(owner_router)
         app.state.redis = AsyncMock()
         store = Mock()
         store.create_pairing.return_value = ('ABCDEFGH', 1234)
-        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':'a'*64,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
+        fp = '0123456789abcdef' * 4
+        with patch('orion.api.mobile_security.require_owner'), patch('orion.api.mobile_security.SecurityStore', return_value=store), patch('orion.api.mobile_security.tls_identity', return_value={'id':ID,'fp':fp,'name':'PC'}), patch('orion.api.mobile_security.local_address', return_value='192.168.1.20'), patch('orion.api.invitations.create_invitation', AsyncMock()) as invite:
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='https://localhost') as client:
                 response = await client.post('/api/v1/owner/secure/pairing', json={})
                 self.assertEqual(response.status_code, 200)
                 data = response.json()
-                # The tappable link opens the app listener's /connect page; both links carry the same QR payload.
-                self.assertTrue(data['link'].startswith('https://192.168.1.20:8443/connect#data='))
-                self.assertTrue(data['app_link'].startswith('orion://pair?data='))
-                for link in (data['link'], data['app_link']):
-                    raw = link.split('data=',1)[1]
-                    decoded = json.loads(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4)))
-                    self.assertEqual(decoded, data['qr'])
-                self.assertEqual(decoded['url'], 'https://192.168.1.20:8443')
-                self.assertEqual(decoded['code'], 'ABCDEFGH')
-                # Every link carries an invitation; creating an account with it stays optional.
-                self.assertIn('invitation_token', decoded)
-                invite.assert_awaited_once()
-                app.state.redis.set.assert_awaited_once()
+        # A domain name, so messaging apps make it tappable; the pairing stays after "#", on the phone.
+        base, token = data['link'].split('#', 1)
+        self.assertEqual(base, 'https://orion-ai-assistant.github.io/p')
+        self.assertLessEqual(len(data['link']), 80)
+        self.assertEqual(data['app_link'], 'orion://pair?l=' + token)
+        raw = base64.urlsafe_b64decode(token + '=' * (-len(token) % 4))
+        self.assertEqual(raw[0], 2)
+        self.assertEqual(raw[1:5], bytes([192, 168, 1, 20]))
+        self.assertEqual(int.from_bytes(raw[5:7], 'big'), 8443)
+        self.assertEqual(raw[12:28], bytes.fromhex(fp)[:16])
+        self.assertEqual(len(raw), 28)
+        # One credential, one lifetime: no separate account invitation any more.
+        invite.assert_not_awaited()
+        self.assertNotIn('invitation_token', data['qr'])
+        self.assertEqual(data['expires_in'], 180)
+        self.assertEqual(app.state.redis.set.await_args.kwargs['ex'], 180)
+
+    def test_code_packs_into_five_bytes(self):
+        from orion.api.mobile_security import CODE_ALPHABET, pairing_token
+        token = pairing_token('fe80::1', 8443, 'Z2Z2Z2Z2', 'ff' * 32)
+        raw = base64.urlsafe_b64decode(token + '=' * (-len(token) % 4))
+        self.assertEqual(raw[0], 3)
+        self.assertEqual(len(raw), 40)
+        number = int.from_bytes(raw[19:24], 'big')
+        code = ''.join(CODE_ALPHABET[(number >> shift) & 31] for shift in range(35, -1, -5))
+        self.assertEqual(code, 'Z2Z2Z2Z2')
 
     async def test_mobile_root_explains_usage_without_exposing_protected_api(self):
         app = MobileBoundary(FastAPI())
