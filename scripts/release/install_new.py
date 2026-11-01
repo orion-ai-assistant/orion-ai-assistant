@@ -152,6 +152,8 @@ def main(argv=None):
     parser.add_argument('--targets-url')
     parser.add_argument('--release-source', type=Path, help="The bundle's release-source.json (one or several feeds)")
     parser.add_argument('--components', nargs='+', choices=sorted(KIND_DIRS), help='With --release-source: kinds to install')
+    parser.add_argument('--mode', choices=('merkez', 'baglan'),
+                        help='Installation type (services/shared/install_plan.py): its components and settings')
     parser.add_argument('--add-missing', action='store_true',
                         help='Existing installation: add only the listed components that are not registered yet')
     parser.add_argument('--root', required=True, type=Path)
@@ -168,6 +170,15 @@ def main(argv=None):
     parser.add_argument('targets', nargs='*')
     args = parser.parse_args(argv)
     registry = Registry(args.registry)
+    mode_settings = {}
+    if args.mode:
+        from services.shared import install_plan
+        if args.components:
+            parser.error('--mode chooses the components itself')
+        args.components = sorted({row.kind for row in install_plan.components(args.mode)})
+        mode_settings = install_plan.settings(args.mode)
+        # A PC that only uses another Hub opens nothing on the network.
+        args.no_firewall = args.no_firewall or not install_plan.firewall(args.mode)
     source = None
     if args.release_source:
         from services.shared.automatic_updates import validate_source
@@ -183,6 +194,10 @@ def main(argv=None):
                                metadata_url=args.metadata_url, targets_url=args.targets_url)
         names = args.targets
     settings = json.loads(args.settings.read_text()) if args.settings else None
+    if mode_settings:
+        settings = settings or {}
+        for kind, values in mode_settings.items():
+            settings[kind] = {**settings.get(kind, {}), **values}
     try:
         if registry.path.exists() or registry.backup_path.exists():
             record = add_components(client, names, args.root, registry.path, settings=settings,

@@ -24,6 +24,18 @@ zekâ servisleri kurulmaz; yalnızca Orion penceresi ve hafif bir Hub ("aracı")
   (`http://127.0.0.1:8910/hub#pair=…`) ve "Bağlantıyı kopyala" düğmelerini gösterir; pencere eklemeden önce
   Hub adı ve adresiyle onay ister.
 
+## Kurulum akışı (2026-11-02 kararı)
+
+- Tek satırlık komut (`irm …/get-orion.ps1 | iex`, `get-orion.cmd`) artık kendisi kurmaz: installer'ı indirip
+  açar. Sessiz kurulum yalnızca parametreyle (`-Mode merkez|baglan -Yes`).
+- Installer: 1) kurulum yeri, 2) tür (merkez / bağlan), 3) seçilen yerde mevcut kurulumu algılayıp özet
+  ("Router zaten kurulu: kullanılacak", "+ Hub kurulacak", isteğe bağlı kutular, başlangıçta aç, kısayol),
+  4) Kur → tek ilerleme → Orion açılır.
+- Bakım: installer bakım modunda açılır (özellik ekle/kaldır, model indir, taşı, kaldır); Başlat menüsünde
+  "Orion Kurulumu" kısayolu. Penceredeki Ayarlar → "Sistem" kartı (yalnızca Hub'ın PC'si) servis durumunu
+  gösterir, aç/kapat/yeniden başlat ve "Kurulumu aç".
+- Hafif kurulum diğer bileşenler gibi otomatik güncellenir.
+
 ## Kurulum sihirbazı (installer yenilenecek)
 
 Mevcut kurulum (get-orion → Install-Orion → install_new.py, konum seçme) eski kaldı. Yeni akış:

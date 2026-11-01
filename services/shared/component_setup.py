@@ -147,6 +147,14 @@ def materialize(client, target, root, settings):
                             package=record_prepared_package(tree, state, target))
 
 
+def hub_mode_of(item):
+    """The new Hub's type from its own data folder (materialize wrote its settings there)."""
+    from dotenv import dotenv_values
+    settings = Path(item['data_path']) / 'services/.env.global.local'
+    value = dotenv_values(settings).get('ORION_HUB_MODE') if settings.is_file() else None
+    return 'relay' if (value or '').strip().lower() == 'relay' else 'full'
+
+
 def finish_setup(registry, items):
     """Steps that need the registry to exist first, so every executable resolves exactly the new data
     directory. Failures retain the installation for explicit repair (first install) or roll the add back."""
@@ -169,8 +177,10 @@ def finish_setup(registry, items):
                 return current
             registry.update(save_identity)
         if item['kind'] == 'hub':
-            subprocess.run([str(tree / 'runtime/python/python.exe'), str(tree / 'local_db_setup.py')],
-                           cwd=tree, env=env, check=True, timeout=180)
+            # A light Hub keeps no database: no PostgreSQL or Redis to download and prepare.
+            if hub_mode_of(item) != 'relay':
+                subprocess.run([str(tree / 'runtime/python/python.exe'), str(tree / 'local_db_setup.py')],
+                               cwd=tree, env=env, check=True, timeout=180)
             subprocess.run([str(tree / 'runtime/python/python.exe'), '-c',
                 'from services.shared.launcher import install_entry; '
                 'from services.shared.installation_registry import Registry; install_entry(Registry(),desktop=False)'],

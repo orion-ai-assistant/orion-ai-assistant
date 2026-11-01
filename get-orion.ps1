@@ -1,16 +1,21 @@
-# One-command Orion installer: downloads the signed installer bundle from this
-# project's GitHub Release feed, then installs Hub, the web client and (from the Router's own feed) the Router.
+# One-command Orion installer: downloads the signed installer bundle from this project's GitHub Release feed
+# and opens the setup window, where the user picks the folder and the type (Orion center, or only the window
+# for using another PC's Orion); it then installs and opens Orion.
 #   PowerShell: irm https://raw.githubusercontent.com/orion-ai-assistant/orion-ai-assistant/main/get-orion.ps1 | iex
 # The bundle carries the public trust root; every package is signature-verified
 # by the installer before anything is extracted or run.
 #
-# Already installed? The same command ADDS what is missing and leaves everything else untouched
-# (for example Hub + web client next to a Router-only installation; a Router with -WithRouter).
-#   -NoRouter    fresh install without the Router
-#   -WithRouter  existing installation: also add the Router (from the Router feed) when it is missing
+# Without the window (scripts, remote setups):
+#   -Mode merkez   install the Orion center (Hub, window, Router)
+#   -Mode baglan   install only the window and the light Hub that connects to another PC's Orion
+#   -NoRouter      (-Mode merkez, older form) fresh install without the Router
+#   -WithRouter    existing installation: also add the Router (from the Router feed) when it is missing
+# Already installed? The same command ADDS what is missing and leaves everything else untouched.
 param(
     [string]$Repo = 'orion-ai-assistant/orion-ai-assistant',
     [string]$Tag = 'feed',
+    [ValidateSet('', 'merkez', 'baglan')]
+    [string]$Mode = '',
     [switch]$NoRouter,
     [switch]$WithRouter,
     [switch]$NoStart,
@@ -47,7 +52,43 @@ try {
 } finally {
     Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
 }
+# No type given and no older switch: the setup window asks and installs.
+$silent = $Mode -or $NoRouter -or $WithRouter -or $NoStart
+if (-not $silent) {
+    try {
+        Write-Host 'Orion kurulum penceresi aciliyor...'
+        & (Join-Path $target 'runtime/python/python.exe') -B -m scripts.release.setup_window --bundle $target
+        $code = $LASTEXITCODE
+    } finally {
+        if ($existing) { Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    if ($code -eq 3) { Write-Host 'Kurulum yapilmadi.' }
+    elseif ($code -ne 0) { throw "Orion installation failed (exit $code). Your data is kept; see $orion." }
+    return
+}
 try {
+    if ($Mode) {
+        $python = Join-Path $target 'runtime/python/python.exe'
+        $install = @('-B', '-m', 'scripts.release.install_new', '--trusted-root', (Join-Path $target 'trusted-root.json'),
+            '--release-source', (Join-Path $target 'release-source.json'), '--root', $orion,
+            '--registry', (Join-Path $orion 'install.json'), '--mode', $Mode)
+        if ($existing) { $install += '--add-missing' }
+        if ($NoStartWithWindows) { $install += '--no-start-with-windows' }
+        if ($NoAutoUpdate) { $install += '--no-auto-update' }
+        if ($NoFirewall) { $install += '--no-firewall' }
+        $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $existing -and -not $elevated) { $install += '--launch' }
+        Push-Location $target
+        try { & $python @install } finally { Pop-Location }
+        if ($LASTEXITCODE -eq 3) { Write-Host 'Hicbir sey degistirilmedi.'; return }
+        if ($LASTEXITCODE -ne 0) { throw "Orion installation failed (exit $LASTEXITCODE). Your data is kept; see $orion." }
+        $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Orion.lnk'
+        # explorer.exe always runs with the user's normal token, so the shortcut starts Orion de-elevated.
+        if (-not $existing -and $elevated -and (Test-Path -LiteralPath $shortcut)) {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $shortcut + '"')
+        }
+        return
+    }
     $components = @('hub', 'client')
     if ($existing) { if ($WithRouter) { $components += 'router' } }
     elseif (-not $NoRouter) { $components += 'router' }

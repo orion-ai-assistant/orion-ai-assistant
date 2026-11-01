@@ -99,7 +99,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         # It must also be present when recovery runs without a working Hub.
         for script in ('launcher_entry.ps1', 'tray.ps1', 'updating.ps1', 'uninstall.ps1', 'orion_ui.ps1'):
             shutil.copyfile(ROOT / 'services/shared' / script, tree / 'services/shared' / script)
-        for name in ('install_new.py', 'update_local.py', 'update_automatic.py', 'manage_installation.py'):
+        for name in ('install_new.py', 'setup_window.py', 'update_local.py', 'update_automatic.py', 'manage_installation.py'):
             destination = tree / 'scripts/release' / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(__file__).with_name(name), destination)

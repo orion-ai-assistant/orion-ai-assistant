@@ -131,6 +131,24 @@ def component_status(root, component):
         return 'ownership-error'
 
 
+def hub_mode(root):
+    """'relay' for a PC that only uses another PC's Hub (light Hub, orion.api.relay_server), else 'full'.
+
+    The installation's own setting decides, not this process's environment: the updater checks other trees."""
+    value = None
+    try:
+        from dotenv import dotenv_values
+        from services.shared.runtime_layout import data_root
+        settings = data_root(Path(root)) / 'services/.env.global.local'
+        if settings.is_file():
+            value = dotenv_values(settings).get('ORION_HUB_MODE')
+    except (ImportError, OSError, RuntimeError):
+        pass
+    if value is None:
+        value = os.getenv('ORION_HUB_MODE')
+    return 'relay' if (value or '').strip().lower() == 'relay' else 'full'
+
+
 @packaged_hub_operation('start')
 def start_hub(root):
     if dispatch_if_needed('start-hub', root):
@@ -148,6 +166,8 @@ def stop_hub(root):
         return True
     from services.shared.process_lifecycle import stop_component
     stop_component(root, 'hub')
+    if hub_mode(root) == 'relay':
+        return True  # A light Hub has no database.
     from services.shared.environment import get_env
     hub_database(root, get_env).stop()
     return True

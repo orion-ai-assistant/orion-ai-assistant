@@ -25,7 +25,7 @@ def _read_env(path):
     try:
         for line in Path(path).read_text(encoding='utf-8').splitlines():
             key, separator, value = line.partition('=')
-            if separator and key.strip() in DEFAULT_PORTS:
+            if separator and (key.strip() in DEFAULT_PORTS or key.strip() == 'ORION_HUB_MODE'):
                 values[key.strip()] = value.strip()
     except OSError:
         pass
@@ -45,6 +45,9 @@ def tcp_ports(record):
         if key == 'ORION_ROUTER_TLS_PORT' and not any(c['kind'] == 'router' for c in record['components']):
             continue
         if key != 'ORION_ROUTER_TLS_PORT' and not any(c['kind'] == 'hub' for c in record['components']):
+            continue
+        # A light Hub (it only relays this PC's window to another Hub) listens on loopback alone.
+        if key != 'ORION_ROUTER_TLS_PORT' and values.get('ORION_HUB_MODE', '').strip().lower() == 'relay':
             continue
         try:
             port = int(values.get(key, default))

@@ -84,6 +84,9 @@ def runtime_probe():
     state = Runtime(root, 'hub').read()
     if component_status(root, 'hub') != 'ready':
         raise RuntimeError('Candidate supervisor is not ready')
+    from .native_services import hub_mode
+    if hub_mode(root) == 'relay':
+        return relay_probe(state, items)
     from orion.kernel.local_security import tls_identity
     identity = tls_identity()
     wait_health(Child(state['children']['api']), int(get_env('HUB_PORT')),
@@ -100,14 +103,7 @@ def runtime_probe():
     worker = Child(state['children']['worker'])
     if not child_running(worker.child) or not module.worker_ready(worker, get_env('REDIS_PORT')):
         raise RuntimeError('Worker ownership unavailable')
-    if 'client' in items:
-        client = state['children']['flutter']
-        wait_health(Child(client), flutter_port(), path='/__orion_flutter_health__',
-                    json_response=False, timeout=10)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open('http://127.0.0.1:' + str(flutter_port()) + '/__orion_flutter_health__', timeout=3) as response:
-            if response.read(128) != b'orion-flutter-web':
-                raise RuntimeError('Unexpected web client')
+    client_probe(state, items)
     if 'router' in items:
         router = items['router']
         from .router_installation import _inspect_registered_component
@@ -126,6 +122,36 @@ def runtime_probe():
         if live.get('id') != router['router_uuid'] or live.get('fp') != router['tls_spki_sha256']:
             raise RuntimeError('Router live identity mismatch')
     return dict(hub_api=True, worker=True, database=True, client_api=True, router_identity=True)
+
+
+def client_probe(state, items):
+    if 'client' not in items:
+        return
+    from .process_lifecycle import ManagedChild as Child, wait_health
+    client = state['children']['flutter']
+    wait_health(Child(client), flutter_port(), path='/__orion_flutter_health__',
+                json_response=False, timeout=10)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open('http://127.0.0.1:' + str(flutter_port()) + '/__orion_flutter_health__', timeout=3) as response:
+        if response.read(128) != b'orion-flutter-web':
+            raise RuntimeError('Unexpected web client')
+
+
+def relay_probe(state, items):
+    """A light Hub: its loopback relay app answers as one and the window is served. It has no database,
+    Redis, worker, owner API or phone listener, and never a Router (orion.api.relay_server)."""
+    from .environment import get_env
+    from .process_lifecycle import ManagedChild as Child, wait_health
+    port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
+    wait_health(Child(state['children']['local']), port, timeout=10)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open('http://127.0.0.1:' + str(port) + '/health', timeout=3) as response:
+        if json.loads(response.read(4096)).get('mode') != 'relay':
+            raise RuntimeError('Unexpected light Hub')
+    if 'router' in items:
+        raise RuntimeError('A light Hub installation has no Router')
+    client_probe(state, items)
+    return dict(relay_api=True, client_api=True)
 
 
 def verify_router(router):

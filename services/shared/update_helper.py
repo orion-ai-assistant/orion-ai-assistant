@@ -571,9 +571,7 @@ class UpdateHelper:
                 with self._timed(tx, 'health.probe'):
                     result = self.host.health(tx['proposed'])
                 self._progress(tx, 1, 3, force=True)
-                required = ({'hub_api', 'worker', 'database', 'client_api', 'router_identity'}
-                            if any(c['kind'] == 'hub' for c in tx['proposed']['components'])
-                            else {'database', 'router_identity'})
+                required = expected_health(tx['proposed'])
                 if set(result) != required or not all(v is True for v in result.values()):
                     raise UpdateError('Candidate health failed')
                 # A healthy candidate that opens admission in place keeps running: the launcher only attaches to
@@ -735,6 +733,9 @@ class NativeHost:
             return router_database_probe(record)
         hub = next(c for c in record['components'] if c['kind'] == 'hub')
         root = Path(hub['code_path'])
+        from .native_services import hub_mode
+        if hub_mode(root) == 'relay':
+            return True  # A light Hub keeps no database: nothing to check before it starts again.
         program = '''from services.shared.native_services import hub_database
 from services.shared.environment import get_env
 db=hub_database('.',get_env)
@@ -753,6 +754,17 @@ finally:
                                     cwd=root, capture_output=True, timeout=90,
                                     **({'creationflags': 0x08000000} if os.name == 'nt' else {}))
         return result.returncode == 0
+
+
+def expected_health(record):
+    """The evidence a healthy candidate must give (update_health.probe), by what this installation runs."""
+    hub = next((c for c in record['components'] if c['kind'] == 'hub'), None)
+    if hub is None:
+        return {'database', 'router_identity'}
+    from .native_services import hub_mode
+    if hub_mode(hub['code_path']) == 'relay':
+        return {'relay_api', 'client_api'}
+    return {'hub_api', 'worker', 'database', 'client_api', 'router_identity'}
 
 
 def stop_and_wait(state, stop):
