@@ -19,7 +19,8 @@ import tempfile
 import subprocess
 import sys
 import urllib.error
-import urllib.request
+
+import web
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -183,8 +184,7 @@ def build_source(feed, names, *, repo, tag, router_repo=None, router_tag='feed',
 
 def current_feed_version(base):
     try:
-        with urllib.request.urlopen(base + 'timestamp.json', timeout=30) as response:
-            return json.loads(response.read())['signed']['version']
+        return json.loads(web.read(base + 'timestamp.json'))['signed']['version']
     except urllib.error.HTTPError as error:
         if error.code == 404:
             return 0
@@ -266,8 +266,7 @@ def bootstrap_source_gate(bundle, names):
 def published_targets(base, version):
     if version < 1:
         return None
-    with urllib.request.urlopen(base + f'{version}.targets.json', timeout=30) as response:
-        return json.loads(response.read())
+    return json.loads(web.read(base + f'{version}.targets.json'))
 
 
 def online_assets(repo, tag):

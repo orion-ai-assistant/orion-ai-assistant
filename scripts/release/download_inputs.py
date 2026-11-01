@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -22,9 +21,8 @@ def download(destination):
             continue
         with tempfile.TemporaryDirectory(dir=destination) as temporary:
             target = Path(temporary) / value['filename']
-            with urllib.request.urlopen(value['url'], timeout=60) as response, target.open('xb') as output:
-                import shutil
-                shutil.copyfileobj(response, output)
+            import web
+            web.download(value['url'], target)
             if sha256(target) != value['sha256']:
                 raise ValueError('Downloaded build input hash mismatch')
             target.rename(path)

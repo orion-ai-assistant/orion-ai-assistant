@@ -21,7 +21,8 @@ import json
 import re
 import subprocess
 import sys
-import urllib.request
+
+import web
 
 KEEP = 1
 GRACE_DAYS = 0
@@ -90,8 +91,7 @@ def main():
     base = feed_url(repo, tag)
 
     def fetch(name):
-        with urllib.request.urlopen(base + name, timeout=60) as response:
-            return json.loads(response.read())
+        return json.loads(web.read(base + name, timeout=60))
     assets = online(repo, tag)
     delete, kept = plan(assets, fetch, now=datetime.now(timezone.utc), keep=args.keep,
                         grace=timedelta(days=args.grace_days))
