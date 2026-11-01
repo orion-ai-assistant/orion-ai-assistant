@@ -364,6 +364,10 @@ def uninstall_orion(registry, scope, *, keep_data=True, keep_models=True, firewa
         outcome = maintenance.uninstall(registry, removed, expected_revision=revision(registry.read()),
                                         helper=helper, links=links)
     except ValueError as error:
+        if 'pending update' in str(error):
+            # The launch repairs a half-applied update itself (automatic_updates._repair_at_launch).
+            raise UninstallError('Yarım kalmış bir güncelleme var; hiçbir şey kaldırılmadı. Orion’u bir kez açıp '
+                                 'kapat (kendini onarır), sonra kaldırmayı yeniden dene.') from error
         raise UninstallError('Kaldırma yapılamadı (' + type(error).__name__ + '): ' + str(error)) from error
     result['operation_id'] = outcome['operation_id']
     # Old releases of what was removed (bounded: only these components' immutable releases). A release inside a

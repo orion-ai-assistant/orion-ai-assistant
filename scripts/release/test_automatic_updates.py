@@ -146,6 +146,44 @@ def test_rollback_keeps_preference_changes_made_after_staging(automatic):
     assert (data / 'identity.manual').exists()
 
 
+def test_another_program_on_orions_ports_defers_the_switch(automatic):
+    service, now, data, host = automatic
+    service.check()
+    before = service.registry.read()
+    host.ports_in_use = lambda record: [5445]  # e.g. Orion run from source holds the database port
+    tx = service.startup()
+    assert tx['phase'] == 'waiting_for_idle' and '5445' in tx['reason']
+    assert service.registry.read() == before  # Nothing switched.
+    del host.ports_in_use
+    assert service.startup()['phase'] == 'completed'
+
+
+def test_a_rollback_that_failed_is_retried_at_launch_a_few_times(automatic):
+    service, now, data, host = automatic
+    service.check()
+    host.healthy = False
+    host.recovery_health = lambda record: False  # The old version could not start either (port held).
+    assert service.startup()['phase'] == 'repair_required'
+    before = service.registry.read()
+    tx = service.startup()  # Still held: counted, still stuck.
+    assert tx['phase'] == 'repair_required' and tx['repair_attempts'] == 1
+    host.recovery_health = lambda record: True  # The other program is gone.
+    assert service.startup()['phase'] == 'rolled_back'
+    assert service.registry.read()['components'] == before['components']
+    assert (data / 'identity.manual').exists()
+
+
+def test_launch_repair_gives_up_after_its_attempts(automatic):
+    service, now, data, host = automatic
+    service.check()
+    host.healthy = False
+    host.recovery_health = lambda record: False
+    service.startup()
+    for _ in range(AutomaticUpdates.REPAIR_ATTEMPTS + 2):
+        tx = service.startup()
+    assert tx['phase'] == 'repair_required' and tx['repair_attempts'] == AutomaticUpdates.REPAIR_ATTEMPTS
+
+
 def test_preference_or_unconfigured_feed_never_starts_a_check(installed):
     helper, client, name, old, data, host = installed
     service = AutomaticUpdates(helper.registry, helper=helper, client_factory=Mock())

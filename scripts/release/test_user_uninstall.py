@@ -197,7 +197,7 @@ def test_an_update_that_already_switched_still_blocks_the_uninstall(world):
     full(world)
     journal = pending_update(world, 'health_check')
     snapshot = world.registry.path.read_bytes()
-    with pytest.raises(U.UninstallError, match='pending update'):
+    with pytest.raises(U.UninstallError, match='Yarım kalmış bir güncelleme'):
         world.run('router')
     assert world.registry.path.read_bytes() == snapshot
     assert json.loads(journal.read_text(encoding='utf-8'))['phase'] == 'health_check'

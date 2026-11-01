@@ -542,6 +542,9 @@ class UpdateHelper:
                     try:
                         if not idle:
                             return self._phase(tx, 'waiting_for_idle')
+                        busy = getattr(self.host, 'ports_in_use', lambda record: [])(tx['proposed'])
+                        if busy:  # Another program on Orion's ports: switching now could only fail.
+                            return self._phase(tx, 'waiting_for_idle', reason='Ports in use: ' + ','.join(map(str, busy)))
                         self._settle(tx, tx['previous'])
                         self._guard_entry()
                         self._phase(tx, 'draining', progress=self._shape('draining', 0, 1))
@@ -641,15 +644,16 @@ class UpdateHelper:
                 raise UpdateError('The waiting update changed; not replacing it')
             return self._phase(tx, 'failed', reason='Superseded')
 
-    def rollback(self):
-        """Explicit repair after resolving the recorded local access/lock fault."""
+    def rollback(self, *, counted=False):
+        """Explicit repair after resolving the recorded local access/lock fault (`counted`: an automatic
+        retry at launch, which gives up after a few)."""
         with operation_lock(self.registry.path, timeout=0):
             tx = self.status()
             if tx is None or tx['phase'] in TERMINAL:
                 raise UpdateError('No pending operation to roll back')
             if tx['proposed'] is None or tx['phase'] in {'staged', 'waiting_for_idle', 'draining', 'backing_up'}:
                 return self._phase(tx, 'failed', reason='Preparation cancelled; active version unchanged')
-            self._phase(tx, 'rollback_pending')
+            self._phase(tx, 'rollback_pending', **({'repair_attempts': tx.get('repair_attempts', 0) + 1} if counted else {}))
             return self._rollback(tx)
 
 
@@ -683,10 +687,23 @@ class NativeHost:
             return True  # Legacy installations are gated by their own, unchanged check.
         gate = StoppedPackages(record, wait=0)
         try:
-            return bool(gate.__enter__())
+            quiet = bool(gate.__enter__())
         finally:
             gate.__exit__(None, None, None)
             self.refused = gate.refused
+        if quiet:
+            # Orion itself is stopped, so whatever holds its ports is another program: the new version could
+            # not start, so not now (a second Orion run from source once left an update half-applied).
+            from .install_ports import in_use
+            busy = in_use(record)
+            if busy:
+                self.refused = 'port:' + ','.join(map(str, busy))
+                return False
+        return quiet
+
+    def ports_in_use(self, record):
+        from .install_ports import in_use
+        return in_use(record)
 
     def stop(self, record):
         from .launcher import launch_environment

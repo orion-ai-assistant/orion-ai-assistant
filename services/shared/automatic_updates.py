@@ -731,8 +731,34 @@ class AutomaticUpdates:
             return self._apply_at_launch(tx)
         if tx and tx['phase'] in APPLYING:
             return self._recover_at_launch(tx)
+        if tx and tx['phase'] == 'repair_required':
+            return self._repair_at_launch(tx)
         # Critical recovery remains explicitly accessible even when preference is off.
         return tx
+
+    REPAIR_ATTEMPTS = 3
+
+    def _repair_at_launch(self, tx):
+        """A switch whose rollback failed at the time (another program held Orion's ports, say): try the same
+        rollback again at a quiet launch, a few times, instead of leaving Orion stuck on "onarma gerekli"."""
+        if tx.get('proposed') is None or tx.get('repair_attempts', 0) >= self.REPAIR_ATTEMPTS:
+            return tx
+        if not self.helper.idle_now(tx):
+            update_log.log(self.base, 'startup.repair-skipped', operation=tx['operation_id'],
+                           busy=getattr(self.helper.host, 'refused', None) or 'running')
+            return tx
+        from . import update_ui
+        with update_ui.updating_window(self.registry):
+            update_log.log(self.base, 'startup.repair', operation=tx['operation_id'],
+                           attempt=tx.get('repair_attempts', 0) + 1)
+            try:
+                result = self.helper.rollback(counted=True)
+            except (LifecycleError, UpdateError):
+                return tx
+        phase = result['phase']
+        update_ui.write_result(self.registry, result, phase, result.get('reason') or phase)
+        update_log.log(self.base, 'startup.repaired', outcome=phase, reason=result.get('reason'))
+        return result
 
     def _recover_at_launch(self, tx):
         """An apply that was cut off (power loss, Task Manager, a closed window) and that no process is
