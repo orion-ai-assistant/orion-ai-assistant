@@ -64,6 +64,7 @@ class Setup:
         self.log_path = None
         self.finished = threading.Event()
         self.seen = time.monotonic()
+        self.opened = False
 
     def state(self):
         record = existing()
@@ -247,6 +248,7 @@ def handler(setup, port):
             if self.path != prefix and not self.path.startswith(prefix + '/'):
                 return None
             setup.seen = time.monotonic()
+            setup.opened = True
             return self.path[len(prefix):] or '/'
 
         def do_GET(self):
@@ -309,10 +311,10 @@ def serve(bundle, *, show=True):
     print('Orion kurulum penceresi acildi. Kurulumu o pencereden bitir.', flush=True)
     try:
         while not setup.finished.wait(5):
-            # The page pings every 20 s while it is open. Closed after the install ended: done. Never opened
-            # or left alone for an hour before installing: give up.
+            # The page pings every 20 s while it is open. Its window closed (a minute without a ping) or never
+            # opened (five minutes): this process ends too; an install already running finishes first, below.
             idle = time.monotonic() - setup.seen
-            if (setup.result is not None and idle > 60) or (setup.process is None and idle > 3600):
+            if (setup.process is None or setup.result is not None) and idle > (60 if setup.opened else 300):
                 break
         if setup.process is not None and setup.result is None:
             setup.process.wait()

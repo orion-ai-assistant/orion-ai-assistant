@@ -51,6 +51,10 @@ function Get-OrionFile([string]$Uri, [string]$OutFile) {
         $total = $response.ContentLength
         $in = $response.GetResponseStream()
         $out = [IO.File]::Create($OutFile)
+        function Show([long]$done) {
+            if ($total -gt 0) { Write-Host -NoNewline ("`r  {0:N1} / {1:N1} MB  ({2}%)   " -f ($done / 1MB), ($total / 1MB), [math]::Floor(100 * $done / $total)) }
+            else { Write-Host -NoNewline ("`r  {0:N1} MB   " -f ($done / 1MB)) }
+        }
         try {
             $buffer = New-Object byte[] 262144
             $done = 0
@@ -58,13 +62,10 @@ function Get-OrionFile([string]$Uri, [string]$OutFile) {
             while (($read = $in.Read($buffer, 0, $buffer.Length)) -gt 0) {
                 $out.Write($buffer, 0, $read)
                 $done += $read
-                $mb = [math]::Floor($done / 1MB)
-                if ($mb -ne $shown) {
-                    $shown = $mb
-                    if ($total -gt 0) { Write-Host -NoNewline ("`r  {0} / {1} MB  ({2}%)   " -f $mb, [math]::Ceiling($total / 1MB), [math]::Floor(100 * $done / $total)) }
-                    else { Write-Host -NoNewline ("`r  {0} MB   " -f $mb) }
-                }
+                $step = [math]::Floor($done / 512KB)
+                if ($step -ne $shown) { $shown = $step; Show $done }
             }
+            Show $done  # The last piece: always ends on 100%.
         } finally { $out.Dispose(); $in.Dispose() }
     } finally { $response.Dispose() }
     Write-Host ''
