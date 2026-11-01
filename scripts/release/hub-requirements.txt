@@ -1907,6 +1907,10 @@ tqdm==4.70.1 \
     --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73 \
     --hash=sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4
     # via ai-edge-litert
+truststore==0.10.4 \
+    --hash=sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301 \
+    --hash=sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981
+    # via -r scripts/release/requirements.in
 tuf==6.0.0 \
     --hash=sha256:458f663a233d95cc76dde0e1a3d01796516a05ce2781fefafebe037f7729601a \
     --hash=sha256:9eed0f7888c5fff45dc62164ff243a05d47fb8a3208035eb268974287e0aee8d

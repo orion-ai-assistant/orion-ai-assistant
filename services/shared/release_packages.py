@@ -264,6 +264,9 @@ class ReleaseClient:
         self.cache = Path(cache)
         self.cache.mkdir(parents=True, exist_ok=True)
         self.bootstrap_root = Path(trusted_root).read_bytes()
+        if fetcher is None:
+            from .windows_trust import tuf_fetcher
+            fetcher = tuf_fetcher()  # GitHub verified by Windows itself, as the browser does.
         self.updater = Updater(str(self.cache / 'metadata'), metadata_url,
             target_dir=str(self.cache / 'targets'), target_base_url=targets_url,
             bootstrap=self.bootstrap_root, fetcher=fetcher)
