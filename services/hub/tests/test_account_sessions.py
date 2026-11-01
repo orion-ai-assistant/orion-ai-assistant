@@ -189,7 +189,9 @@ class AccountSessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_pre_update_tokens_end_at_their_own_expiry(self):
         expired = security.create_access_token({'sub': 'alice'}, timedelta(seconds=-1))
         never_expiring = jwt.encode({'sub': 'alice'}, security.JWT_SECRET_KEY, algorithm=security.ALGORITHM)
-        for token in (expired, never_expiring):
+        # Pre-session tokens lived 24 h: a later expiry was never issued by the Hub.
+        far_future = security.create_access_token({'sub': 'alice'}, timedelta(days=3650))
+        for token in (expired, never_expiring, far_future):
             self.assertEqual((await self.me(token)).headers.get('www-authenticate'), ENDED)
             response = await self.client.post('/api/v1/auth/session', headers={'Authorization': 'Bearer ' + token})
             self.assertEqual(response.status_code, 401)

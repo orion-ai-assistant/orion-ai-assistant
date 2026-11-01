@@ -11,10 +11,13 @@ services:
 
     container_name: ${TTS_HOST}
     ports:
-      - "${TTS_PORT}:${TTS_CONTAINER_PORT}"
+      - "${ORION_SERVICES_BIND_HOST:-127.0.0.1}:${TTS_PORT}:${TTS_CONTAINER_PORT}"
     env_file:
       - ../.env.global
       - .env
+    environment:
+      # Inside the container it listens everywhere; the host port above decides who reaches it.
+      - ORION_SERVICES_BIND_HOST=0.0.0.0
     volumes:
       - ./models:/app/models
       - ./voices:/app/voices

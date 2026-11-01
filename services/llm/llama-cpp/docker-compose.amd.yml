@@ -4,7 +4,7 @@ services:
     container_name: ${LLM_HOST}
     restart: unless-stopped
     ports:
-      - "${LLM_PORT}:${LLM_CONTAINER_PORT}"
+      - "${ORION_SERVICES_BIND_HOST:-127.0.0.1}:${LLM_PORT}:${LLM_CONTAINER_PORT}"
     env_file:
       - ../../.env.global
       - .env

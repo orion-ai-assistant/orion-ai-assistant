@@ -14,6 +14,7 @@ except ImportError:
     pass
 
 from services.shared.environment import get_env
+from services.shared.service_access import BrowserGuard, bind_host
 import time
 import uuid
 import logging
@@ -42,7 +43,7 @@ from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from engines import get_engine, VoiceRegistry
+from engines import get_engine, VoiceRegistry, valid_voice_name
 from schemas import SpeechRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -122,6 +123,7 @@ async def lifespan(app: FastAPI):
     if engine: engine.cleanup()
 
 app = FastAPI(title="Orion TTS API", version="1.0.4", lifespan=lifespan)
+app.add_middleware(BrowserGuard)
 
 # ——————————————————————————————————————————
 # UI & Static
@@ -266,6 +268,8 @@ async def reload_engine(reload_req: ReloadRequest):
 
 @app.post("/v1/voices/clone")
 async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text: str = Form("")):
+    if not valid_voice_name(name):
+        raise HTTPException(status_code=400, detail="Voice names use letters, digits, space, '.', '_' or '-' (max 64)")
     if registry.voice_exists(name, engine_name_env):
         raise HTTPException(status_code=400, detail="Voice already exists")
     tts = engine
@@ -394,4 +398,4 @@ async def get_model_info():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=TTS_PORT)
+    uvicorn.run(app, host=bind_host(), port=TTS_PORT)

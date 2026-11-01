@@ -409,3 +409,24 @@ class BrowserToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['status'], 'verification_required')
             self.assertIn('robot doğrulaması', result['message'])
             page.activate.assert_awaited_once()
+
+
+class BrowserAddressTests(unittest.IsolatedAsyncioTestCase):
+    def test_model_cannot_open_this_pc_or_the_home_network(self):
+        for url in ('http://127.0.0.1:8910/panel/', 'http://localhost:20128/dashboard', 'http://[::1]:8443/',
+                    'http://192.168.1.1/', 'http://10.0.0.5/', 'http://169.254.169.254/latest/',
+                    'http://orion-pc.local/', 'http://manage.localhost/', 'http://router/', 'http://0.0.0.0:8810/'):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                browser.BrowserInput(action='navigate', url=url)
+        self.assertEqual(browser.BrowserInput(action='navigate', url='https://example.com/a').url,
+                         'https://example.com/a')
+
+    async def test_name_resolving_to_a_local_address_is_blocked_before_the_browser(self):
+        args = browser.BrowserInput(action='navigate', url='https://rebind.example/')
+        answers = [(2, 1, 6, '', ('127.0.0.1', 0))]
+        manager = MagicMock()
+        with patch.object(asyncio.get_running_loop(), 'getaddrinfo', AsyncMock(return_value=answers)), \
+                patch.object(browser, 'BrowserManager', manager):
+            result = await browser.browser_control(args, SimpleNamespace(user_id='alice', chat_id='chat-1'))
+        self.assertEqual(result['status'], 'blocked')
+        manager.assert_not_called()

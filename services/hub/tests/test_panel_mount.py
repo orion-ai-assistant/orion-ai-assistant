@@ -84,6 +84,8 @@ class PanelMountTests(unittest.IsolatedAsyncioTestCase):
         for path in ['/panel/manage/', '/panel/admin/', '/panel/router/', '/panel/manage/security']:
             response = await self.client.get(path)
             self.assertIn('/panel/owner-assets/base.js', response.text)
+            self.assertEqual(response.headers['x-frame-options'], 'DENY', path)
+            self.assertEqual(response.headers['content-security-policy'], "frame-ancestors 'none'", path)
             self.assertIn('href="/panel/"', response.text)
         for path in ['/panel', '/panel/manage/']:
             response = await self.client.get(path)

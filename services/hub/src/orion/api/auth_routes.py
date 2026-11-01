@@ -3,6 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
 
 from orion.api.security import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
     hash_password,
     verify_password,
     valid_admin_key,
@@ -13,6 +14,7 @@ from orion.api.login_limits import limit_login, limit_attempts
 from orion.api import invitations, sessions
 from orion.api.access_boundary import is_local
 import asyncio
+import time
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
@@ -77,7 +79,9 @@ async def authenticate_token(token_str: str, connection=None) -> str:
     if claims.get('sid') is None:
         # A pre-session token from before this Hub version: valid until its own 24 h expiry.
         # The client exchanges it for a session at startup (POST /auth/session).
-        if 'exp' not in claims:
+        # Such tokens lived 24 h; a later expiry was not issued here (a forged token).
+        latest = time.time() + ACCESS_TOKEN_EXPIRE_MINUTES * 60 + 300
+        if not isinstance(claims.get('exp'), (int, float)) or claims['exp'] > latest:
             raise sessions.ended()
         await require_active_user(username)
     else:

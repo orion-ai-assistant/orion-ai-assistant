@@ -21,6 +21,10 @@ from services.shared.environment import get_redis_url, get_env
 from services.shared.update_gate import admitted, UpdateAdmission, wait_for_admission
 from orion.kernel.config import get_runtime_settings, seed_database_settings
 
+# Management pages are never shown inside another page's frame (clickjacking).
+OWNER_PAGE_HEADERS = {'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY',
+                      'Content-Security-Policy': "frame-ancestors 'none'"}
+
 
 @asynccontextmanager
 async def service_lifespan(app: FastAPI):
@@ -193,7 +197,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
                 html = html.replace('href="/dashboard/"', 'href="' + target + '"')
                 if root:
                     html = re.sub(r'(href|src)="(/(?!/)[^"]*)"', lambda match: f'{match[1]}="{match[2] if match[2] == target else root + match[2]}"', html)
-                return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
+                return HTMLResponse(html, headers=OWNER_PAGE_HEADERS)
             target = '/hub' if root else f'http://127.0.0.1:{get_env("ORION_LOCAL_PORT", default="8910", required=False)}/hub'
             html = html.replace('href="/dashboard/"', 'href="' + target + '"')
             if root:
@@ -204,7 +208,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
                 panel = f'http://127.0.0.1:{get_env("ORION_LOCAL_PORT", default="8910", required=False)}/panel'
                 for path in ('/', '/manage/', '/manage/security', '/admin/', '/router/'):
                     html = html.replace(f'href="{path}"', f'href="{panel}{path}"')
-            return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
+            return HTMLResponse(html, headers=OWNER_PAGE_HEADERS)
 
         @application.get('/manage', include_in_schema=False)
         @application.get('/manage/', include_in_schema=False)

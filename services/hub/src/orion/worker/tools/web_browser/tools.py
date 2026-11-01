@@ -1,5 +1,7 @@
 import asyncio
+import socket
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -8,7 +10,36 @@ from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailabl
 from contextlib import suppress
 from orion.browser.cdp import CDPConnectionLost, CDPTimeout, CDPError
 from orion.browser.page import web_url
+from ..web_search.page import UnsafeURL, _check_address
 from .._base import Tool, ToolInput
+
+LOCAL_SUFFIXES = ('.localhost', '.local', '.lan', '.home', '.internal', '.home.arpa')
+
+
+def public_url(url):
+    """The model browses the public web only: never this PC, the home network
+    or Orion's own pages, which the user's logged-in browser could open."""
+    web_url(url)
+    host = urlsplit(url).hostname.rstrip('.').lower()
+    if host == 'localhost' or host.endswith(LOCAL_SUFFIXES) or '.' not in host and ':' not in host:
+        raise UnsafeURL('Only public internet addresses are allowed')
+    try:
+        _check_address(host)
+    except UnsafeURL:
+        raise
+    except ValueError:
+        pass  # A name; its DNS answers are checked before navigating.
+    return url
+
+
+async def check_resolved(url):
+    host = urlsplit(url).hostname
+    try:
+        answers = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return  # The browser cannot open it either.
+    for answer in answers:
+        _check_address(answer[4][0])
 
 
 class BrowserInput(ToolInput):
@@ -45,7 +76,7 @@ class BrowserInput(ToolInput):
     @model_validator(mode='after')
     def required_fields(self):
         if self.action == 'navigate':
-            web_url(self.url or '')
+            public_url(self.url or '')
         if self.action in ('click', 'type') and not (self.selector or '').strip():
             raise ValueError('A selector is required')
         if self.action == 'type' and self.text is None:
@@ -54,6 +85,11 @@ class BrowserInput(ToolInput):
 
 
 async def browser_control(args, context):
+    if args.action == 'navigate':
+        try:
+            await check_resolved(args.url)
+        except UnsafeURL as exc:
+            return {'status': 'blocked', 'message': str(exc)}
     try:
         tab_options = {'target_id': args.tab_id} if args.tab_id else {}
         if not getattr(args, 'visible', False):

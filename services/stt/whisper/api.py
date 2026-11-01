@@ -11,7 +11,6 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from model_loading import load_whisper_robust
 from prompts import select_transcription_prompt, WHISPER_LANGUAGES, LANGUAGE_CATALOG
 import re
@@ -23,6 +22,10 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =========================================================
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from services.shared.service_access import BrowserGuard, bind_host
 
 try:
     from dotenv import load_dotenv
@@ -88,13 +91,7 @@ MIN_TRANSCRIBE_INTERVAL = 0.2
 
 app = FastAPI(title="Orion STT Whisper API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(BrowserGuard)
 
 # Global Model Instance
 model = None
@@ -530,4 +527,4 @@ if __name__ == "__main__":
     # Default port 9009
     port = int(os.getenv("STT_PORT", 9009))
     logger.info(f"Starting Orion STT on port {port}")
-    uvicorn.run("api:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("api:app", host=bind_host(), port=port, reload=False)

@@ -3,6 +3,9 @@ import sys
 import subprocess
 import signal
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
+from services.shared.service_access import bind_host, own_origins
+
 def get_env_dict():
     env_vars = {}
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -86,7 +89,11 @@ def main():
         exe_path,
         "-m", model_path,
         "--port", port,
-        "--host", "0.0.0.0",
+        "--host", bind_host(),
+        # llama-server takes no browser guard: pages may read only from its own
+        # origin, and the slots endpoint (which shows prompts) stays off.
+        "--cors-origins", own_origins(port),
+        "--no-slots",
         "-c", str(ctx_size),
         "-b", str(batch_size),
         "-np", str(n_parallel)

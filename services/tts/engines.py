@@ -615,6 +615,14 @@ def get_engine():
     engine.cleanup()
     return engine
 
+def valid_voice_name(name) -> bool:
+    """A voice name becomes a file name: no folders, "..", or glob characters,
+    or a request could read, write or delete .pt files elsewhere on the disk."""
+    import re
+    name = str(name).strip()
+    return bool(re.fullmatch(r"\w[\w .-]{0,63}", name)) and ".." not in name
+
+
 class VoiceRegistry:
     def __init__(self, storage_path="voices"):
         self.storage_path = Path(storage_path)
@@ -632,7 +640,7 @@ class VoiceRegistry:
 
     def _find_voice_file(self, name: str, engine_name: str) -> Path | None:
         name_clean = str(name).strip().lower()
-        if not name_clean:
+        if not valid_voice_name(name_clean):
             return None
         
         target_engine = engine_name.lower().strip()
@@ -650,7 +658,7 @@ class VoiceRegistry:
     def find_voice_in_any_engine(self, name: str) -> list[str]:
         """Returns list of other engine names where this voice exists."""
         name_clean = str(name).strip().lower()
-        if not name_clean:
+        if not valid_voice_name(name_clean):
             return []
         found_in = set()
         prefix = f"{name_clean}_"
@@ -689,6 +697,8 @@ class VoiceRegistry:
         return False
 
     def save_voice_cache(self, name: str, cache_obj: Any, engine_name: str):
+        if not valid_voice_name(name):
+            raise ValueError("Invalid voice name")
         target_dir = self.service_voices_path if self.service_voices_path.exists() else self.storage_path
         path = target_dir / f"{name}_{engine_name}.pt"
         if TORCH_AVAILABLE:

@@ -45,11 +45,13 @@ class RemotePairingTests(unittest.IsolatedAsyncioTestCase):
         for url,headers in [('http://hub.example/api/v1/pair/create',{}),('/api/v1/pair/create',{'X-Forwarded-For':'127.0.0.1'})]:
             response=await self.create(url=url,headers=headers);self.assertEqual(response.status_code,403)
         self.mock_store.assert_not_called()
-    async def test_default_owner_password_can_create_remote_qr(self):
+    async def test_default_owner_password_cannot_create_remote_qr(self):
+        # Anyone who already has an account would know it and could invite more people.
         self.key.stop()
         with patch('orion.api.security.valid_admin_key',side_effect=lambda value:value=='orion'):
             response=await self.create(password='orion')
-        self.assertEqual(response.status_code,200,response.text);self.assertIn('qr_png',response.json())
+        self.assertEqual(response.status_code,403);self.assertIn('Varsayılan',response.json()['detail'])
+        self.mock_store.assert_not_called();self.mock_invites.assert_not_awaited()
     async def test_rate_limit_blocks_creation(self):
         self.app.state.redis.eval.return_value=[6,25]
         response=await self.create();self.assertEqual(response.status_code,429);self.assertEqual(response.headers['retry-after'],'25');self.mock_store.assert_not_called()

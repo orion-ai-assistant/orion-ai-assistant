@@ -165,7 +165,7 @@ async def password_info(request: Request):
 
 class ChangeOwnerPassword(BaseModel):
     current_password: str = Field(min_length=1, max_length=512)
-    new_password: str = Field(min_length=4, max_length=72)
+    new_password: str = Field(min_length=8, max_length=72)
 
 
 @owner_router.post('/password')
@@ -303,6 +303,10 @@ async def create_remote_pairing(payload: RemotePairing, request: Request, curren
     await limit_attempts(request, 'owner-pair-global', 'all', 20)
     if not await asyncio.to_thread(valid_admin_key, payload.password):
         raise HTTPException(403, 'Yönetici şifresi yanlış.')
+    if secrets.compare_digest(payload.password.encode(), b'orion'):
+        # Everyone knows the shipped password; from a phone it could invite anyone.
+        raise HTTPException(403, 'Varsayılan yönetici şifresi telefondan kullanılamaz. '
+                                 'Önce bu bilgisayardaki yönetim panelinden şifreyi değiştir.')
     return JSONResponse(await build_pairing(request), headers={'Cache-Control': 'no-store'})
 
 

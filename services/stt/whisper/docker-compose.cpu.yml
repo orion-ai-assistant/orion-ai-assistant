@@ -4,11 +4,13 @@ services:
     container_name: ${STT_HOST}
     restart: unless-stopped
     ports:
-      - "${STT_PORT}:${STT_CONTAINER_PORT}"
+      - "${ORION_SERVICES_BIND_HOST:-127.0.0.1}:${STT_PORT}:${STT_CONTAINER_PORT}"
     env_file:
       - ../../.env.global
       - .env
     environment:
+      # Inside the container it listens everywhere; the host port above decides who reaches it.
+      - ORION_SERVICES_BIND_HOST=0.0.0.0
       - WHISPER_MODEL=${WHISPER_MODEL}
       - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
       - WHISPER_DEVICE=cpu
@@ -16,6 +18,7 @@ services:
       - UVICORN_PORT=${STT_CONTAINER_PORT}
     volumes:
       - .:/app
+      - ../../shared:/app/services/shared:ro
       - ./models:/models
     working_dir: /app
     command: python api.py
