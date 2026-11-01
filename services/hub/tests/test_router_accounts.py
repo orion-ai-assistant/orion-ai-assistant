@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 import unittest
@@ -90,19 +91,38 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
             settings = await accounts.account_settings(RuntimeSettings(router_api_key='admin-secret'), 'user')
         self.assertEqual(settings.router_api_key, 'sk-orion-personal')
 
-    async def test_default_password_connection_is_automatic(self):
+    async def test_same_pc_connection_is_automatic(self):
         with patch.object(accounts, '_state', return_value=None), patch.object(accounts, 'connect_router', AsyncMock()) as connect:
             await accounts.ensure_connection(RECORD)
         connect.assert_awaited_once_with(RECORD)
 
-    async def test_admin_password_is_only_used_for_enrollment(self):
-        with patch.object(accounts, 'tls_identity', return_value={'id': HUB, 'name': 'PC'}), patch.object(
-            accounts, '_credential', return_value='hub-orion-fixture'), patch.object(
-            accounts, 'request_router', AsyncMock(return_value={'connected': True})) as request, patch.object(
-            accounts, 'atomic_write') as write:
-            await accounts.connect_router(RECORD, 'private-password')
-        self.assertEqual(request.await_args.kwargs['admin_password'], 'private-password')
-        self.assertNotIn('private-password', str(write.call_args))
+    def enroll(self, *, local_token=None):
+        return (patch.object(accounts, 'tls_identity', return_value={'id': HUB, 'name': 'PC'}),
+                patch.object(accounts, '_credential', return_value='hub-orion-fixture'),
+                patch.object(accounts, 'local_enrollment_token', return_value=local_token),
+                patch.object(accounts, 'request_router', AsyncMock(return_value={'connected': True})),
+                patch.object(accounts, 'atomic_write'))
+
+    async def test_connection_code_is_only_used_for_enrollment(self):
+        identity, credential, local, request, write = self.enroll()
+        with identity, credential, local, request as request, write as write:
+            await accounts.connect_router(RECORD, 'ABCD-EFGH-JKMN')
+        self.assertEqual(request.await_args.kwargs['enrollment'], {'x-orion-enrollment-code': 'ABCD-EFGH-JKMN'})
+        self.assertNotIn('ABCD', str(write.call_args))
+
+    async def test_same_pc_token_admits_without_a_code(self):
+        identity, credential, local, request, write = self.enroll(local_token='t' * 64)
+        with identity, credential, local, request as request, write:
+            await accounts.connect_router(RECORD)
+        self.assertEqual(request.await_args.kwargs['enrollment'], {'x-orion-local-enrollment': 't' * 64})
+
+    async def test_router_password_is_never_sent(self):
+        identity, credential, local, request, write = self.enroll()
+        with identity, credential, local, request as request, write as write:
+            with self.assertRaises(accounts.EnrollmentRequired):
+                await accounts.connect_router(RECORD)
+        request.assert_not_awaited()
+        write.assert_not_called()
 
 
 class ProviderRoutesTests(unittest.IsolatedAsyncioTestCase):
@@ -183,11 +203,11 @@ class ProviderRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.json()['connected'])
         self.assertTrue(result.json()['managed'])
 
-    async def test_password_setup_is_directed_to_panel_not_the_account_form(self):
-        with patch.object(router_providers, 'account', AsyncMock(side_effect=accounts.RouterAccountError('Orion Router şifresini girin.'))):
+    async def test_unfinished_connection_is_directed_to_the_hub_owner(self):
+        with patch.object(router_providers, 'account', AsyncMock(side_effect=accounts.EnrollmentRequired())):
             result = await self.client.get('/api/v1/router/providers')
-        self.assertIn('Orion Panel', result.json()['message'])
-        self.assertNotIn('şifresini girin', result.json()['message'])
+        self.assertIn('Hub sahibi', result.json()['message'])
+        self.assertNotIn('şifre', result.json()['message'])
 
     def test_provider_routes_are_available_to_mobile_but_connection_management_is_private(self):
         from orion.api.access_boundary import public_path
@@ -200,14 +220,29 @@ class ProviderRoutesTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.get('/api/v1/router/providers')
         self.assertEqual(result.status_code, 401)
 
-    async def test_panel_password_is_not_sent_when_selected_router_has_changed(self):
+    async def test_code_for_another_router_is_never_used_to_enroll(self):
         from fastapi import HTTPException
-        from orion.api.router_connection import authorize, RouterPassword
+        from orion.api import router_connection
+        manager = SimpleNamespace(lock=asyncio.Lock())
         request = SimpleNamespace(client=SimpleNamespace(host='127.0.0.1'))
-        with patch('orion.api.router_connection.association'), patch('orion.api.login_limits.limit_attempts', AsyncMock()), patch.object(
-            accounts, 'selected_router', AsyncMock(return_value={**RECORD, 'id': OTHER})), patch.object(
+        with patch.object(router_connection, 'association', return_value=manager), patch(
+            'orion.api.login_limits.limit_attempts', AsyncMock()), patch.object(
+            router_connection, '_listed_router', AsyncMock(return_value={**RECORD, 'url': 'https://router.test'})), patch(
+            'orion.kernel.pinned_router.prove_router', AsyncMock(return_value={'id': OTHER, 'fp': 'a' * 64})), patch.object(
             accounts, 'connect_router', AsyncMock()) as connect:
             with self.assertRaises(HTTPException) as failure:
-                await authorize(RouterPassword(password='private', router_id=ROUTER), request)
+                await router_connection.select(router_connection.Selection(id=ROUTER, code='ABCD-EFGH-JKMN'), request)
         self.assertEqual(failure.exception.status_code, 409)
         connect.assert_not_awaited()
+
+    async def test_a_removed_hub_forgets_its_admission(self):
+        response = AsyncMock(status=401)
+        response.__aenter__.return_value = response
+        session = AsyncMock()
+        session.request = lambda *args, **kwargs: response
+        session.__aenter__.return_value = session
+        with patch.object(accounts, '_credential', return_value='hub-orion-fixture'), patch.object(
+            accounts, 'router_session', return_value=session), patch.object(accounts, '_state_path') as path:
+            with self.assertRaises(accounts.EnrollmentRequired):
+                await accounts.request_router(RECORD, 'GET', '/api/v1/hubs/status')
+        path.return_value.unlink.assert_called_once_with(missing_ok=True)

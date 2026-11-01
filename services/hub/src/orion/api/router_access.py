@@ -31,10 +31,13 @@ async def status(user: str = Depends(get_current_user)):
         record, subject = await identity(user)
         await accounts.provision_if_available(user, record)
         state = await asyncio.to_thread(manual_state, record['id'], subject)
-        return {'router_id': record['id'], 'router_name': record['name'],
-                'managed_registered': bool(await asyncio.to_thread(accounts._state, record['id'], subject)),
-                'manual_saved': bool(state), 'manual_enabled': bool(state and state.get('enabled')),
-                'manual_hint': mask_api_key(state.get('key')) if state else ''}
+        registered = bool(await asyncio.to_thread(accounts._state, record['id'], subject))
+        result = {'router_id': record['id'], 'router_name': record['name'], 'managed_registered': registered,
+                  'manual_saved': bool(state), 'manual_enabled': bool(state and state.get('enabled')),
+                  'manual_hint': mask_api_key(state.get('key')) if state else ''}
+        if not registered and not await asyncio.to_thread(accounts._state, record['id']):
+            result['message'] = str(accounts.EnrollmentRequired())  # Say why, not only that it waits.
+        return result
     except accounts.RouterAccountError as error:
         if record and subject:
             return {'router_id': record['id'], 'router_name': record['name'], 'message': str(error),

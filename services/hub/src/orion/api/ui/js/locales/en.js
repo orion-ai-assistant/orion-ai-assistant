@@ -40,6 +40,7 @@ window.orionUiLocales.en = {
     setting_stt_enabled: 'Live speech transcription', setting_stt_model: 'Transcription model',
     setting_stt_language: 'Transcription language', sttAutomaticLanguage: 'Detect automatically',
     setting_tts_model: 'Speech model', setting_tts_voice: 'Voice',
+    setting_tts_language: 'Speech language',
     setting_max_tool_rounds: 'Tool rounds limit', setting_max_tool_calls: 'Maximum tool calls',
     hint_temperature: 'Value from 0 to 2 (default when empty).',
     hint_thinking_level: 'Model thinking level (default when empty).',

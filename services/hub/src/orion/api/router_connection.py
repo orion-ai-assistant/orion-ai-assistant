@@ -56,6 +56,13 @@ class RouterAssociation:
                 return trusted[0]
             return None
 
+    async def current(self):
+        """The saved selection as trusted now, without discovery or bootstrap; for frequent checks."""
+        previous = await asyncio.to_thread(read_connection)
+        if not previous:
+            return None
+        return next((entry for entry in SecurityStore().routers() if entry['id'] == previous.get('id')), None)
+
     async def run(self):
         while True:
             try:
@@ -71,48 +78,29 @@ def association(request):
 
 
 @router.get('')
-async def status(request: Request):
+async def status(request: Request, light: bool = False):
     manager = association(request)
     try:
-        selected = await manager.refresh()
+        selected = await (manager.current() if light else manager.refresh())
     except RuntimeError as error:
         raise HTTPException(503, 'Router bağlantı kaydı geçersiz; panelden kontrol edin.') from error
-    from orion.kernel.router_accounts import ensure_connection, request_router, RouterAccountError
-    access = False
-    message = 'Bu Hub’ın model bağlantısı henüz kurulmamış.'
-    if selected:
-        try:
-            await ensure_connection(selected)
-            await request_router(selected, 'GET', '/api/v1/hubs/status')
-            access = True
-            message = 'Router bağlı. Kullanıcı erişimleri otomatik oluşturulur.'
-        except RouterAccountError as error:
-            message = str(error)
-    return {'selected': selected, 'identity_verified': bool(selected),
-            'access_ready': access, 'message': message}
+    return {'selected': selected, 'identity_verified': bool(selected), **await access_state(selected)}
 
 
-class RouterPassword(BaseModel):
-    password: str = Field(min_length=1, max_length=1024)
-    router_id: UUID
-
-
-@router.post('/access')
-async def authorize(payload: RouterPassword, request: Request):
-    association(request)
-    from orion.api.login_limits import limit_attempts
-    await limit_attempts(request, 'router-password', request.client.host, 10)
-    from orion.kernel.router_accounts import selected_router, connect_router, RouterAccountError
+async def access_state(selected):
+    """Whether the Router admits this Hub; a same-PC Router admits it without asking anything."""
+    from orion.kernel.router_accounts import ensure_connection, request_router, RouterAccountError, EnrollmentRequired
+    if not selected:
+        return {'access_ready': False, 'needs_code': False, 'message': 'Bu Hub’ın model bağlantısı henüz kurulmamış.'}
     try:
-        record = await selected_router()
-        if record['id'] != str(payload.router_id):
-            raise HTTPException(409, 'Seçilen Router değişti. Bağlantı ekranını yenileyin.')
-        await connect_router(record, payload.password)
+        await ensure_connection(selected)
+        await request_router(selected, 'GET', '/api/v1/hubs/status')
+    except EnrollmentRequired:
+        return {'access_ready': False, 'needs_code': True,
+                'message': 'Router bu Hub’ı henüz tanımıyor. Router panelinden bir bağlantı kodu oluşturup girin.'}
     except RouterAccountError as error:
-        raise HTTPException(400, str(error)) from error
-    from orion.kernel import router_models
-    router_models.clear_catalog_cache()
-    return {'access_ready': True}
+        return {'access_ready': False, 'needs_code': False, 'message': str(error)}
+    return {'access_ready': True, 'needs_code': False, 'message': 'Router bağlı. Kullanıcı erişimleri otomatik oluşturulur.'}
 
 
 @router.get('/discover')
@@ -142,6 +130,8 @@ class Selection(BaseModel):
     manual_url: str | None = None
     manual_id: UUID | None = None
     fp: str | None = Field(default=None, pattern=r'^[0-9a-f]{64}$')
+    # A dashboard connection code proves the Router's identity and admits this Hub in one step.
+    code: str | None = Field(default=None, pattern=r'^[A-Za-z0-9 -]{12,24}$')
 
     @model_validator(mode='after')
     def one_source(self):
@@ -149,44 +139,72 @@ class Selection(BaseModel):
             raise ValueError('Bir Router seç veya HTTPS adresi yaz.')
         if self.manual_url:
             self.manual_url = validate_url(self.manual_url)
-            if not self.manual_id:
-                raise ValueError('Router ekranındaki UUID gerekli.')
         return self
+
+
+async def _listed_router(manager, router_id):
+    from orion.kernel.router_bootstrap import local_router_identity
+    try:
+        local = await local_router_identity()
+    except Exception:
+        local = None
+    records = await manager.directory.list()
+    if local and router_id == local['id']:
+        records = [local]
+    known = [entry for entry in SecurityStore().routers() if entry['id'] == router_id]
+    matches = [entry for entry in records if entry['id'] == router_id] or known
+    if len(matches) != 1 or matches[0].get('conflict'):
+        raise HTTPException(409, 'Seçilen Router bulunamadı veya kimliği çakışıyor.')
+    return matches[0]
+
+
+NEEDS_CODE = 'Bu Router’ı ilk kez bağlıyorsun. Router panelinden bir bağlantı kodu oluşturup gir.'
 
 
 @router.post('')
 async def select(payload: Selection, request: Request):
     manager = association(request)
+    if payload.code:
+        from orion.api.login_limits import limit_attempts
+        await limit_attempts(request, 'router-code', request.client.host, 10)
     async with manager.lock:
         if payload.id:
-            from orion.kernel.router_bootstrap import local_router_identity
-            try:
-                local = await local_router_identity()
-            except Exception:
-                local = None
-            records = await manager.directory.list()
-            if local and str(payload.id) == local['id']:
-                records = [local]
-            matches = [entry for entry in records if entry['id'] == str(payload.id)]
-            if len(matches) != 1 or matches[0].get('conflict'):
-                raise HTTPException(409, 'Seçilen Router bulunamadı veya kimliği çakışıyor.')
-            record = matches[0]
+            record = await _listed_router(manager, str(payload.id))
         else:
-            record = {'id': str(payload.manual_id), 'name': 'Orion Router', 'url': payload.manual_url}
+            record = {'id': str(payload.manual_id) if payload.manual_id else None, 'name': 'Orion Router', 'url': payload.manual_url}
         base = validate_url(record['url'])
-        known = next((entry for entry in SecurityStore().routers() if entry['id'] == record['id']), None)
-        fingerprint = payload.fp or record.get('fp') or (known['fp'] if known else None)
-        if fingerprint is None:
-            raise HTTPException(400, 'Yeni Router için kendi ekranındaki SPKI parmak izini girin.')
-        try:
-            identity = await verify_router(base, record['id'], fingerprint)
-        except Exception as error:
-            raise HTTPException(409, 'Router UUID veya parmak izi doğrulanamadı.') from error
-        selected = {'mode': 'discovery' if payload.id else 'manual', 'id': record['id'],
+        if payload.code:
+            from orion.kernel.pinned_router import prove_router
+            try:
+                identity = await prove_router(base, payload.code)
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
+            except Exception as error:
+                raise HTTPException(409, 'Router’a ulaşılamadı. Adresi ve Router’ın açık olduğunu kontrol edin.') from error
+            if record['id'] and identity['id'] != record['id']:
+                raise HTTPException(409, 'Bağlantı kodu seçilen Router’a ait değil.')
+            fingerprint = identity['fp']
+        else:
+            known = next((entry for entry in SecurityStore().routers() if entry['id'] == record['id']), None)
+            fingerprint = payload.fp or record.get('fp') or (known['fp'] if known else None)
+            if fingerprint is None or not record['id']:
+                raise HTTPException(400, NEEDS_CODE)
+            try:
+                identity = await verify_router(base, record['id'], fingerprint)
+            except Exception as error:
+                raise HTTPException(409, 'Router kimliği doğrulanamadı.') from error
+        selected = {'mode': 'discovery' if payload.id else 'manual', 'id': identity['id'],
                     'name': identity.get('name') or record['name'], 'url': base, 'fp': fingerprint,
                     'last_seen': time.time()}
         await asyncio.to_thread(SecurityStore().trust_router, identity, base)
         await asyncio.to_thread(write_connection, selected)
         from orion.kernel.router_models import clear_catalog_cache
         clear_catalog_cache()
-    return {'selected': selected, 'identity_verified': True}
+    if payload.code:
+        from orion.kernel.router_accounts import selected_router, connect_router, RouterAccountError
+        try:
+            await connect_router(await selected_router(), payload.code)
+        except RouterAccountError as error:
+            raise HTTPException(400, str(error)) from error
+    # A same-PC Router admits the Hub without a code; otherwise the owner is asked for one next.
+    return {'selected': selected, 'identity_verified': True, **await access_state(selected)}

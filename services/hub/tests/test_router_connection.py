@@ -175,8 +175,10 @@ class RouterConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.path.read_bytes(), before)
 
     async def test_manual_selection_requires_uuid_and_verified_pin(self):
-        with self.assertRaises(ValueError):
-            api.Selection(manual_url='https://localhost:9443', fp=FP)
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as unknown:
+            await self.choose(api.Selection(manual_url='https://localhost:9443', fp=FP))
+        self.assertEqual(unknown.exception.status_code, 400)
         result = await self.choose(api.Selection(manual_url='https://localhost:9443/v1/', manual_id=ID, fp=FP))
         self.verifier.assert_awaited_once_with('https://127.0.0.1:9443', ID, FP)
         self.assertTrue(result['identity_verified'])
@@ -270,6 +272,61 @@ class RouterConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result['identity_verified'])
         self.assertFalse(result['access_ready'])
         call.assert_not_awaited()
+
+    async def pairing_router(self, code, *, prove_fp=None, status=200):
+        """A real TLS Router answering pairing proofs; prove_fp simulates a relay that proves another certificate."""
+        import hashlib, hmac
+        tls = tls_identity(self.root / 'tls')
+        identity = {key: tls[key] for key in ('v', 'id', 'name', 'fp')}
+        received = []
+        async def proof(request):
+            body = await request.json()
+            received.append(body)
+            if status != 200:
+                return web.json_response({'detail': 'no_active_code'}, status=status)
+            key = hashlib.sha256(code.replace('-', '').upper().encode()).digest()
+            message = '|'.join(('orion-hub-pairing-v1', tls['id'], prove_fp or tls['fp'], body['nonce'])).encode()
+            return web.json_response({'id': tls['id'], 'proofs': [hmac.new(key, message, hashlib.sha256).hexdigest()]})
+        app = web.Application()
+        app.router.add_post('/api/v1/hubs/pairing-proof', proof)
+        app.router.add_get('/api/v1/tls/identity', lambda request: web.json_response(identity))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        self.addAsyncCleanup(runner.cleanup)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(tls['cert'], tls['key'])
+        site = web.TCPSite(runner, '127.0.0.1', 0, ssl_context=context)
+        await site.start()
+        return 'https://127.0.0.1:' + str(site._server.sockets[0].getsockname()[1]), identity, received
+
+    async def test_frequent_status_checks_never_scan_the_network(self):
+        manager = SimpleNamespace(refresh=AsyncMock(), current=AsyncMock(return_value=None))
+        with patch.object(api, 'association', return_value=manager):
+            result = await api.status(SimpleNamespace(), light=True)
+        manager.refresh.assert_not_awaited()
+        manager.current.assert_awaited_once()
+        self.assertFalse(result['access_ready'])
+
+    async def test_one_connection_code_proves_the_router_without_being_sent(self):
+        from orion.kernel.pinned_router import prove_router
+        base, identity, received = await self.pairing_router('K7MP-Q2XA-9WRT')
+        self.assertEqual(await prove_router(base, 'k7mp q2xa 9wrt'), identity)
+        self.assertNotIn('K7MP', str(received))
+        with self.assertRaises(ValueError):
+            await prove_router(base, 'AAAA-BBBB-CCCC')
+
+    async def test_a_relay_with_another_certificate_cannot_pass_the_proof(self):
+        from orion.kernel.pinned_router import prove_router
+        base, _, _ = await self.pairing_router('K7MP-Q2XA-9WRT', prove_fp='c' * 64)
+        with self.assertRaises(ValueError):
+            await prove_router(base, 'K7MP-Q2XA-9WRT')
+
+    async def test_router_without_an_active_code_says_so(self):
+        from orion.kernel.pinned_router import prove_router
+        base, _, _ = await self.pairing_router('K7MP-Q2XA-9WRT', status=404)
+        with self.assertRaises(ValueError) as failure:
+            await prove_router(base, 'K7MP-Q2XA-9WRT')
+        self.assertIn('bağlantı kodu yok', str(failure.exception))
 
     async def test_real_tls_pin_and_uuid_are_checked_before_account_auth(self):
         tls = tls_identity(self.root / 'tls')

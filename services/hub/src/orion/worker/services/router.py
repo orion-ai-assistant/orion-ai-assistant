@@ -29,13 +29,14 @@ from orion.kernel.router_models import get_model_provider
 
 
 def _get_router_api_key(settings: RuntimeSettings) -> str:
-    """Orion Router ile iletişim için API anahtarını döner.
-    Kullanıcı özel bir anahtar tanımlamadıysa varsayılan 'orion' admin secret kullanılır.
-    """
+    """The requesting account's Router key. The Router administrator password is never a fallback."""
     key = (getattr(settings, "router_api_key", "") or "").strip()
     if key and key != "sk-60f3eaf169d7c485-0icocf-0a3db541":
         return key
-    return os.getenv("ROUTER_API_KEY", "").strip() or "orion"
+    key = os.getenv("ROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Router erişimi için kullanıcı hesabıyla giriş yapın.")
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +461,8 @@ async def _tts_request(
             elif lowered_model in ("voxcpm", "voxcpm2", "local", "local-model", "local-tts"):
                 provider = "local"
             else:
-                raise
+                # As for chat: the Router can still resolve the model while the shared catalog is unavailable.
+                provider = None
 
     raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
     if not raw_voice and hasattr(settings, "tts_model_voices"):
@@ -495,6 +497,8 @@ async def _tts_request(
     }
     if voice_name:
         payload["voice"] = voice_name
+    if getattr(settings, "tts_language", ""):
+        payload["language"] = settings.tts_language
 
     timeout_sec = getattr(settings, "tts_timeout_seconds", 15)
     timeout = _request_timeout(timeout_sec)

@@ -138,6 +138,18 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
             _, headers, _, _, _, _ = await router._tts_request('hello', settings, None, 'pcm')
         self.assertEqual(headers['Connection'], 'keep-alive')
 
+    async def test_request_carries_the_chosen_speech_language_only_when_one_is_set(self):
+        from orion.contracts.settings import RuntimeSettings
+        from orion.worker.services import router
+        with patch.object(router, 'get_session', AsyncMock()),                 patch.object(router, 'get_model_provider', AsyncMock(return_value='local')),                 patch.object(router, 'get_router_base_urls', lambda: ['https://router']),                 patch.object(router, '_get_router_api_key', lambda settings: 'key'):
+            for chosen, sent in ((' Turkish ', 'Turkish'), ('Auto', 'Auto')):
+                settings = RuntimeSettings(tts_model='local-tts', tts_language=chosen)
+                _, _, payload, _, _, _ = await router._tts_request('merhaba', settings, None, 'pcm')
+                self.assertEqual(payload['language'], sent)
+            unset = RuntimeSettings(tts_model='local-tts', tts_language='')
+            _, _, payload, _, _, _ = await router._tts_request('merhaba', unset, None, 'pcm')
+            self.assertNotIn('language', payload)
+
     async def test_quota_error_preserves_http_status(self):
         request = await self.request(status=429)
         with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=request)):

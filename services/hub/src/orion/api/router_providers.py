@@ -8,8 +8,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from orion.api.auth_routes import get_current_user
-from orion.kernel.router_accounts import (RouterAccountError, selected_router, ensure_account,
-                                          request_router)
+from orion.kernel.router_accounts import (RouterAccountError, EnrollmentRequired, selected_router,
+                                          ensure_account, request_router)
 from orion.kernel.local_security import SecurityStore
 from orion.kernel.router_accounts import _state
 from orion.kernel.router_panel import navigation
@@ -53,9 +53,7 @@ async def status(request: Request, user_id: str = Depends(get_current_user)):
         result = {k: v for k, v in result.items() if k != 'local_dashboard_url'}
         current = {**result, **links, 'connected': True, 'router_name': record['name'], 'router_id': record['id']}
     except RouterAccountError as error:
-        message = str(error)
-        if 'şifre' in message or 'Orion Panel' in message:
-            message = 'Bu Hub’ın Router erişimi henüz kurulmamış. Hub yöneticisinin Orion Panel’den bağlantıyı tamamlaması gerekiyor.'
+        message = str(error) if isinstance(error, EnrollmentRequired) or 'Orion Panel' not in str(error)             else str(EnrollmentRequired())
         current = {'connected': False, 'message': message, 'providers': [], 'configured': []}
         if record:
             current.update(router_id=record['id'], router_name=record['name'])

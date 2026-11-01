@@ -40,6 +40,7 @@ window.orionUiLocales.tr = {
     setting_stt_enabled: 'Canlı sesli yazma', setting_stt_model: 'Sesli yazma modeli',
     setting_stt_language: 'Sesli yazma dili', sttAutomaticLanguage: 'Otomatik algıla',
     setting_tts_model: 'Seslendirme modeli', setting_tts_voice: 'Ses',
+    setting_tts_language: 'Seslendirme dili',
     setting_max_tool_rounds: 'Araç çalıştırma tur limiti', setting_max_tool_calls: 'Maksimum araç çağrı sayısı',
     hint_temperature: '0–2 arasında değer (boşsa varsayılan).',
     hint_thinking_level: 'Model düşünme seviyesi (boşsa varsayılan).',

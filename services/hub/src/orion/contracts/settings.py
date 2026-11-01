@@ -69,7 +69,15 @@ class AISettings(BaseModel):
     tts_voice: str = ""
     tts_model: str = "local-tts"
     tts_model_voices: dict[str, str] = Field(default_factory=dict)
+    # A name from the provider's own language catalog ("Auto" included), sent as chosen.
+    # Empty: none is sent and the Router uses its own default. Providers that take no language ignore it.
+    tts_language: str = Field(default="", max_length=100)
     tts_timeout_seconds: int = Field(default=15, ge=1, le=300)
+
+    @field_validator("tts_language", mode="before")
+    @classmethod
+    def parse_tts_language(cls, value):
+        return str(value or "").strip()
 
     @field_validator("tts_model_voices", mode="before")
     @classmethod

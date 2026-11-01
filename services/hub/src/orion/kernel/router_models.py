@@ -1,5 +1,4 @@
 import asyncio
-import os
 import time
 
 import aiohttp
@@ -32,9 +31,8 @@ def clear_catalog_cache():
     _catalog_sections.clear()
 
 
-async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict | None:
-    from orion.kernel.router_accounts import catalog_credentials
-    prefix, headers = await catalog_credentials(key)
+async def _fetch_section(session, bases: list[str], name: str, credentials) -> dict | None:
+    prefix, headers = credentials
     async def fetch():
         for base in bases:
             url = base.rstrip('/').removesuffix('/v1') + prefix + name
@@ -62,14 +60,22 @@ async def _fetch_section(session, bases: list[str], name: str, key: str) -> dict
         return None
 
 
+async def _catalog_credentials():
+    from orion.kernel.router_accounts import catalog_credentials, RouterAccountError
+    try:
+        return await catalog_credentials()
+    except RouterAccountError as error:
+        raise RuntimeError(str(error)) from error
+
+
 async def _refresh_models() -> dict:
     global _model_catalog_cache, _model_cached_at
     generation = _catalog_generation
-    key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
+    credentials = await _catalog_credentials()
     names = ['models', 'model-groups']
     async with router_session() as session:
         results = await asyncio.gather(*(
-            _fetch_section(session, get_router_base_urls(), name, key) for name in names
+            _fetch_section(session, get_router_base_urls(), name, credentials) for name in names
         ))
     if generation != _catalog_generation:
         raise RuntimeError('Router bağlantısı değişti. Model listesini yenileyin.')
@@ -107,12 +113,12 @@ async def get_router_catalog(force_refresh: bool = False, include_voices: bool =
     if not force_refresh and _catalog_cache is not None:
         if time.monotonic() - _catalog_cached_at < _CATALOG_TTL_SECONDS:
             return _catalog_cache
-    key = os.getenv("ROUTER_ADMIN_KEY") or os.getenv("ROUTER_API_KEY") or "orion"
+    credentials = await _catalog_credentials()
     names = ['voices', 'local-tts-info']
     async with router_session() as session:
         model_catalog, *results = await asyncio.gather(
             get_router_catalog(force_refresh=force_refresh, include_voices=False),
-            *(_fetch_section(session, get_router_base_urls(), name, key) for name in names),
+            *(_fetch_section(session, get_router_base_urls(), name, credentials) for name in names),
         )
     if generation != _catalog_generation:
         raise RuntimeError('Router bağlantısı değişti. Model listesini yenileyin.')
@@ -123,16 +129,19 @@ async def get_router_catalog(force_refresh: bool = False, include_voices: bool =
         else:
             _catalog_sections[name] = result
     voices = dict(_catalog_sections.get('voices', {}).get('voices', {}))
-    local_voices = _catalog_sections.get('local-tts-info', {}).get('voices', [])
-    if local_voices:
-        voices['local'] = local_voices
-    _catalog_cache = {'models': model_catalog['models'], 'voices': voices, 'model_voice_groups': _catalog_sections.get('voices', {}).get('model_voice_groups', {}), 'unavailable': unavailable}
+    languages = dict(_catalog_sections.get('voices', {}).get('languages', {}))
+    local_info = _catalog_sections.get('local-tts-info', {})
+    if local_info.get('voices'):
+        voices['local'] = local_info['voices']
+    if local_info.get('languages'):
+        languages['local'] = local_info['languages']
+    _catalog_cache = {'models': model_catalog['models'], 'voices': voices, 'model_voice_groups': _catalog_sections.get('voices', {}).get('model_voice_groups', {}), 'languages': languages, 'unavailable': unavailable}
     _catalog_cached_at = time.monotonic()
     return _catalog_cache
 
 
-async def get_model_provider(name: str, capability: str) -> str | None:
-    catalog = await get_router_catalog(include_voices=False)
+async def get_model_provider(name: str, capability: str, catalog: dict | None = None) -> str | None:
+    catalog = catalog or await get_router_catalog(include_voices=False)
     for model in catalog["models"]:
         if model["name"] == name and model["capability"] == capability:
             return model.get("provider")
@@ -153,25 +162,39 @@ async def get_account_catalog(user_id, include_voices=True):
               for m in model_data['models']]
     models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat')}
                   for g in groups['groups'])
-    voices, groups_by_provider, unavailable = {}, {}, []
+    voices, groups_by_provider, languages, unavailable = {}, {}, {}, []
     if include_voices:
         try:
             voice_catalog = await fetch('voices')
             voices = voice_catalog['voices']
             groups_by_provider = voice_catalog.get('model_voice_groups', {})
+            languages = voice_catalog.get('languages', {})
         except RuntimeError:
             unavailable.append('voices')
-    return {'models': models, 'voices': voices, 'model_voice_groups': groups_by_provider, 'unavailable': unavailable}
-async def validate_model_updates(updates: dict[str, str]) -> None:
-    """Validate model settings when they change, outside the message hot path."""
+    return {'models': models, 'voices': voices, 'model_voice_groups': groups_by_provider, 'languages': languages, 'unavailable': unavailable}
+
+
+async def validate_model_updates(updates: dict[str, str], user_id: str = 'global') -> None:
+    """Validate model settings when they change, outside the message hot path.
+
+    A user's choice is checked against the models that user's own Router account may use;
+    only the Hub-wide defaults use the Hub's shared catalog.
+    """
     model_capabilities = {
         "router_model_group": "chat",
         "chat_title_model": "chat",
         "tts_model": "tts",
         "stt_model": "stt",
     }
+    catalog = None
     for key, value in updates.items():
         capability = model_capabilities.get(key.lower())
         model_name = str(value).strip()
         if capability and model_name:
-            await get_model_provider(model_name, capability)
+            if catalog is None and user_id != 'global':
+                from orion.kernel.router_accounts import RouterAccountError
+                try:
+                    catalog = await get_account_catalog(user_id, include_voices=False)
+                except RouterAccountError as error:
+                    raise RuntimeError(str(error)) from error
+            await get_model_provider(model_name, capability, catalog)

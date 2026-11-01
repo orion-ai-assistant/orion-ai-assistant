@@ -73,7 +73,7 @@ class TitleRoutingTests(TitleTestBase):
                 session.post.return_value = response
                 context = SimpleNamespace(request=SimpleNamespace(chat_id=None), prompt="hello", chat_id="c", channel="u", turn_id="t", redis=AsyncMock())
                 context.redis.hget.return_value = "t"
-                settings = RuntimeSettings(ai_chat_titles_enabled=True, router_model_group=model)
+                settings = RuntimeSettings(ai_chat_titles_enabled=True, router_model_group=model, router_api_key='sk-orion-fixture')
                 with patch.object(router, "get_session", AsyncMock(return_value=session)), patch.object(
                     router, "_router_urls", return_value=["http://test/chat"]
                 ), patch.object(
@@ -118,4 +118,14 @@ class ModelSettingTests(unittest.IsolatedAsyncioTestCase):
             await router_models.validate_model_updates(
                 {"router_model_group": "gemini-test", "temperature": "0.3"}
             )
-        provider.assert_awaited_once_with("gemini-test", "chat")
+        provider.assert_awaited_once_with("gemini-test", "chat", None)
+
+    async def test_a_users_choice_is_validated_against_that_users_own_models(self):
+        account = {"models": [{"name": "allowed", "provider": "gemini", "capability": "chat"}]}
+        with patch.object(router_models, "get_account_catalog", AsyncMock(return_value=account)) as catalog, patch.object(
+            router_models, "get_router_catalog", AsyncMock()) as shared:
+            await router_models.validate_model_updates({"router_model_group": "allowed"}, "user-1")
+            with self.assertRaises(router_models.ModelNotFoundError):
+                await router_models.validate_model_updates({"router_model_group": "shared-only"}, "user-1")
+        catalog.assert_awaited_with("user-1", include_voices=False)
+        shared.assert_not_awaited()

@@ -49,8 +49,9 @@ class Session:
         data = {
             'models': {'models': [{'name': 'gemini', 'provider': 'google', 'capability': 'chat'}]},
             'model-groups': {'groups': []},
-            'voices': {'voices': {'google': ['cloud-voice']}, 'model_voice_groups': {'google': [{'models': ['tts-classic'], 'voices': ['cloud-voice']}]}},
-            'local-tts-info': {'voices': self.voices},
+            'voices': {'voices': {'google': ['cloud-voice']}, 'model_voice_groups': {'google': [{'models': ['tts-classic'], 'voices': ['cloud-voice']}]},
+                       'languages': {'google': [], 'local': ['Auto', 'English']}},
+            'local-tts-info': {'voices': self.voices, 'languages': ['Auto', 'English', 'Turkish']},
         }
         return Response(data[name], self.local_delay if name == 'local-tts-info' else 0,
                         self.model_started if name == 'models' else None,
@@ -101,6 +102,11 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         recovered = await self.fetch(Session(voices=['zephyr2', 'new-voice']))
         self.assertEqual(recovered['voices']['local'], ['zephyr2', 'new-voice'])
         self.assertNotIn('local-tts-info', recovered['unavailable'])
+
+    async def test_speech_languages_come_from_each_provider(self):
+        result = await self.fetch(Session())
+        self.assertEqual(result['languages']['google'], [])
+        self.assertEqual(result['languages']['local'], ['Auto', 'English', 'Turkish'])
 
     async def test_cold_model_save_never_requests_voice_services(self):
         session = Session(local_delay=10)

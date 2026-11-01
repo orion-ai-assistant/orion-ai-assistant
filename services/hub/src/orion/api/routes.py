@@ -30,7 +30,7 @@ async def stt_language_catalog(request: Request, current_user: str = Depends(get
     from orion.api.services.stt_catalog import fetch_stt_catalog
     settings = await get_runtime_settings(request.app.state.redis, current_user)
     try:
-        return await fetch_stt_catalog(settings.router_api_key or "orion")
+        return await fetch_stt_catalog(settings.router_api_key)
     except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
         raise HTTPException(503, "STT dil listesine şu anda ulaşılamıyor.") from exc
 
@@ -76,12 +76,12 @@ class SettingsUpdateRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
 
-async def _validate_settings_update(values: dict[str, str]) -> None:
+async def _validate_settings_update(values: dict[str, str], user_id: str) -> None:
     for key in values:
         if key.lower() not in _allowed_keys:
             raise HTTPException(status_code=400, detail=f"Geçersiz ayar anahtarı: {key}")
     try:
-        await validate_model_updates(values)
+        await validate_model_updates(values, user_id)
     except ModelNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -397,7 +397,7 @@ async def stt_proxy(
         return
     await websocket.accept()
     settings = await get_runtime_settings(redis, user_id)
-    router_api_key = settings.router_api_key or "orion"
+    router_api_key = settings.router_api_key
 
     router_url = get_router_base_urls()[0]
     ws_base = router_url.replace("http://", "ws://").replace("https://", "wss://")
@@ -480,7 +480,7 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request, curr
     if payload.user_id != current_user and current_user != "global":
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    await _validate_settings_update(payload.values)
+    await _validate_settings_update(payload.values, payload.user_id)
 
     # Global ayarları değiştirmek için Admin API Key zorunlu
     if payload.user_id == SETTINGS_DEFAULT_USER:
@@ -500,7 +500,7 @@ async def get_settings(request: Request, current_user: str = Depends(get_current
         from orion.api.services.stt_catalog import fetch_stt_catalog, initial_stt_language
         from orion.kernel.config import initialize_stt_language
         try:
-            catalog = await fetch_stt_catalog(settings.router_api_key or "orion")
+            catalog = await fetch_stt_catalog(settings.router_api_key)
             settings = await initialize_stt_language(
                 redis, current_user, initial_stt_language(device_language, catalog))
         except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError, KeyError, TypeError, AttributeError):
@@ -525,7 +525,7 @@ async def get_all_settings(request: Request) -> dict[str, dict[str, str]]:
 @router.post("/api/v1/admin/users/settings", response_model=RuntimeSettings)
 async def admin_update_settings(payload: SettingsUpdateRequest, request: Request) -> RuntimeSettings:
     _check_admin_key(request)
-    await _validate_settings_update(payload.values)
+    await _validate_settings_update(payload.values, payload.user_id)
     settings = await _save_settings_update(request.app.state.redis, payload)
     return _mask_settings_for_client(settings)
 

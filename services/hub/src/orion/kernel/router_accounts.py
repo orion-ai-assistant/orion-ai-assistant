@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import time
-from urllib.parse import quote
+from pathlib import Path
 from uuid import UUID, uuid5
 
 import aiohttp
@@ -22,6 +22,13 @@ _pending = {}
 
 class RouterAccountError(RuntimeError):
     pass
+
+
+class EnrollmentRequired(RouterAccountError):
+    """The Router has not admitted this Hub yet; only the Hub owner can finish it."""
+    def __init__(self, message='Router bağlantısı Hub sahibinin onayını bekliyor. '
+                               'Hub sahibi, Hub panelindeki Router bağlantısı sayfasından bağlantıyı tamamlamalı.'):
+        super().__init__(message)
 
 
 def _material():
@@ -74,18 +81,23 @@ async def selected_router():
     return record
 
 
-async def request_router(record, method, path, *, body=None, admin_password=None, account_key=None):
-    headers = {'x-orion-hub-key': await asyncio.to_thread(_credential, record['id'], 'hub')}
-    if admin_password is not None:
-        headers['x-admin-key'] = quote(admin_password, safe='')
+async def request_router(record, method, path, *, body=None, enrollment=None, account_key=None):
+    headers = {'x-orion-hub-key': await asyncio.to_thread(_credential, record['id'], 'hub'), **(enrollment or {})}
     if account_key:
         headers['Authorization'] = 'Bearer ' + account_key
     try:
         async with router_session(expected_router=record, account_route=getattr(account_key, 'route', False), timeout=aiohttp.ClientTimeout(total=8)) as session:
             async with session.request(method, record['url'].rstrip('/') + path,
                                        headers=headers, json=body, allow_redirects=False) as response:
-                if response.status == 401 and admin_password is not None:
-                    raise RouterAccountError('Orion Router şifresini girin. Varsayılan şifre değiştirilmiş veya girilen şifre yanlış.')
+                if response.status == 401 and 'x-orion-enrollment-code' in headers:
+                    raise RouterAccountError('Bağlantı kodu geçersiz veya süresi dolmuş. Router panelinden yeni kod oluşturun.')
+                if response.status == 401 and enrollment is not None:
+                    raise EnrollmentRequired()
+                if response.status == 401 and not account_key:
+                    # The Router no longer knows this Hub (removed by its administrator): forget the old
+                    # admission so the owner is asked for a new connection code.
+                    await asyncio.to_thread(_state_path(record['id']).unlink, missing_ok=True)
+                    raise EnrollmentRequired('Router bu Hub’ı kaldırmış. Hub sahibi, Hub panelinden yeni bir bağlantı kodu ile yeniden bağlamalı.')
                 if response.status >= 400:
                     messages = {401: 'Router bağlantı yetkisi geçersiz. Orion Panel’den yeniden bağlayın.',
                                 402: 'Router kullanım limitiniz dolmuş.', 403: 'Router erişiminiz kapatılmış.',
@@ -97,13 +109,37 @@ async def request_router(record, method, path, *, body=None, admin_password=None
         raise RouterAccountError('Orion Router’a güvenli bağlantı kurulamadı.') from error
 
 
-async def connect_router(record, password=None):
+def local_enrollment_token(record):
+    """The same-PC Router's enrollment token, read from its registered installation; never from the network."""
+    from orion.kernel.router_bootstrap import read_local_router_candidate
+    try:
+        candidate = read_local_router_candidate()
+        if candidate is None:
+            return None
+        identity_path = Path(candidate['identity_path'])
+        if str(UUID(identity_path.read_text(encoding='ascii').strip())) != record['id']:
+            return None
+        token = (identity_path.parent / 'hub-enrollment-token').read_text(encoding='ascii').strip()
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
+        # No readable same-PC Router: the owner is asked for a connection code instead.
+        logger.info('Same-PC Router enrollment unavailable: %s', error)
+        return None
+    return token if 32 <= len(token) <= 128 else None
+
+
+async def connect_router(record, code=None):
+    """Admit this Hub with a dashboard connection code, or the same-PC Router's local token."""
+    if code:
+        enrollment = {'x-orion-enrollment-code': code}
+    else:
+        token = await asyncio.to_thread(local_enrollment_token, record)
+        if not token:
+            raise EnrollmentRequired()
+        enrollment = {'x-orion-local-enrollment': token}
     identity = await asyncio.to_thread(tls_identity)
     token = await asyncio.to_thread(_credential, record['id'], 'hub')
     await request_router(record, 'POST', '/api/v1/hubs/enroll',
-                         body={'id': identity['id'], 'name': identity['name'], 'token': token},
-                         admin_password=password if password is not None else
-                         (os.getenv('ROUTER_ADMIN_KEY') or os.getenv('ROUTER_API_KEY') or 'orion'))
+                         body={'id': identity['id'], 'name': identity['name'], 'token': token}, enrollment=enrollment)
     await asyncio.to_thread(atomic_write, _state_path(record['id']), b'{"connected":true}')
 
 
@@ -153,11 +189,11 @@ async def provision_if_available(user_id, record=None):
         _pending[marker] = time.monotonic() + 15
 
 
-async def catalog_credentials(admin_key):
-    record = await asyncio.to_thread(read_connection)
-    if record and record.get('id') and await asyncio.to_thread(_state, record['id']):
-        return '/api/v1/hubs/catalog/', {'x-orion-hub-key': await asyncio.to_thread(_credential, record['id'], 'hub')}
-    return '/dashboard/api/', {'x-admin-key': quote(admin_key, safe='')}
+async def catalog_credentials():
+    """Only an admitted Hub reads the shared catalog; never with the Router administrator password."""
+    record = await selected_router()
+    await ensure_connection(record)
+    return '/api/v1/hubs/catalog/', {'x-orion-hub-key': await asyncio.to_thread(_credential, record['id'], 'hub')}
 
 
 async def account_settings(settings, user_id):

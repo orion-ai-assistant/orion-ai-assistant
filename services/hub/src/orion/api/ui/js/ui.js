@@ -1025,7 +1025,7 @@ const UI = {
             window.RouterProviders?.mount();
             const oldTtsModel = document.getElementById('setting-input-tts_model')?.value;
             Object.keys(settings).forEach(key => {
-                if (key === 'tts_voice' || key === 'stt_language') return;
+                if (key === 'tts_voice' || key === 'tts_language' || key === 'stt_language') return;
                 const el = document.getElementById(`setting-input-${key}`);
                 if (el && document.activeElement !== el && !el.classList?.contains('dirty')) {
                     const serverVal = settings[key] !== undefined ? String(settings[key] ?? '') : '';
@@ -1066,7 +1066,7 @@ const UI = {
                 desc: OrionI18n.t('settingsChatHint')
             },
             [OrionI18n.t('settingsVoice')]: {
-                section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "stt_enabled", "stt_model", "stt_language"],
+                section: "general", icon: "🎙️", keys: ["tts_enabled", "tts_model", "tts_voice", "tts_language", "stt_enabled", "stt_model", "stt_language"],
                 desc: OrionI18n.t('settingsVoiceHint')
             },
             [OrionI18n.t('settingsBehavior')]: {
@@ -1121,7 +1121,7 @@ const UI = {
                                 <option value="true" ${isChecked ? 'selected' : ''}>${OrionI18n.t('enabled')}</option>
                                 <option value="false" ${!isChecked ? 'selected' : ''}>${OrionI18n.t('disabled')}</option>
                             </select>`;
-                    } else if (['chat_title_model', 'router_model_group', 'tts_model', 'tts_voice', 'stt_model', 'stt_language'].includes(key)) {
+                    } else if (['chat_title_model', 'router_model_group', 'tts_model', 'tts_voice', 'tts_language', 'stt_model', 'stt_language'].includes(key)) {
                         inputHtml = `<select id="setting-input-${key}" data-original="${escapeSetting(val)}" onchange="UI.handleSettingChange('${key}')" class="setting-select"></select>`;
                     } else if (key === 'temperature' || key === 'thinking_level') {
                         inputHtml = `<input id="setting-input-${key}" type="${key === 'temperature' ? 'number' : 'text'}" ${key === 'temperature' ? 'min="0" max="2" step="0.1"' : ''} data-original="${escapeSetting(val)}" value="${escapeSetting(val)}" placeholder="${OrionI18n.t('optional')}" oninput="UI.handleSettingChange('${key}')" class="setting-input">
@@ -1241,6 +1241,7 @@ const UI = {
         if (uiLangEl) uiLangEl.value = OrionI18n.language;
         window.RouterProviders?.mount();
         this.loadSttLanguageChoices();
+        this.loadTtsLanguageChoices();
     },
     async loadSttLanguageChoices() {
         const select = document.getElementById('setting-input-stt_language');
@@ -1280,7 +1281,7 @@ const UI = {
             if (button && !silent) button.title = result.error;
             return;
         }
-        this.routerCatalog = {...result, voices: this.routerCatalog?.voices || result.voices, model_voice_groups: this.routerCatalog?.model_voice_groups || result.model_voice_groups};
+        this.routerCatalog = {...result, voices: this.routerCatalog?.voices || result.voices, model_voice_groups: this.routerCatalog?.model_voice_groups || result.model_voice_groups, languages: this.routerCatalog?.languages || result.languages};
         for (const key of ['router_model_group', 'chat_title_model', 'tts_model', 'stt_model']) {
             const select = document.getElementById(`setting-input-${key}`);
             if (!select) continue;
@@ -1321,6 +1322,7 @@ const UI = {
                 if (!catalog.error && this.routerCatalog) {
                     this.routerCatalog.voices = catalog.voices;
                     this.routerCatalog.model_voice_groups = catalog.model_voice_groups;
+                    this.routerCatalog.languages = catalog.languages;
                     this.routerCatalog.unavailable = catalog.unavailable;
                     this.loadVoiceChoices(false);
                 }
@@ -1385,6 +1387,25 @@ const UI = {
         if (userInitiated) {
             this.handleSettingChange('tts_voice');
         }
+        this.loadTtsLanguageChoices();
+    },
+    loadTtsLanguageChoices() {
+        const select = document.getElementById('setting-input-tts_language');
+        if (!select) return;
+        const model = document.getElementById('setting-input-tts_model')?.value || this.currentSettings?.tts_model || '';
+        const provider = this.routerCatalog?.models?.find(item => item.name === model)?.provider;
+        // The provider's own names, "Auto" included; a provider that takes no language lists none and the row stays hidden.
+        const languages = this.routerCatalog?.languages?.[provider] || [];
+        const row = select.closest('.setting-row');
+        if (row) row.hidden = !languages.length;
+        if (!languages.length || select.classList.contains('dirty') || select.dataset.saving === 'true') return;
+        const saved = String(this.currentSettings?.tts_language ?? '');
+        // Unset sends nothing, so the Router's own default ("Auto") applies.
+        const value = saved || (languages.includes('Auto') ? 'Auto' : languages[0]);
+        select.replaceChildren(...languages.map(name => new Option(name, name)));
+        if (!languages.includes(value)) select.add(new Option(value, value));
+        select.value = value;
+        select.dataset.original = value;
     },
     clearChatArea() {
         this._attachmentObserver?.disconnect();

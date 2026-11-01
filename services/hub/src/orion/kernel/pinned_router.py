@@ -4,7 +4,9 @@ aiohttp's Fingerprint hook runs on the actual TLS connection before any HTTP
 headers/body, including a WebSocket upgrade, are written to that connection.
 """
 import asyncio
+import hashlib
 import hmac
+import secrets
 from contextvars import ContextVar
 from urllib.parse import urlsplit
 
@@ -219,6 +221,55 @@ async def verify_router(url, expected_id, expected_fp):
     if identity.get('v') != 1 or identity.get('id') != expected_id or identity.get('fp') != expected_fp:
         raise ValueError('Router identity does not match owner confirmation')
     return identity
+
+
+class _SPKIRecorder(aiohttp.Fingerprint):
+    """Accepts any certificate but remembers its SPKI, for a proof that is checked against it."""
+    def __init__(self):
+        super().__init__(bytes(32))
+        self.seen = None
+
+    def check(self, transport):
+        ssl_object = transport.get_extra_info('ssl_object')
+        if ssl_object is None:
+            raise aiohttp.ClientConnectionError('Router connection requires TLS')
+        self.seen = spki_fingerprint(ssl_object.getpeercert(binary_form=True))
+
+
+def pairing_code_key(code):
+    normalized = ''.join(character for character in code.upper() if character.isalnum())
+    return hashlib.sha256(normalized.encode()).digest()
+
+
+async def prove_router(url, code):
+    """Learn a Router's identity from a dashboard connection code alone.
+
+    The Router answers with an HMAC of the code over its own UUID and SPKI. A machine in the middle
+    has a different certificate and does not know the code, so it cannot produce a proof for the
+    certificate this connection actually saw. The code itself is never sent here.
+    """
+    uri = urlsplit(url)
+    if uri.scheme != 'https' or not uri.hostname or uri.username or uri.password or uri.query or uri.fragment or uri.path not in {'', '/'}:
+        raise ValueError('Router URL must be an HTTPS origin')
+    nonce = secrets.token_hex(32)
+    recorder = _SPKIRecorder()
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=recorder, force_close=True), trust_env=False,
+                                     timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with session.post(url.rstrip('/') + '/api/v1/hubs/pairing-proof', json={'nonce': nonce},
+                                allow_redirects=False) as response:
+            if response.status == 404:
+                raise ValueError('Router’da geçerli bir bağlantı kodu yok. Router panelinden yeni kod oluşturun.')
+            if response.status != 200:
+                raise ValueError('Router bağlantı kodunu doğrulayamadı. Router güncel mi?')
+            data = await response.json()
+    router_id, proofs = str(data.get('id', '')), data.get('proofs')
+    if recorder.seen is None or not isinstance(proofs, list):
+        raise ValueError('Router kimliği doğrulanamadı.')
+    message = '|'.join(('orion-hub-pairing-v1', router_id, recorder.seen, nonce)).encode()
+    expected = hmac.new(pairing_code_key(code), message, hashlib.sha256).hexdigest()
+    if not any(isinstance(proof, str) and hmac.compare_digest(expected, proof) for proof in proofs):
+        raise ValueError('Bağlantı kodu bu Router’a ait değil, yanlış ya da süresi dolmuş.')
+    return await verify_router(url, router_id, recorder.seen)
 
 
 class PinnedWebSocket:
