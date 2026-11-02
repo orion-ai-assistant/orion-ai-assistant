@@ -65,7 +65,7 @@ async def delete_model(part_id: str, model_id: str, request: Request, current_us
 
 @router.put('/{part_id}')
 async def change(part_id: str, change: PartChange, request: Request, current_user: str = Depends(get_current_user)):
-    """Choose the model and/or advanced settings; a running part restarts with them."""
+    """Choose the model and/or advanced settings: saved only; a running part takes them on Uygula (/apply)."""
     _manage(request)
     return await _act(local_parts.select, part_id, model=change.model, settings=change.settings)
 
@@ -85,7 +85,8 @@ async def remove(part_id: str, request: Request, body: PartRemove | None = None,
 @router.post('/{part_id}/{action}')
 async def act(part_id: str, action: str, request: Request, current_user: str = Depends(get_current_user)):
     _manage(request)
-    function = {'cancel': local_parts.cancel, 'start': local_parts.start, 'stop': local_parts.stop}.get(action)
+    function = {'cancel': local_parts.cancel, 'start': local_parts.start, 'stop': local_parts.stop,
+                'apply': local_parts.apply_choice}.get(action)
     if function is None:
         raise HTTPException(404, 'Bu işlem yok.')
     return await _act(function, part_id)

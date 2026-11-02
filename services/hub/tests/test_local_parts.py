@@ -426,6 +426,7 @@ def test_an_older_wish_never_undoes_a_newer_one(parts, monkeypatch):
     fake_engine(parts)
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     P.select('embedding', settings={'parallel': 2})
+    P.apply_choice('embedding')
     restart = P.spawned[-1]
     P.remove('embedding', delete_models=True)
     removal = P.spawned[-1]
@@ -495,23 +496,23 @@ def test_the_model_file_tells_its_limits_vector_size_and_what_its_extra_understa
     assert (row['context_max'], row['dims']) == (8192, 768)
 
 
-def test_a_choice_that_cannot_run_yet_leaves_the_running_part_as_it_is(parts, monkeypatch):
+def test_a_choice_is_only_saved_until_uygula(parts, monkeypatch):
     fake_engine(parts)  # CUDA only: the processor's engine is not here.
     monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
     monkeypatch.setattr(P, '_alive', lambda pid: True)
-    llm = P.spec('llm')
     P.write_part_config('llm', enabled=True, model='miniplm-qwen-200m', settings={'hardware': 'cuda'})
-    model, settings = P.effective(llm, TWO_CARDS)
-    P._write_json(P.run_dir('llm') / 'applied.json', P._signature(model, settings))  # Running like this.
     card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'llm')
-    P.select('llm', settings={'hardware': 'cpu'})
-    assert P.spawned == []  # Not stopped for an engine that is not here.
-    engine = card()['engines']['cpu']
-    assert not engine['ready'] and engine['mb'] > 0  # "İndir ve uygula" fetches it.
-    P.select('llm', settings={'hardware': 'cuda'})
-    assert P.spawned == []  # Back to what runs: nothing to do.
     P.select('llm', settings={'parallel': 2})
+    P.select('llm', settings={'hardware': 'cpu'})
+    assert P.spawned == []  # Saving never stops or restarts anything.
+    # Uygula with a choice whose engine is not here: the download comes first, the old one keeps running.
+    P.apply_choice('llm')
+    assert P.spawned[-1][:2] == ['job', 'llm'] and 'install' in P.spawned[-1]
+    (P.home() / 'jobs' / 'llm.json').unlink()
+    P.select('llm', settings={'hardware': 'cuda'})
+    P.apply_choice('llm')  # Everything here: a restart with the new choice.
     assert '--restart' in P.spawned[-1] and card()['state'] == 'restarting'
+    assert P.read_config()['llm']['settings']['parallel'] == 2
 
 
 def test_a_paused_part_only_saves_its_settings(parts, monkeypatch):

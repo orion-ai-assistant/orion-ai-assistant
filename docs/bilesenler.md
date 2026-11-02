@@ -30,11 +30,12 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 - **Model bilgileri modelin kendi dosyasından:** katalog yalnızca modelin adını, adresini ve boyutunu tutar.
   Bağlam sınırı, vektör boyutu (embedding) ve ek dosyanın (mmproj) neyi anladığı (görsel/ses) GGUF başlığından
   okunur: indirilmişse dosyadan, indirilmemişse internetten dosyanın ilk birkaç KB'ı (`headers.json` önbelleği).
-- **Ayar değişince:** çalışan parça yeni seçimle yalnızca o seçim hemen çalışabiliyorsa (dosyaları ve motoru
-  burada) ve çalışandan farklıysa yeniden başlar ("Yeniden başlıyor…"). İndirme gerekiyorsa servis olduğu gibi
-  çalışmaya devam eder, kutucuk "İndir ve uygula · ~X MB" der; çalışana geri dönmek hiçbir şeyi başlatmaz.
-  Başlatılamayan parça durur ve öyle kalır (Başlat ile denenir); servis günlüğü her başlatmada sıfırlanır, bellek
-  yetmezliği gibi bilinen hatalar Türkçe söylenir.
+- **Ayar değişince:** seçimler (model, görsel anlama, gelişmiş ayarlar) hemen kaydedilir ama hiçbir şeyi
+  yeniden başlatmaz. Çalışan parça önceki ayarlarla sürer; kutucuk "Değişiklikler henüz uygulanmadı" der,
+  "Geri al" (çalışana döner) ve "Uygula" (gerekirse önce indirir: "İndir ve uygula · ~X MB") sunar
+  (`apply_choice`, `/api/v1/parts/<id>/apply`). Durmuş parça yeni ayarları Başlat'ta, kurulmamış olan Kur'da alır.
+  Neyle çalıştığı `run/<parça>/applied.json`'da. Başlatılamayan parça durur ve öyle kalır; servis günlüğü her
+  başlatmada sıfırlanır, bellek yetmezliği gibi bilinen hatalar Türkçe söylenir.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
   dinler, Hub durunca durur. Hub'ın sahip süreci dakikada bir kurulu parçaların açık olduğunu denetler (çöken
   geri gelir; kaldırılan açılmaz).

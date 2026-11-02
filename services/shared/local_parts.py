@@ -702,7 +702,9 @@ def part_status(part, hw, config, data):
             # One number for the button: everything "Modeli indir ve kur" fetches (engine and model, what is left).
             'download_mb': ((missing_mb(part, model, settings) if model else 0)
                             + (round(engine_bytes / 1048576) if engine_bytes else 0)), 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
-            'job': current, 'error': (change or {}).get('error')}
+            'job': current, 'error': (change or {}).get('error'),
+            # What the service runs with (the page compares the choice with it: "not applied yet").
+            'applied': applied(part['id']) if state in ('running', 'restarting') else None}
 
 
 def status():
@@ -770,8 +772,8 @@ def cancel(part_id):
 
 
 def select(part_id, *, model=None, settings=None):
-    """Save the chosen model and settings; a running part restarts with them (in the background: the answer
-    does not wait for it)."""
+    """Save the chosen model and settings. Nothing restarts: a running part keeps what it runs until the user
+    presses Uygula (`apply_choice`); a stopped one takes them when it starts, a new one when it is installed."""
     data = catalog()
     part = spec(part_id, data)
     hw = hardware()
@@ -783,17 +785,27 @@ def select(part_id, *, model=None, settings=None):
         values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}),
                               **clean_settings(part, settings, hw, target)}
     entry = write_part_config(part_id, **values)
-    current, settings = effective(part, hw)
     change = transition(part_id)
     if change and change.get('error'):
         (run_dir(part_id) / 'transition.json').unlink(missing_ok=True)  # About the old choice.
-    # A part that runs restarts with the new choice only when that can run now (its model files and engine are
-    # all here) and differs from what runs. Otherwise it keeps running as it was: the card offers "İndir ve
-    # uygula" for what is missing, and choosing back what runs changes nothing. A stopped part only saves.
-    if (entry.get('enabled') and not entry.get('paused') and not busy(part_id) and current
-            and ready(part, current, settings) and applied(part_id) != _signature(current, settings)):
-        _move(part_id, 'running', restart=True)
     return entry
+
+
+def apply_choice(part_id):
+    """Uygula: the saved choice replaces what runs. What it needs and is not here (another hardware's engine,
+    the vision file, another model) is downloaded first; until then the old one keeps running."""
+    part = spec(part_id)
+    if busy(part_id):
+        raise PartError('Bu bileşende bir iş sürüyor; bitince uygula.')
+    if not read_config().get(part_id, {}).get('enabled'):
+        raise PartError('Bileşen kurulu değil.')
+    model, settings = effective(part, hardware())
+    if model is None:
+        raise PartError('Önce bir model seç.')
+    if not ready(part, model, settings):
+        return start_job(part_id, 'install')
+    write_part_config(part_id, paused=False)
+    _move(part_id, 'running', restart=True)
 
 
 def ready(part, model, settings, data=None):
@@ -848,8 +860,8 @@ def start(part_id):
     if not entry.get('enabled'):
         raise PartError('Bileşen kurulu değil.')
     model, settings = effective(part, hardware())
-    if model is None or not downloaded(part, model, settings):
-        raise PartError('Modelin dosyaları eksik; Modeli indir ve kur ile tamamla.')
+    if model is None or not ready(part, model, settings):
+        raise PartError('Bu seçimin dosyaları eksik; İndir ve başlat ile tamamla.')
     write_part_config(part_id, paused=False)
     _move(part_id, 'running')
 
