@@ -29,11 +29,13 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import uuid
 import urllib.request
 import zipfile
 
@@ -51,6 +53,10 @@ ALL_LAYERS = 999
 
 class PartError(ValueError):
     """A refusal the user reads (Turkish)."""
+
+
+class MissingFiles(PartError):
+    """The model's files are not all there (nothing in the service log explains it)."""
 
 
 def catalog():
@@ -309,7 +315,68 @@ def default_settings(part, model, hw):
     return settings
 
 
-def advanced(part, hw):
+CONTEXT_FALLBACK = 131072
+_contexts = {}
+
+
+def gguf_context(path):
+    """The context length a GGUF model was trained for (its `<arch>.context_length`), read from the file's
+    header; None when the file says nothing. llama.cpp accepts a larger -c, but past this the model loses the
+    thread (and the memory is spent for nothing), so the setting stops here."""
+    path = Path(path)
+    try:
+        key = (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return None
+    if key in _contexts:
+        return _contexts[key]
+    formats = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d'}
+    found = None
+    try:
+        with path.open('rb') as stream:
+            def read(size):
+                data = stream.read(size)
+                if len(data) < size:
+                    raise EOFError
+                return data
+
+            def string():
+                return read(struct.unpack('<Q', read(8))[0]).decode('utf-8', 'replace')
+
+            def value(kind):
+                if kind == 8:
+                    return string()
+                if kind == 9:
+                    inner, count = struct.unpack('<IQ', read(12))
+                    for _ in range(count):
+                        value(inner)
+                    return None
+                return struct.unpack(formats[kind], read(struct.calcsize(formats[kind])))[0]
+
+            if read(4) == b'GGUF':
+                read(4)
+                _, count = struct.unpack('<QQ', read(16))
+                for _ in range(min(count, 10000)):
+                    name = string()
+                    result = value(struct.unpack('<I', read(4))[0])
+                    if name.endswith('.context_length') and isinstance(result, int) and result > 0:
+                        found = result
+                        break
+    except (OSError, EOFError, KeyError, struct.error):
+        found = None
+    _contexts[key] = found
+    return found
+
+
+def context_max(part, model):
+    """The model's own limit: from its file once downloaded, else the catalog's, else a general ceiling."""
+    if model is None:
+        return CONTEXT_FALLBACK
+    first = models_dir(part['id']) / model['folder'] / model['files'][0]
+    return gguf_context(first) or model.get('context_max') or CONTEXT_FALLBACK
+
+
+def advanced(part, hw, model=None):
     """The advanced settings a card shows (all have a default)."""
     fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': choices(part, hw)}]
     # Only NVIDIA cards are numbered for CUDA (CUDA_VISIBLE_DEVICES); the field shows when there is a choice.
@@ -325,8 +392,10 @@ def advanced(part, hw):
         return fields
     # No layer count: on a card the whole model goes to it, on the processor none can (command()).
     fields += [
-        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512, 'max': 131072,
-         'hint': 'Bir seferde ne kadar metin görebilir. Büyüdükçe daha çok bellek ister.'},
+        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512,
+         'max': context_max(part, model),
+         'hint': 'Bir seferde ne kadar metin görebilir; üst sınır seçili modelin kendi sınırı. '
+                 'Büyüdükçe daha çok bellek ister.'},
         {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8,
          'hint': 'Kaç isteğe aynı anda yanıt verir. Her biri bellek ister.'},
     ]
@@ -336,9 +405,9 @@ def advanced(part, hw):
     return fields
 
 
-def clean_settings(part, values, hw):
-    """Only known keys, inside their limits; anything else is refused with a Turkish reason."""
-    fields = {field['key']: field for field in advanced(part, hw)}
+def clean_settings(part, values, hw, model=None):
+    """Only known keys, inside their limits (the context: the model's own); anything else is refused in Turkish."""
+    fields = {field['key']: field for field in advanced(part, hw, model)}
     result = {}
     for key, value in (values or {}).items():
         field = fields.get(key)
@@ -369,6 +438,9 @@ def effective(part, hw, config=None):
     model = next((m for m in part.get('models', []) if m['id'] == model_id), None)
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
     settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
+    if 'context_size' in settings:
+        # Never past what the model was trained for (a context saved for another model, or the default).
+        settings['context_size'] = min(int(settings['context_size']), context_max(part, model))
     if settings['hardware'] not in {choice['id'] for choice in choices(part, hw)}:
         settings['hardware'] = choices(part, hw)[0]['id']  # A card that is gone, or a config copied from another PC.
     return model, settings
@@ -511,7 +583,7 @@ def part_status(part, hw, config, data):
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
             'note': note,
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
-            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None, 'models': models, 'settings': settings, 'advanced': advanced(part, hw),
+            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None, 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
             'job': current, 'error': (change or {}).get('error')}
 
 
@@ -559,11 +631,13 @@ def start_job(part_id, action, *, model=None, settings=None):
         values = {'model': chosen['id']}
         if settings:
             saved = read_config().get(part_id, {}).get('settings') or {}
-            values['settings'] = {**saved, **clean_settings(part, settings, hw)}
+            values['settings'] = {**saved, **clean_settings(part, settings, hw, chosen)}
         write_part_config(part_id, **values)
     elif action != 'download':
         raise PartError('Bilinmeyen iş.')
     (home() / 'jobs' / f'{part_id}.cancel').unlink(missing_ok=True)
+    if action == 'install':
+        (run_dir(part_id) / 'transition.json').unlink(missing_ok=True)
     _write_json(home() / 'jobs' / f'{part_id}.json', {'action': action, 'model': chosen['id'], 'phase': 'queued',
                                                        'label': 'Başlıyor…', 'started': time.time(), 'pid': None})
     process = _spawn(['job', part_id, action, chosen['id']])
@@ -586,7 +660,9 @@ def select(part_id, *, model=None, settings=None):
     if model is not None:
         values['model'] = model_spec(part, model)['id']
     if settings is not None:
-        values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}), **clean_settings(part, settings, hw)}
+        target = model_spec(part, values['model']) if 'model' in values else effective(part, hw)[0]
+        values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}),
+                              **clean_settings(part, settings, hw, target)}
     entry = write_part_config(part_id, **values)
     current, settings = effective(part, hw)
     # A running part restarts only when its new files are all there (vision turned on before its file came:
@@ -663,41 +739,68 @@ def transition(part_id):
 def _move(part_id, to, *, restart=False):
     folder = run_dir(part_id)
     folder.mkdir(parents=True, exist_ok=True)
-    _write_json(folder / 'transition.json', {'to': to, 'at': time.time(), 'pid': None, 'error': None})
-    process = _spawn(['apply', part_id] + (['--restart'] if restart else []))
+    wish = uuid.uuid4().hex
+    _write_json(folder / 'transition.json', {'id': wish, 'to': to, 'at': time.time(), 'pid': None, 'error': None})
+    process = _spawn(['apply', part_id, '--id', wish] + (['--restart'] if restart else []))
     path = folder / 'transition.json'
     current = _read_json(path, {})
-    if current.get('to') == to and not current.get('pid'):
+    if current.get('id') == wish and not current.get('pid'):
         _write_json(path, {**current, 'pid': process.pid})
 
 
-def apply(part_id, *, restart=False):
-    """Bring the part where its configuration says: running when installed and not stopped, else stopped."""
-    path = run_dir(part_id) / 'transition.json'
-    _write_json(path, {**_read_json(path, {}), 'pid': os.getpid()})
-    entry = read_config().get(part_id, {})
-    wanted = 'running' if entry.get('enabled') and not entry.get('paused') else 'stopped'
+APPLY_WAIT = READY_TIMEOUT + 120
+
+
+def apply(part_id, *, wish=None, restart=False):
+    """Bring the part where its configuration says: running when installed and not stopped, else stopped.
+
+    One at a time per part (a lock), and only the latest wish: an older one that waited behind a newer click
+    does nothing, and never writes its outcome over the newer one's (a restart from a setting change once
+    started a model while "Kaldır + modelleri sil" was deleting it, and its error stayed on the card)."""
+    from .process_lifecycle import InstanceLock, LifecycleError
+    folder = run_dir(part_id)
+    path = folder / 'transition.json'
+    mine = lambda: wish is None or _read_json(path, {}).get('id') == wish
     try:
-        if wanted == 'stopped' or restart:
-            stop_part(part_id)
-        if wanted == 'stopped' and entry.get('purge'):
-            shutil.rmtree(models_dir(part_id), ignore_errors=True)
-            write_part_config(part_id, purge=False)
-        if wanted == 'running':
-            start_part(part_id)
-    except Exception as error:
-        log = run_dir(part_id) / 'service.log'
-        tail = ''
-        try:
-            lines = [line for line in log.read_text(encoding='utf-8', errors='replace').splitlines() if line.strip()]
-            tail = ' Son satır: ' + lines[-1][-300:] if lines else ''
-        except OSError:
-            pass
-        _write_json(path, {'to': wanted, 'at': time.time(), 'pid': None,
-                           'error': f'{"Başlatılamadı" if wanted == "running" else "Durdurulamadı"}: {error}.{tail}'})
+        lock = InstanceLock(folder, 'apply', timeout=APPLY_WAIT)
+        lock.__enter__()
+    except LifecycleError:
         return 1
-    path.unlink(missing_ok=True)
-    return 0
+    try:
+        if not mine():
+            return 0
+        _write_json(path, {**_read_json(path, {}), 'pid': os.getpid()})
+        part = spec(part_id)
+        entry = read_config().get(part_id, {})
+        wanted = 'running' if entry.get('enabled') and not entry.get('paused') else 'stopped'
+        try:
+            if wanted == 'stopped' or restart:
+                stop_part(part_id)
+            if wanted == 'stopped' and entry.get('purge'):
+                shutil.rmtree(models_dir(part_id), ignore_errors=True)
+                write_part_config(part_id, purge=False)
+            if wanted == 'running':
+                model, settings = effective(part, hardware())
+                if model is None or not downloaded(part, model, settings):
+                    raise MissingFiles('Modelin dosyaları eksik; Modeli indir ve kur ile tamamla')
+                start_part(part_id)
+        except Exception as error:
+            log = folder / 'service.log'
+            tail = ''
+            try:
+                lines = [line for line in log.read_text(encoding='utf-8', errors='replace').splitlines() if line.strip()]
+                tail = ' Son satır: ' + lines[-1][-300:] if lines and not isinstance(error, MissingFiles) else ''
+            except OSError:
+                pass
+            if mine():
+                _write_json(path, {'id': wish, 'to': wanted, 'at': time.time(), 'pid': None,
+                                   'error': f'{"Başlatılamadı" if wanted == "running" else "Durdurulamadı"}: {error}.{tail}'})
+            return 1
+        if mine():
+            path.unlink(missing_ok=True)
+        return 0
+    finally:
+        lock.__exit__(None, None, None)
 
 
 # --- Running parts -------------------------------------------------------------------------------------------
@@ -785,6 +888,11 @@ def _update_job(part_id, **values):
 def download(url, target, *, report, cancelled, chunk=1 << 20, opener=None):
     """`url` into `target`, continuing a cut `.part` file; `report(bytes, total)` as it goes."""
     target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        # Finished on an earlier try (only a complete download is renamed from .part): never fetched again;
+        # the caller still checks its SHA-256 where the catalog has one.
+        report(target.stat().st_size, target.stat().st_size)
+        return
     partial = target.with_name(target.name + '.part')
     have = partial.stat().st_size if partial.is_file() else 0
     request = urllib.request.Request(url, headers={'User-Agent': 'Orion', **({'Range': f'bytes={have}-'} if have else {})})
@@ -853,7 +961,7 @@ def _remote_size(urls):
     return total
 
 
-def _install_engine(part_id, part, settings, data, cancelled):
+def _install_engine(part_id, part, settings, data, cancelled, step=''):
     """Put the engine together in a scratch folder (Orion's bundled files, archives, wheels), then move it in."""
     hardware_id = settings['hardware']
     if engine_ready(part['engine'], hardware_id, data):
@@ -875,7 +983,7 @@ def _install_engine(part_id, part, settings, data, cancelled):
         total = engine_size(part['engine'], hardware_id, data) or _remote_size([piece['url'] for piece, _ in pieces])
         offset = 0
         for number, (piece, kind) in enumerate(pieces, 1):
-            label = f'1/3 · Motor indiriliyor ({part["engine"]}, parça {number}/{len(pieces)})'
+            label = f'{step}Motor indiriliyor ({part["engine"]}, parça {number}/{len(pieces)})'
             _update_job(part_id, phase='engine', label=label, bytes=offset, total=total)
             archive = home() / 'engines' / 'downloads' / piece['url'].rsplit('/', 1)[-1]
             # Without a known total each piece shows its own share.
@@ -898,12 +1006,12 @@ def _install_engine(part_id, part, settings, data, cancelled):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _fetch_model(part_id, part, model, cancelled, settings=None):
+def _fetch_model(part_id, part, model, cancelled, settings=None, step=''):
     files = model_files(part, model, settings)
     if all(path.is_file() for path in files):
         return
     estimate = int(model['size_mb'] * 1048576)
-    label = f'2/3 · Model indiriliyor: {model["name"]}'
+    label = f'{step}Model indiriliyor: {model["name"]}'
     if model.get('archive'):
         archive = models_dir(part_id) / '.downloads' / model['archive'].rsplit('/', 1)[-1]
         _update_job(part_id, phase='model', label=label, total=estimate)
@@ -943,14 +1051,19 @@ def run_job(part_id, action, model_id):
     cancelled = marker.is_file
     _update_job(part_id, pid=os.getpid(), phase='starting', label='Hazırlanıyor…', error=None)
     try:
+        _, settings = effective(part, hardware(), read_config())
+        # Steps counted from what this job really does: the engine may be there already (another part uses it).
+        steps = ([] if action != 'install' or engine_ready(part['engine'], settings['hardware'], data) else ['engine'])
+        steps += [] if downloaded(part, model, settings) else ['model']
+        steps += ['start'] if action == 'install' else []
+        step = lambda name: f'{steps.index(name) + 1}/{len(steps)} · ' if len(steps) > 1 and name in steps else ''
         if action == 'install':
-            _, settings = effective(part, hardware(), read_config())
-            _install_engine(part_id, part, settings, data, cancelled)
-        _fetch_model(part_id, part, model, cancelled, effective(part, hardware(), read_config())[1])
+            _install_engine(part_id, part, settings, data, cancelled, step('engine'))
+        _fetch_model(part_id, part, model, cancelled, settings, step('model'))
         if action == 'install':
             write_part_config(part_id, enabled=True, paused=False, model=model_id)
-            _update_job(part_id, phase='launching', label='3/3 · Servis başlatılıyor (model belleğe yükleniyor)…', bytes=None, total=None,
-                        rate=0)
+            _update_job(part_id, phase='launching', label=f'{step("start")}Servis başlatılıyor (model belleğe yükleniyor)…',
+                        bytes=None, total=None, rate=0)
             stop_part(part_id)
             start_part(part_id)
         _update_job(part_id, phase='done', label='Hazır.', rate=0, finished=time.time())
@@ -974,6 +1087,7 @@ def main(argv=None):
     apply_parser = sub.add_parser('apply')
     apply_parser.add_argument('part')
     apply_parser.add_argument('--restart', action='store_true')
+    apply_parser.add_argument('--id')
     job_parser = sub.add_parser('job')
     job_parser.add_argument('part')
     job_parser.add_argument('kind', choices=['download', 'install'])
@@ -985,7 +1099,7 @@ def main(argv=None):
     elif args.action == 'start':
         start_part(args.part)
     elif args.action == 'apply':
-        return apply(args.part, restart=args.restart)
+        return apply(args.part, wish=args.id, restart=args.restart)
     elif args.action == 'job':
         return run_job(args.part, args.kind, args.model)
     else:

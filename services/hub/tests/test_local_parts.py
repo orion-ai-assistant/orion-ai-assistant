@@ -183,6 +183,12 @@ def test_a_cut_download_continues_where_it_stopped(tmp_path, server):
     P.download(server + 'model.gguf', target, report=lambda done, total: seen.append((done, total)), cancelled=lambda: False)
     assert target.read_bytes() == Files.content
     assert seen[0] == (300000, len(Files.content))  # It asked for the rest only.
+    # A piece that finished on an earlier try is not fetched again (a two-piece engine cancelled in its
+    # second piece continues there).
+    asked = []
+    P.download(server + 'model.gguf', target, report=lambda done, total: asked.append(done), cancelled=lambda: False,
+               opener=SimpleNamespace(open=lambda *a, **k: pytest.fail('downloaded again')))
+    assert asked == [len(Files.content)]
     with pytest.raises(P.Cancelled):
         P.download(server + 'x.gguf', tmp_path / 'x.gguf', report=lambda *a: None, cancelled=lambda: True)
     assert not (tmp_path / 'x.gguf').exists()
@@ -241,7 +247,7 @@ def test_a_stopped_part_stays_off_until_started(parts, monkeypatch):
     fake_engine(parts)
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     P.stop('embedding')
-    assert P.spawned[-1] == ['apply', 'embedding']  # Stopping happens in its own process, not in the request.
+    assert P.spawned[-1][:3] == ['apply', 'embedding', '--id']  # Stopping happens in its own process, not in the request.
     P.keep_running()
     assert started == [] and next(p for p in P.status()['parts'] if p['id'] == 'embedding')['state'] == 'stopped'
     P.write_part_config('embedding', paused=False)
@@ -375,3 +381,60 @@ def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
     monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
     assert P.apply('embedding') == 1
     assert card()['state'] == 'stopped' and 'out of memory' in card()['error']
+
+
+def tiny_gguf(path, context):
+    """A GGUF header with a few keys (one array before the context, as real files have)."""
+    import struct
+    def string(text):
+        data = text.encode()
+        return struct.pack('<Q', len(data)) + data
+    keys = (string('general.architecture') + struct.pack('<I', 8) + string('gemma4')
+            + string('tokenizer.ggml.scores') + struct.pack('<IIQ', 9, 6, 3) + struct.pack('<fff', 1, 2, 3)
+            + string('gemma4.context_length') + struct.pack('<I', 4) + struct.pack('<I', context))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 3) + keys)
+
+
+def test_the_context_stops_at_what_the_model_was_trained_for(parts):
+    llm = P.spec('llm')
+    small = P.model_spec(llm, 'miniplm-qwen-200m')
+    assert P.context_max(llm, small) == 32768  # From the catalog before the download.
+    tiny_gguf(P.models_dir('llm') / small['folder'] / small['files'][0], 4096)
+    assert P.context_max(llm, small) == 4096  # The file itself, once it is there.
+    field = next(f for f in P.advanced(llm, TWO_CARDS, small) if f['key'] == 'context_size')
+    assert field['max'] == 4096
+    with pytest.raises(P.PartError):
+        P.clean_settings(llm, {'context_size': 8192}, TWO_CARDS, small)
+    # A context saved for a bigger model is cut down to this one's.
+    P.write_part_config('llm', model='miniplm-qwen-200m', settings={'context_size': 65536})
+    assert P.effective(llm, TWO_CARDS)[1]['context_size'] == 4096
+    with pytest.raises(P.PartError):
+        P.select('llm', settings={'context_size': 8192})
+
+
+def test_an_older_wish_never_undoes_a_newer_one(parts, monkeypatch):
+    # A restart (setting change) was still waiting when "Kaldır + modelleri sil" came: the restart must not
+    # start the model being deleted, nor leave its error on the card.
+    started, stopped = [], []
+    monkeypatch.setattr(P, 'start_part', lambda part_id: started.append(part_id))
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: stopped.append(part_id))
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P.select('embedding', settings={'parallel': 2})
+    restart = P.spawned[-1]
+    P.remove('embedding', delete_models=True)
+    removal = P.spawned[-1]
+    assert P.apply('embedding', wish=restart[restart.index('--id') + 1], restart=True) == 0
+    assert started == [] and stopped == []  # The old wish did nothing.
+    assert P.apply('embedding', wish=removal[removal.index('--id') + 1]) == 0
+    assert stopped == ['embedding'] and P.transition('embedding') is None
+    card = next(part for part in P.status()['parts'] if part['id'] == 'embedding')
+    assert card['state'] == 'absent' and card['error'] is None
+
+
+def test_a_start_without_its_model_files_says_so(parts, monkeypatch):
+    monkeypatch.setattr(P, 'start_part', lambda part_id: pytest.fail('started without its files'))
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    assert P.apply('embedding') == 1
+    assert 'dosyaları eksik' in P.transition('embedding')['error']

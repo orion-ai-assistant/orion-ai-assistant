@@ -385,7 +385,8 @@
             "--pooling",
             "last"
           ],
-          "recommended": true
+          "recommended": true,
+          "context_max": 8192
         },
         {
           "id": "lco-embedding-omni-7b",
@@ -400,7 +401,8 @@
           "args": [
             "--pooling",
             "last"
-          ]
+          ],
+          "context_max": 32768
         }
       ],
       "runner": "llama",
@@ -437,7 +439,8 @@
             "--flash-attn",
             "auto"
           ],
-          "recommended": true
+          "recommended": true,
+          "context_max": 131072
         },
         {
           "id": "miniplm-qwen-200m",
@@ -449,7 +452,8 @@
             "MiniPLM-Qwen-200M-Q3_K_M.gguf"
           ],
           "size_mb": 130,
-          "args": []
+          "args": [],
+          "context_max": 32768
         }
       ],
       "runner": "llama",
