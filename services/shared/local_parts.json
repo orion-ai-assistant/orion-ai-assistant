@@ -1,0 +1,110 @@
+{
+  "engines": {
+    "llama.cpp": {
+      "version": "b11026",
+      "windows": {
+        "cuda": [
+          "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-cuda-12.4-x64.zip",
+          "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip"
+        ],
+        "vulkan": [
+          "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-vulkan-x64.zip"
+        ],
+        "cpu": [
+          "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-cpu-x64.zip"
+        ]
+      }
+    }
+  },
+  "parts": [
+    {
+      "id": "embedding",
+      "title": "Hafıza (embedding)",
+      "description": "Metni anlam vektörüne çevirir: Orion sohbetleri hatırlar, eski konuları bulur.",
+      "engine": "llama.cpp",
+      "port_key": "EMBED_PORT",
+      "port": 8086,
+      "args": ["--embedding"],
+      "context_size": 8192,
+      "cloud": "Bulut seçeneği (Router üzerinden) sonraki aşamada.",
+      "models": [
+        {
+          "id": "jina-v5-omni-nano",
+          "name": "Jina Embeddings v5 Omni Nano",
+          "description": "Çok dilli ve hafif; çoğu bilgisayar için yeterli.",
+          "folder": "jina-embeddings",
+          "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/main/",
+          "files": ["jina-embeddings-v5-omni-nano-retrieval-F16.gguf"],
+          "size_mb": 411,
+          "args": ["--pooling", "last"],
+          "recommended": true
+        },
+        {
+          "id": "lco-embedding-omni-7b",
+          "name": "LCO Embedding Omni 7B",
+          "description": "Daha güçlü ve uzun metinlerde daha iyi; ekran kartı ister.",
+          "folder": "LCO-Embedding",
+          "url": "https://huggingface.co/marksverdhei/LCO-Embedding-Omni-7B-GGUF/resolve/main/",
+          "files": ["LCO-Embedding-Omni-7B-IQ2_M.gguf"],
+          "size_mb": 2500,
+          "args": ["--pooling", "last"]
+        }
+      ]
+    },
+    {
+      "id": "llm",
+      "title": "Yerel dil modeli (LLM)",
+      "description": "Sohbeti internete çıkmadan bu bilgisayarda yanıtlar. Router'da \"local-chat\" modeli olarak seçilir.",
+      "engine": "llama.cpp",
+      "port_key": "LLM_PORT",
+      "port": 8085,
+      "args": [],
+      "context_size": 8192,
+      "cloud": "Kurulmazsa sohbet Router'daki bulut modelleriyle sürer.",
+      "models": [
+        {
+          "id": "gemma-4-e2b-it-q3-k-s",
+          "name": "Gemma 4 E2B (görsel destekli)",
+          "description": "Küçük ama yetenekli; resimleri de anlar.",
+          "folder": "gemma-4-e2b",
+          "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
+          "files": ["gemma-4-E2B-it-Q3_K_S.gguf"],
+          "mmproj": "mmproj-BF16.gguf",
+          "size_mb": 3266,
+          "args": ["--flash-attn", "auto"],
+          "recommended": true
+        },
+        {
+          "id": "miniplm-qwen-200m",
+          "name": "MiniPLM Qwen 200M",
+          "description": "Çok küçük deneme modeli; zayıf bilgisayarda bile çalışır, yanıtları basittir.",
+          "folder": "miniplm-qwen-200m",
+          "url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/main/",
+          "files": ["MiniPLM-Qwen-200M-Q3_K_M.gguf"],
+          "size_mb": 130,
+          "args": []
+        }
+      ]
+    },
+    {
+      "id": "stt",
+      "title": "Ses tanıma (STT)",
+      "description": "Konuşmanı bu bilgisayarda yazıya çevirir (sesli yazma).",
+      "engine": null,
+      "port_key": "STT_PORT",
+      "port": 9009,
+      "cloud": "Gemini ile yazıya çevirme Router'da var; canlı sesli yazma şimdilik yerel servisi ister.",
+      "pending": "Yerel ses tanımanın buradan kurulması sonraki aşamada."
+    },
+    {
+      "id": "tts",
+      "title": "Seslendirme (TTS)",
+      "description": "Yanıtları bu bilgisayarda sesli okur.",
+      "engine": null,
+      "port_key": "TTS_PORT",
+      "port": 8810,
+      "cloud": "Kurulmazsa bulut sesi (Gemini, OpenAI) kullanılır.",
+      "pending": "Yerel seslendirmenin buradan kurulması sonraki aşamada."
+    }
+  ]
+}

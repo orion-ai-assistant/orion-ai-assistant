@@ -66,7 +66,7 @@ def public_path(path: str) -> bool:
             or path.startswith('/api/v1/pair/requests/')
             or path.rstrip('/') in USER_SETTINGS
             or any(path == prefix or path.startswith(prefix + '/') for prefix in
-                   ('/api/v1/chats', '/api/v1/chat', '/api/v1/tools', '/api/v1/models', '/api/v1/audio', '/api/v1/router/providers', '/api/v1/router/access', '/api/v1/updates')))
+                   ('/api/v1/chats', '/api/v1/chat', '/api/v1/tools', '/api/v1/models', '/api/v1/audio', '/api/v1/router/providers', '/api/v1/router/access', '/api/v1/updates', '/api/v1/parts')))
 
 
 def is_desktop_peer(scope) -> bool:

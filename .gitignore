@@ -92,3 +92,6 @@ files/security/
 .orion-lifecycle/
 .orion-lifecycle-postgres/
 build/
+
+# Bileşenler (local AI parts) of a Hub run from source
+.local_parts/

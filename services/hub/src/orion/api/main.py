@@ -84,9 +84,27 @@ async def service_lifespan(app: FastAPI):
         if app.state.discovery_enabled:
             association.start()
     association_task = asyncio.create_task(start_association())
+
+    async def keep_parts():
+        # The same owner process starts the local parts the user installed (Bileşenler) and brings back one
+        # that stopped; parts the user did not install never start.
+        await wait_for_admission()
+        if not app.state.discovery_enabled:
+            return
+        from services.shared import local_parts
+        while True:
+            try:
+                await asyncio.to_thread(local_parts.keep_running)
+            except Exception:
+                logging.exception('Local parts could not be started')
+            await asyncio.sleep(60)
+    parts_task = asyncio.create_task(keep_parts())
     try:
         yield
     finally:
+        parts_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await parts_task
         association_task.cancel()
         with suppress(asyncio.CancelledError):
             await association_task
@@ -134,6 +152,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
     application.include_router(access_router)
     from orion.api.update_routes import router as update_router
     application.include_router(update_router)
+    from orion.api.parts_routes import router as parts_router
+    application.include_router(parts_router)
     application.state.public = public
     application.state.mobile = mobile
     application.state.discovery_enabled = discovery_enabled
