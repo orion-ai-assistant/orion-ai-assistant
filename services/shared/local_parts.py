@@ -12,7 +12,7 @@ is installed, and the jobs that download and install them.
 
 Nothing is installed with Orion itself: the user installs a part when they want it (Ayarlar > Bileşenler, or
 where a feature needs it). A job runs in its own process (`python -m services.shared.local_parts job ...`), so
-closing the Orion window never stops a download, and a download that was cut continues where it stopped.
+closing the Orion window never stops a download, and finished files are kept while a cut one starts over (appending once gave corrupt models).
 Installed parts start with the Hub (`keep_running`) and stop with it.
 
 The catalog (local_parts.json) lists engine recipes per operating system and hardware: files shipped with Orion
@@ -45,7 +45,7 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 TERMINAL = {'done', 'error', 'cancelled', 'interrupted'}
 READY_TIMEOUT = 300           # a big model loads for minutes on a slow disk
 HARDWARE_TTL = 600
-HARDWARE_LABELS = {'cuda': 'Ekran kartı (NVIDIA CUDA)', 'vulkan': 'Ekran kartı (Vulkan: her marka, CUDA’dan genelde yavaş)',
+HARDWARE_LABELS = {'cuda': 'Ekran kartı (NVIDIA CUDA)', 'vulkan': 'Ekran kartı (Vulkan)',
                    'metal': 'Apple GPU (Metal)',
                    'cpu': 'İşlemci (CPU)'}
 ALL_LAYERS = 999
@@ -170,6 +170,24 @@ def model_files(part, model, settings=None):
     folder = models_dir(part['id']) / model['folder']
     vision = model.get('mmproj') and (settings or {}).get('vision', True)
     return [folder / name for name in model['files'] + ([model['mmproj']] if vision else [])]
+
+
+def model_mb(model, settings=None):
+    """The model's size with these settings: its vision file counts only while vision is on."""
+    vision = model.get('mmproj') and (settings or {}).get('vision', True)
+    return model['size_mb'] + (model.get('mmproj_mb', 0) if vision else 0)
+
+
+def missing_mb(part, model, settings=None):
+    """What is left to download of the model (finished files count as there; a cut one starts over)."""
+    files = model_files(part, model, settings)
+    there = 0
+    for path in files:
+        if path.is_file():
+            there += path.stat().st_size
+    if all(path.is_file() for path in files):
+        return 0
+    return max(0, round(model_mb(model, settings) - there / 1048576))
 
 
 def downloaded(part, model, settings=None):
@@ -503,7 +521,7 @@ def job(part_id):
     value = _read_json(home() / 'jobs' / f'{part_id}.json', None)
     if value and value.get('phase') not in TERMINAL and not _alive(value.get('pid')):
         value = {**value, 'phase': 'interrupted', 'error': 'İş yarıda kaldı (Orion kapandı ya da yeniden başladı). '
-                 'Yeniden başlatınca indirme kaldığı yerden sürer.'}
+                 'Yeniden başlatınca tam inen dosyalar kalır, yarım kalan baştan iner.'}
     return value
 
 
@@ -572,7 +590,8 @@ def part_status(part, hw, config, data):
                       if p.with_name(p.name + '.part').is_file())
         vision_file = models_dir(part['id']) / item['folder'] / item['mmproj'] if item.get('mmproj') else None
         models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
-                       'size_mb': item['size_mb'], 'recommended': bool(item.get('recommended')),
+                       'size_mb': model_mb(item, settings), 'mmproj_mb': item.get('mmproj_mb'),
+                       'recommended': bool(item.get('recommended')),
                        'downloaded': downloaded(part, item, settings), 'partial_mb': round(partial / 1048576, 1),
                        'mmproj': bool(item.get('mmproj')),
                        'vision_downloaded': bool(vision_file and vision_file.is_file())})
@@ -583,7 +602,10 @@ def part_status(part, hw, config, data):
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
             'note': note,
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
-            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None, 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
+            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None,
+            # One number for the button: everything "Modeli indir ve kur" fetches (engine and model, what is left).
+            'download_mb': ((missing_mb(part, model, settings) if model else 0)
+                            + (round(engine_bytes / 1048576) if engine_bytes else 0)), 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
             'job': current, 'error': (change or {}).get('error')}
 
 
@@ -886,7 +908,10 @@ def _update_job(part_id, **values):
 
 
 def download(url, target, *, report, cancelled, chunk=1 << 20, opener=None):
-    """`url` into `target`, continuing a cut `.part` file; `report(bytes, total)` as it goes."""
+    """`url` into `target`; `report(bytes, total)` as it goes.
+
+    Whole files only: a finished file is kept and never fetched again, but a cut one starts over. Appending
+    to a cut file once gave corrupt models, and most models here have no SHA-256 that would catch that."""
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
         # Finished on an earlier try (only a complete download is renamed from .part): never fetched again;
@@ -894,36 +919,30 @@ def download(url, target, *, report, cancelled, chunk=1 << 20, opener=None):
         report(target.stat().st_size, target.stat().st_size)
         return
     partial = target.with_name(target.name + '.part')
-    have = partial.stat().st_size if partial.is_file() else 0
-    request = urllib.request.Request(url, headers={'User-Agent': 'Orion', **({'Range': f'bytes={have}-'} if have else {})})
+    partial.unlink(missing_ok=True)
     opener = opener or urllib.request.build_opener()
     try:
-        response = opener.open(request, timeout=30)
-    except urllib.error.HTTPError as error:
-        if error.code == 416 and have:  # Already complete.
-            os.replace(partial, target)
-            return
-        raise
-    with response:
-        if have and response.status != 206:
-            have = 0  # The server sends it whole: start over.
-        length = response.headers.get('Content-Length')
-        total = have + int(length) if length and length.isdigit() else None
-        with partial.open('ab' if have else 'wb') as out:
-            done = have
-            report(done, total)
-            while True:
-                if cancelled():
-                    raise Cancelled()
-                block = response.read(chunk)
-                if not block:
-                    break
-                out.write(block)
-                done += len(block)
+        with opener.open(urllib.request.Request(url, headers={'User-Agent': 'Orion'}), timeout=30) as response:
+            length = response.headers.get('Content-Length')
+            total = int(length) if length and length.isdigit() else None
+            done = 0
+            with partial.open('wb') as out:
                 report(done, total)
-    if total is not None and done < total:
-        raise OSError('İndirme yarıda kesildi; yeniden başlatınca kaldığı yerden sürer.')
-    os.replace(partial, target)
+                while True:
+                    if cancelled():
+                        raise Cancelled()
+                    block = response.read(chunk)
+                    if not block:
+                        break
+                    out.write(block)
+                    done += len(block)
+                    report(done, total)
+        if total is not None and done < total:
+            raise OSError('İndirme yarıda kesildi; yeniden dene (bu dosya baştan iner).')
+        os.replace(partial, target)
+    except BaseException:
+        partial.unlink(missing_ok=True)  # Never left to look like a resumable piece.
+        raise
 
 
 class _Progress:
@@ -1010,7 +1029,7 @@ def _fetch_model(part_id, part, model, cancelled, settings=None, step=''):
     files = model_files(part, model, settings)
     if all(path.is_file() for path in files):
         return
-    estimate = int(model['size_mb'] * 1048576)
+    estimate = int(model_mb(model, settings) * 1048576)
     label = f'{step}Model indiriliyor: {model["name"]}'
     if model.get('archive'):
         archive = models_dir(part_id) / '.downloads' / model['archive'].rsplit('/', 1)[-1]
@@ -1053,16 +1072,16 @@ def run_job(part_id, action, model_id):
     try:
         _, settings = effective(part, hardware(), read_config())
         # Steps counted from what this job really does: the engine may be there already (another part uses it).
+        # Only the downloads are numbered ("1/2 · ..."); starting comes after them as "Kuruluyor".
         steps = ([] if action != 'install' or engine_ready(part['engine'], settings['hardware'], data) else ['engine'])
         steps += [] if downloaded(part, model, settings) else ['model']
-        steps += ['start'] if action == 'install' else []
         step = lambda name: f'{steps.index(name) + 1}/{len(steps)} · ' if len(steps) > 1 and name in steps else ''
         if action == 'install':
             _install_engine(part_id, part, settings, data, cancelled, step('engine'))
         _fetch_model(part_id, part, model, cancelled, settings, step('model'))
         if action == 'install':
             write_part_config(part_id, enabled=True, paused=False, model=model_id)
-            _update_job(part_id, phase='launching', label=f'{step("start")}Servis başlatılıyor (model belleğe yükleniyor)…',
+            _update_job(part_id, phase='launching', label='Kuruluyor: servis başlatılıyor (model belleğe yükleniyor)…',
                         bytes=None, total=None, rate=0)
             stop_part(part_id)
             start_part(part_id)

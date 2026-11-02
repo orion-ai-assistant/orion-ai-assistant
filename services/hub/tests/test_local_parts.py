@@ -176,13 +176,13 @@ def server():
     httpd.shutdown()
 
 
-def test_a_cut_download_continues_where_it_stopped(tmp_path, server):
+def test_a_cut_file_starts_over_and_a_finished_one_is_kept(tmp_path, server):
     target = tmp_path / 'model.gguf'
-    target.with_name('model.gguf.part').write_bytes(Files.content[:300000])
+    target.with_name('model.gguf.part').write_bytes(b'x' * 300000)  # A cut (maybe corrupt) earlier try.
     seen = []
     P.download(server + 'model.gguf', target, report=lambda done, total: seen.append((done, total)), cancelled=lambda: False)
     assert target.read_bytes() == Files.content
-    assert seen[0] == (300000, len(Files.content))  # It asked for the rest only.
+    assert seen[0] == (0, len(Files.content))  # Fetched whole, nothing appended to the cut file.
     # A piece that finished on an earlier try is not fetched again (a two-piece engine cancelled in its
     # second piece continues there).
     asked = []
@@ -191,7 +191,7 @@ def test_a_cut_download_continues_where_it_stopped(tmp_path, server):
     assert asked == [len(Files.content)]
     with pytest.raises(P.Cancelled):
         P.download(server + 'x.gguf', tmp_path / 'x.gguf', report=lambda *a: None, cancelled=lambda: True)
-    assert not (tmp_path / 'x.gguf').exists()
+    assert not (tmp_path / 'x.gguf').exists() and not (tmp_path / 'x.gguf.part').exists()  # Nothing half left.
 
 
 def test_a_download_job_fetches_the_model_and_reports_it(parts, server, monkeypatch):
@@ -438,3 +438,19 @@ def test_a_start_without_its_model_files_says_so(parts, monkeypatch):
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     assert P.apply('embedding') == 1
     assert 'dosyaları eksik' in P.transition('embedding')['error']
+
+
+def test_the_button_says_one_total_that_follows_vision(parts):
+    llm = P.spec('llm')
+    card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    engine = card()['engine_mb']
+    assert engine and card()['download_mb'] == 2332 + 941 + engine  # Model, its vision file and the engine.
+    P.write_part_config('llm', settings={'vision': False})
+    assert card()['download_mb'] == 2332 + engine
+    gemma = next(m for m in card()['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
+    assert gemma['size_mb'] == 2332 and gemma['mmproj_mb'] == 941
+    fake_engine(parts)
+    folder = P.models_dir('llm') / 'gemma-4-e2b'
+    folder.mkdir(parents=True)
+    (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').write_bytes(b'm')
+    assert card()['download_mb'] == 0  # Everything is there: the button says Kur.

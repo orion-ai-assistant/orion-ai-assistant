@@ -397,7 +397,7 @@
           "files": [
             "LCO-Embedding-Omni-7B-IQ2_M.gguf"
           ],
-          "size_mb": 2500,
+          "size_mb": 2652,
           "args": [
             "--pooling",
             "last"
@@ -434,13 +434,14 @@
             "gemma-4-E2B-it-Q3_K_S.gguf"
           ],
           "mmproj": "mmproj-BF16.gguf",
-          "size_mb": 3266,
+          "size_mb": 2332,
           "args": [
             "--flash-attn",
             "auto"
           ],
           "recommended": true,
-          "context_max": 131072
+          "context_max": 131072,
+          "mmproj_mb": 941
         },
         {
           "id": "miniplm-qwen-200m",
@@ -451,7 +452,7 @@
           "files": [
             "MiniPLM-Qwen-200M-Q3_K_M.gguf"
           ],
-          "size_mb": 130,
+          "size_mb": 139,
           "args": [],
           "context_max": 32768
         }
@@ -543,7 +544,7 @@
             "omnivoice-base-Q8_0.gguf",
             "omnivoice-tokenizer-Q8_0.gguf"
           ],
-          "size_mb": 945,
+          "size_mb": 902,
           "recommended": true
         }
       ],
