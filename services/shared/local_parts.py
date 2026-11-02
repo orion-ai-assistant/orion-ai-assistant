@@ -200,6 +200,11 @@ def hardware(*, refresh=False, run=subprocess.run):
     """This PC: its system, graphics cards and which ways a llama.cpp part can run here (recommended first)."""
     if not refresh and _hardware['value'] and time.monotonic() - _hardware['at'] < HARDWARE_TTL:
         return _hardware['value']
+    # Every Hub process asks; the cards do not wait for nvidia-smi and PowerShell each time (seconds).
+    saved = None if refresh else _read_json(home() / 'hardware.json', None)
+    if saved and 0 <= time.time() - saved.get('at', 0) < HARDWARE_TTL and isinstance(saved.get('value'), dict):
+        _hardware.update(at=time.monotonic(), value=saved['value'])
+        return saved['value']
     current = system()
     nvidia = _nvidia(run) if current != 'mac' else []
     others = _other_gpus(run) if current == 'windows' else []
@@ -210,6 +215,10 @@ def hardware(*, refresh=False, run=subprocess.run):
     value = {'system': current, 'gpus': nvidia + others, 'choices': [{'id': c, 'label': HARDWARE_LABELS[c]} for c in choices],
              'recommended': choices[0]}
     _hardware.update(at=time.monotonic(), value=value)
+    try:
+        _write_json(home() / 'hardware.json', {'at': time.time(), 'value': value})
+    except OSError:
+        pass
     return value
 
 
@@ -377,7 +386,7 @@ def part_status(part, hw, config, data):
                        'downloaded': downloaded(part, item), 'partial_mb': round(partial / 1048576, 1)})
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
             'note': None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).',
-            'state': state, 'enabled': bool(entry.get('enabled')), 'model': model['id'] if model else None,
+            'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
             'engine_ready': engine_ready, 'models': models, 'settings': settings, 'advanced': advanced(part, hw),
             'job': current}
 
@@ -452,7 +461,7 @@ def select(part_id, *, model=None, settings=None):
     if settings is not None:
         values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}), **clean_settings(part, settings, hw)}
     entry = write_part_config(part_id, **values)
-    if entry.get('enabled') and not busy(part_id):
+    if entry.get('enabled') and not entry.get('paused') and not busy(part_id):
         stop_part(part_id)
         current, _ = effective(part, hw)
         if current and downloaded(part, current):
@@ -477,7 +486,17 @@ def remove(part_id):
     """Turn the part off and stop it. Its models stay (the model panel deletes them)."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
-    write_part_config(part_id, enabled=False)
+    write_part_config(part_id, enabled=False, paused=False)
+    stop_part(part_id)
+
+
+def stop(part_id):
+    """Stop a part but keep it installed: it stays off (also after a restart) until Başlat."""
+    if busy(part_id):
+        raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
+    if not read_config().get(part_id, {}).get('enabled'):
+        raise PartError('Bileşen kurulu değil.')
+    write_part_config(part_id, paused=True)
     stop_part(part_id)
 
 
@@ -489,6 +508,7 @@ def start(part_id):
     model, _ = effective(part, hardware())
     if model is None or not downloaded(part, model):
         raise PartError('Modeli indirilmemiş; Modeli indir ve kur ile kur.')
+    write_part_config(part_id, paused=False)
     _spawn(['start', part_id])
 
 
@@ -521,7 +541,8 @@ def keep_running():
     config = read_config()
     hw = hardware()
     for part in data['parts']:
-        if not part.get('engine') or not config.get(part['id'], {}).get('enabled') or busy(part['id']):
+        entry = config.get(part['id'], {})
+        if not part.get('engine') or not entry.get('enabled') or entry.get('paused') or busy(part['id']):
             continue
         model, settings = effective(part, hw, config)
         if model is None or not downloaded(part, model) or engine_exe(part['engine'], settings['hardware'], data) is None:
@@ -680,7 +701,7 @@ def run_job(part_id, action, model_id):
             _install_engine(part_id, part, settings, data, cancelled)
         _fetch_model(part_id, part, model, cancelled)
         if action == 'install':
-            write_part_config(part_id, enabled=True, model=model_id)
+            write_part_config(part_id, enabled=True, paused=False, model=model_id)
             _update_job(part_id, phase='launching', label='Servis başlatılıyor (model yükleniyor)…', bytes=None, total=None,
                         rate=0)
             stop_part(part_id)

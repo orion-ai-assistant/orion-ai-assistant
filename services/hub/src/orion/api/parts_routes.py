@@ -73,7 +73,8 @@ async def change(part_id: str, change: PartChange, request: Request, current_use
 @router.post('/{part_id}/{action}')
 async def act(part_id: str, action: str, request: Request, current_user: str = Depends(get_current_user)):
     _manage(request)
-    function = {'cancel': local_parts.cancel, 'remove': local_parts.remove, 'start': local_parts.start}.get(action)
+    function = {'cancel': local_parts.cancel, 'remove': local_parts.remove, 'start': local_parts.start,
+                'stop': local_parts.stop}.get(action)
     if function is None:
         raise HTTPException(404, 'Bu işlem yok.')
     return await _act(function, part_id)

@@ -176,3 +176,31 @@ def test_only_this_pcs_window_changes_parts(parts, monkeypatch):
     assert response.status_code == 400 and 'arasında' in response.json()['detail']
     assert client.put('/api/v1/parts/llm', json={'model': 'miniplm-qwen-200m'}).status_code == 200
     assert P.read_config()['llm']['model'] == 'miniplm-qwen-200m'
+
+
+def test_a_stopped_part_stays_off_until_started(parts, monkeypatch):
+    started = []
+    monkeypatch.setattr(P, 'start_part', lambda part_id: started.append(part_id))
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model: True)
+    fake_engine(parts)
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P.stop('embedding')
+    P.keep_running()
+    assert started == [] and next(p for p in P.status()['parts'] if p['id'] == 'embedding')['state'] == 'stopped'
+    P.write_part_config('embedding', paused=False)
+    P.keep_running()
+    assert started == ['embedding']
+
+
+def test_the_hardware_is_read_once_for_every_hub_process(parts, monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setenv('ORION_PARTS_HOME', str(parts))
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv[0])
+        return SimpleNamespace(returncode=1, stdout='')
+    P.hardware(refresh=True, run=run)
+    P._hardware.update(at=0, value=None)  # Another process: nothing in memory.
+    P.hardware(run=run)
+    assert len(calls) <= 2 and (parts / 'hardware.json').is_file()
