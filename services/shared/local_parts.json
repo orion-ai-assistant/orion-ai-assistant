@@ -510,7 +510,7 @@
         }
       ],
       "env": {
-        "WHISPER_MODEL": "{model_folder}",
+        "WHISPER_MODEL": "{model_dir}",
         "WHISPER_COMPUTE_TYPE": "{compute_type}",
         "MODEL_FILE": ""
       }
@@ -546,7 +546,7 @@
       ],
       "env": {
         "ENGINE_NAME": "omnivoice-gguf",
-        "MODEL_PATH": "{model_dir}",
+        "MODEL_PATH": "{files[0]}", "CODEC_PATH": "{files[1]}",
         "OMNIVOICE_BIN_DIR": "{engine_dir}"
       }
     }

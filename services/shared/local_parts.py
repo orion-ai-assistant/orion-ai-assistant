@@ -7,7 +7,8 @@ is installed, and the jobs that download and install them.
       engines/<engine>-<version>/<hw>/    an engine (llama-server, tts-server, or a Python service's extra
                                           packages under site/), shared by the parts that use it
       models/<part>/<folder>/<files>      (under the installation's models location when it has one)
-      jobs/<part>.json                    the running or last job; jobs/<part>.cancel asks it to stop
+      models/<part>/kendi/<name>/         the user's own models: a folder each, read from its files
+      jobs/<part>.json                   the running or last job; jobs/<part>.cancel asks it to stop
       run/<part>/                         process lifecycle state of the running part
 
 Nothing is installed with Orion itself: the user installs a part when they want it (Ayarlar > Bileşenler, or
@@ -28,6 +29,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import struct
 import subprocess
@@ -61,7 +63,12 @@ class MissingFiles(PartError):
 
 
 def catalog():
-    return json.loads(CATALOG.read_text(encoding='utf-8'))
+    """Our parts and models, with the models the user put in each part's own folder after ours."""
+    data = json.loads(CATALOG.read_text(encoding='utf-8'))
+    for part in data['parts']:
+        if part['id'] in USER_KINDS:
+            part['models'] = part.get('models', []) + user_models(part)
+    return data
 
 
 def spec(part_id, data=None):
@@ -179,20 +186,9 @@ def model_mb(model, settings=None):
     return model['size_mb'] + (model.get('mmproj_mb', 0) if vision else 0)
 
 
-def missing_mb(part, model, settings=None):
-    """What is left to download of the model (finished files count as there; a cut one starts over)."""
-    files = model_files(part, model, settings)
-    there = 0
-    for path in files:
-        if path.is_file():
-            there += path.stat().st_size
-    if all(path.is_file() for path in files):
-        return 0
-    return max(0, round(model_mb(model, settings) - there / 1048576))
-
-
 def downloaded(part, model, settings=None):
-    return all(path.is_file() for path in model_files(part, model, settings))
+    # A user's model is there once its folder holds every file its kind needs (none is still being copied).
+    return model.get('complete', True) and all(path.is_file() for path in model_files(part, model, settings))
 
 
 def sha256(path):
@@ -347,8 +343,9 @@ _GGUF_FORMATS = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 
 
 def gguf_meta(stream):
     """What a GGUF file says about itself, from its header (the first few KB: the tokenizer, which comes after
-    what we need, is never read): architecture, context length it was trained for, vector size, and for an
-    mmproj file whether it understands images and/or sound. None when it is not a GGUF file."""
+    what we need, is never read): architecture, context length it was trained for, vector size, how an
+    embedding model pools (None: not said), and for an mmproj file whether it understands images and/or sound.
+    None when it is not a GGUF file."""
     def read(size):
         data = stream.read(size)
         if len(data) < size:
@@ -375,13 +372,14 @@ def gguf_meta(stream):
     found = {}
     for _ in range(min(count, 10000)):
         name = string()
-        found[name] = value(struct.unpack('<I', read(4))[0])
         arch = found.get('general.architecture')
-        if arch and f'{arch}.context_length' in found and f'{arch}.embedding_length' in found:
-            break  # All we need: the tokenizer's long lists that follow are never read.
+        if name.startswith('tokenizer.') and arch and f'{arch}.context_length' in found:
+            break  # All we need is above: the tokenizer's long lists that follow are never read.
+        found[name] = value(struct.unpack('<I', read(4))[0])
     arch = found.get('general.architecture')
     number = lambda key: found.get(f'{arch}.{key}') if isinstance(found.get(f'{arch}.{key}'), int) else None
     return {'architecture': arch, 'context': number('context_length'), 'dims': number('embedding_length'),
+            'pooling': number('pooling_type'),
             'vision': bool(found.get('clip.has_vision_encoder')), 'audio': bool(found.get('clip.has_audio_encoder'))}
 
 
@@ -451,7 +449,9 @@ def prefetch_headers(data):
 def model_meta(part, model, name=None):
     """What the model's file says (`name`: one of its files, the first by default): the downloaded file, else
     its header read from the internet, else None."""
-    name = name or model['files'][0]
+    name = name or next(iter(model['files']), None)
+    if name is None:
+        return None  # A user's model whose file has not come yet.
     meta = file_meta(models_dir(part['id']) / model['folder'] / name) if name.endswith('.gguf') else None
     if meta is None and model.get('url'):
         meta = (_read_json(home() / 'headers.json', {}).get(model['url'] + name) or {}).get('meta')
@@ -475,6 +475,164 @@ def extra_info(part, model):
     meta = model_meta(part, model, model['mmproj']) or {}
     name, text = EXTRAS.get((meta.get('vision', False), meta.get('audio', False)), ('Görsel anlama', 'Resimleri anlar.'))
     return name, f'{text} (mmproj dosyası)'
+
+
+# --- The user's own models -----------------------------------------------------------------------------------
+# Ours come from the catalog; the user's are folders under models/<part>/kendi/, one per model, named by the
+# user. Nothing about them is asked: which file is which, the context limit and the rest are read from the
+# files themselves, so a folder dropped there by hand works as well as one made from the page.
+
+USER_DIR = 'kendi'
+MB = 1048576
+
+# What each part's engine needs from a model folder, in the order the service takes the files. `names`: one of
+# these exact files; `gguf`: a GGUF file with this architecture ('*': any model, not an mmproj or a sibling's).
+USER_KINDS = {
+    'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'files': [
+        {'gguf': '*', 'label': 'Model dosyası (.gguf)'},
+        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel/ses ek dosyası (mmproj, .gguf)',
+         'hint': 'Resim ya da ses anlaması için; yoksa model yalnızca metinle çalışır.'}]}],
+    'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'files': [
+        {'gguf': '*', 'label': 'Embedding modeli (.gguf)'}]}],
+    'stt': [{'id': 'faster-whisper', 'label': "faster-whisper (CTranslate2'ye çevrilmiş Whisper)", 'files': [
+        {'names': ['model.bin'], 'label': 'model.bin'},
+        {'names': ['config.json'], 'label': 'config.json'},
+        {'names': ['tokenizer.json'], 'label': 'tokenizer.json'},
+        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json ya da vocabulary.txt'},
+        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'preprocessor_config.json',
+         'hint': 'Large-v3 modellerinde gerekli.'}]}],
+    'tts': [{'id': 'omnivoice', 'label': 'OmniVoice (GGUF)', 'files': [
+        {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (omnivoice-base….gguf)'},
+        {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü (omnivoice-tokenizer….gguf)'}]}],
+}
+_SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')
+
+
+def user_dir(part_id):
+    return models_dir(part_id) / USER_DIR
+
+
+def _slug(text):
+    plain = text.translate(str.maketrans('çğıöşüÇĞİÖŞÜ', 'cgiosuCGIOSU')).lower()
+    return '-'.join(re.findall(r'[a-z0-9]+', plain)) or 'model'
+
+
+def _settled(path):
+    """False while another program still writes the file (a copy in Explorer: a model is gigabytes)."""
+    if os.name != 'nt':
+        return True
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                   wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    # Read, letting others only read: refused exactly while someone has it open for writing (a running service
+    # only reads its model, so its files count as settled).
+    handle = kernel.CreateFileW(str(path), 0x80000000, 0x1, None, 3, 0x80, None)
+    if handle in (None, wintypes.HANDLE(-1).value):
+        return ctypes.get_last_error() != 32  # ERROR_SHARING_VIOLATION
+    kernel.CloseHandle(handle)
+    return True
+
+
+def _user_model(part, kind, path, model_id):
+    """One folder of the user's as a catalog entry like ours (files in the service's order, sizes, args), with
+    a checklist of what its kind needs: each file there, missing, or more than one candidate."""
+    present = sorted(file for file in path.iterdir() if file.is_file())
+    copying = [file.name for file in present if not _settled(file)]
+    ggufs = [(file, file_meta(file)) for file in present if file.suffix.lower() == '.gguf' and file.name not in copying]
+    claimed = {spec['gguf'] for spec in kind['files'] if spec.get('gguf', '*') != '*'} | {'clip'}
+    problems = [f'{file.name} okunamadı (GGUF değil ya da bozuk).' for file, meta in ggufs if meta is None]
+    checklist, picked = [], []
+    for spec in kind['files']:
+        if 'names' in spec:
+            matches = [path / name for name in spec['names'] if (path / name).is_file() and name not in copying][:1]
+        else:
+            matches = [file for file, meta in ggufs if meta and (
+                meta['architecture'] == spec['gguf'] or spec['gguf'] == '*' and meta['architecture'] not in claimed)]
+            parts = [file for file in matches if _SPLIT.search(file.name)]
+            if parts and len(parts) == len(matches):
+                matches = [min(parts, key=lambda file: file.name)]  # A split model loads from its first piece.
+        item = {'label': spec['label'], 'optional': bool(spec.get('optional')), 'hint': spec.get('hint'),
+                'state': 'ok' if len(matches) == 1 else 'many' if matches else 'missing',
+                'names': [file.name for file in matches]}
+        if len(matches) == 1:
+            item['mb'] = round(matches[0].stat().st_size / MB)
+            meta = file_meta(matches[0]) if matches[0].suffix.lower() == '.gguf' else None
+            if meta:
+                item['architecture'], item['context'] = meta['architecture'], meta['context']
+        checklist.append(item)
+        picked.append(matches[0] if len(matches) == 1 else None)
+    complete = not copying and all(item['state'] == 'ok' or item['optional'] and item['state'] == 'missing'
+                                   for item in checklist)
+    extra = next((file for spec, file in zip(kind['files'], picked) if spec.get('role') == 'mmproj' and file), None)
+    files = [file for spec, file in zip(kind['files'], picked) if spec.get('role') != 'mmproj' and file]
+    main = file_meta(files[0]) if files and files[0].suffix.lower() == '.gguf' else None
+    # An embedding model that does not say how it pools is pooled like ours (the last token).
+    args = ['--pooling', 'last'] if part['id'] == 'embedding' and main and main.get('pooling') is None else []
+    entry = {'id': model_id, 'name': path.name, 'description': 'Kendi modelin.', 'folder': f'{USER_DIR}/{path.name}',
+             'files': [file.name for file in files], 'size_mb': round(sum(file.stat().st_size for file in files) / MB),
+             'args': args, 'user': True, 'kind': kind['id'], 'complete': complete, 'checklist': checklist,
+             'copying': copying, 'problems': problems}
+    if extra:
+        entry.update(mmproj=extra.name, mmproj_mb=round(extra.stat().st_size / MB))
+    return entry
+
+
+def user_models(part):
+    """The models the user put in this part's own folder, each a folder (its name is the model's)."""
+    kinds = USER_KINDS.get(part['id'])
+    folder = user_dir(part['id'])
+    if not kinds or not folder.is_dir():
+        return []
+    models, ids = [], set()
+    for path in sorted((path for path in folder.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+        model_id = base = f'kendi-{_slug(path.name)}'
+        number = 1
+        while model_id in ids:
+            number += 1
+            model_id = f'{base}-{number}'
+        ids.add(model_id)
+        try:
+            models.append(_user_model(part, kinds[0], path, model_id))
+        except OSError:
+            continue  # Being renamed or deleted in Explorer just now.
+    return models
+
+
+def add_user_model(part_id, name):
+    """Make the folder for a model the user brings: it shows at once (empty) and fills as they copy its files
+    in. Returns its id."""
+    part = spec(part_id)
+    if part_id not in USER_KINDS:
+        raise PartError('Bu bileşene kendi modelin eklenemiyor.')
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', str(name or '')).strip().rstrip('. ')
+    if not name:
+        raise PartError('Modele bir ad ver.')
+    if len(name) > 60:
+        raise PartError('Ad en çok 60 harf olabilir.')
+    if any(model['id'] == f'kendi-{_slug(name)}' for model in part['models']):
+        raise PartError('Bu adda bir model zaten var.')
+    try:
+        (user_dir(part_id) / name).mkdir(parents=True)
+    except OSError:
+        raise PartError('Bu adla klasör açılamadı; başka bir ad dene.') from None
+    return next(model['id'] for model in spec(part_id)['models'] if model['folder'] == f'{USER_DIR}/{name}')
+
+
+def open_folder(part_id, model_id=None):
+    """Show the part's folder of the user's models (or one model's) in this PC's file manager."""
+    part = spec(part_id)
+    if part_id not in USER_KINDS:
+        raise PartError('Bu bileşene kendi modelin eklenemiyor.')
+    folder = models_dir(part_id) / model_spec(part, model_id)['folder'] if model_id else user_dir(part_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == 'nt':
+        os.startfile(str(folder))
+    else:
+        subprocess.Popen(['open' if system() == 'mac' else 'xdg-open', str(folder)], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def advanced(part, hw, model=None):
@@ -576,7 +734,9 @@ def _python_command(part, model, settings, data=None):
         raise PartError('Motor kurulu değil.')
     port = str(os.getenv(part['port_key']) or part['port'])
     gpu = settings['hardware'] != 'cpu'
+    # `files`: the model's files in the order its kind lists them (a user's model names them its own way).
     values = {'model_folder': model['folder'], 'model_dir': str(models_dir(part['id']) / model['folder']),
+              'files': [str(path) for path in model_files(part, model, settings)],
               'engine_dir': str(folder), 'compute_type': settings.get('compute_type', 'int8') if gpu else 'int8'}
     site = folder / 'site'
     argv = [sys.executable, '-B', '-m', 'services.shared.part_python', str(ROOT / part['script']),
@@ -649,8 +809,6 @@ def part_status(part, hw, config, data):
     model, settings = effective(part, hw, config)
     entry = config.get(part['id'], {})
     current = job(part['id'])
-    ready = engine_ready(part['engine'], settings['hardware'], data)
-    engine_bytes = None if ready else engine_size(part['engine'], settings['hardware'], data)
     change = transition(part['id'])
     moving = change and not change.get('error')
     if current and current.get('phase') not in TERMINAL:
@@ -669,42 +827,49 @@ def part_status(part, hw, config, data):
         state = 'stopped'
     else:
         state = 'absent'
+    # Facts only, each true whatever the user chooses next: every model's files (main and extra apart), every
+    # hardware's engine, the model's own limits. What a choice makes of them (sizes with or without the extra
+    # file, what is left to download, the context limit, "not applied yet") the page works out itself, so it
+    # shows with the click and never waits for this answer.
     models = []
     for item in part['models']:
-        partial = sum(p.with_name(p.name + '.part').stat().st_size for p in model_files(part, item, settings)
-                      if p.with_name(p.name + '.part').is_file())
-        vision_file = models_dir(part['id']) / item['folder'] / item['mmproj'] if item.get('mmproj') else None
-        main_there = all((models_dir(part['id']) / item['folder'] / name).is_file() for name in item['files'])
+        folder = models_dir(part['id']) / item['folder']
+        names = item['files'] + ([item['mmproj']] if item.get('mmproj') else [])
+        partial = sum((folder / (name + '.part')).stat().st_size for name in names
+                      if (folder / (name + '.part')).is_file())
         meta = model_meta(part, item) or {}
         extra = extra_info(part, item) if item.get('mmproj') else (None, None)
-        models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
-                       'size_mb': model_mb(item, settings), 'mmproj_mb': item.get('mmproj_mb'),
-                       'base_mb': item['size_mb'], 'main_downloaded': main_there,
-                       'extra_name': extra[0], 'extra_description': extra[1],
-                       'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
-                       'dims': meta.get('dims') if part['id'] == 'embedding' else None,
-                       'recommended': bool(item.get('recommended')),
-                       'downloaded': downloaded(part, item, settings), 'partial_mb': round(partial / 1048576, 1),
-                       'mmproj': bool(item.get('mmproj')),
-                       'vision_downloaded': bool(vision_file and vision_file.is_file())})
+        row = {'id': item['id'], 'name': item['name'], 'description': item['description'],
+               'recommended': bool(item.get('recommended')), 'user': bool(item.get('user')),
+               'main_mb': item['size_mb'], 'partial_mb': round(partial / MB, 1),
+               'main_there': item.get('complete', True) and all((folder / name).is_file() for name in item['files']),
+               'extra': bool(item.get('mmproj')), 'extra_mb': item.get('mmproj_mb'),
+               'extra_there': bool(item.get('mmproj')) and (folder / item.get('mmproj', '')).is_file(),
+               'extra_name': extra[0], 'extra_description': extra[1],
+               'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
+               'dims': meta.get('dims') if part['id'] == 'embedding' else None}
+        if item.get('user'):
+            row.update(complete=item['complete'], checklist=item['checklist'], copying=item['copying'],
+                       problems=item['problems'], path=str(folder))
+        models.append(row)
     note = None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).'
     if not python_fits(part['engine'], data):
         known = ', '.join(data['engines'][part['engine']]['pythons'])
         note = f'Bu parçanın paketleri Python {known} için var; bu Hub Python {_python()} ile çalışıyor.'
+    kinds = USER_KINDS.get(part['id'])
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
             'note': note,
-            'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
-            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None,
-            # Per way of running: the page switches hardware and shows the engine left to fetch at once.
+            'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')),
+            # The saved choice (what Başlat, Kur or Uygula uses).
+            'model': model['id'] if model else None, 'settings': settings,
             'engines': {choice['id']: {'ready': engine_ready(part['engine'], choice['id'], data),
-                                       'mb': round((engine_size(part['engine'], choice['id'], data) or 0) / 1048576)}
+                                       'mb': round((engine_size(part['engine'], choice['id'], data) or 0) / MB)}
                         for choice in choices(part, hw)},
-            # One number for the button: everything "Modeli indir ve kur" fetches (engine and model, what is left).
-            'download_mb': ((missing_mb(part, model, settings) if model else 0)
-                            + (round(engine_bytes / 1048576) if engine_bytes else 0)), 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
+            'models': models, 'advanced': advanced(part, hw),
             'job': current, 'error': (change or {}).get('error'),
             # What the service runs with (the page compares the choice with it: "not applied yet").
-            'applied': applied(part['id']) if state in ('running', 'restarting') else None}
+            'applied': applied(part['id']) if state in ('running', 'restarting') else None,
+            'user': {'kinds': kinds, 'folder': str(user_dir(part['id']))} if kinds else None}
 
 
 def status():
@@ -748,6 +913,10 @@ def start_job(part_id, action, *, model=None, settings=None):
     chosen = model_spec(part, model) if model else current
     if chosen is None:
         raise PartError('Önce bir model seç.')
+    if chosen.get('user') and not chosen['complete']:
+        raise PartError('Bu modelin klasöründe eksik dosya var; Modeller panelinde neyin eksik olduğu yazıyor.')
+    if action == 'download' and chosen.get('user'):
+        raise PartError('Kendi modelin indirilmez: dosyaları klasöründe.')
     if action == 'install':
         values = {'model': chosen['id']}
         if settings:
@@ -822,25 +991,56 @@ def applied(part_id):
     return _read_json(run_dir(part_id) / 'applied.json', None)
 
 
-def delete_model(part_id, model_id):
+def delete_model(part_id, model_id, *, extra=False):
+    """Delete a model (all its files; a user's model with its folder), or with `extra` only its extra file
+    (mmproj): the model stays and, when it is the chosen one, the choice stops asking for that file.
+
+    Any model can go, the chosen one too (the card then offers to download it again). A file the running
+    service holds is let go of first: the service stops, then the file goes (in the background, like Durdur);
+    it stays stopped until Başlat."""
     part = spec(part_id)
     model = model_spec(part, model_id)
-    entry = read_config().get(part_id, {})
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; bitince sil.')
-    if entry.get('enabled') and (entry.get('model') or model_id) == model_id:
-        raise PartError('Bu model şu an kullanılıyor. Önce başka model seç ya da bileşeni kaldır.')
-    folder = models_dir(part_id) / model['folder']
-    if folder.is_dir():
-        shutil.rmtree(folder)
+    if extra and not model.get('mmproj'):
+        raise PartError('Bu modelin ek dosyası yok.')
+    entry = read_config().get(part_id, {})
+    if extra and (effective(part, hardware())[0] or {}).get('id') == model_id:
+        write_part_config(part_id, settings={**(entry.get('settings') or {}), 'vision': False})
+    if not held(part, model_id, extra=extra):
+        _drop(part, model, extra)
+        return
+    write_part_config(part_id, paused=True, drop=[*(entry.get('drop') or []), {'model': model_id, 'extra': extra}])
+    _move(part_id, 'stopped')
 
 
-def remove(part_id, *, delete_models=False):
+def held(part, model_id, *, extra=False):
+    """The part's service (running or starting) has this model's files open (with `extra`: its extra file)."""
+    running = applied(part['id'])
+    if not running or running.get('model') != model_id or extra and running['settings'].get('vision') is False:
+        return False
+    return answers(int(os.getenv(part['port_key']) or part['port'])) or _supervised(part['id'])
+
+
+def _drop(part, model, extra=False):
+    folder = models_dir(part['id']) / model['folder']
+    try:
+        if extra:
+            (folder / model['mmproj']).unlink(missing_ok=True)
+        elif folder.is_dir():
+            shutil.rmtree(folder)
+    except OSError:
+        raise PartError('Dosya şu an kullanılıyor; birazdan yeniden dene.') from None
+
+
+def remove(part_id, *, delete_models=False, delete_user_models=False):
     """Turn the part off and stop it (in the background); with `delete_models` what it downloaded goes too,
-    once the service has let go of it: its models, and its engine unless another installed part uses it."""
+    once the service has let go of it: our models, and its engine unless another installed part uses it. The
+    user's own models go only when asked too (`delete_user_models`): they may have nowhere else."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
-    write_part_config(part_id, enabled=False, paused=False, purge=bool(delete_models))
+    write_part_config(part_id, enabled=False, paused=False, purge=bool(delete_models),
+                      purge_user=bool(delete_models and delete_user_models))
     _move(part_id, 'stopped')
 
 
@@ -926,12 +1126,25 @@ def apply(part_id, *, wish=None, restart=False):
         try:
             if wanted == 'stopped' or restart:
                 stop_part(part_id)
+                # Files a delete waited for (the service held them): let go of now.
+                for item in entry.get('drop') or []:
+                    try:
+                        _drop(part, model_spec(part, item['model']), item.get('extra'))
+                    except PartError:
+                        pass
+                if entry.get('drop'):
+                    write_part_config(part_id, drop=[])
             if wanted == 'stopped' and entry.get('purge'):
-                shutil.rmtree(models_dir(part_id), ignore_errors=True)
+                folder = models_dir(part_id)
+                for path in (folder.iterdir() if folder.is_dir() else []):
+                    if path.name != USER_DIR or entry.get('purge_user'):
+                        shutil.rmtree(path, ignore_errors=True)
+                if folder.is_dir() and not any(folder.iterdir()):
+                    folder.rmdir()
                 for unused in unused_engines(part):
                     (unused / '.complete').unlink(missing_ok=True)  # Never "ready" if a file is held.
                     shutil.rmtree(unused, ignore_errors=True)
-                write_part_config(part_id, purge=False)
+                write_part_config(part_id, purge=False, purge_user=False)
             if wanted == 'running':
                 model, settings = effective(part, hardware())
                 if model is None or not downloaded(part, model, settings):
@@ -1231,6 +1444,8 @@ def _fetch_model(part_id, part, model, cancelled, settings=None, step=''):
     files = model_files(part, model, settings)
     if all(path.is_file() for path in files):
         return
+    if model.get('user'):
+        raise PartError('Kendi modelinin dosyaları eksik; klasörüne koy.')
     estimate = int(model_mb(model, settings) * 1048576)
     label = f'{step}Model indiriliyor: {model["name"]}'
     if model.get('archive'):

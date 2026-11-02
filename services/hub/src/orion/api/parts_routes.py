@@ -58,9 +58,35 @@ async def download(part_id: str, model_id: str, request: Request, current_user: 
 
 
 @router.delete('/{part_id}/models/{model_id}')
-async def delete_model(part_id: str, model_id: str, request: Request, current_user: str = Depends(get_current_user)):
+async def delete_model(part_id: str, model_id: str, request: Request, extra: bool = False,
+                       current_user: str = Depends(get_current_user)):
+    """Delete a model's files (`?extra=true`: only its extra file); a service holding them stops first."""
     _manage(request)
-    return await _act(local_parts.delete_model, part_id, model_id)
+    return await _act(local_parts.delete_model, part_id, model_id, extra=extra)
+
+
+class UserModel(BaseModel):
+    name: str
+
+
+@router.post('/{part_id}/user-models')
+async def add_user_model(part_id: str, body: UserModel, request: Request,
+                         current_user: str = Depends(get_current_user)):
+    """A folder for a model the user brings (they copy its files in); answers its id with the status."""
+    _manage(request)
+    try:
+        added = await asyncio.to_thread(local_parts.add_user_model, part_id, body.name)
+    except local_parts.PartError as error:
+        raise HTTPException(400, str(error)) from error
+    return {**await _status_body(), 'added': added}
+
+
+@router.post('/{part_id}/user-models/open')
+async def open_folder(part_id: str, request: Request, model: str | None = None,
+                      current_user: str = Depends(get_current_user)):
+    """Show the user's models folder (or one model's) in this PC's file manager."""
+    _manage(request)
+    return await _act(local_parts.open_folder, part_id, model)
 
 
 @router.put('/{part_id}')
@@ -72,14 +98,16 @@ async def change(part_id: str, change: PartChange, request: Request, current_use
 
 class PartRemove(BaseModel):
     delete_models: bool = False
+    delete_user_models: bool = False
 
 
 @router.post('/{part_id}/remove')
 async def remove(part_id: str, request: Request, body: PartRemove | None = None,
                  current_user: str = Depends(get_current_user)):
-    """Turn the part off; with delete_models its downloaded models go too."""
+    """Turn the part off; with delete_models its downloaded models go too (the user's own only when asked)."""
     _manage(request)
-    return await _act(local_parts.remove, part_id, delete_models=bool(body and body.delete_models))
+    return await _act(local_parts.remove, part_id, delete_models=bool(body and body.delete_models),
+                      delete_user_models=bool(body and body.delete_user_models))
 
 
 @router.post('/{part_id}/{action}')

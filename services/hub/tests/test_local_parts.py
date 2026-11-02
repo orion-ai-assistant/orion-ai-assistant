@@ -55,7 +55,8 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     assert all(part['installable'] and part['state'] == 'absent' for part in by_id.values())
     assert by_id['embedding']['model'] == 'jina-v5-omni-nano'  # The recommended model, nothing installed yet.
     # With an NVIDIA card the speech engine brings cuBLAS and cuDNN (~1.3 GB); on the processor it is 43 MB.
-    assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engine_mb'] > 1300
+    assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engines']['cuda']['mb'] > 1300
+    assert by_id['stt']['engines']['cpu']['mb'] < 100
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
     assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vision']  # Two cards: which one.
     assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
@@ -73,11 +74,14 @@ def test_speech_services_run_on_orions_python_with_their_engine(parts):
     argv, env, port = P.command(stt, small, {'hardware': 'cpu', 'gpu': 'all', 'compute_type': 'float16'})
     assert port == 9009 and argv[1:4] == ['-B', '-m', 'services.shared.part_python']
     assert argv[4].endswith('api.py') and argv[5].endswith('site')
-    assert env['WHISPER_MODEL'] == 'whisper-small-official' and env['WHISPER_COMPUTE_TYPE'] == 'int8'  # CPU: int8.
+    assert env['WHISPER_MODEL'] == str(P.models_dir('stt') / 'whisper-small-official')
+    assert env['WHISPER_COMPUTE_TYPE'] == 'int8'  # CPU: int8.
     assert env['ORION_HW_ID'] == 'cpu' and env['MODEL_FILE'] == ''
     tts = P.spec('tts')
     argv, env, port = P.command(tts, P.model_spec(tts, 'omnivoice-gguf'), {'hardware': 'cpu', 'gpu': 'all'})
-    assert port == 8810 and env['ENGINE_NAME'] == 'omnivoice-gguf' and env['MODEL_PATH'].endswith('omnivoice-gguf')
+    assert port == 8810 and env['ENGINE_NAME'] == 'omnivoice-gguf'
+    # Both files named (a user's own model may call them anything).
+    assert env['MODEL_PATH'].endswith('omnivoice-base-Q8_0.gguf') and env['CODEC_PATH'].endswith('omnivoice-tokenizer-Q8_0.gguf')
     assert env['OMNIVOICE_BIN_DIR'] == str(P.engine_dir('omnivoice-gguf', 'cpu'))
 
 
@@ -204,14 +208,12 @@ def test_a_download_job_fetches_the_model_and_reports_it(parts, server, monkeypa
     record = P.job('embedding')
     assert record['phase'] == 'done' and record['bytes'] == len(Files.content)
     embedding = next(part for part in P.status()['parts'] if part['id'] == 'embedding')
-    assert next(m for m in embedding['models'] if m['id'] == 'jina-v5-omni-nano')['downloaded']
+    assert next(m for m in embedding['models'] if m['id'] == 'jina-v5-omni-nano')['main_there']
     assert embedding['state'] == 'absent'  # Downloaded is not installed: the card offers Kur.
-    # The model in use cannot be deleted; another can.
+    # The chosen model can go too while nothing runs it (the card then offers to download it again).
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
-    with pytest.raises(P.PartError):
-        P.delete_model('embedding', 'jina-v5-omni-nano')
-    P.write_part_config('embedding', enabled=False)
     P.delete_model('embedding', 'jina-v5-omni-nano')
+    assert P.spawned == []  # Nothing to stop: gone at once.
     assert not P.downloaded(P.spec('embedding'), P.model_spec(P.spec('embedding'), 'jina-v5-omni-nano'))
 
 
@@ -362,7 +364,7 @@ def test_the_vision_file_is_optional_and_can_come_later(parts):
         P.clean_settings(llm, {'vision': 'yes'}, TWO_CARDS)
     status = next(part for part in P.status()['parts'] if part['id'] == 'llm')
     row = next(m for m in status['models'] if m['id'] == gemma['id'])
-    assert row['mmproj'] and not row['vision_downloaded'] and status['settings']['vision'] is True
+    assert row['extra'] and not row['extra_there'] and status['settings']['vision'] is True
 
 
 def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
@@ -445,29 +447,23 @@ def test_a_start_without_its_model_files_says_so(parts, monkeypatch):
     assert 'dosyaları eksik' in P.transition('embedding')['error']
 
 
-def test_the_button_says_one_total_that_follows_vision(parts):
-    llm = P.spec('llm')
+def test_the_status_holds_facts_only_so_no_choice_waits_for_it(parts):
+    """What a choice makes of the facts (sizes with the extra file, what is left to download, the context limit)
+    the page works out with the click. The status never says it: a value only the Hub worked out once showed late
+    on the page, so whatever the user chooses, every fact stays the same and only the choice changes."""
     card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'llm')
-    engine = card()['engine_mb']
-    assert engine and card()['download_mb'] == 2332 + 941 + engine  # Model, its vision file and the engine.
-    P.write_part_config('llm', settings={'vision': False})
-    assert card()['download_mb'] == 2332 + engine
-    gemma = next(m for m in card()['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
-    assert gemma['size_mb'] == 2332 and gemma['mmproj_mb'] == 941
-    fake_engine(parts)
-    folder = P.models_dir('llm') / 'gemma-4-e2b'
-    folder.mkdir(parents=True)
-    (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').write_bytes(b'm')
-    assert card()['download_mb'] == 0  # Everything is there: the button says Kur.
-
-
-def test_the_page_gets_the_facts_to_work_sizes_out_itself(parts):
-    card = next(part for part in P.status()['parts'] if part['id'] == 'llm')
-    gemma = next(m for m in card['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
-    assert (gemma['base_mb'], gemma['mmproj_mb'], gemma['main_downloaded'], gemma['vision_downloaded']) == (2332, 941, False, False)
+    facts = lambda value: {key: item for key, item in value.items() if key not in ('model', 'settings')}
+    before = card()
+    assert not {'download_mb', 'engine_ready', 'engine_mb'} & set(before)
+    assert not {'size_mb', 'downloaded'} & set(before['models'][0])
+    P.select('llm', model='miniplm-qwen-200m', settings={'vision': False, 'hardware': 'cpu', 'context_size': 1024})
+    after = card()
+    assert facts(after) == facts(before) and after['settings']['hardware'] == 'cpu'
+    gemma = next(m for m in after['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
+    assert (gemma['main_mb'], gemma['extra_mb'], gemma['main_there'], gemma['extra_there']) == (2332, 941, False, False)
     assert gemma['name'] == 'Gemma 4 E2B' and gemma['extra_name'] == 'Görsel anlama'
-    assert set(card['engines']) == {'cuda', 'vulkan', 'cpu'}
-    assert card['engines']['cuda']['mb'] > card['engines']['vulkan']['mb'] > 0 and not card['engines']['cuda']['ready']
+    assert set(after['engines']) == {'cuda', 'vulkan', 'cpu'}
+    assert after['engines']['cuda']['mb'] > after['engines']['vulkan']['mb'] > 0 and not after['engines']['cuda']['ready']
     # Labels come from this code even when the hardware came from an old cache.
     P._hardware.update(at=__import__('time').monotonic(), value={**TWO_CARDS, 'choices': [{'id': 'vulkan', 'label': 'old words'}]})
     assert P._labelled(P._hardware['value'])['choices'][0]['label'] == 'Ekran kartı (Vulkan)'
@@ -483,7 +479,8 @@ def test_the_model_file_tells_its_limits_vector_size_and_what_its_extra_understa
             + string('clip.has_vision_encoder') + struct.pack('<I', 7) + b'\x01'
             + string('clip.has_audio_encoder') + struct.pack('<I', 7) + b'\x01')
     path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 3) + keys)
-    assert P.file_meta(path) == {'architecture': 'clip', 'context': None, 'dims': None, 'vision': True, 'audio': True}
+    assert P.file_meta(path) == {'architecture': 'clip', 'context': None, 'dims': None, 'pooling': None,
+                                 'vision': True, 'audio': True}
     llm = P.spec('llm')
     gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
     assert P.extra_info(llm, gemma)[0] == 'Görsel anlama'  # Not known yet.
@@ -540,3 +537,108 @@ def test_the_engine_goes_with_the_last_part_that_uses_it(parts, monkeypatch):
     P.remove('embedding', delete_models=True)
     assert P.apply('embedding') == 0
     assert not P.engine_dir('llama.cpp', 'cuda').exists()  # The last one: gone too.
+
+
+def gguf(path, arch, **numbers):
+    """A GGUF file holding only a header: its architecture and these `<arch>.<key>` numbers."""
+    import struct
+    def string(text):
+        data = text.encode()
+        return struct.pack('<Q', len(data)) + data
+    keys = string('general.architecture') + struct.pack('<I', 8) + string(arch)
+    for key, number in numbers.items():
+        keys += string(f'{arch}.{key}') + struct.pack('<I', 4) + struct.pack('<I', number)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 1 + len(numbers)) + keys)
+
+
+def test_a_held_model_is_deleted_once_its_service_lets_go(parts, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: stopped.append(part_id) or True)
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: True)
+    folder = P.models_dir('embedding') / 'jina-embeddings'
+    gguf(folder / 'jina-embeddings-v5-omni-nano-retrieval-F16.gguf', 'eurobert')
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P._write_json(P.run_dir('embedding') / 'applied.json', {'model': 'jina-v5-omni-nano', 'settings': {'hardware': 'cuda'}})
+    P.delete_model('embedding', 'jina-v5-omni-nano')
+    assert folder.is_dir()  # Still held: nothing deleted inside the request.
+    assert P.read_config()['embedding']['paused'] and 'apply' in P.spawned[-1]
+    wish = P.spawned[-1][P.spawned[-1].index('--id') + 1]
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
+    assert P.apply('embedding', wish=wish) == 0
+    assert stopped == ['embedding'] and not folder.exists() and P.read_config()['embedding']['drop'] == []
+
+
+def test_the_extra_file_goes_alone_and_the_choice_stops_asking_for_it(parts):
+    folder = P.models_dir('llm') / 'gemma-4-e2b'
+    gguf(folder / 'gemma-4-E2B-it-Q3_K_S.gguf', 'gemma4', context_length=131072)
+    gguf(folder / 'mmproj-BF16.gguf', 'clip')
+    P.write_part_config('llm', enabled=True, model='gemma-4-e2b-it-q3-k-s', settings={'vision': True})
+    P.delete_model('llm', 'gemma-4-e2b-it-q3-k-s', extra=True)
+    assert (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').is_file() and not (folder / 'mmproj-BF16.gguf').exists()
+    assert P.read_config()['llm']['settings']['vision'] is False
+    with pytest.raises(P.PartError):
+        P.delete_model('llm', 'miniplm-qwen-200m', extra=True)  # It has no extra file.
+
+
+def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
+    opened = []
+    monkeypatch.setattr(P.os, 'startfile', opened.append, raising=False)
+    # LLM: the name is the folder's; which file is the model and which the extra is read from them.
+    assert P.add_user_model('llm', 'Benim Qwen') == 'kendi-benim-qwen'
+    with pytest.raises(P.PartError):
+        P.add_user_model('llm', 'benim qwen')  # The same name.
+    folder = P.user_dir('llm') / 'Benim Qwen'
+    card = lambda part_id: next(part for part in P.status()['parts'] if part['id'] == part_id)
+    row = lambda part_id, model_id: next(m for m in card(part_id)['models'] if m['id'] == model_id)
+    empty = row('llm', 'kendi-benim-qwen')
+    assert empty['user'] and not empty['complete'] and empty['checklist'][0]['state'] == 'missing'
+    gguf(folder / 'qwen-7b-q4.gguf', 'qwen2', context_length=32768)
+    gguf(folder / 'vision.gguf', 'clip')
+    model = P.model_spec(P.spec('llm'), 'kendi-benim-qwen')
+    assert (model['files'], model['mmproj'], model['complete']) == (['qwen-7b-q4.gguf'], 'vision.gguf', True)
+    assert row('llm', 'kendi-benim-qwen')['context_max'] == 32768
+    gguf(folder / 'other.gguf', 'llama')  # Two models in one folder: which one is not guessed.
+    assert P.model_spec(P.spec('llm'), 'kendi-benim-qwen')['checklist'][0]['state'] == 'many'
+    P.open_folder('llm', 'kendi-benim-qwen')
+    assert opened == [str(folder)]
+    # Speech: the files faster-whisper needs, each ticked as it comes.
+    stt = P.user_dir('stt') / 'whisper-tr'
+    stt.mkdir(parents=True)
+    for name in ('model.bin', 'config.json'):
+        (stt / name).write_text('x')
+    states = [item['state'] for item in P.model_spec(P.spec('stt'), 'kendi-whisper-tr')['checklist']]
+    assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
+    for name in ('tokenizer.json', 'vocabulary.txt'):
+        (stt / name).write_text('x')
+    whisper = P.model_spec(P.spec('stt'), 'kendi-whisper-tr')
+    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt']
+    engine = P.engine_dir('faster-whisper', 'cpu')
+    engine.mkdir(parents=True)
+    (engine / '.complete').write_text('x')
+    assert P.command(P.spec('stt'), whisper, {'hardware': 'cpu', 'gpu': 'all'})[1]['WHISPER_MODEL'] == str(stt)
+    # Speech out: the engine's two files, told apart by what they are, not by their names.
+    tts = P.user_dir('tts') / 'Ses'
+    gguf(tts / 'b.gguf', 'omnivoice-tokenizer')
+    gguf(tts / 'a.gguf', 'omnivoice-lm', context_length=40960)
+    voice = P.model_spec(P.spec('tts'), 'kendi-ses')
+    assert voice['complete'] and voice['files'] == ['a.gguf', 'b.gguf']
+    # Memory: a model that does not say how it pools is pooled like ours.
+    gguf(P.user_dir('embedding') / 'E' / 'e.gguf', 'qwen2', context_length=8192, embedding_length=1024)
+    assert P.model_spec(P.spec('embedding'), 'kendi-e')['args'] == ['--pooling', 'last']
+    assert row('embedding', 'kendi-e')['dims'] == 1024
+
+
+def test_removing_keeps_the_users_own_models_unless_asked(parts, monkeypatch):
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    gguf(P.user_dir('llm') / 'Mine' / 'm.gguf', 'qwen2', context_length=4096)
+    gguf(P.models_dir('llm') / 'miniplm-qwen-200m' / 'MiniPLM-Qwen-200M-Q3_K_M.gguf', 'qwen2')
+    P.write_part_config('llm', enabled=True, model='kendi-mine')
+    P.remove('llm', delete_models=True)
+    assert P.apply('llm') == 0
+    assert (P.user_dir('llm') / 'Mine' / 'm.gguf').is_file()
+    assert not (P.models_dir('llm') / 'miniplm-qwen-200m').exists()
+    P.write_part_config('llm', enabled=True)
+    P.remove('llm', delete_models=True, delete_user_models=True)
+    assert P.apply('llm') == 0
+    assert not P.user_dir('llm').exists()

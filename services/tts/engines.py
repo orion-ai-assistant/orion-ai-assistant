@@ -615,7 +615,9 @@ def get_engine():
     elif engine_name == "omnivoice":
         engine = OmniVoiceEngine(model_id=model_path or "k2-fsa/OmniVoice")
     elif engine_name in ("omnivoice-gguf", "omnivoice_gguf", "gguf"):
-        engine = OmniVoiceGGUFEngine(model_path=model_path)
+        # Bileşenler names both files (a user's own model may call them anything).
+        engine = OmniVoiceGGUFEngine(model_path=model_path,
+                                     codec_path=get_env("CODEC_PATH", default=None, required=False))
     else:
         raise ValueError(f"Hata: '{engine_name}' adında bir motor bulunamadı.")
     
