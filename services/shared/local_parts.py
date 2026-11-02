@@ -4,7 +4,8 @@ is installed, and the jobs that download and install them.
     parts home   <installation>/Parts for an installed Orion; <source tree>/.local_parts when the Hub runs from
                  source (a development tree never writes into the installed Orion's folder)
       config.json                         per part: enabled, model, settings
-      engines/<engine>-<version>/<hw>/    llama-server and its libraries, shared by the parts that use them
+      engines/<engine>-<version>/<hw>/    an engine (llama-server, tts-server, or a Python service's extra
+                                          packages under site/), shared by the parts that use it
       models/<part>/<folder>/<files>      (under the installation's models location when it has one)
       jobs/<part>.json                    the running or last job; jobs/<part>.cancel asks it to stop
       run/<part>/                         process lifecycle state of the running part
@@ -14,10 +15,15 @@ where a feature needs it). A job runs in its own process (`python -m services.sh
 closing the Orion window never stops a download, and a download that was cut continues where it stopped.
 Installed parts start with the Hub (`keep_running`) and stop with it.
 
-The catalog (local_parts.json) lists engine builds per operating system; a part whose engine has no build for
-this system is shown but cannot be installed here yet.
+The catalog (local_parts.json) lists engine recipes per operating system and hardware: files shipped with Orion
+(`bundled`), archives and Python wheels to download (with SHA-256 where known). A part whose engine has no
+recipe for this system is shown but cannot be installed here yet. Two kinds of part run:
+    llama    llama-server with the model (memory/embedding, local LLM)
+    python   one of Orion's own services (STT, TTS) on the packaged Python, its engine's packages on the path
+             (services/shared/part_python.py); no PyTorch anywhere
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -114,6 +120,29 @@ def engine_exe(engine, hardware, data=None):
     return found
 
 
+def engine_recipe(engine, hardware, data=None):
+    """How this engine is put together here: {'bundled', 'archives', 'wheels'}, or None (not on this system)."""
+    return (((data or catalog())['engines'][engine].get(system())) or {}).get(hardware)
+
+
+def engine_ready(engine, hardware, data=None):
+    folder = engine_dir(engine, hardware, data)
+    return (folder / '.complete').is_file() or (engine == 'llama.cpp' and engine_exe(engine, hardware, data) is not None)
+
+
+def python_fits(engine, data=None):
+    """Wheels are built for one Python: the packaged Orion's. A Hub run from source on another one cannot use them."""
+    wanted = (data or catalog())['engines'][engine].get('python')
+    return not wanted or wanted == f'{sys.version_info.major}.{sys.version_info.minor}'
+
+
+def engine_size(engine, hardware, data=None):
+    """Bytes to download for the engine when every piece says its size, else None."""
+    recipe = engine_recipe(engine, hardware, data) or {}
+    pieces = recipe.get('archives', []) + recipe.get('wheels', [])
+    return sum(piece['size'] for piece in pieces) if all('size' in piece for piece in pieces) else None
+
+
 def model_files(part, model):
     folder = models_dir(part['id']) / model['folder']
     return [folder / name for name in model['files'] + ([model['mmproj']] if model.get('mmproj') else [])]
@@ -121,6 +150,20 @@ def model_files(part, model):
 
 def downloaded(part, model):
     return all(path.is_file() for path in model_files(part, model))
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as source:
+        for block in iter(lambda: source.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verify(path, expected, what):
+    if expected and sha256(path) != expected:
+        Path(path).unlink(missing_ok=True)
+        raise PartError(f'{what} bozuk indi (SHA-256 tutmadı); yeniden dene.')
 
 
 def _write_json(path, value):
@@ -224,9 +267,24 @@ def hardware(*, refresh=False, run=subprocess.run):
 
 # --- Settings ------------------------------------------------------------------------------------------------
 
+COMPUTE_TYPES = [{'id': 'int8_float16', 'label': 'int8 + float16 (önerilen)'},
+                 {'id': 'int8', 'label': 'int8 (en az bellek)'}, {'id': 'float16', 'label': 'float16 (en doğru, çok bellek)'}]
+
+
+def choices(part, hw):
+    """The ways this part can run on this PC, best first."""
+    allowed = part.get('hardware') or [choice['id'] for choice in hw['choices']]
+    return [choice for choice in hw['choices'] if choice['id'] in allowed] or [{'id': 'cpu', 'label': HARDWARE_LABELS['cpu']}]
+
+
 def default_settings(part, model, hw):
     """What a part runs with unless the user changes it (Gelişmiş ayarlar)."""
-    hardware_id = hw['recommended']
+    hardware_id = choices(part, hw)[0]['id']
+    if part.get('runner') == 'python':
+        settings = {'hardware': hardware_id, 'gpu': 'all'}
+        if part['id'] == 'stt':
+            settings['compute_type'] = 'int8' if hardware_id == 'cpu' else 'int8_float16'
+        return settings
     layers = 0
     if hardware_id != 'cpu':
         layers = ALL_LAYERS
@@ -240,11 +298,16 @@ def default_settings(part, model, hw):
 
 def advanced(part, hw):
     """The advanced settings a card shows (all have a default)."""
-    fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': hw['choices']}]
+    fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': choices(part, hw)}]
     if len(hw['gpus']) > 1:
         fields.append({'key': 'gpu', 'label': 'Hangi ekran kartı', 'type': 'choice',
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
                            {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in hw['gpus']]})
+    if part.get('runner') == 'python':
+        if part['id'] == 'stt':
+            fields.append({'key': 'compute_type', 'label': 'Hesaplama hassasiyeti', 'type': 'choice',
+                           'options': COMPUTE_TYPES, 'hint': 'İşlemcide her zaman int8 kullanılır.'})
+        return fields
     fields += [
         {'key': 'gpu_layers', 'label': 'Ekran kartına giden katman', 'type': 'int', 'min': 0, 'max': ALL_LAYERS,
          'hint': f'{ALL_LAYERS} = hepsi. Ekran kartı belleği yetmezse azalt.'},
@@ -282,13 +345,15 @@ def effective(part, hw, config=None):
     model_id = config.get('model') or next((m['id'] for m in part.get('models', []) if m.get('recommended')), None)
     model = next((m for m in part.get('models', []) if m['id'] == model_id), None)
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
-    if settings['hardware'] not in {choice['id'] for choice in hw['choices']}:
-        settings['hardware'] = hw['recommended']  # A card that is gone, or a config copied from another PC.
+    if settings['hardware'] not in {choice['id'] for choice in choices(part, hw)}:
+        settings['hardware'] = choices(part, hw)[0]['id']  # A card that is gone, or a config copied from another PC.
     return model, settings
 
 
 def command(part, model, settings, data=None):
-    """llama-server's argv and environment for `part` running `model` with `settings`."""
+    """The argv, environment and port for `part` running `model` with `settings`."""
+    if part.get('runner') == 'python':
+        return _python_command(part, model, settings, data)
     from .service_access import bind_host, own_origins
     exe = engine_exe(part['engine'], settings['hardware'], data)
     if exe is None:
@@ -304,6 +369,27 @@ def command(part, model, settings, data=None):
     env = dict(os.environ)
     if settings.get('gpu', 'all') != 'all':
         env['CUDA_VISIBLE_DEVICES' if settings['hardware'] == 'cuda' else 'GGML_VK_VISIBLE_DEVICES'] = settings['gpu']
+    return argv, env, int(port)
+
+
+def _python_command(part, model, settings, data=None):
+    """One of Orion's own services on the packaged Python, with its engine's packages and libraries."""
+    folder = engine_dir(part['engine'], settings['hardware'], data)
+    if not engine_ready(part['engine'], settings['hardware'], data):
+        raise PartError('Motor kurulu değil.')
+    port = str(os.getenv(part['port_key']) or part['port'])
+    gpu = settings['hardware'] != 'cpu'
+    values = {'model_folder': model['folder'], 'model_dir': str(models_dir(part['id']) / model['folder']),
+              'engine_dir': str(folder), 'compute_type': settings.get('compute_type', 'int8') if gpu else 'int8'}
+    site = folder / 'site'
+    argv = [sys.executable, '-B', '-m', 'services.shared.part_python', str(ROOT / part['script']),
+            str(site) if site.is_dir() else '']
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8', ORION_HW_ID='nvidia' if gpu else 'cpu',
+               ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'])
+    env[part['port_key']] = port
+    env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
+    if gpu and settings.get('gpu', 'all') != 'all':
+        env['CUDA_VISIBLE_DEVICES'] = settings['gpu']
     return argv, env, int(port)
 
 
@@ -366,7 +452,8 @@ def part_status(part, hw, config, data):
     model, settings = effective(part, hw, config)
     entry = config.get(part['id'], {})
     current = job(part['id'])
-    engine_ready = engine_exe(part['engine'], settings['hardware'], data) is not None
+    ready = engine_ready(part['engine'], settings['hardware'], data)
+    engine_bytes = None if ready else engine_size(part['engine'], settings['hardware'], data)
     if current and current.get('phase') not in TERMINAL:
         state = 'working'
     elif running:
@@ -384,10 +471,15 @@ def part_status(part, hw, config, data):
         models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
                        'size_mb': item['size_mb'], 'recommended': bool(item.get('recommended')),
                        'downloaded': downloaded(part, item), 'partial_mb': round(partial / 1048576, 1)})
+    note = None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).'
+    if builds and not python_fits(part['engine'], data):
+        builds = None
+        note = (f'Bu parçanın paketleri Orion’un Python {data["engines"][part["engine"]]["python"]} sürümü için; '
+                f'bu Hub Python {sys.version_info.major}.{sys.version_info.minor} ile çalışıyor (kaynaktan çalışan Hub).')
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
-            'note': None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).',
+            'note': note,
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
-            'engine_ready': engine_ready, 'models': models, 'settings': settings, 'advanced': advanced(part, hw),
+            'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None, 'models': models, 'settings': settings, 'advanced': advanced(part, hw),
             'job': current}
 
 
@@ -423,6 +515,8 @@ def start_job(part_id, action, *, model=None, settings=None):
     hw = hardware()
     if not data['engines'][part['engine']].get(hw['system']):
         raise PartError('Bu işletim sistemi için kurulum henüz yok.')
+    if not python_fits(part['engine'], data):
+        raise PartError('Bu parçanın paketleri bu Python sürümüne uymuyor; kurulu Orion’da kurulur.')
     if busy(part_id):
         raise PartError('Bu bileşende bir iş zaten sürüyor.')
     current, _ = effective(part, hw)
@@ -545,7 +639,7 @@ def keep_running():
         if not part.get('engine') or not entry.get('enabled') or entry.get('paused') or busy(part['id']):
             continue
         model, settings = effective(part, hw, config)
-        if model is None or not downloaded(part, model) or engine_exe(part['engine'], settings['hardware'], data) is None:
+        if model is None or not downloaded(part, model) or not engine_ready(part['engine'], settings['hardware'], data):
             continue
         if not answers(int(os.getenv(part['port_key']) or part['port'])):
             try:
@@ -570,7 +664,11 @@ def serve(part_id):
     with Runtime(run_dir(part_id), 'part') as runtime:
         if 'engine' not in runtime.children:
             assert_port_free(port)
-        child = runtime.launch('engine', argv, cwd=str(Path(argv[0]).parent), env=env, creationflags=NO_WINDOW)
+        cwd = run_dir(part_id) if part.get('runner') == 'python' else Path(argv[0]).parent
+        # The service's own output (why it did not start) is kept next to its state.
+        with (run_dir(part_id) / 'service.log').open('ab') as log:
+            child = runtime.launch('engine', argv, cwd=str(cwd), env=env, creationflags=NO_WINDOW,
+                                   stdout=log, stderr=subprocess.STDOUT)
         wait_health(child, port, timeout=READY_TIMEOUT)
         runtime.ready()
         while not runtime.requested() and child.poll() is None:
@@ -645,26 +743,37 @@ class _Progress:
 
 
 def _install_engine(part_id, part, settings, data, cancelled):
+    """Put the engine together in a scratch folder (Orion's bundled files, archives, wheels), then move it in."""
     hardware_id = settings['hardware']
-    if engine_exe(part['engine'], hardware_id, data) is not None:
+    if engine_ready(part['engine'], hardware_id, data):
         return
-    urls = data['engines'][part['engine']].get(system(), {}).get(hardware_id)
-    if not urls:
+    recipe = engine_recipe(part['engine'], hardware_id, data)
+    if not recipe:
         raise PartError('Bu donanım için motor yok.')
     final = engine_dir(part['engine'], hardware_id, data)
     (home() / 'engines').mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='unpack-', dir=str(home() / 'engines')))
     try:
         unpacked = work / 'unpacked'
-        for number, url in enumerate(urls, 1):
-            _update_job(part_id, phase='engine', label=f'Motor indiriliyor ({number}/{len(urls)})', bytes=0, total=None)
-            archive = home() / 'engines' / 'downloads' / url.rsplit('/', 1)[-1]
-            download(url, archive, report=_Progress(part_id, f'Motor indiriliyor ({number}/{len(urls)})'), cancelled=cancelled)
+        unpacked.mkdir()
+        if recipe.get('bundled'):
+            shutil.copytree(ROOT / recipe['bundled'], unpacked, dirs_exist_ok=True)
+        pieces = [(piece, 'archive') for piece in recipe.get('archives', [])] + [(piece, 'wheel') for piece in recipe.get('wheels', [])]
+        total = engine_size(part['engine'], hardware_id, data)
+        offset = 0
+        for number, (piece, kind) in enumerate(pieces, 1):
+            label = f'Motor indiriliyor ({number}/{len(pieces)})'
+            _update_job(part_id, phase='engine', label=label, bytes=offset, total=total)
+            archive = home() / 'engines' / 'downloads' / piece['url'].rsplit('/', 1)[-1]
+            download(piece['url'], archive, report=_Progress(part_id, label, offset, total), cancelled=cancelled)
+            verify(archive, piece.get('sha256'), 'Motor dosyası')
+            offset += archive.stat().st_size
             _update_job(part_id, phase='engine', label='Motor açılıyor…', rate=0)
             with zipfile.ZipFile(archive) as bundle:
-                bundle.extractall(unpacked)
-        if not any(unpacked.rglob('llama-server.exe' if os.name == 'nt' else 'llama-server')):
+                bundle.extractall(unpacked / 'site' if kind == 'wheel' else unpacked)
+        if part.get('runner', 'llama') == 'llama' and not any(unpacked.rglob('llama-server.exe' if os.name == 'nt' else 'llama-server')):
             raise PartError('İndirilen motorda llama-server yok.')
+        (unpacked / '.complete').write_text(data['engines'][part['engine']]['version'], encoding='utf-8')
         final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():
             shutil.rmtree(final)
@@ -676,15 +785,38 @@ def _install_engine(part_id, part, settings, data, cancelled):
 
 def _fetch_model(part_id, part, model, cancelled):
     files = model_files(part, model)
-    missing = [path for path in files if not path.is_file()]
-    if not missing:
+    if all(path.is_file() for path in files):
         return
     estimate = int(model['size_mb'] * 1048576)
+    label = f'{model["name"]} indiriliyor'
+    if model.get('archive'):
+        archive = models_dir(part_id) / '.downloads' / model['archive'].rsplit('/', 1)[-1]
+        _update_job(part_id, phase='model', label=label, total=estimate)
+        download(model['archive'], archive, report=_Progress(part_id, label, 0, estimate), cancelled=cancelled)
+        verify(archive, model.get('archive_sha256'), 'Model')
+        _update_job(part_id, phase='model', label='Model açılıyor…', rate=0)
+        folder = files[0].parent
+        work = Path(tempfile.mkdtemp(prefix='unpack-', dir=str(archive.parent)))
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(work)
+            # The zip holds the model's files, at its root or in one folder.
+            source = next((path.parent for path in work.rglob(model['files'][0])), None)
+            if source is None:
+                raise PartError('İndirilen modelde beklenen dosyalar yok.')
+            if folder.exists():
+                shutil.rmtree(folder)
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(source, folder)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            archive.unlink(missing_ok=True)
+        return
     offset = sum(path.stat().st_size for path in files if path.is_file())
-    for path in missing:
-        label = f'{model["name"]} indiriliyor'
+    for path in [path for path in files if not path.is_file()]:
         _update_job(part_id, phase='model', label=label, total=estimate)
         download(model['url'] + path.name, path, report=_Progress(part_id, label, offset, estimate), cancelled=cancelled)
+        verify(path, (model.get('sha256') or {}).get(path.name), 'Model')
         offset += path.stat().st_size
 
 

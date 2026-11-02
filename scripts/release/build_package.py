@@ -106,7 +106,11 @@ def verify_no_service_worker(web):
 RUNTIME_RECIPE = 1
 SOURCE_PREFIXES = {
     'hub': ['services/shared', 'services/hub/src', 'services/hub/run_local.py',
-            'services/hub/pyproject.toml', 'services/.env.global', 'local_db_setup.py', 'installer/app'],
+            'services/hub/pyproject.toml', 'services/.env.global', 'local_db_setup.py', 'installer/app',
+            # Bileşenler: the STT and TTS services run on this package's Python (services/shared/local_parts.py).
+            'services/stt/whisper/api.py', 'services/stt/whisper/model_loading.py', 'services/stt/whisper/prompts.py',
+            'services/stt/whisper/stt_languages.json', 'services/tts/api.py', 'services/tts/engines.py',
+            'services/tts/schemas.py', 'services/tts/omnivoice-gguf/bin'],
     'router': ['core', 'bin', 'api', 'database', 'providers', 'main.py', 'cli.py',
                'dynamic_router.py', 'pyproject.toml', '.env.example'],
 }

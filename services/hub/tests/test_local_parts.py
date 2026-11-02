@@ -25,6 +25,7 @@ def parts(tmp_path, monkeypatch):
     monkeypatch.setenv('ORION_PARTS_HOME', str(tmp_path / 'Parts'))
     monkeypatch.setattr(P, 'hardware', lambda **kwargs: TWO_CARDS)
     monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
+    monkeypatch.setattr(P, 'python_fits', lambda engine, data=None: True)  # Tests run on any Python.
     return tmp_path / 'Parts'
 
 
@@ -34,15 +35,37 @@ def fake_engine(home, hardware='cuda'):
     (folder / ('llama-server.exe' if os.name == 'nt' else 'llama-server')).write_bytes(b'')
 
 
-def test_the_cards_show_every_part_and_only_llama_parts_install_here(parts):
+def test_every_part_installs_here_with_its_own_settings(parts):
     status = P.status()
     by_id = {part['id']: part for part in status['parts']}
     assert set(by_id) == {'embedding', 'llm', 'stt', 'tts'}
-    assert by_id['embedding']['installable'] and by_id['embedding']['state'] == 'absent'
+    assert all(part['installable'] and part['state'] == 'absent' for part in by_id.values())
     assert by_id['embedding']['model'] == 'jina-v5-omni-nano'  # The recommended model, nothing installed yet.
-    assert not by_id['stt']['installable'] and by_id['stt']['note'] and by_id['stt']['cloud']
-    keys = [field['key'] for field in by_id['llm']['advanced']]
-    assert keys == ['hardware', 'gpu', 'gpu_layers', 'context_size', 'parallel']  # Two cards: which one.
+    # With an NVIDIA card the speech engine brings cuBLAS and cuDNN (~1.3 GB); on the processor it is 43 MB.
+    assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engine_mb'] > 1300
+    keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
+    assert keys('llm') == ['hardware', 'gpu', 'gpu_layers', 'context_size', 'parallel']  # Two cards: which one.
+    assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
+    # Speech runs on CUDA or the processor; there is no Vulkan build of it.
+    assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'cpu']
+
+
+def test_speech_services_run_on_orions_python_with_their_engine(parts):
+    for part_id in ('stt', 'tts'):
+        folder = P.engine_dir(P.spec(part_id)['engine'], 'cpu')
+        (folder / 'site').mkdir(parents=True)
+        (folder / '.complete').write_text('x')
+    stt = P.spec('stt')
+    small = P.model_spec(stt, 'whisper-small-official')
+    argv, env, port = P.command(stt, small, {'hardware': 'cpu', 'gpu': 'all', 'compute_type': 'float16'})
+    assert port == 9009 and argv[1:4] == ['-B', '-m', 'services.shared.part_python']
+    assert argv[4].endswith('api.py') and argv[5].endswith('site')
+    assert env['WHISPER_MODEL'] == 'whisper-small-official' and env['WHISPER_COMPUTE_TYPE'] == 'int8'  # CPU: int8.
+    assert env['ORION_HW_ID'] == 'cpu' and env['MODEL_FILE'] == ''
+    tts = P.spec('tts')
+    argv, env, port = P.command(tts, P.model_spec(tts, 'omnivoice-gguf'), {'hardware': 'cpu', 'gpu': 'all'})
+    assert port == 8810 and env['ENGINE_NAME'] == 'omnivoice-gguf' and env['MODEL_PATH'].endswith('omnivoice-gguf')
+    assert env['OMNIVOICE_BIN_DIR'] == str(P.engine_dir('omnivoice-gguf', 'cpu'))
 
 
 def test_another_system_shows_the_cards_but_cannot_install_yet(parts, monkeypatch):
@@ -204,3 +227,79 @@ def test_the_hardware_is_read_once_for_every_hub_process(parts, monkeypatch):
     P._hardware.update(at=0, value=None)  # Another process: nothing in memory.
     P.hardware(run=run)
     assert len(calls) <= 2 and (parts / 'hardware.json').is_file()
+
+
+def zip_bytes(files):
+    import io
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as bundle:
+        for name, content in files.items():
+            bundle.writestr(name, content)
+    return buffer.getvalue()
+
+
+class Archives(BaseHTTPRequestHandler):
+    files = {}
+    def do_GET(self):
+        body = self.files.get(self.path.lstrip('/'))
+        if body is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+
+
+def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, monkeypatch, tmp_path):
+    import hashlib
+    httpd = ThreadingHTTPServer(('127.0.0.1', 0), Archives)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f'http://127.0.0.1:{httpd.server_address[1]}/'
+    wheel = zip_bytes({'faster_whisper/__init__.py': 'x = 1\n'})
+    model = zip_bytes({'whisper-small-ct2/model.bin': 'm', 'whisper-small-ct2/config.json': '{}',
+                       'whisper-small-ct2/tokenizer.json': '{}', 'whisper-small-ct2/vocabulary.txt': 'v'})
+    Archives.files = {'fw.whl': wheel, 'small.zip': model, 'bad.whl': b'not this'}
+    bundled = tmp_path / 'bundled'
+    bundled.mkdir()
+    (bundled / 'tool.dll').write_text('dll')
+    data = P.catalog()
+    monkeypatch.setattr(P, 'ROOT', tmp_path)
+    data['engines']['faster-whisper']['windows']['cpu'] = {'bundled': 'bundled', 'wheels': [
+        {'url': base + 'fw.whl', 'sha256': hashlib.sha256(wheel).hexdigest(), 'size': len(wheel)}]}
+    stt = next(part for part in data['parts'] if part['id'] == 'stt')
+    small = next(m for m in stt['models'] if m['id'] == 'whisper-small-official')
+    small.update(archive=base + 'small.zip', archive_sha256=hashlib.sha256(model).hexdigest())
+    monkeypatch.setattr(P, 'catalog', lambda: data)
+    monkeypatch.setattr(P, 'hardware', lambda **kwargs: {**NO_CARD, 'system': 'windows'})
+    monkeypatch.setattr(P, 'start_part', lambda part_id: True)
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    try:
+        assert P.run_job('stt', 'install', 'whisper-small-official') == 0, P.job('stt')
+        folder = P.engine_dir('faster-whisper', 'cpu')
+        assert (folder / 'tool.dll').is_file() and (folder / 'site/faster_whisper/__init__.py').is_file()
+        assert P.downloaded(stt, small) and P.read_config()['stt']['enabled']
+        # A piece that does not match its SHA-256 is refused and nothing is installed.
+        data['engines']['faster-whisper']['windows']['cuda'] = {'wheels': [{'url': base + 'bad.whl', 'sha256': '0' * 64}]}
+        P.write_part_config('stt', settings={'hardware': 'cuda'}, enabled=False)
+        monkeypatch.setattr(P, 'hardware', lambda **kwargs: TWO_CARDS)
+        assert P.run_job('stt', 'install', 'whisper-small-official') == 1
+        assert 'SHA-256' in P.job('stt')['error'] and not P.engine_ready('faster-whisper', 'cuda')
+    finally:
+        httpd.shutdown()
+
+
+def test_speech_packages_need_the_packaged_python(parts, monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setenv('ORION_PARTS_HOME', str(parts))
+    monkeypatch.setattr(P, 'hardware', lambda **kwargs: NO_CARD)
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
+    monkeypatch.setattr(P.sys, 'version_info', type('V', (), {'major': 3, 'minor': 14})())
+    stt = next(part for part in P.status()['parts'] if part['id'] == 'stt')
+    assert not stt['installable'] and 'Python 3.11' in stt['note'] and '3.14' in stt['note']
+    with pytest.raises(P.PartError):
+        P.start_job('stt', 'install')

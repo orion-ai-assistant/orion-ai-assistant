@@ -30,7 +30,8 @@ from services.shared.service_access import BrowserGuard, bind_host
 try:
     from dotenv import load_dotenv
     _local_env = os.path.join(CURRENT_DIR, ".env")
-    if os.path.exists(_local_env):
+    # Started by Orion's Bileşenler page: its settings come from there, not from a developer's .env here.
+    if os.path.exists(_local_env) and not os.getenv("ORION_PART"):
         load_dotenv(_local_env, override=True)
 except ImportError:
     pass

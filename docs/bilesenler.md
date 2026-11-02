@@ -47,12 +47,20 @@ Sıra önerisi yukarıdan aşağıya.
    grubunu gönderiyor). Hafıza kapalıyken sohbet ekranında "Hafıza kapalı. Açmak için hafıza servisini kur
    [Bileşenleri aç]" kutucuğu (`offerPart(part: 'embedding')`). Tasarım notları: `embedtaktik.md`,
    `assets/yz hafıza sistemi/`.
-2. **Yerel STT'yi buradan kurmak.** faster-whisper ve ctranslate2 Hub'ın paketli Python'unda yok; whisper servisi
-   (`services/stt/whisper`) pakete girmiyor. Seçenekler: STT için ayrı bir Python ortamı/katmanı indirmek ya da
-   whisper.cpp (llama.cpp gibi tek exe) motoruna geçmek. Kutucuk şimdilik durumunu ve bulut seçeneğini gösteriyor;
-   mikrofon STT yoksa kutucuğu öneriyor.
-3. **Yerel TTS'yi buradan kurmak.** Aynı sorun, daha büyük (torch). omnivoice-gguf yolu GGUF ise motor modeline
-   uyabilir; araştır.
+2. ~~Yerel STT ve TTS'yi buradan kurmak~~ (2026-11-02 yapıldı, PyTorch'suz):
+   - **STT:** Orion'un paketli Python'u (3.11) + faster-whisper/CTranslate2 paketleri (43 MB, sabit sürüm ve
+     SHA-256, `uv pip compile` ile Hub paketleriyle uyumlu çözüldü). GPU için ek olarak NVIDIA cuBLAS/cuDNN/NVRTC
+     (~1.3 GB, yalnızca "Ekran kartı" seçilince). Modeller bizim `stt-whisper-ct2-v1` yayınımızdaki SHA'lı ziplerden.
+   - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU dosyaları Orion paketinde, CUDA zipi `tts-v1.0.0` yayınından.
+   - Servisler `services/shared/part_python.py` ile başlar; `ORION_PART` varken servisler depodaki geliştirici
+     `.env`'sini okumaz. Kaynaktan çalışan Hub başka bir Python sürümündeyse (3.14) STT kutucuğu bunu söyler.
+   - Doğrulandı: kurulu Orion'un Python 3.11'iyle STT ve TTS gerçekten kuruldu; TTS'in ürettiği Türkçe cümle STT ile
+     yazıya döndü. Bu sırada TTS'in akışlı WAV'ın yalnızca ilk parçasını döndürdüğü hata düzeltildi.
+   - Kalan: STT/TTS paketlerinin sürümünü yenilerken `uv pip compile -c
+     hub-requirements.txt --python-version 3.11 --python-platform x86_64-pc-windows-msvc --generate-hashes`
+     ile yeniden çöz, adres ve SHA-256'ları PyPI'den alıp kataloğa yaz (bunu yapan bir betik henüz depoda yok).
+3. **TTS ses klonları:** Bileşenler'in kurduğu TTS klonları `Parts/run/tts/voices` altında tutar; Orion'la gelen
+   sesler kod klasöründe. Klon yönetimi ekranı yok.
 4. **Yerel mi bulut mu seçimi.** Her kutucukta "Bulut (Router üzerinden)" seçeneği: STT için Gemini
    transcribe var ama canlı sesli yazma hep yerel servise gidiyor (`orion-router/api/transcriptions.py`);
    embedding için `GeminiEmbedProvider` var ama `gemini/models.json`'da embedding modeli listelenmemiş. Seçim

@@ -253,13 +253,18 @@ class OmniVoiceGGUFEngine(TTSEngine):
             self.server_bin = f"/usr/local/bin/tts-server{exe_ext}"
             self.codec_bin = f"/usr/local/bin/omnivoice-codec{exe_ext}"
         else:
-            self.server_bin = os.path.join(gguf_dir, "bin", f"tts-server{exe_ext}")
-            self.codec_bin = os.path.join(gguf_dir, "bin", f"omnivoice-codec{exe_ext}")
+            # Orion's Bileşenler page installs the engine outside the code folder (OMNIVOICE_BIN_DIR).
+            bin_dir = os.environ.get("OMNIVOICE_BIN_DIR") or os.path.join(gguf_dir, "bin")
+            self.server_bin = os.path.join(bin_dir, f"tts-server{exe_ext}")
+            self.codec_bin = os.path.join(bin_dir, f"omnivoice-codec{exe_ext}")
 
         # Models Path
         models_base = os.path.join(current_dir, "models", "omnivoice-gguf")
-        
+
         if model_path and os.path.isdir(model_path):
+            # A model folder holds both files (Bileşenler downloads them together).
+            if not codec_path and os.path.exists(os.path.join(model_path, "omnivoice-tokenizer-Q8_0.gguf")):
+                codec_path = os.path.join(model_path, "omnivoice-tokenizer-Q8_0.gguf")
             model_path = os.path.join(model_path, "omnivoice-base-Q8_0.gguf")
             
         if not model_path or not os.path.exists(model_path):
@@ -279,7 +284,8 @@ class OmniVoiceGGUFEngine(TTSEngine):
             logger.warning(f"OmniVoice GGUF codec not found at: {self.codec_path}")
 
         self.host = "127.0.0.1"
-        self.port = 8809
+        # Its own loopback port; a second TTS (a Bileşenler one next to a source one) picks another.
+        self.port = int(os.environ.get("OMNIVOICE_SERVER_PORT", "8809"))
         self.server_proc = None
         self._start_server()
         
@@ -489,20 +495,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
             try:
                 with urllib.request.urlopen(req, timeout=600) as res:
                     if res.status == 200:
-                        wav_data = res.read()
-                        import tempfile, wave, os
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
-                            tmp_wav.write(wav_data)
-                            tmp_wav_path = tmp_wav.name
-                            
-                        with wave.open(tmp_wav_path, "rb") as wf:
-                            sample_rate = wf.getframerate()
-                            n_frames = wf.getnframes()
-                            frames = wf.readframes(n_frames)
-                            audio_data = np.frombuffer(frames, dtype=np.int16)
-                            
-                        os.remove(tmp_wav_path)
-                        return (sample_rate, audio_data)
+                        return streamed_wav(res.read())
             except Exception as e:
                 logger.error(f"GGUF Server request failed: {e}")
             
@@ -595,6 +588,20 @@ class OmniVoiceGGUFEngine(TTSEngine):
         finally:
             if is_temp_voice and target_voice:
                 self._delete_voice_from_server(target_voice)
+
+def streamed_wav(wav_data: bytes) -> Tuple[int, np.ndarray]:
+    """tts-server streams its WAV, so the header's sizes describe only the first part (a 2.4 s sentence came
+    back as 0.45 s). Every byte after the "data" tag is audio."""
+    import struct
+    if len(wav_data) < 44 or wav_data[:4] != b"RIFF":
+        raise ValueError("tts-server did not send a WAV")
+    sample_rate = struct.unpack_from("<I", wav_data, 24)[0]
+    at = wav_data.find(b"data", 12)
+    if at < 0:
+        raise ValueError("tts-server WAV has no data")
+    pcm = wav_data[at + 8:]
+    return sample_rate, np.frombuffer(pcm[:len(pcm) // 2 * 2], dtype=np.int16)
+
 
 def get_engine():
     engine_name = get_env("ENGINE_NAME", "omnivoice", required=False).lower()
