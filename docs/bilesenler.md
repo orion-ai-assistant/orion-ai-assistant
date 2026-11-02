@@ -69,13 +69,13 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   (`USER_KINDS`):
   - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj), başlıktaki mimariden ayırt edilir. Bağlam sınırı, vektör
     boyutu, havuzlama dosyadan okunur.
-  - **STT (faster-whisper):** bizim modellerdeki dosyaların hepsi zorunlu: `model.bin` (başlığı CTranslate2
-    Whisper olmalı), `config.json`, `tokenizer.json`, `vocabulary.json` (bugünkü dönüştürücünün yazdığı ad; eski
-    `.txt` da çalışır ama tek ad karışıklığı önler), `preprocessor_config.json`
-    (sesin kaç mel bandına bölüneceği; `model.bin`'in istediğiyle aynı olmalı, large-v3 ve turbo 128, eskiler
-    80). faster-whisper bu adlarla açar. CTranslate2 4.8.4 ve faster-whisper 1.2.1 ile denendi (2026-11-02): iki
-    sözcük listesi de aynı sonucu verdi, hiçbiri yoksa model açılmadı; turbo 80 bantlık sese hata verdi. Ses
-    servisleri internete çıkmaz (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine hiçbir şey indirilmez.
+  - **STT (faster-whisper):** `model.bin` (başlığı CTranslate2 Whisper olmalı), `config.json`, `tokenizer.json`,
+    `vocabulary.json` ya da `vocabulary.txt` (Systran'ın small/medium modelleri ve bizim small `.txt` getirir).
+    `preprocessor_config.json` sesin kaç mel bandına bölüneceğini söyler: model 80'den çok bant istiyorsa
+    (large-v3, turbo: 128; `model.bin`'den okunur) zorunlu, değilse isteğe bağlı; varsa sayısı modelinkiyle aynı
+    olmalı. CTranslate2 4.8.4 ve faster-whisper 1.2.1 ile denendi (2026-11-02): iki sözcük listesi de aynı sonucu
+    verdi, hiçbiri yoksa model açılmadı; turbo 80 bantlık sese hata verdi. Ses servisleri internete çıkmaz
+    (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine hiçbir şey indirilmez.
   - **TTS:** motor kullanıcının seçimi (OmniVoice; VoxCPM2 yakında). OmniVoice'un iki dosyası başlıklarındaki
     mimariden (`omnivoice-lm`, `omnivoice-tokenizer`) ayırt edilir; tanınmayan dosya adıyla söylenir.
 
@@ -86,7 +86,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 - **Yetki:** durumu oturum açmış herkes görür (telefon salt okunur). Kurma, kaldırma, ayar yalnızca Hub
   bilgisayarındaki Orion penceresinden (`update_routes.local_control`, güncellemelerle aynı kural).
 - **Donanım:** `nvidia-smi` ile NVIDIA kartları ve bellekleri; Windows'ta diğer kartların adları. Varsayılan:
-  NVIDIA varsa CUDA, başka kart varsa Vulkan, yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
+  ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; STT ve TTS'te yalnızca CUDA), yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
   Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
 
 Doğrulandı (2026-11-02, bu bilgisayarda): hafıza parçası CPU motoru + Jina v5 Omni Nano ile gerçekten indirildi,
@@ -140,3 +140,8 @@ Sıra önerisi yukarıdan aşağıya.
       yok); havuzlama söylenmemişse `--pooling last` verilir.
     - **Hafıza modeli değişirse** eski vektörler yeni modelle karşılaştırılamaz (boyut ve uzay farklı): hafıza
       dizini modelin kimliği ve boyutuyla tutulmalı, model değişince arkada yeniden hesaplanmalı.
+12. **Tanıtım ekranı** (2026-11-03, sonra): Flutter uygulaması ilk açılınca uygulamanın nasıl kullanıldığını
+    anlatan kısa bir tanıtım; içinde Bileşenler ekranına (hafıza, yerel model, ses) yönlendiren adım.
+13. **TTS Vulkan derlemesi:** OmniVoice motoru (`services/tts/omnivoice-gguf`, kendi ggml'i) şimdi CUDA 12.1 ve CPU
+    için derleniyor. `GGML_VULKAN=ON` ile derlenip denenirse AMD/Intel kartlarda da çalışabilir; OmniVoice'un
+    kullandığı her işlemin ggml'in Vulkan tarafında olması gerekir. Hız farkı ölçülerek anlaşılır.

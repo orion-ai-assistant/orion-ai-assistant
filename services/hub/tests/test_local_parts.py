@@ -102,7 +102,10 @@ def test_graphics_cards_are_read_from_nvidia_smi():
     if hw['system'] != 'windows':
         pytest.skip('Windows hardware layout')
     assert [gpu['name'] for gpu in hw['gpus']] == ['NVIDIA GeForce RTX 3060', 'RTX 2060', 'Intel(R) UHD Graphics 770']
-    assert [choice['id'] for choice in hw['choices']] == ['cuda', 'vulkan', 'cpu'] and hw['recommended'] == 'cuda'
+    # Vulkan first (the default); speech, which has no Vulkan build, starts on CUDA.
+    assert [choice['id'] for choice in hw['choices']] == ['vulkan', 'cuda', 'cpu'] and hw['recommended'] == 'vulkan'
+    P._hardware.update(at=__import__('time').monotonic(), value=hw)
+    assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['cuda', 'cpu']
     nothing = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=1, stdout=''))
     assert nothing['recommended'] == 'cpu'
 
@@ -608,15 +611,10 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     (stt / 'config.json').write_text('{}')
     states = [item['state'] for item in P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']]
     assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
-    (stt / 'vocabulary.txt').write_text('x')  # One name only: vocabulary.json.
-    assert P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist'][3]['state'] == 'missing'
-    for name in ('tokenizer.json', 'vocabulary.json'):
+    for name in ('tokenizer.json', 'vocabulary.txt'):  # As Systran's small brings them: no preprocessor file.
         (stt / name).write_text('x')
-    assert not P.model_spec(P.spec('stt'), 'custom-whisper-tr')['complete']  # All five, as ours have them.
-    (stt / 'preprocessor_config.json').write_text('{"feature_size": 80}')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
-    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.json',
-                                                        'preprocessor_config.json']
+    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt']
     engine = P.engine_dir('faster-whisper', 'cpu')
     engine.mkdir(parents=True)
     (engine / '.complete').write_text('x')

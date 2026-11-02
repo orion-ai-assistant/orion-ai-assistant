@@ -6,8 +6,9 @@ is installed, and the jobs that download and install them.
       config.json                         per part: enabled, model, settings
       engines/<engine>-<version>/<hw>/    an engine (llama-server, tts-server, or a Python service's extra
                                           packages under site/), shared by the parts that use it
-      models/<part>/<folder>/<files>      (under the installation's models location when it has one)
-      models/<part>/kendi/<name>/         the user's own models: a folder each, read from its files
+      models/<part>/<folder>/<files>      (the installation's models location's parts/ when it has one; the user
+                                          can move it: `location`, services/shared/parts_location.py)
+      models/<part>/custom/<name>/        the user's own models: a folder each, read from its files
       jobs/<part>.json                   the running or last job; jobs/<part>.cancel asks it to stop
       run/<part>/                         process lifecycle state of the running part
 
@@ -117,10 +118,28 @@ def home():
     return Path(Registry().path).parent / 'Parts' if record else ROOT / '.local_parts'
 
 
-def models_dir(part_id):
+def location():
+    """(registry, place, folder): the models' place (what Ayarlar > Bileşenler shows and moves), the registry
+    that says where it is, and the folder of the parts' models in it. An installed Orion's place is its
+    installation's models location (the parts' models in its parts/ folder; registry None when the installation
+    names none, and then it cannot move). A source tree's is its parts home's models/ until the user moves it;
+    then a small registry of its own says where (it never writes into the installed Orion's)."""
+    from .installation_registry import Registry
     record = None if os.getenv('ORION_PARTS_HOME') else _installed()
-    location = ((record or {}).get('locations') or {}).get('models')
-    return (Path(location) / 'parts' if location else home() / 'models') / part_id
+    if record is not None:
+        place = (record.get('locations') or {}).get('models')
+        return (Registry(), Path(place), Path(place) / 'parts') if place else (None, home() / 'models', home() / 'models')
+    registry = Registry(home() / 'location' / 'install.json')
+    try:
+        place = ((registry.read() or {}).get('locations') or {}).get('models')
+    except Exception:
+        place = None
+    place = Path(place) if place else home() / 'models'
+    return registry, place, place
+
+
+def models_dir(part_id):
+    return location()[2] / part_id
 
 
 def _python():
@@ -293,7 +312,9 @@ def hardware(*, refresh=False, run=subprocess.run):
     if current == 'mac':
         choices = ['metal', 'cpu'] if platform.machine().lower() in {'arm64', 'aarch64'} else ['cpu']
     else:
-        choices = (['cuda'] if nvidia else []) + (['vulkan'] if nvidia or others else []) + ['cpu']
+        # Vulkan first (the default): one build for every card, and on an RTX 3060 Ti it generated faster than
+        # the CUDA build (about 100 against 60-70 tokens a second). CUDA stays a choice; speech has only CUDA.
+        choices = (['vulkan'] if nvidia or others else []) + (['cuda'] if nvidia else []) + ['cpu']
     value = {'system': current, 'gpus': nvidia + others, 'choices': [{'id': c, 'label': HARDWARE_LABELS[c]} for c in choices],
              'recommended': choices[0]}
     _hardware.update(at=time.monotonic(), value=value)
@@ -497,17 +518,19 @@ USER_KINDS = {
          'hint': 'Resim ve ses anlamak için.'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Embedding modeli (.gguf)'}]}],
-    # All five, by the names today's converter (ct2-transformers-converter) writes them: without tokenizer.json
-    # faster-whisper would fetch one from the internet, and preprocessor_config.json says how the audio is prepared
-    # (large-v3 and turbo need 128 bands, not 80). One name each: vocabulary.txt (older conversions) works too,
-    # but one name leaves nothing to get wrong.
+    # As the models people download have them: Systran's small and medium (older conversions, ours too) bring
+    # vocabulary.txt and no preprocessor_config.json; large-v3 and turbo bring vocabulary.json and need
+    # preprocessor_config.json (128 bands: without it the audio is prepared with 80 and refused). So either
+    # vocabulary name, and preprocessor_config.json only for a model that hears more than 80 bands (read from
+    # model.bin). tokenizer.json always: nothing is fetched from the internet in place of a missing file.
     'stt': [{'id': 'faster-whisper', 'label': 'faster-whisper (CTranslate2 Whisper)', 'engine': 'faster-whisper',
              'files': [
         {'names': ['model.bin'], 'label': 'model.bin', 'hint': 'Model'},
         {'names': ['config.json'], 'label': 'config.json', 'hint': 'Ayarlar'},
         {'names': ['tokenizer.json'], 'label': 'tokenizer.json', 'hint': 'Sözlük'},
-        {'names': ['vocabulary.json'], 'label': 'vocabulary.json', 'hint': 'Sözcük listesi'},
-        {'names': ['preprocessor_config.json'], 'label': 'preprocessor_config.json', 'hint': 'Ses ayarları'}]}],
+        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json / .txt', 'hint': 'Sözcük listesi'},
+        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'preprocessor_config.json',
+         'hint': 'Ses ayarları; large-v3 ve turbo için gerekli'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
                 {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (.gguf)'},
                 {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü (.gguf)'}]},
@@ -592,8 +615,9 @@ def _ct2_header(path):
 
 
 def _whisper(path, kind, checklist):
-    """faster-whisper's own rules, from the files: model.bin must be a Whisper model, and preprocessor_config.json
-    must prepare the audio with as many mel bands as the model hears (with 80 a turbo model refuses it)."""
+    """faster-whisper's own rules, from the files: model.bin must be a Whisper model, and the audio must be prepared
+    with as many mel bands as it hears: preprocessor_config.json is needed past 80 (without it faster-whisper uses
+    80, and a turbo model refuses that), and when present it must say the model's number."""
     items = {spec['names'][0]: item for spec, item in zip(kind['files'], checklist)}
     model, prepare = items['model.bin'], items['preprocessor_config.json']
     if model['state'] != 'ok':
@@ -603,6 +627,8 @@ def _whisper(path, kind, checklist):
         model.update(state='wrong', hint='Whisper modeli değil.')
         return
     mels = meta['mels']
+    if mels and mels != 80:
+        prepare.update(optional=False, hint=f'Bu model {mels} bantlı: gerekli')
     if prepare['state'] == 'ok' and mels:
         try:
             said = json.loads((path / 'preprocessor_config.json').read_text(encoding='utf-8')).get('feature_size', 80)
@@ -705,6 +731,7 @@ def user_models(part):
 def add_user_model(part_id, name, kind_id=None):
     """Make the folder for a model the user brings, for the engine they chose: it shows at once (empty) and
     fills as they copy its files in. Returns its id."""
+    _not_moving()
     part = spec(part_id)
     places = _places(part_id)
     if not places:
@@ -731,6 +758,7 @@ def add_user_model(part_id, name, kind_id=None):
 
 def open_folder(part_id, model_id):
     """Show one of the user's model folders in this PC's file manager, in front of the Orion window."""
+    _not_moving()
     model = model_spec(spec(part_id), model_id)
     if not model.get('user'):
         raise PartError('Yalnızca kendi modellerinin klasörü açılır.')
@@ -927,6 +955,20 @@ def busy(part_id):
     return bool(value and value.get('phase') not in TERMINAL)
 
 
+def moving():
+    """The models are being moved (services/shared/parts_location.py): nothing may start, download or delete
+    until it is done (a file written meanwhile would be left behind, or fail the check of the copy)."""
+    value = _read_json(home() / 'jobs' / 'move.json', None)
+    if not value or value.get('phase') in TERMINAL:
+        return False
+    return _alive(value.get('pid')) or not value.get('pid') and time.time() - value.get('started', 0) < 30
+
+
+def _not_moving():
+    if moving():
+        raise PartError('Modeller taşınıyor; bitince yeniden dene.')
+
+
 def answers(port, timeout=.5):
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1063,6 +1105,7 @@ def start_job(part_id, action, *, model=None, settings=None, fetch=None):
         raise PartError('Bu işletim sistemi için kurulum henüz yok.')
     if busy(part_id):
         raise PartError('Bu bileşende bir iş zaten sürüyor.')
+    _not_moving()
     current, _ = effective(part, hw)
     chosen = model_spec(part, model) if model else current
     if chosen is None:
@@ -1123,6 +1166,7 @@ def apply_choice(part_id):
     """Uygula: the saved choice replaces what runs. What it needs and is not here (another hardware's engine,
     the vision file, another model) is downloaded first; until then the old one keeps running."""
     part = spec(part_id)
+    _not_moving()
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; bitince uygula.')
     if not read_config().get(part_id, {}).get('enabled'):
@@ -1159,6 +1203,7 @@ def delete_model(part_id, model_id, *, extra=False, file=None):
     it stays stopped until Başlat. `file`: one file of a user's model (its folder goes with its last file)."""
     part = spec(part_id)
     model = model_spec(part, model_id)
+    _not_moving()
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; bitince sil.')
     if extra and not model.get('mmproj'):
@@ -1205,6 +1250,7 @@ def remove(part_id, *, delete_models=False, delete_user_models=False):
     user's own models go only when asked too (`delete_user_models`): they may have nowhere else."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
+    _not_moving()
     write_part_config(part_id, enabled=False, paused=False, purge=bool(delete_models),
                       purge_user=bool(delete_models and delete_user_models))
     _move(part_id, 'stopped')
@@ -1221,6 +1267,7 @@ def stop(part_id):
 
 
 def start(part_id):
+    _not_moving()
     part = spec(part_id)
     entry = read_config().get(part_id, {})
     if not entry.get('enabled'):
@@ -1422,6 +1469,8 @@ def stop_part(part_id):
 def keep_running():
     """The Hub's owner process calls this at start and then now and then: every part the user installed runs
     (a crashed one comes back), none of the others does."""
+    if moving():
+        return  # The move stopped them; it starts them again from the new place.
     data = catalog()
     config = read_config()
     hw = hardware()
