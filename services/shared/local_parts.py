@@ -43,7 +43,8 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 TERMINAL = {'done', 'error', 'cancelled', 'interrupted'}
 READY_TIMEOUT = 300           # a big model loads for minutes on a slow disk
 HARDWARE_TTL = 600
-HARDWARE_LABELS = {'cuda': 'Ekran kartı (NVIDIA CUDA)', 'vulkan': 'Ekran kartı (Vulkan)', 'metal': 'Apple GPU (Metal)',
+HARDWARE_LABELS = {'cuda': 'Ekran kartı (NVIDIA CUDA)', 'vulkan': 'Ekran kartı (Vulkan: her marka, CUDA’dan genelde yavaş)',
+                   'metal': 'Apple GPU (Metal)',
                    'cpu': 'İşlemci (CPU)'}
 ALL_LAYERS = 999
 
@@ -108,9 +109,23 @@ def models_dir(part_id):
     return (Path(location) / 'parts' if location else home() / 'models') / part_id
 
 
+def _python():
+    return f'{sys.version_info.major}.{sys.version_info.minor}'
+
+
+def engine_builds(engine, data=None, system_name=None):
+    """{hardware: recipe} of this engine for this system (and, for Python packages, this Python), or None."""
+    entry = (data or catalog())['engines'][engine]
+    if 'pythons' in entry:
+        entry = entry['pythons'].get(_python()) or {}
+    return entry.get(system_name or system()) or None
+
+
 def engine_dir(engine, hardware, data=None):
-    version = (data or catalog())['engines'][engine]['version']
-    return home() / 'engines' / f'{engine}-{version}' / hardware
+    entry = (data or catalog())['engines'][engine]
+    # Python packages are built for one Python: each one gets its own folder.
+    tag = '-py' + _python().replace('.', '') if 'pythons' in entry else ''
+    return home() / 'engines' / f'{engine}-{entry["version"]}{tag}' / hardware
 
 
 def engine_exe(engine, hardware, data=None):
@@ -122,7 +137,7 @@ def engine_exe(engine, hardware, data=None):
 
 def engine_recipe(engine, hardware, data=None):
     """How this engine is put together here: {'bundled', 'archives', 'wheels'}, or None (not on this system)."""
-    return (((data or catalog())['engines'][engine].get(system())) or {}).get(hardware)
+    return (engine_builds(engine, data) or {}).get(hardware)
 
 
 def engine_ready(engine, hardware, data=None):
@@ -131,9 +146,10 @@ def engine_ready(engine, hardware, data=None):
 
 
 def python_fits(engine, data=None):
-    """Wheels are built for one Python: the packaged Orion's. A Hub run from source on another one cannot use them."""
-    wanted = (data or catalog())['engines'][engine].get('python')
-    return not wanted or wanted == f'{sys.version_info.major}.{sys.version_info.minor}'
+    """Python packages exist for the Pythons the catalog lists (the packaged Orion's, and the one a Hub run from
+    source uses); another Python cannot install this part."""
+    entry = (data or catalog())['engines'][engine]
+    return 'pythons' not in entry or _python() in entry['pythons']
 
 
 def engine_size(engine, hardware, data=None):
@@ -462,14 +478,20 @@ def part_status(part, hw, config, data):
         # Not installable from here yet: say whether it already runs (installed another way) and what else works.
         return {**base, 'installable': False, 'note': part.get('pending'), 'state': 'running' if running else 'absent',
                 'models': [], 'advanced': [], 'settings': {}, 'job': None}
-    builds = data['engines'][part['engine']].get(hw['system'])
+    builds = engine_builds(part['engine'], data, hw['system'])
     model, settings = effective(part, hw, config)
     entry = config.get(part['id'], {})
     current = job(part['id'])
     ready = engine_ready(part['engine'], settings['hardware'], data)
     engine_bytes = None if ready else engine_size(part['engine'], settings['hardware'], data)
+    change = transition(part['id'])
+    moving = change and not change.get('error')
     if current and current.get('phase') not in TERMINAL:
         state = 'working'
+    elif moving and change['to'] == 'stopped' and running:
+        state = 'stopping'
+    elif moving and change['to'] == 'running' and not running:
+        state = 'starting'
     elif running:
         state = 'running'
     elif entry.get('enabled') and _supervised(part['id']):
@@ -489,15 +511,14 @@ def part_status(part, hw, config, data):
                        'mmproj': bool(item.get('mmproj')),
                        'vision_downloaded': bool(vision_file and vision_file.is_file())})
     note = None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).'
-    if builds and not python_fits(part['engine'], data):
-        builds = None
-        note = (f'Bu parçanın paketleri Orion’un Python {data["engines"][part["engine"]]["python"]} sürümü için; '
-                f'bu Hub Python {sys.version_info.major}.{sys.version_info.minor} ile çalışıyor (kaynaktan çalışan Hub).')
+    if not python_fits(part['engine'], data):
+        known = ', '.join(data['engines'][part['engine']]['pythons'])
+        note = f'Bu parçanın paketleri Python {known} için var; bu Hub Python {_python()} ile çalışıyor.'
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
             'note': note,
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
             'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None, 'models': models, 'settings': settings, 'advanced': advanced(part, hw),
-            'job': current}
+            'job': current, 'error': (change or {}).get('error')}
 
 
 def status():
@@ -530,10 +551,10 @@ def start_job(part_id, action, *, model=None, settings=None):
     if not part.get('engine'):
         raise PartError(part.get('pending') or 'Bu bileşen buradan kurulamıyor.')
     hw = hardware()
-    if not data['engines'][part['engine']].get(hw['system']):
-        raise PartError('Bu işletim sistemi için kurulum henüz yok.')
     if not python_fits(part['engine'], data):
-        raise PartError('Bu parçanın paketleri bu Python sürümüne uymuyor; kurulu Orion’da kurulur.')
+        raise PartError('Bu parçanın paketleri bu Python sürümü için yok.')
+    if not engine_builds(part['engine'], data, hw['system']):
+        raise PartError('Bu işletim sistemi için kurulum henüz yok.')
     if busy(part_id):
         raise PartError('Bu bileşende bir iş zaten sürüyor.')
     current, _ = effective(part, hw)
@@ -562,7 +583,8 @@ def cancel(part_id):
 
 
 def select(part_id, *, model=None, settings=None):
-    """Save the chosen model and settings; a running part restarts with them."""
+    """Save the chosen model and settings; a running part restarts with them (in the background: the answer
+    does not wait for it)."""
     data = catalog()
     part = spec(part_id, data)
     hw = hardware()
@@ -575,9 +597,9 @@ def select(part_id, *, model=None, settings=None):
     current, settings = effective(part, hw)
     # A running part restarts only when its new files are all there (vision turned on before its file came:
     # it keeps running without it until "Modeli indir ve kur" fetches it).
-    if entry.get('enabled') and not entry.get('paused') and not busy(part_id) and current             and downloaded(part, current, settings):
-        stop_part(part_id)
-        _spawn(['start', part_id])
+    if (entry.get('enabled') and not entry.get('paused') and not busy(part_id) and current
+            and downloaded(part, current, settings)):
+        _move(part_id, 'running', restart=True)
     return entry
 
 
@@ -595,11 +617,11 @@ def delete_model(part_id, model_id):
 
 
 def remove(part_id):
-    """Turn the part off and stop it. Its models stay (the model panel deletes them)."""
+    """Turn the part off and stop it (in the background). Its models stay (the model panel deletes them)."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
     write_part_config(part_id, enabled=False, paused=False)
-    stop_part(part_id)
+    _move(part_id, 'stopped')
 
 
 def stop(part_id):
@@ -609,7 +631,7 @@ def stop(part_id):
     if not read_config().get(part_id, {}).get('enabled'):
         raise PartError('Bileşen kurulu değil.')
     write_part_config(part_id, paused=True)
-    stop_part(part_id)
+    _move(part_id, 'stopped')
 
 
 def start(part_id):
@@ -621,7 +643,63 @@ def start(part_id):
     if model is None or not downloaded(part, model, settings):
         raise PartError('Modelin dosyaları eksik; Modeli indir ve kur ile tamamla.')
     write_part_config(part_id, paused=False)
-    _spawn(['start', part_id])
+    _move(part_id, 'running')
+
+
+# --- Moving between running and stopped ----------------------------------------------------------------------
+# Starting loads a model (up to minutes) and stopping waits for a clean exit: neither happens inside a request.
+# The wish is written first (so every status says "starting"/"stopping" from the first moment, and the button
+# never flips back), then a process of its own does it and records an error the card shows.
+
+TRANSITION_TTL = READY_TIMEOUT + 60
+
+
+def transition(part_id):
+    value = _read_json(run_dir(part_id) / 'transition.json', None)
+    if not value:
+        return None
+    if value.get('error'):
+        return value
+    if time.time() - value.get('at', 0) > TRANSITION_TTL or not _alive(value.get('pid')):
+        return None  # Done long ago, or its process is gone: the state alone tells.
+    return value
+
+
+def _move(part_id, to, *, restart=False):
+    folder = run_dir(part_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    _write_json(folder / 'transition.json', {'to': to, 'at': time.time(), 'pid': None, 'error': None})
+    process = _spawn(['apply', part_id] + (['--restart'] if restart else []))
+    path = folder / 'transition.json'
+    current = _read_json(path, {})
+    if current.get('to') == to and not current.get('pid'):
+        _write_json(path, {**current, 'pid': process.pid})
+
+
+def apply(part_id, *, restart=False):
+    """Bring the part where its configuration says: running when installed and not stopped, else stopped."""
+    path = run_dir(part_id) / 'transition.json'
+    _write_json(path, {**_read_json(path, {}), 'pid': os.getpid()})
+    entry = read_config().get(part_id, {})
+    wanted = 'running' if entry.get('enabled') and not entry.get('paused') else 'stopped'
+    try:
+        if wanted == 'stopped' or restart:
+            stop_part(part_id)
+        if wanted == 'running':
+            start_part(part_id)
+    except Exception as error:
+        log = run_dir(part_id) / 'service.log'
+        tail = ''
+        try:
+            lines = [line for line in log.read_text(encoding='utf-8', errors='replace').splitlines() if line.strip()]
+            tail = ' Son satır: ' + lines[-1][-300:] if lines else ''
+        except OSError:
+            pass
+        _write_json(path, {'to': wanted, 'at': time.time(), 'pid': None,
+                           'error': f'{"Başlatılamadı" if wanted == "running" else "Durdurulamadı"}: {error}.{tail}'})
+        return 1
+    path.unlink(missing_ok=True)
+    return 0
 
 
 # --- Running parts -------------------------------------------------------------------------------------------
@@ -654,7 +732,8 @@ def keep_running():
     hw = hardware()
     for part in data['parts']:
         entry = config.get(part['id'], {})
-        if not part.get('engine') or not entry.get('enabled') or entry.get('paused') or busy(part['id']):
+        if (not part.get('engine') or not entry.get('enabled') or entry.get('paused') or busy(part['id'])
+                or transition(part['id'])):
             continue
         model, settings = effective(part, hw, config)
         if model is None or not downloaded(part, model, settings) or not engine_ready(part['engine'], settings['hardware'], data):
@@ -760,6 +839,22 @@ class _Progress:
         _update_job(self.part_id, label=self.label, bytes=self.offset + done, total=overall_total, rate=round(rate))
 
 
+def _remote_size(urls):
+    """The bytes all `urls` hold, asked before downloading (None when a server does not say)."""
+    total = 0
+    opener = urllib.request.build_opener()
+    for url in urls:
+        try:
+            with opener.open(urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Orion'}), timeout=15) as reply:
+                length = reply.headers.get('Content-Length')
+        except (OSError, ValueError):
+            return None
+        if not (length and length.isdigit()):
+            return None
+        total += int(length)
+    return total
+
+
 def _install_engine(part_id, part, settings, data, cancelled):
     """Put the engine together in a scratch folder (Orion's bundled files, archives, wheels), then move it in."""
     hardware_id = settings['hardware']
@@ -777,13 +872,17 @@ def _install_engine(part_id, part, settings, data, cancelled):
         if recipe.get('bundled'):
             shutil.copytree(ROOT / recipe['bundled'], unpacked, dirs_exist_ok=True)
         pieces = [(piece, 'archive') for piece in recipe.get('archives', [])] + [(piece, 'wheel') for piece in recipe.get('wheels', [])]
-        total = engine_size(part['engine'], hardware_id, data)
+        # One total for every piece: the catalog's sizes, else what the servers say (a total of one file only
+        # made "616 / 373 MB").
+        total = engine_size(part['engine'], hardware_id, data) or _remote_size([piece['url'] for piece, _ in pieces])
         offset = 0
         for number, (piece, kind) in enumerate(pieces, 1):
-            label = f'Motor indiriliyor ({number}/{len(pieces)})'
+            label = f'1/3 · Motor indiriliyor ({part["engine"]}, parça {number}/{len(pieces)})'
             _update_job(part_id, phase='engine', label=label, bytes=offset, total=total)
             archive = home() / 'engines' / 'downloads' / piece['url'].rsplit('/', 1)[-1]
-            download(piece['url'], archive, report=_Progress(part_id, label, offset, total), cancelled=cancelled)
+            # Without a known total each piece shows its own share.
+            download(piece['url'], archive, report=_Progress(part_id, label, offset if total else 0, total),
+                     cancelled=cancelled)
             verify(archive, piece.get('sha256'), 'Motor dosyası')
             offset += archive.stat().st_size
             _update_job(part_id, phase='engine', label='Motor açılıyor…', rate=0)
@@ -806,7 +905,7 @@ def _fetch_model(part_id, part, model, cancelled, settings=None):
     if all(path.is_file() for path in files):
         return
     estimate = int(model['size_mb'] * 1048576)
-    label = f'{model["name"]} indiriliyor'
+    label = f'2/3 · Model indiriliyor: {model["name"]}'
     if model.get('archive'):
         archive = models_dir(part_id) / '.downloads' / model['archive'].rsplit('/', 1)[-1]
         _update_job(part_id, phase='model', label=label, total=estimate)
@@ -852,7 +951,7 @@ def run_job(part_id, action, model_id):
         _fetch_model(part_id, part, model, cancelled, effective(part, hardware(), read_config())[1])
         if action == 'install':
             write_part_config(part_id, enabled=True, paused=False, model=model_id)
-            _update_job(part_id, phase='launching', label='Servis başlatılıyor (model yükleniyor)…', bytes=None, total=None,
+            _update_job(part_id, phase='launching', label='3/3 · Servis başlatılıyor (model belleğe yükleniyor)…', bytes=None, total=None,
                         rate=0)
             stop_part(part_id)
             start_part(part_id)
@@ -874,6 +973,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='action', required=True)
     for name in ('serve', 'start'):
         sub.add_parser(name).add_argument('part')
+    apply_parser = sub.add_parser('apply')
+    apply_parser.add_argument('part')
+    apply_parser.add_argument('--restart', action='store_true')
     job_parser = sub.add_parser('job')
     job_parser.add_argument('part')
     job_parser.add_argument('kind', choices=['download', 'install'])
@@ -884,6 +986,8 @@ def main(argv=None):
         serve(args.part)
     elif args.action == 'start':
         start_part(args.part)
+    elif args.action == 'apply':
+        return apply(args.part, restart=args.restart)
     elif args.action == 'job':
         return run_job(args.part, args.kind, args.model)
     else:

@@ -36,6 +36,9 @@ def parts(tmp_path, monkeypatch):
     monkeypatch.setattr(P, 'hardware', lambda **kwargs: TWO_CARDS)
     monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
     monkeypatch.setattr(P, 'python_fits', lambda engine, data=None: True)  # Tests run on any Python.
+    spawned = []
+    monkeypatch.setattr(P, '_spawn', lambda argv: spawned.append(argv) or SimpleNamespace(pid=999999999))
+    P.spawned = spawned
     return tmp_path / 'Parts'
 
 
@@ -218,6 +221,7 @@ def test_a_stopped_part_stays_off_until_started(parts, monkeypatch):
     fake_engine(parts)
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     P.stop('embedding')
+    assert P.spawned[-1] == ['apply', 'embedding']  # Stopping happens in its own process, not in the request.
     P.keep_running()
     assert started == [] and next(p for p in P.status()['parts'] if p['id'] == 'embedding')['state'] == 'stopped'
     P.write_part_config('embedding', paused=False)
@@ -278,8 +282,9 @@ def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, 
     (bundled / 'tool.dll').write_text('dll')
     data = P.catalog()
     monkeypatch.setattr(P, 'ROOT', tmp_path)
-    data['engines']['faster-whisper']['windows']['cpu'] = {'bundled': 'bundled', 'wheels': [
-        {'url': base + 'fw.whl', 'sha256': hashlib.sha256(wheel).hexdigest(), 'size': len(wheel)}]}
+    data['engines']['faster-whisper'] = {'version': 'test', 'pythons': {P._python(): {'windows': {
+        'cpu': {'bundled': 'bundled', 'wheels': [
+            {'url': base + 'fw.whl', 'sha256': hashlib.sha256(wheel).hexdigest(), 'size': len(wheel)}]}}}}}
     stt = next(part for part in data['parts'] if part['id'] == 'stt')
     small = next(m for m in stt['models'] if m['id'] == 'whisper-small-official')
     small.update(archive=base + 'small.zip', archive_sha256=hashlib.sha256(model).hexdigest())
@@ -293,7 +298,8 @@ def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, 
         assert (folder / 'tool.dll').is_file() and (folder / 'site/faster_whisper/__init__.py').is_file()
         assert P.downloaded(stt, small) and P.read_config()['stt']['enabled']
         # A piece that does not match its SHA-256 is refused and nothing is installed.
-        data['engines']['faster-whisper']['windows']['cuda'] = {'wheels': [{'url': base + 'bad.whl', 'sha256': '0' * 64}]}
+        data['engines']['faster-whisper']['pythons'][P._python()]['windows']['cuda'] = {
+            'wheels': [{'url': base + 'bad.whl', 'sha256': '0' * 64}]}
         P.write_part_config('stt', settings={'hardware': 'cuda'}, enabled=False)
         monkeypatch.setattr(P, 'hardware', lambda **kwargs: TWO_CARDS)
         assert P.run_job('stt', 'install', 'whisper-small-official') == 1
@@ -302,14 +308,14 @@ def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, 
         httpd.shutdown()
 
 
-def test_speech_packages_need_the_packaged_python(parts, monkeypatch):
+def test_speech_packages_need_a_python_they_are_built_for(parts, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setenv('ORION_PARTS_HOME', str(parts))
     monkeypatch.setattr(P, 'hardware', lambda **kwargs: NO_CARD)
     monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
-    monkeypatch.setattr(P.sys, 'version_info', type('V', (), {'major': 3, 'minor': 14})())
+    monkeypatch.setattr(P, '_python', lambda: '3.9')  # A Python the catalog has no packages for.
     stt = next(part for part in P.status()['parts'] if part['id'] == 'stt')
-    assert not stt['installable'] and 'Python 3.11' in stt['note'] and '3.14' in stt['note']
+    assert not stt['installable'] and '3.11, 3.14' in stt['note'] and '3.9' in stt['note']
     with pytest.raises(P.PartError):
         P.start_job('stt', 'install')
 
@@ -331,3 +337,21 @@ def test_the_vision_file_is_optional_and_can_come_later(parts):
     status = next(part for part in P.status()['parts'] if part['id'] == 'llm')
     row = next(m for m in status['models'] if m['id'] == gemma['id'])
     assert row['mmproj'] and not row['vision_downloaded'] and status['settings']['vision'] is True
+
+
+def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
+    fake_engine(parts)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    monkeypatch.setattr(P, '_alive', lambda pid: True)  # The background process is running.
+    P.write_part_config('embedding', enabled=True, paused=True, model='jina-v5-omni-nano')
+    P.start('embedding')
+    card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'embedding')
+    assert card()['state'] == 'starting'  # From the first answer on: the button never flips back to Başlat.
+
+    def broken(part_id):
+        (P.run_dir(part_id) / 'service.log').write_text('loading...\nerror: out of memory\n', encoding='utf-8')
+        raise P.PartError('Servis hazır olmadan kapandı')
+    monkeypatch.setattr(P, 'start_part', broken)
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    assert P.apply('embedding') == 1
+    assert card()['state'] == 'stopped' and 'out of memory' in card()['error']
