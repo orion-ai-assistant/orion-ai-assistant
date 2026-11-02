@@ -155,17 +155,22 @@ class Postgres:
             "'data_directory', (SELECT setting FROM pg_settings WHERE name = 'data_directory'), "
             "'fsync', current_setting('fsync'), 'full_page_writes', current_setting('full_page_writes'), "
             "'synchronous_commit', current_setting('synchronous_commit'), "
-            "'started', extract(epoch FROM pg_postmaster_start_time())::bigint)"))
+            "'started', extract(epoch FROM pg_postmaster_start_time()))"))
+
+    START_GAP = 15
 
     def same_cluster(self, settings=None):
         """The connection reaches the postmaster that owner() verified for this data directory."""
         settings = settings or self.settings()
         if settings['data_directory'] is not None:
             return canonical(settings['data_directory']) == canonical(self.data)
-        # Without data_directory: the server's start time is readable by every role and must equal the one in
-        # this cluster's postmaster.pid.
+        # Without data_directory: the server's start time is readable by every role and must be the one in this
+        # cluster's postmaster.pid. They are not the same moment: postmaster.pid has the whole second the process
+        # began, pg_postmaster_start_time() is taken later in its start-up. On a busy PC that was more than a
+        # second (a restart right after a build failed with "Connected to another PostgreSQL cluster", the
+        # second try passed), so the server's time may come up to START_GAP seconds after the file's.
         started = int((self.data / 'postmaster.pid').read_text(encoding='utf-8').splitlines()[2])
-        return abs(int(settings['started']) - started) <= 1
+        return -1 <= float(settings['started']) - started <= self.START_GAP
 
     def ready(self):
         owner = self.owner()

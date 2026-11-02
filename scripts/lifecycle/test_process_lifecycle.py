@@ -840,6 +840,12 @@ def test_postgres_role_without_settings_privilege_is_identified_by_start_time(tm
                                synchronous_commit='on', started=started))
     with patch.object(db, 'sql', return_value=settings(None, 1792370309)):
         assert db.same_cluster()
+    # The server takes its own start time later in its start-up than the file's second: on a busy PC that was
+    # 2 s (a false "another cluster" on restart).
+    with patch.object(db, 'sql', return_value=settings(None, 1792370311.4)):
+        assert db.same_cluster()
+    with patch.object(db, 'sql', return_value=settings(None, 1792370309 + 60)):
+        assert not db.same_cluster()   # a server started later than this file's
     with patch.object(db, 'sql', return_value=settings(None, 1792000000)):
         assert not db.same_cluster()   # another cluster on this port
     with patch.object(db, 'sql', return_value=settings(str(tmp_path / 'other'), 1792370309)):
