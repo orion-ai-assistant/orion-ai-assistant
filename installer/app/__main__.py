@@ -299,6 +299,12 @@ if __name__ == "__main__":
     import urllib.request
     import json
 
+    # Retired: local services are installed from Ayarlar > Bileşenler (services/shared/local_parts.py). The code
+    # stays for reference, but the panel no longer starts (docs/bilesenler.md, Yapılacaklar 8).
+    print('[!] Eski kurulum paneli (127.0.0.1:7171) artık kullanılmıyor. '
+          'Yerel servisler Orion içinde Ayarlar > Bileşenler sayfasından kurulur.')
+    sys.exit(1)
+
     global_env = config._load_global_env()
     PORT = int(global_env.get("INSTALLER_PORT", "7171"))
 

@@ -365,6 +365,9 @@ def cmd_help(args=None):
     print("==================================\n")
 
 def handle_installer(args):
+    # Retired: Ayarlar > Bileşenler installs local services now; the panel's code stays but never starts.
+    print("[!] Eski kurulum paneli artık kullanılmıyor: yerel servisler Orion'da Ayarlar > Bileşenler'den kurulur.")
+    return 1
     mode = get_mode_from_args(args)
     print(f"[i] Installation Mode Set: {mode.upper()}")
     save_install_mode(mode)

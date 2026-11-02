@@ -125,8 +125,10 @@ Sıra önerisi yukarıdan aşağıya.
 6. **İndirme doğrulaması.** Modeller için SHA256 (Hugging Face `x-linked-etag`/LFS oid) ve motor zipleri için
    sabit özet; şimdilik yalnızca boyut (Content-Length) denetleniyor.
 7. **Disk alanı denetimi** indirmeden önce, yetmezse kutucukta açıkça.
-8. **Eski geliştirici kurulum paneli** (`installer/app`, 127.0.0.1:7171): yerel servis kurma/indirme işleri artık
-   buraya taşınabilir; panelin hangi kısımlarının kaldırılacağı kullanıcıya sorularak karar verilecek.
+8. **Eski geliştirici kurulum paneli** (`installer/app`, 127.0.0.1:7171): kullanılmıyor (2026-11-03 kararı). Kod
+   şimdilik duruyor ama başlamıyor: `python -m installer.app` ve `manager.py installer` bir uyarıyla çıkar. Kurulu
+   Orion onu zaten hiç başlatmıyordu; dosyaları hâlâ Hub paketine giriyor (`build_package.py` `SOURCE_PREFIXES`).
+   Tamamen kaldırmak sonra konuşulacak.
 9. **LLM'in sohbette seçilmesi:** LLM parçası çalışınca Router'da `local-chat` modeli kullanılabilir; Ayarlar'daki
    model seçicisinde "Yerel (bu bilgisayar)" diye görünmesi ve parça kapalıyken uyarması.
 10. **Misafir hesaplar** geldiğinde: kurma/kaldırma yalnızca ana kullanıcı (şimdilik Hub bilgisayarındaki pencere).
