@@ -25,6 +25,16 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   Pencereyi kapatmak işi durdurmaz; tam inen dosyalar (motor parçaları dahil) kalır, yarım kalan dosya baştan iner (kaldığı yerden eklemek bozuk model verebiliyordu; çoğu modelin SHA-256'sı yok). Durum
   `jobs/<parça>.json`'da: aşama, bayt, toplam, hız, hata.
 - **Motor:** llama.cpp tek sefer indirilir, LLM ve hafıza paylaşır (`engines/llama.cpp-<sürüm>/<cuda|vulkan|cpu>`).
+  Kurulumla gelmez (CUDA ~616 MB, Vulkan ~30 MB, CPU ~18 MB; hangisi gerekeceği seçilen donanıma bağlı).
+  "Kaldır + indirilen dosyaları da sil" motoru, onu kullanan başka kurulu parça yoksa siler (`unused_engines`).
+- **Model bilgileri modelin kendi dosyasından:** katalog yalnızca modelin adını, adresini ve boyutunu tutar.
+  Bağlam sınırı, vektör boyutu (embedding) ve ek dosyanın (mmproj) neyi anladığı (görsel/ses) GGUF başlığından
+  okunur: indirilmişse dosyadan, indirilmemişse internetten dosyanın ilk birkaç KB'ı (`headers.json` önbelleği).
+- **Ayar değişince:** çalışan parça yeni seçimle yalnızca o seçim hemen çalışabiliyorsa (dosyaları ve motoru
+  burada) ve çalışandan farklıysa yeniden başlar ("Yeniden başlıyor…"). İndirme gerekiyorsa servis olduğu gibi
+  çalışmaya devam eder, kutucuk "İndir ve uygula · ~X MB" der; çalışana geri dönmek hiçbir şeyi başlatmaz.
+  Başlatılamayan parça durur ve öyle kalır (Başlat ile denenir); servis günlüğü her başlatmada sıfırlanır, bellek
+  yetmezliği gibi bilinen hatalar Türkçe söylenir.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
   dinler, Hub durunca durur. Hub'ın sahip süreci dakikada bir kurulu parçaların açık olduğunu denetler (çöken
   geri gelir; kaldırılan açılmaz).
@@ -32,7 +42,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   bilgisayarındaki Orion penceresinden (`update_routes.local_control`, güncellemelerle aynı kural).
 - **Donanım:** `nvidia-smi` ile NVIDIA kartları ve bellekleri; Windows'ta diğer kartların adları. Varsayılan:
   NVIDIA varsa CUDA, başka kart varsa Vulkan, yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
-  Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), kart katmanı, bağlam, eşzamanlı istek.
+  Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
 
 Doğrulandı (2026-11-02, bu bilgisayarda): hafıza parçası CPU motoru + Jina v5 Omni Nano ile gerçekten indirildi,
 kuruldu, `/health` "ok" ve `/v1/embeddings` vektör döndü; Kaldır servisi durdurdu; bekçi kurulu parçayı açtı;
@@ -75,3 +85,14 @@ Sıra önerisi yukarıdan aşağıya.
 9. **LLM'in sohbette seçilmesi:** LLM parçası çalışınca Router'da `local-chat` modeli kullanılabilir; Ayarlar'daki
    model seçicisinde "Yerel (bu bilgisayar)" diye görünmesi ve parça kapalıyken uyarması.
 10. **Misafir hesaplar** geldiğinde: kurma/kaldırma yalnızca ana kullanıcı (şimdilik Hub bilgisayarındaki pencere).
+11. **Kullanıcının kendi modelleri** (tasarım, 2026-11-02 konuşuldu): bizim kataloğumuz ayrı, kullanıcınınki ayrı
+    (`Parts/user_models.json` + her parçada görünür bir klasör, ör. `Parts/models/llm/kendi/<ad>/`). Arayüzden
+    "Kendi modelini ekle" ya da klasöre bırakmak; Hub klasörü tarar. Kaldırırken kullanıcının modelleri ayrı sorulur.
+    - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj) ve bir ad. Mimari, bağlam, vektör boyutu, mmproj'un neyi
+      anladığı dosyanın başlığından okunur; hafızada embedding olmayan model reddedilir.
+    - **STT:** motor faster-whisper olduğu için yalnızca CTranslate2'ye çevrilmiş Whisper klasörü. Ekleme ekranı
+      gereken dosyaları (`model.bin`, `config.json`, `tokenizer.json`, varsa `vocabulary.*`/`preprocessor_config.json`)
+      listeler; kullanıcı ekledikçe her biri "tamam" olur.
+    - **TTS:** önce motor seçilir (şimdi OmniVoice; ileride Kokoro vb.), ekran o motorun istediği dosyaları gösterir.
+    - **Hafıza modeli değişirse** eski vektörler yeni modelle karşılaştırılamaz (boyut ve uzay farklı): hafıza
+      dizini modelin kimliği ve boyutuyla tutulmalı, model değişince arkada yeniden hesaplanmalı.

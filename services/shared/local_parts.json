@@ -385,8 +385,7 @@
             "--pooling",
             "last"
           ],
-          "recommended": true,
-          "context_max": 8192
+          "recommended": true
         },
         {
           "id": "lco-embedding-omni-7b",
@@ -401,8 +400,7 @@
           "args": [
             "--pooling",
             "last"
-          ],
-          "context_max": 32768
+          ]
         }
       ],
       "runner": "llama",
@@ -440,10 +438,7 @@
             "auto"
           ],
           "recommended": true,
-          "context_max": 131072,
-          "mmproj_mb": 941,
-          "mmproj_name": "Görsel anlama",
-          "mmproj_description": "Resimleri anlar (mmproj dosyası)."
+          "mmproj_mb": 941
         },
         {
           "id": "miniplm-qwen-200m",
@@ -455,8 +450,7 @@
             "MiniPLM-Qwen-200M-Q3_K_M.gguf"
           ],
           "size_mb": 139,
-          "args": [],
-          "context_max": 32768
+          "args": []
         }
       ],
       "runner": "llama",

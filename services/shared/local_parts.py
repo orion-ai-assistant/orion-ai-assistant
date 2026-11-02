@@ -33,6 +33,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import uuid
@@ -340,64 +341,140 @@ def default_settings(part, model, hw):
 
 
 CONTEXT_FALLBACK = 131072
-_contexts = {}
+_metas = {}
+_GGUF_FORMATS = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d'}
 
 
-def gguf_context(path):
-    """The context length a GGUF model was trained for (its `<arch>.context_length`), read from the file's
-    header; None when the file says nothing. llama.cpp accepts a larger -c, but past this the model loses the
-    thread (and the memory is spent for nothing), so the setting stops here."""
+def gguf_meta(stream):
+    """What a GGUF file says about itself, from its header (the first few KB: the tokenizer, which comes after
+    what we need, is never read): architecture, context length it was trained for, vector size, and for an
+    mmproj file whether it understands images and/or sound. None when it is not a GGUF file."""
+    def read(size):
+        data = stream.read(size)
+        if len(data) < size:
+            raise EOFError
+        return data
+
+    def string():
+        return read(struct.unpack('<Q', read(8))[0]).decode('utf-8', 'replace')
+
+    def value(kind):
+        if kind == 8:
+            return string()
+        if kind == 9:
+            inner, count = struct.unpack('<IQ', read(12))
+            for _ in range(count):
+                value(inner)
+            return None
+        return struct.unpack(_GGUF_FORMATS[kind], read(struct.calcsize(_GGUF_FORMATS[kind])))[0]
+
+    if read(4) != b'GGUF':
+        return None
+    read(4)
+    _, count = struct.unpack('<QQ', read(16))
+    found = {}
+    for _ in range(min(count, 10000)):
+        name = string()
+        found[name] = value(struct.unpack('<I', read(4))[0])
+        arch = found.get('general.architecture')
+        if arch and f'{arch}.context_length' in found and f'{arch}.embedding_length' in found:
+            break  # All we need: the tokenizer's long lists that follow are never read.
+    arch = found.get('general.architecture')
+    number = lambda key: found.get(f'{arch}.{key}') if isinstance(found.get(f'{arch}.{key}'), int) else None
+    return {'architecture': arch, 'context': number('context_length'), 'dims': number('embedding_length'),
+            'vision': bool(found.get('clip.has_vision_encoder')), 'audio': bool(found.get('clip.has_audio_encoder'))}
+
+
+def file_meta(path):
     path = Path(path)
     try:
         key = (str(path), path.stat().st_mtime_ns)
     except OSError:
         return None
-    if key in _contexts:
-        return _contexts[key]
-    formats = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d'}
-    found = None
-    try:
-        with path.open('rb') as stream:
-            def read(size):
-                data = stream.read(size)
-                if len(data) < size:
-                    raise EOFError
-                return data
+    if key not in _metas:
+        try:
+            with path.open('rb') as stream:
+                _metas[key] = gguf_meta(stream)
+        except (OSError, EOFError, KeyError, struct.error, UnicodeDecodeError):
+            _metas[key] = None
+    return _metas[key]
 
-            def string():
-                return read(struct.unpack('<Q', read(8))[0]).decode('utf-8', 'replace')
 
-            def value(kind):
-                if kind == 8:
-                    return string()
-                if kind == 9:
-                    inner, count = struct.unpack('<IQ', read(12))
-                    for _ in range(count):
-                        value(inner)
-                    return None
-                return struct.unpack(formats[kind], read(struct.calcsize(formats[kind])))[0]
+HEADER_RETRY = 3600
+_fetching = threading.Lock()
 
-            if read(4) == b'GGUF':
-                read(4)
-                _, count = struct.unpack('<QQ', read(16))
-                for _ in range(min(count, 10000)):
-                    name = string()
-                    result = value(struct.unpack('<I', read(4))[0])
-                    if name.endswith('.context_length') and isinstance(result, int) and result > 0:
-                        found = result
-                        break
-    except (OSError, EOFError, KeyError, struct.error):
-        found = None
-    _contexts[key] = found
-    return found
+
+def remote_meta(url, *, opener=None):
+    """The header of a GGUF file on the internet: a few KB of it (a range request), not the file."""
+    import io
+    opener = opener or urllib.request.build_opener()
+    for size in (65536, 4 << 20):
+        request = urllib.request.Request(url, headers={'Range': f'bytes=0-{size - 1}', 'User-Agent': 'Orion'})
+        with opener.open(request, timeout=20) as response:
+            data = response.read(size)
+        try:
+            return gguf_meta(io.BytesIO(data))
+        except EOFError:
+            continue
+    return None
+
+
+def _gguf_urls(data):
+    return [model['url'] + name for part in data['parts'] for model in part.get('models', [])
+            if model.get('url') for name in model['files'] + ([model['mmproj']] if model.get('mmproj') else [])
+            if name.endswith('.gguf')]
+
+
+def _fetch_headers(urls):
+    with _fetching:
+        path = home() / 'headers.json'
+        for url in urls:
+            saved = _read_json(path, {})
+            try:
+                saved[url] = {'meta': remote_meta(url), 'at': time.time()}
+            except Exception:
+                saved[url] = {'failed': True, 'at': time.time()}
+            _write_json(path, saved)
+
+
+def prefetch_headers(data):
+    """Read (once, in the background) the headers of the catalog's models that are not downloaded, so a card
+    knows a model's limits before it comes. The catalog says only where a model is and how big; the rest comes
+    from the model itself, as for a model the user adds."""
+    saved = _read_json(home() / 'headers.json', {})
+    wanted = [url for url in _gguf_urls(data) if url not in saved
+              or (saved[url].get('failed') and time.time() - saved[url].get('at', 0) > HEADER_RETRY)]
+    if wanted and not _fetching.locked():
+        threading.Thread(target=_fetch_headers, args=(wanted,), daemon=True).start()
+
+
+def model_meta(part, model, name=None):
+    """What the model's file says (`name`: one of its files, the first by default): the downloaded file, else
+    its header read from the internet, else None."""
+    name = name or model['files'][0]
+    meta = file_meta(models_dir(part['id']) / model['folder'] / name) if name.endswith('.gguf') else None
+    if meta is None and model.get('url'):
+        meta = (_read_json(home() / 'headers.json', {}).get(model['url'] + name) or {}).get('meta')
+    return meta
 
 
 def context_max(part, model):
-    """The model's own limit: from its file once downloaded, else the catalog's, else a general ceiling."""
+    """The model's own limit (from its file); a general ceiling while that is not known yet."""
     if model is None:
         return CONTEXT_FALLBACK
-    first = models_dir(part['id']) / model['folder'] / model['files'][0]
-    return gguf_context(first) or model.get('context_max') or CONTEXT_FALLBACK
+    return (model_meta(part, model) or {}).get('context') or CONTEXT_FALLBACK
+
+
+EXTRAS = {(True, True): ('Görsel ve ses anlama', 'Resimleri ve sesleri anlar.'),
+          (True, False): ('Görsel anlama', 'Resimleri anlar.'),
+          (False, True): ('Ses anlama', 'Sesleri anlar.')}
+
+
+def extra_info(part, model):
+    """The name of a model's extra file (mmproj) from what it understands, as the file says."""
+    meta = model_meta(part, model, model['mmproj']) or {}
+    name, text = EXTRAS.get((meta.get('vision', False), meta.get('audio', False)), ('Görsel anlama', 'Resimleri anlar.'))
+    return name, f'{text} (mmproj dosyası)'
 
 
 def advanced(part, hw, model=None):
@@ -578,6 +655,8 @@ def part_status(part, hw, config, data):
     moving = change and not change.get('error')
     if current and current.get('phase') not in TERMINAL:
         state = 'working'
+    elif moving and change['to'] == 'running' and change.get('restart'):
+        state = 'restarting'
     elif moving and change['to'] == 'stopped' and running:
         state = 'stopping'
     elif moving and change['to'] == 'running' and not running:
@@ -596,10 +675,14 @@ def part_status(part, hw, config, data):
                       if p.with_name(p.name + '.part').is_file())
         vision_file = models_dir(part['id']) / item['folder'] / item['mmproj'] if item.get('mmproj') else None
         main_there = all((models_dir(part['id']) / item['folder'] / name).is_file() for name in item['files'])
+        meta = model_meta(part, item) or {}
+        extra = extra_info(part, item) if item.get('mmproj') else (None, None)
         models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
                        'size_mb': model_mb(item, settings), 'mmproj_mb': item.get('mmproj_mb'),
                        'base_mb': item['size_mb'], 'main_downloaded': main_there,
-                       'extra_name': item.get('mmproj_name'), 'extra_description': item.get('mmproj_description'),
+                       'extra_name': extra[0], 'extra_description': extra[1],
+                       'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
+                       'dims': meta.get('dims') if part['id'] == 'embedding' else None,
                        'recommended': bool(item.get('recommended')),
                        'downloaded': downloaded(part, item, settings), 'partial_mb': round(partial / 1048576, 1),
                        'mmproj': bool(item.get('mmproj')),
@@ -624,6 +707,7 @@ def part_status(part, hw, config, data):
 
 def status():
     data = catalog()
+    prefetch_headers(data)
     hw = hardware()
     config = read_config()
     return {'system': hw['system'], 'hardware': hw, 'parts': [part_status(p, hw, config, data) for p in data['parts']]}
@@ -700,12 +784,30 @@ def select(part_id, *, model=None, settings=None):
                               **clean_settings(part, settings, hw, target)}
     entry = write_part_config(part_id, **values)
     current, settings = effective(part, hw)
-    # A running part restarts only when its new files are all there (vision turned on before its file came:
-    # it keeps running without it until "Modeli indir ve kur" fetches it).
+    change = transition(part_id)
+    if change and change.get('error'):
+        (run_dir(part_id) / 'transition.json').unlink(missing_ok=True)  # About the old choice.
+    # A part that runs restarts with the new choice only when that can run now (its model files and engine are
+    # all here) and differs from what runs. Otherwise it keeps running as it was: the card offers "İndir ve
+    # uygula" for what is missing, and choosing back what runs changes nothing. A stopped part only saves.
     if (entry.get('enabled') and not entry.get('paused') and not busy(part_id) and current
-            and downloaded(part, current, settings)):
+            and ready(part, current, settings) and applied(part_id) != _signature(current, settings)):
         _move(part_id, 'running', restart=True)
     return entry
+
+
+def ready(part, model, settings, data=None):
+    """Everything `model` needs with `settings` is here: its files and the engine for that hardware."""
+    return downloaded(part, model, settings) and engine_ready(part['engine'], settings['hardware'], data)
+
+
+def _signature(model, settings):
+    return {'model': model['id'], 'settings': {key: settings[key] for key in sorted(settings)}}
+
+
+def applied(part_id):
+    """The model and settings the part's service was last started with (None: never started)."""
+    return _read_json(run_dir(part_id) / 'applied.json', None)
 
 
 def delete_model(part_id, model_id):
@@ -722,8 +824,8 @@ def delete_model(part_id, model_id):
 
 
 def remove(part_id, *, delete_models=False):
-    """Turn the part off and stop it (in the background); with `delete_models` its downloaded models go too,
-    once the service has let go of them. The engine stays (another part may use it)."""
+    """Turn the part off and stop it (in the background); with `delete_models` what it downloaded goes too,
+    once the service has let go of it: its models, and its engine unless another installed part uses it."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
     write_part_config(part_id, enabled=False, paused=False, purge=bool(delete_models))
@@ -775,7 +877,8 @@ def _move(part_id, to, *, restart=False):
     folder = run_dir(part_id)
     folder.mkdir(parents=True, exist_ok=True)
     wish = uuid.uuid4().hex
-    _write_json(folder / 'transition.json', {'id': wish, 'to': to, 'at': time.time(), 'pid': None, 'error': None})
+    _write_json(folder / 'transition.json', {'id': wish, 'to': to, 'restart': restart, 'at': time.time(), 'pid': None,
+                                             'error': None})
     process = _spawn(['apply', part_id, '--id', wish] + (['--restart'] if restart else []))
     path = folder / 'transition.json'
     current = _read_json(path, {})
@@ -813,29 +916,94 @@ def apply(part_id, *, wish=None, restart=False):
                 stop_part(part_id)
             if wanted == 'stopped' and entry.get('purge'):
                 shutil.rmtree(models_dir(part_id), ignore_errors=True)
+                for unused in unused_engines(part):
+                    (unused / '.complete').unlink(missing_ok=True)  # Never "ready" if a file is held.
+                    shutil.rmtree(unused, ignore_errors=True)
                 write_part_config(part_id, purge=False)
             if wanted == 'running':
                 model, settings = effective(part, hardware())
                 if model is None or not downloaded(part, model, settings):
-                    raise MissingFiles('Modelin dosyaları eksik; Modeli indir ve kur ile tamamla')
-                start_part(part_id)
+                    raise MissingFiles('Modelin dosyaları eksik; indir ve başlat ile tamamla')
+                if not engine_ready(part['engine'], settings['hardware']):
+                    raise MissingFiles('Bu donanımın motoru indirilmedi; indir ve başlat ile tamamla')
+                try:
+                    start_part(part_id)
+                except PartError:
+                    raise
+                except Exception:
+                    # A service that just stopped gives its card memory back a moment after it exits: a restart
+                    # once ran out of memory for that alone. One more try.
+                    if not _out_of_memory(part_id):
+                        raise
+                    time.sleep(RETRY_AFTER)
+                    start_part(part_id)
         except Exception as error:
-            log = folder / 'service.log'
-            tail = ''
-            try:
-                lines = [line for line in log.read_text(encoding='utf-8', errors='replace').splitlines() if line.strip()]
-                tail = ' Son satır: ' + lines[-1][-300:] if lines and not isinstance(error, MissingFiles) else ''
-            except OSError:
-                pass
+            if wanted == 'running':
+                # A failed start stays stopped (Başlat tries again): nothing restarts it by itself.
+                write_part_config(part_id, paused=True)
             if mine():
                 _write_json(path, {'id': wish, 'to': wanted, 'at': time.time(), 'pid': None,
-                                   'error': f'{"Başlatılamadı" if wanted == "running" else "Durdurulamadı"}: {error}.{tail}'})
+                                   'error': failure(part_id, wanted, error)})
             return 1
         if mine():
             path.unlink(missing_ok=True)
         return 0
     finally:
         lock.__exit__(None, None, None)
+
+
+def unused_engines(part, data=None):
+    """The folders of `part`'s engine (every hardware) that no other installed part uses: an engine is shared
+    (memory and the local LLM both run llama.cpp), so it goes only with the last part that needs it."""
+    data = data or catalog()
+    hw = hardware()
+    config = read_config()
+    used = set()
+    for other in data['parts']:
+        if other['id'] == part['id'] or other.get('engine') != part['engine']:
+            continue
+        entry = config.get(other['id'], {})
+        if entry.get('enabled') or busy(other['id']):
+            used.add(engine_dir(other['engine'], effective(other, hw, config)[1]['hardware'], data))
+        running = applied(other['id'])
+        if running and answers(int(os.getenv(other['port_key']) or other['port'])):
+            used.add(engine_dir(other['engine'], running['settings']['hardware'], data))
+    return [engine_dir(part['engine'], hw_id, data) for hw_id in (engine_builds(part['engine'], data) or {})
+            if engine_dir(part['engine'], hw_id, data).is_dir() and engine_dir(part['engine'], hw_id, data) not in used]
+
+
+HINTS = (('out of memory', 'Ekran kartının belleği yetmedi: bağlam boyutunu ya da aynı anda isteği küçült, '
+                           'veya işlemciyi seç.'),
+         ('failed to allocate', 'Bellek yetmedi: bağlam boyutunu ya da aynı anda isteği küçült.'),
+         ('unknown model architecture', 'Bu motor sürümü bu modelin mimarisini tanımıyor.'))
+
+
+RETRY_AFTER = 4
+
+
+def _out_of_memory(part_id):
+    try:
+        text = (run_dir(part_id) / 'service.log').read_text(encoding='utf-8', errors='replace').lower()
+    except OSError:
+        return False
+    return 'out of memory' in text or 'failed to allocate' in text
+
+
+def failure(part_id, wanted, error):
+    """What went wrong, in words the card can show: our own reason, else the service's last words from this
+    start (the log starts over at every start, so an older run's lines never explain a new failure)."""
+    verb = 'Başlatılamadı' if wanted == 'running' else 'Durdurulamadı'
+    try:
+        lines = [line.strip() for line in (run_dir(part_id) / 'service.log').read_text(
+            encoding='utf-8', errors='replace').splitlines() if line.strip()]
+    except OSError:
+        lines = []
+    for needle, hint in HINTS:
+        if any(needle in line.lower() for line in lines):
+            return f'{verb}: {hint}'
+    if isinstance(error, PartError):
+        return f'{verb}: {error}.'
+    return f'{verb}. Son satır: {lines[-1][-300:]}' if lines else f'{verb}: {error}.'
 
 
 # --- Running parts -------------------------------------------------------------------------------------------
@@ -893,7 +1061,16 @@ def serve(part_id):
     data = catalog()
     part = spec(part_id, data)
     model, settings = effective(part, hardware(), read_config())
-    argv, env, port = command(part, model, settings, data)
+    folder = run_dir(part_id)
+    log_path = folder / 'service.log'
+    if log_path.is_file():
+        os.replace(log_path, folder / 'service.prev.log')
+    try:
+        argv, env, port = command(part, model, settings, data)
+    except Exception as error:
+        log_path.write_text(f'Orion: {error}\n', encoding='utf-8')
+        raise
+    _write_json(folder / 'applied.json', _signature(model, settings))
     with Runtime(run_dir(part_id), 'part') as runtime:
         if 'engine' not in runtime.children:
             assert_port_free(port)
@@ -1097,7 +1274,11 @@ def run_job(part_id, action, model_id):
             _update_job(part_id, phase='launching', label='Kuruluyor: servis başlatılıyor (model belleğe yükleniyor)…',
                         bytes=None, total=None, rate=0)
             stop_part(part_id)
-            start_part(part_id)
+            try:
+                start_part(part_id)
+            except Exception as error:
+                write_part_config(part_id, paused=True)  # Başlat tries again; nothing restarts it by itself.
+                raise PartError(failure(part_id, 'running', error)) from None
         _update_job(part_id, phase='done', label='Hazır.', rate=0, finished=time.time())
         return 0
     except Cancelled:

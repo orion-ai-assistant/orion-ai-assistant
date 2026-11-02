@@ -380,7 +380,8 @@ def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
     monkeypatch.setattr(P, 'start_part', broken)
     monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
     assert P.apply('embedding') == 1
-    assert card()['state'] == 'stopped' and 'out of memory' in card()['error']
+    assert card()['state'] == 'stopped' and 'belleği yetmedi' in card()['error']
+    assert P.read_config()['embedding']['paused']  # Nothing starts it again by itself; Başlat does.
 
 
 def tiny_gguf(path, context):
@@ -399,7 +400,9 @@ def tiny_gguf(path, context):
 def test_the_context_stops_at_what_the_model_was_trained_for(parts):
     llm = P.spec('llm')
     small = P.model_spec(llm, 'miniplm-qwen-200m')
-    assert P.context_max(llm, small) == 32768  # From the catalog before the download.
+    assert P.context_max(llm, small) == P.CONTEXT_FALLBACK  # Nothing known yet.
+    P._write_json(parts / 'headers.json', {small['url'] + small['files'][0]: {'meta': {'context': 32768}, 'at': 0}})
+    assert P.context_max(llm, small) == 32768  # The file's header, read from the internet before the download.
     tiny_gguf(P.models_dir('llm') / small['folder'] / small['files'][0], 4096)
     assert P.context_max(llm, small) == 4096  # The file itself, once it is there.
     field = next(f for f in P.advanced(llm, TWO_CARDS, small) if f['key'] == 'context_size')
@@ -420,6 +423,7 @@ def test_an_older_wish_never_undoes_a_newer_one(parts, monkeypatch):
     monkeypatch.setattr(P, 'start_part', lambda part_id: started.append(part_id))
     monkeypatch.setattr(P, 'stop_part', lambda part_id: stopped.append(part_id))
     monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    fake_engine(parts)
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     P.select('embedding', settings={'parallel': 2})
     restart = P.spawned[-1]
@@ -466,3 +470,72 @@ def test_the_page_gets_the_facts_to_work_sizes_out_itself(parts):
     # Labels come from this code even when the hardware came from an old cache.
     P._hardware.update(at=__import__('time').monotonic(), value={**TWO_CARDS, 'choices': [{'id': 'vulkan', 'label': 'old words'}]})
     assert P._labelled(P._hardware['value'])['choices'][0]['label'] == 'Ekran kartı (Vulkan)'
+
+
+def test_the_model_file_tells_its_limits_vector_size_and_what_its_extra_understands(parts, tmp_path):
+    import struct
+    def string(text):
+        data = text.encode()
+        return struct.pack('<Q', len(data)) + data
+    path = tmp_path / 'mmproj.gguf'
+    keys = (string('general.architecture') + struct.pack('<I', 8) + string('clip')
+            + string('clip.has_vision_encoder') + struct.pack('<I', 7) + b'\x01'
+            + string('clip.has_audio_encoder') + struct.pack('<I', 7) + b'\x01')
+    path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 3) + keys)
+    assert P.file_meta(path) == {'architecture': 'clip', 'context': None, 'dims': None, 'vision': True, 'audio': True}
+    llm = P.spec('llm')
+    gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
+    assert P.extra_info(llm, gemma)[0] == 'Görsel anlama'  # Not known yet.
+    P._write_json(parts / 'headers.json', {gemma['url'] + gemma['mmproj']: {'meta': P.file_meta(path), 'at': 0}})
+    assert P.extra_info(llm, gemma)[0] == 'Görsel ve ses anlama'
+    embedding = P.spec('embedding')
+    jina = P.model_spec(embedding, 'jina-v5-omni-nano')
+    P._write_json(parts / 'headers.json', {jina['url'] + jina['files'][0]: {'meta': {'context': 8192, 'dims': 768}, 'at': 0}})
+    row = next(m for m in next(c for c in P.status()['parts'] if c['id'] == 'embedding')['models'] if m['id'] == jina['id'])
+    assert (row['context_max'], row['dims']) == (8192, 768)
+
+
+def test_a_choice_that_cannot_run_yet_leaves_the_running_part_as_it_is(parts, monkeypatch):
+    fake_engine(parts)  # CUDA only: the processor's engine is not here.
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    monkeypatch.setattr(P, '_alive', lambda pid: True)
+    llm = P.spec('llm')
+    P.write_part_config('llm', enabled=True, model='miniplm-qwen-200m', settings={'hardware': 'cuda'})
+    model, settings = P.effective(llm, TWO_CARDS)
+    P._write_json(P.run_dir('llm') / 'applied.json', P._signature(model, settings))  # Running like this.
+    card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    P.select('llm', settings={'hardware': 'cpu'})
+    assert P.spawned == []  # Not stopped for an engine that is not here.
+    engine = card()['engines']['cpu']
+    assert not engine['ready'] and engine['mb'] > 0  # "İndir ve uygula" fetches it.
+    P.select('llm', settings={'hardware': 'cuda'})
+    assert P.spawned == []  # Back to what runs: nothing to do.
+    P.select('llm', settings={'parallel': 2})
+    assert '--restart' in P.spawned[-1] and card()['state'] == 'restarting'
+
+
+def test_a_paused_part_only_saves_its_settings(parts, monkeypatch):
+    fake_engine(parts)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    P.write_part_config('llm', enabled=True, paused=True, model='miniplm-qwen-200m')
+    P.select('llm', settings={'parallel': 3})
+    assert P.spawned == [] and P.read_config()['llm']['settings']['parallel'] == 3
+
+
+def test_the_engine_goes_with_the_last_part_that_uses_it(parts, monkeypatch):
+    monkeypatch.setattr(P, 'start_part', lambda part_id: None)
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    fake_engine(parts, 'cuda')
+    fake_engine(parts, 'vulkan')
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano', settings={'hardware': 'cuda'})
+    P.write_part_config('llm', enabled=True, model='miniplm-qwen-200m', settings={'hardware': 'vulkan'})
+    P.remove('llm', delete_models=True)
+    assert P.apply('llm') == 0
+    # Memory still runs on the CUDA build: it stays; the Vulkan one nobody uses is gone.
+    assert P.engine_dir('llama.cpp', 'cuda').is_dir() and not P.engine_dir('llama.cpp', 'vulkan').exists()
+    P.remove('embedding', delete_models=False)
+    assert P.apply('embedding') == 0
+    assert P.engine_dir('llama.cpp', 'cuda').is_dir()  # Kept: the user kept the downloads.
+    P.remove('embedding', delete_models=True)
+    assert P.apply('embedding') == 0
+    assert not P.engine_dir('llama.cpp', 'cuda').exists()  # The last one: gone too.
