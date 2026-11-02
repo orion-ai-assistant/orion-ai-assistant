@@ -497,15 +497,16 @@ USER_KINDS = {
          'hint': 'Resim ve ses anlamak için.'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Embedding modeli (.gguf)'}]}],
-    # All five, as ours have them: without tokenizer.json faster-whisper would fetch one from the internet, and
-    # preprocessor_config.json says how the audio is prepared (large-v3 and turbo need 128 bands, not 80). Either
-    # vocabulary file works (tried with CTranslate2 4.8.4 and faster-whisper 1.2.1).
+    # All five, by the names today's converter (ct2-transformers-converter) writes them: without tokenizer.json
+    # faster-whisper would fetch one from the internet, and preprocessor_config.json says how the audio is prepared
+    # (large-v3 and turbo need 128 bands, not 80). One name each: vocabulary.txt (older conversions) works too,
+    # but one name leaves nothing to get wrong.
     'stt': [{'id': 'faster-whisper', 'label': 'faster-whisper (CTranslate2 Whisper)', 'engine': 'faster-whisper',
              'files': [
         {'names': ['model.bin'], 'label': 'model.bin', 'hint': 'Model'},
         {'names': ['config.json'], 'label': 'config.json', 'hint': 'Ayarlar'},
         {'names': ['tokenizer.json'], 'label': 'tokenizer.json', 'hint': 'Sözlük'},
-        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json / .txt', 'hint': 'Sözcük listesi'},
+        {'names': ['vocabulary.json'], 'label': 'vocabulary.json', 'hint': 'Sözcük listesi'},
         {'names': ['preprocessor_config.json'], 'label': 'preprocessor_config.json', 'hint': 'Ses ayarları'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
                 {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (.gguf)'},

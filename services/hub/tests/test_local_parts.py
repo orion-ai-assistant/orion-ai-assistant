@@ -608,12 +608,14 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     (stt / 'config.json').write_text('{}')
     states = [item['state'] for item in P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']]
     assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
-    for name in ('tokenizer.json', 'vocabulary.txt'):
+    (stt / 'vocabulary.txt').write_text('x')  # One name only: vocabulary.json.
+    assert P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist'][3]['state'] == 'missing'
+    for name in ('tokenizer.json', 'vocabulary.json'):
         (stt / name).write_text('x')
     assert not P.model_spec(P.spec('stt'), 'custom-whisper-tr')['complete']  # All five, as ours have them.
     (stt / 'preprocessor_config.json').write_text('{"feature_size": 80}')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
-    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt',
+    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.json',
                                                         'preprocessor_config.json']
     engine = P.engine_dir('faster-whisper', 'cpu')
     engine.mkdir(parents=True)
@@ -650,7 +652,7 @@ def ct2(path, *, mels, spec='WhisperSpec'):
 
 
 def test_a_speech_model_says_which_files_it_needs(parts):
-    """Tried with Orion's CTranslate2 and faster-whisper: either vocabulary file works; a model hearing 128 mel
+    """Tried with Orion's CTranslate2 and faster-whisper: a model hearing 128 mel
     bands (large-v3, turbo) refuses audio prepared without preprocessor_config.json."""
     folder = P.user_dir('stt') / 'turbo'
     ct2(folder / 'model.bin', mels=128)

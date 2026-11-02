@@ -70,7 +70,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj), başlıktaki mimariden ayırt edilir. Bağlam sınırı, vektör
     boyutu, havuzlama dosyadan okunur.
   - **STT (faster-whisper):** bizim modellerdeki dosyaların hepsi zorunlu: `model.bin` (başlığı CTranslate2
-    Whisper olmalı), `config.json`, `tokenizer.json`, `vocabulary.json` ya da `.txt`, `preprocessor_config.json`
+    Whisper olmalı), `config.json`, `tokenizer.json`, `vocabulary.json` (bugünkü dönüştürücünün yazdığı ad; eski
+    `.txt` da çalışır ama tek ad karışıklığı önler), `preprocessor_config.json`
     (sesin kaç mel bandına bölüneceği; `model.bin`'in istediğiyle aynı olmalı, large-v3 ve turbo 128, eskiler
     80). faster-whisper bu adlarla açar. CTranslate2 4.8.4 ve faster-whisper 1.2.1 ile denendi (2026-11-02): iki
     sözcük listesi de aynı sonucu verdi, hiçbiri yoksa model açılmadı; turbo 80 bantlık sese hata verdi. Ses
