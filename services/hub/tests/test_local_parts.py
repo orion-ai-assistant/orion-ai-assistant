@@ -604,9 +604,8 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     assert opened == [str(folder)]
     # Speech: the files faster-whisper needs, each ticked as it comes.
     stt = P.user_dir('stt') / 'whisper-tr'
-    stt.mkdir(parents=True)
-    for name in ('model.bin', 'config.json'):
-        (stt / name).write_text('x')
+    ct2(stt / 'model.bin', mels=80)
+    (stt / 'config.json').write_text('{}')
     states = [item['state'] for item in P.model_spec(P.spec('stt'), 'kendi-whisper-tr')['checklist']]
     assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
     for name in ('tokenizer.json', 'vocabulary.txt'):
@@ -617,16 +616,73 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     engine.mkdir(parents=True)
     (engine / '.complete').write_text('x')
     assert P.command(P.spec('stt'), whisper, {'hardware': 'cpu', 'gpu': 'all'})[1]['WHISPER_MODEL'] == str(stt)
-    # Speech out: the engine's two files, told apart by what they are, not by their names.
+    # Speech out: the engine's two files, told apart by what they are, not by their names; a file of another
+    # kind is named, not taken.
     tts = P.user_dir('tts') / 'Ses'
     gguf(tts / 'b.gguf', 'omnivoice-tokenizer')
     gguf(tts / 'a.gguf', 'omnivoice-lm', context_length=40960)
+    gguf(tts / 'c.gguf', 'llama')
     voice = P.model_spec(P.spec('tts'), 'kendi-ses')
-    assert voice['complete'] and voice['files'] == ['a.gguf', 'b.gguf']
+    assert voice['complete'] and voice['files'] == ['a.gguf', 'b.gguf'] and voice['kind'] == 'omnivoice'
+    assert voice['problems'] == ['c.gguf: bu bileşenin tanıdığı bir dosya değil (mimari: llama).']
     # Memory: a model that does not say how it pools is pooled like ours.
     gguf(P.user_dir('embedding') / 'E' / 'e.gguf', 'qwen2', context_length=8192, embedding_length=1024)
     assert P.model_spec(P.spec('embedding'), 'kendi-e')['args'] == ['--pooling', 'last']
     assert row('embedding', 'kendi-e')['dims'] == 1024
+
+
+def ct2(path, *, mels, spec='WhisperSpec'):
+    """A CTranslate2 model.bin holding only its header: the spec and the first convolution (its mel bands)."""
+    import struct
+    def string(text):
+        data = text.encode() + b'\0'
+        return struct.pack('<H', len(data)) + data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(struct.pack('<I', 6) + string(spec) + struct.pack('<II', 3, 2)
+                     + string('decoder/embeddings/weight') + struct.pack('<B2IBI', 2, 4, 4, 0, 16) + bytes(16)
+                     + string('encoder/conv1/weight') + struct.pack('<B3IBI', 3, 384, mels, 3, 0, 0))
+
+
+def test_a_speech_model_says_which_files_it_needs(parts):
+    """Tried with Orion's CTranslate2 and faster-whisper: either vocabulary file works; a model hearing 128 mel
+    bands (large-v3, turbo) refuses audio prepared without preprocessor_config.json."""
+    folder = P.user_dir('stt') / 'turbo'
+    ct2(folder / 'model.bin', mels=128)
+    for name in ('config.json', 'tokenizer.json', 'vocabulary.json'):
+        (folder / name).write_text('{}')
+    checklist = lambda: P.model_spec(P.spec('stt'), 'kendi-turbo')['checklist']
+    assert P.ct2_meta(folder / 'model.bin') == {'spec': 'WhisperSpec', 'mels': 128}
+    last = checklist()[-1]
+    assert (last['state'], last['optional']) == ('missing', False) and '128' in last['hint']
+    assert not P.model_spec(P.spec('stt'), 'kendi-turbo')['complete']
+    (folder / 'preprocessor_config.json').write_text('{"feature_size": 80}')
+    assert checklist()[-1]['state'] == 'wrong'  # Says 80: as wrong as none.
+    (folder / 'preprocessor_config.json').write_text('{"feature_size": 128}')
+    model = P.model_spec(P.spec('stt'), 'kendi-turbo')
+    assert model['complete'] and model['files'][-1] == 'preprocessor_config.json'
+    ct2(folder / 'model.bin', mels=128, spec='TransformerSpec')  # A translation model is not a Whisper one.
+    assert checklist()[0]['state'] == 'wrong'
+
+
+def test_a_download_names_and_counts_only_what_it_fetches(parts, server, monkeypatch):
+    data = P.catalog()
+    for part in data['parts']:
+        for model in part.get('models', []):
+            model['url'] = server
+    monkeypatch.setattr(P, 'catalog', lambda: data)
+    seen = []
+    record = P._update_job
+    monkeypatch.setattr(P, '_update_job', lambda part_id, **values: seen.append(values) or record(part_id, **values))
+    folder = P.models_dir('llm') / 'gemma-4-e2b'
+    gguf(folder / 'gemma-4-E2B-it-Q3_K_S.gguf', 'gemma4', context_length=131072)
+    P.write_part_config('llm', model='gemma-4-e2b-it-q3-k-s', settings={'vision': True})
+    assert P.run_job('llm', 'download', 'gemma-4-e2b-it-q3-k-s') == 0
+    started = next(values for values in seen if values.get('fetch'))
+    # Only the extra file: named so, its own size (not the model already here counted again).
+    assert started['label'] == 'Ek dosya indiriliyor: Görsel anlama' and started['fetch'] == ['extra']
+    assert started['total'] == 941 * P.MB
+    assert not any('Model indiriliyor' in str(values.get('label')) for values in seen)
+    assert (folder / 'mmproj-BF16.gguf').read_bytes() == Files.content
 
 
 def test_removing_keeps_the_users_own_models_unless_asked(parts, monkeypatch):
