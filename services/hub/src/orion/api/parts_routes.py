@@ -70,11 +70,22 @@ async def change(part_id: str, change: PartChange, request: Request, current_use
     return await _act(local_parts.select, part_id, model=change.model, settings=change.settings)
 
 
+class PartRemove(BaseModel):
+    delete_models: bool = False
+
+
+@router.post('/{part_id}/remove')
+async def remove(part_id: str, request: Request, body: PartRemove | None = None,
+                 current_user: str = Depends(get_current_user)):
+    """Turn the part off; with delete_models its downloaded models go too."""
+    _manage(request)
+    return await _act(local_parts.remove, part_id, delete_models=bool(body and body.delete_models))
+
+
 @router.post('/{part_id}/{action}')
 async def act(part_id: str, action: str, request: Request, current_user: str = Depends(get_current_user)):
     _manage(request)
-    function = {'cancel': local_parts.cancel, 'remove': local_parts.remove, 'start': local_parts.start,
-                'stop': local_parts.stop}.get(action)
+    function = {'cancel': local_parts.cancel, 'start': local_parts.start, 'stop': local_parts.stop}.get(action)
     if function is None:
         raise HTTPException(404, 'Bu işlem yok.')
     return await _act(function, part_id)

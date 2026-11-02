@@ -303,15 +303,7 @@ def default_settings(part, model, hw):
         if part['id'] == 'stt':
             settings['compute_type'] = 'int8' if hardware_id == 'cpu' else 'int8_float16'
         return settings
-    layers = 0
-    if hardware_id != 'cpu':
-        layers = ALL_LAYERS
-        vram = max((gpu['vram_mb'] or 0 for gpu in hw['gpus']), default=0)
-        size = (model or {}).get('size_mb') or 0
-        if vram and size and size * 1.2 > vram:
-            layers = 24  # Does not fit: half on the card, the rest on the processor.
-    settings = {'hardware': hardware_id, 'gpu': 'all', 'gpu_layers': layers,
-                'context_size': part.get('context_size', 8192), 'parallel': 1}
+    settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1}
     if any(item.get('mmproj') for item in part.get('models', [])):
         settings['vision'] = True
     return settings
@@ -331,11 +323,12 @@ def advanced(part, hw):
             fields.append({'key': 'compute_type', 'label': 'Hesaplama hassasiyeti', 'type': 'choice',
                            'options': COMPUTE_TYPES, 'hint': 'İşlemcide her zaman int8 kullanılır.'})
         return fields
+    # No layer count: on a card the whole model goes to it, on the processor none can (command()).
     fields += [
-        {'key': 'gpu_layers', 'label': 'Ekran kartına giden katman', 'type': 'int', 'min': 0, 'max': ALL_LAYERS,
-         'hint': f'{ALL_LAYERS} = hepsi. Ekran kartı belleği yetmezse azalt.'},
-        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512, 'max': 131072},
-        {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8},
+        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512, 'max': 131072,
+         'hint': 'Bir seferde ne kadar metin görebilir. Büyüdükçe daha çok bellek ister.'},
+        {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8,
+         'hint': 'Kaç isteğe aynı anda yanıt verir. Her biri bellek ister.'},
     ]
     if any(item.get('mmproj') for item in part.get('models', [])):
         # Shown on the model's tile (model panel), kept with the other settings.
@@ -375,6 +368,7 @@ def effective(part, hw, config=None):
     model_id = config.get('model') or next((m['id'] for m in part.get('models', []) if m.get('recommended')), None)
     model = next((m for m in part.get('models', []) if m['id'] == model_id), None)
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
+    settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
     if settings['hardware'] not in {choice['id'] for choice in choices(part, hw)}:
         settings['hardware'] = choices(part, hw)[0]['id']  # A card that is gone, or a config copied from another PC.
     return model, settings
@@ -392,7 +386,7 @@ def command(part, model, settings, data=None):
     port = str(os.getenv(part['port_key']) or part['port'])
     argv = [str(exe), '-m', str(files[0]), '--port', port, '--host', bind_host(), '--cors-origins', own_origins(port),
             '--no-slots', '-c', str(settings['context_size']), '-np', str(settings['parallel']),
-            '-ngl', str(0 if settings['hardware'] == 'cpu' else settings['gpu_layers'])]
+            '-ngl', str(0 if settings['hardware'] == 'cpu' else ALL_LAYERS)]
     if model.get('mmproj') and len(files) > len(model['files']):
         argv += ['--mmproj', str(files[-1])]
     argv += list(part.get('args', [])) + list(model.get('args', []))
@@ -616,11 +610,12 @@ def delete_model(part_id, model_id):
         shutil.rmtree(folder)
 
 
-def remove(part_id):
-    """Turn the part off and stop it (in the background). Its models stay (the model panel deletes them)."""
+def remove(part_id, *, delete_models=False):
+    """Turn the part off and stop it (in the background); with `delete_models` its downloaded models go too,
+    once the service has let go of them. The engine stays (another part may use it)."""
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
-    write_part_config(part_id, enabled=False, paused=False)
+    write_part_config(part_id, enabled=False, paused=False, purge=bool(delete_models))
     _move(part_id, 'stopped')
 
 
@@ -685,6 +680,9 @@ def apply(part_id, *, restart=False):
     try:
         if wanted == 'stopped' or restart:
             stop_part(part_id)
+        if wanted == 'stopped' and entry.get('purge'):
+            shutil.rmtree(models_dir(part_id), ignore_errors=True)
+            write_part_config(part_id, purge=False)
         if wanted == 'running':
             start_part(part_id)
     except Exception as error:

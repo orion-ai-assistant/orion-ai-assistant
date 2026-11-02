@@ -57,7 +57,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     # With an NVIDIA card the speech engine brings cuBLAS and cuDNN (~1.3 GB); on the processor it is 43 MB.
     assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engine_mb'] > 1300
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
-    assert keys('llm') == ['hardware', 'gpu', 'gpu_layers', 'context_size', 'parallel', 'vision']  # Two cards: which one.
+    assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vision']  # Two cards: which one.
     assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
     # Speech runs on CUDA or the processor; there is no Vulkan build of it.
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'cpu']
@@ -103,17 +103,37 @@ def test_graphics_cards_are_read_from_nvidia_smi():
     assert nothing['recommended'] == 'cpu'
 
 
-def test_defaults_fit_the_card_and_settings_stay_inside_their_limits(parts):
+def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(parts):
+    fake_engine(parts)
     llm = P.spec('llm')
     gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
-    assert P.default_settings(llm, gemma, TWO_CARDS)['gpu_layers'] == P.ALL_LAYERS
-    small_card = {**TWO_CARDS, 'gpus': [{'index': 0, 'name': 'x', 'vram_mb': 2048, 'vendor': 'nvidia'}]}
-    assert P.default_settings(llm, gemma, small_card)['gpu_layers'] == 24  # Half on the card.
-    assert P.default_settings(llm, gemma, NO_CARD)['gpu_layers'] == 0
-    assert P.clean_settings(llm, {'gpu': '1', 'gpu_layers': '30'}, TWO_CARDS) == {'gpu': '1', 'gpu_layers': 30}
-    for wrong in ({'gpu_layers': 5000}, {'hardware': 'metal'}, {'shell': 'calc.exe'}, {'parallel': 'x'}):
+    on_card, _, _ = P.command(llm, gemma, {**P.default_settings(llm, gemma, TWO_CARDS), 'hardware': 'cuda'})
+    assert on_card[on_card.index('-ngl') + 1] == str(P.ALL_LAYERS)
+    fake_engine(parts, 'cpu')
+    on_cpu, _, _ = P.command(llm, gemma, {**P.default_settings(llm, gemma, TWO_CARDS), 'hardware': 'cpu'})
+    assert on_cpu[on_cpu.index('-ngl') + 1] == '0'
+    # An older saved layer count is gone from the settings.
+    P.write_part_config('llm', settings={'gpu_layers': 24})
+    assert 'gpu_layers' not in P.effective(llm, TWO_CARDS)[1]
+    assert P.clean_settings(llm, {'gpu': '1', 'context_size': '4096'}, TWO_CARDS) == {'gpu': '1', 'context_size': 4096}
+    for wrong in ({'context_size': 100}, {'parallel': 9}, {'hardware': 'metal'}, {'shell': 'calc.exe'}, {'parallel': 'x'}):
         with pytest.raises(P.PartError):
             P.clean_settings(llm, wrong, TWO_CARDS)
+
+
+def test_removing_can_take_the_models_after_the_service_stopped(parts, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: stopped.append(part_id))
+    folder = P.models_dir('embedding') / 'jina-embeddings'
+    folder.mkdir(parents=True)
+    (folder / 'model.gguf').write_bytes(b'm')
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P.remove('embedding')
+    assert P.apply('embedding') == 0 and folder.is_dir()  # Kept unless asked.
+    P.write_part_config('embedding', enabled=True)
+    P.remove('embedding', delete_models=True)
+    assert P.apply('embedding') == 0 and stopped == ['embedding', 'embedding']
+    assert not P.models_dir('embedding').exists() and not P.read_config()['embedding']['purge']
 
 
 def test_the_engine_command_follows_the_part_model_and_settings(parts):
@@ -205,9 +225,9 @@ def test_only_this_pcs_window_changes_parts(parts, monkeypatch):
     monkeypatch.setattr(parts_routes, 'local_control', lambda request: False)
     assert client.get('/api/v1/parts').json()['can_manage'] is False
     assert client.post('/api/v1/parts/embedding/install', json={}).status_code == 403
-    assert client.put('/api/v1/parts/llm', json={'settings': {'gpu_layers': 10}}).status_code == 403
+    assert client.put('/api/v1/parts/llm', json={'settings': {'parallel': 2}}).status_code == 403
     monkeypatch.setattr(parts_routes, 'local_control', lambda request: True)
-    response = client.put('/api/v1/parts/llm', json={'settings': {'gpu_layers': 5000}})
+    response = client.put('/api/v1/parts/llm', json={'settings': {'context_size': 500000}})
     assert response.status_code == 400 and 'arasında' in response.json()['detail']
     assert client.put('/api/v1/parts/llm', json={'model': 'miniplm-qwen-200m'}).status_code == 200
     assert P.read_config()['llm']['model'] == 'miniplm-qwen-200m'
