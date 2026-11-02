@@ -478,42 +478,41 @@ def extra_info(part, model):
 
 
 # --- The user's own models -----------------------------------------------------------------------------------
-# Ours come from the catalog; the user's are folders under models/<part>/kendi/, one per model, named by the
-# user. Nothing about them is asked: which file is which, the context limit and the rest are read from the
-# files themselves, so a folder dropped there by hand works as well as one made from the page.
+# Ours come from the catalog; the user's are folders under models/<part>/custom/, one per model, named by the
+# user (a part with several engines, such as TTS, has a folder per engine: custom/OmniVoice/<name>). The user
+# picks the engine; which file is which, the context limit and the rest are read from the files' contents,
+# never from their names, so a folder filled by hand works as well as one made from the page.
 
-USER_DIR = 'kendi'
+USER_DIR = 'custom'
 MB = 1048576
 
 # What each engine needs from a model folder, in the order the service takes the files. `names`: one of these
-# exact files; `gguf`: a GGUF file with this architecture ('*': any model, not an mmproj or a sibling's). A part
-# may have several kinds (TTS: OmniVoice now, VoxCPM2 later): which one a folder holds is read from its GGUF
-# files' architectures, never asked (a fine-tuned model keeps its base's).
+# exact files (faster-whisper loads them by name); `gguf`: a GGUF file whose header says this architecture ('*':
+# any model, not an mmproj or a sibling's). A kind whose engine Orion does not have yet (`engine` other than the
+# part's) is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Model dosyası (.gguf)'},
-        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel/ses ek dosyası (mmproj, .gguf)',
-         'hint': 'Resim ya da ses anlaması için; yoksa model yalnızca metinle çalışır.'}]}],
+        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Ek dosya (mmproj, .gguf)',
+         'hint': 'Resim ve ses anlamak için.'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Embedding modeli (.gguf)'}]}],
-    # Tried with Orion's CTranslate2 4.8.4 and faster-whisper 1.2.1: either vocabulary file works (none: the model
-    # does not load); without tokenizer.json faster-whisper fetches a general one from the internet at every start.
-    'stt': [{'id': 'faster-whisper', 'label': "faster-whisper (CTranslate2'ye çevrilmiş Whisper)",
-             'engine': 'faster-whisper', 'files': [
-        {'names': ['model.bin'], 'label': 'model.bin', 'hint': 'Modelin kendisi.'},
-        {'names': ['config.json'], 'label': 'config.json', 'hint': 'Modelin ayarları.'},
-        {'names': ['tokenizer.json'], 'label': 'tokenizer.json',
-         'hint': 'Yazıyı çözen sözlük; yoksa her açılışta internetten genel bir sözlük indirilmeye çalışılır.'},
-        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json ya da vocabulary.txt',
-         'hint': 'Modelin sözcük listesi; ikisinden biri yeter.'},
-        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'preprocessor_config.json',
-         'hint': 'Sesin modele nasıl hazırlanacağı. Large-v3 ve turbo (128 bant) için gerekli; diğerlerinde '
-                 'yoksa 80 bant kullanılır.'}]}],
-    'tts': [{'id': 'omnivoice', 'label': 'OmniVoice (GGUF)', 'engine': 'omnivoice-gguf', 'files': [
-        {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (omnivoice-base….gguf)'},
-        {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü (omnivoice-tokenizer….gguf)'}]}],
+    # All five, as ours have them: without tokenizer.json faster-whisper would fetch one from the internet, and
+    # preprocessor_config.json says how the audio is prepared (large-v3 and turbo need 128 bands, not 80). Either
+    # vocabulary file works (tried with CTranslate2 4.8.4 and faster-whisper 1.2.1).
+    'stt': [{'id': 'faster-whisper', 'label': 'faster-whisper (CTranslate2 Whisper)', 'engine': 'faster-whisper',
+             'files': [
+        {'names': ['model.bin'], 'label': 'model.bin', 'hint': 'Model'},
+        {'names': ['config.json'], 'label': 'config.json', 'hint': 'Ayarlar'},
+        {'names': ['tokenizer.json'], 'label': 'tokenizer.json', 'hint': 'Sözlük'},
+        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json / .txt', 'hint': 'Sözcük listesi'},
+        {'names': ['preprocessor_config.json'], 'label': 'preprocessor_config.json', 'hint': 'Ses ayarları'}]}],
+    'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
+                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (.gguf)'},
+                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü (.gguf)'}]},
+            {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2', 'files': []}],
 }
-_SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')
+_SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')  # llama.cpp's own naming of a model split in pieces
 
 
 def user_dir(part_id):
@@ -593,48 +592,34 @@ def _ct2_header(path):
 
 def _whisper(path, kind, checklist):
     """faster-whisper's own rules, from the files: model.bin must be a Whisper model, and preprocessor_config.json
-    is needed when the model hears more than 80 mel bands (large-v3, turbo): without it the audio is prepared with
-    80 and the model refuses it ("expected 128"); a file that says another number is as wrong."""
+    must prepare the audio with as many mel bands as the model hears (with 80 a turbo model refuses it)."""
     items = {spec['names'][0]: item for spec, item in zip(kind['files'], checklist)}
     model, prepare = items['model.bin'], items['preprocessor_config.json']
     if model['state'] != 'ok':
         return
     meta = ct2_meta(path / 'model.bin')
     if not meta or meta['spec'] != 'WhisperSpec':
-        model.update(state='wrong', hint='Bu bir Whisper modeli değil (CTranslate2 Whisper bekleniyor).')
+        model.update(state='wrong', hint='Whisper modeli değil.')
         return
     mels = meta['mels']
-    if mels and mels != 80:
-        prepare.update(optional=False, hint=f'Bu model {mels} bantlı (large-v3 ya da turbo): bu dosya olmadan ses '
-                                            'yanlış hazırlanır ve tanıma çalışmaz.')
     if prepare['state'] == 'ok' and mels:
         try:
             said = json.loads((path / 'preprocessor_config.json').read_text(encoding='utf-8')).get('feature_size', 80)
         except (OSError, ValueError, AttributeError):
             said = None
         if said != mels:
-            prepare.update(state='wrong', hint=f'Bu dosya {said} bant diyor, model {mels} bant istiyor.'
-                           if said else 'Bu dosya okunamadı.')
+            prepare.update(state='wrong', hint=f'{said} bant diyor, model {mels} bant istiyor.' if said
+                           else 'Okunamadı.')
 
 
-def _kind_of(kinds, ggufs):
-    """Which of a part's kinds a folder holds: the one its GGUF files' architectures belong to (the first while
-    nothing tells)."""
-    def known(kind):
-        archs = {spec['gguf'] for spec in kind['files'] if spec.get('gguf') not in (None, '*', 'clip')}
-        return sum(1 for _, meta in ggufs if meta and meta['architecture'] in archs)
-    return max(kinds, key=known)
-
-
-def _user_model(part, kinds, path, model_id):
+def _user_model(part, kind, path, model_id, folder):
     """One folder of the user's as a catalog entry like ours (files in the service's order, sizes, args), with
-    a checklist of what its kind needs: each file there, missing, more than one candidate, or not right."""
+    a checklist of what its engine needs: each file there, missing, more than one candidate, or not right."""
     present = sorted(file for file in path.iterdir() if file.is_file())
     copying = [file.name for file in present if not _settled(file)]
     ggufs = [(file, file_meta(file)) for file in present if file.suffix.lower() == '.gguf' and file.name not in copying]
-    kind = _kind_of(kinds, ggufs)
     claimed = {spec['gguf'] for spec in kind['files'] if spec.get('gguf', '*') != '*'} | {'clip'}
-    problems = [f'{file.name} okunamadı (GGUF değil ya da bozuk).' for file, meta in ggufs if meta is None]
+    problems = [f'{file.name}: okunamadı.' for file, meta in ggufs if meta is None]
     checklist, picked = [], []
     for spec in kind['files']:
         if 'names' in spec:
@@ -657,13 +642,14 @@ def _user_model(part, kinds, path, model_id):
         checklist.append(item)
         picked.append(matches[0] if len(matches) == 1 else None)
     used = {name for item in checklist for name in item['names']}
-    problems += [f'{file.name}: bu bileşenin tanıdığı bir dosya değil (mimari: {meta["architecture"]}).'
+    problems += [f'{file.name}: tanınmayan dosya ({meta["architecture"]}).'
                  for file, meta in ggufs if meta and file.name not in used]
     if kind['id'] == 'faster-whisper':
         _whisper(path, kind, checklist)
-    if kind['engine'] != part.get('engine'):
-        problems.append(f'{kind["label"]} için motor henüz yok.')
-    complete = (not copying and kind['engine'] == part.get('engine')
+    ready = kind['engine'] == part.get('engine')
+    if not ready:
+        problems.append(f'{kind["label"]} motoru henüz yok.')
+    complete = (ready and not copying
                 and all(item['state'] == 'ok' or item['optional'] and item['state'] == 'missing' for item in checklist))
     picked = [file if item['state'] == 'ok' else None for file, item in zip(picked, checklist)]
     extra = next((file for spec, file in zip(kind['files'], picked) if spec.get('role') == 'mmproj' and file), None)
@@ -671,69 +657,132 @@ def _user_model(part, kinds, path, model_id):
     main = file_meta(files[0]) if files and files[0].suffix.lower() == '.gguf' else None
     # An embedding model that does not say how it pools is pooled like ours (the last token).
     args = ['--pooling', 'last'] if part['id'] == 'embedding' and main and main.get('pooling') is None else []
-    entry = {'id': model_id, 'name': path.name, 'description': 'Kendi modelin.', 'folder': f'{USER_DIR}/{path.name}',
+    entry = {'id': model_id, 'name': path.name, 'description': 'Kendi modelin.', 'folder': folder,
              'files': [file.name for file in files], 'size_mb': round(sum(file.stat().st_size for file in files) / MB),
              'args': args, 'user': True, 'kind': kind['id'], 'kind_label': kind['label'], 'complete': complete,
-             'checklist': checklist,
-             'copying': copying, 'problems': problems}
+             'present': [file.name for file in present], 'checklist': checklist, 'copying': copying,
+             'problems': problems}
     if extra:
         entry.update(mmproj=extra.name, mmproj_mb=round(extra.stat().st_size / MB))
     return entry
 
 
+def _places(part_id):
+    """(kind, folder, its path under the models folder) for each engine of the part: one folder for a part with
+    one engine, one per engine otherwise."""
+    kinds = USER_KINDS.get(part_id) or []
+    if len(kinds) == 1:
+        return [(kinds[0], user_dir(part_id), USER_DIR)]
+    return [(kind, user_dir(part_id) / kind['folder'], f'{USER_DIR}/{kind["folder"]}') for kind in kinds]
+
+
+def _user_id(part_id, kind, name):
+    several = len(USER_KINDS.get(part_id) or []) > 1
+    return f'{USER_DIR}-{kind["id"] + "-" if several else ""}{_slug(name)}'
+
+
 def user_models(part):
     """The models the user put in this part's own folder, each a folder (its name is the model's)."""
-    kinds = USER_KINDS.get(part['id'])
-    folder = user_dir(part['id'])
-    if not kinds or not folder.is_dir():
-        return []
     models, ids = [], set()
-    for path in sorted((path for path in folder.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
-        model_id = base = f'kendi-{_slug(path.name)}'
-        number = 1
-        while model_id in ids:
-            number += 1
-            model_id = f'{base}-{number}'
-        ids.add(model_id)
-        try:
-            models.append(_user_model(part, kinds, path, model_id))
-        except OSError:
-            continue  # Being renamed or deleted in Explorer just now.
+    for kind, folder, relative in _places(part['id']):
+        if not folder.is_dir():
+            continue
+        for path in sorted((path for path in folder.iterdir() if path.is_dir()), key=lambda path: path.name.lower()):
+            model_id = base = _user_id(part['id'], kind, path.name)
+            number = 1
+            while model_id in ids:
+                number += 1
+                model_id = f'{base}-{number}'
+            ids.add(model_id)
+            try:
+                models.append(_user_model(part, kind, path, model_id, f'{relative}/{path.name}'))
+            except OSError:
+                continue  # Being renamed or deleted in Explorer just now.
     return models
 
 
-def add_user_model(part_id, name):
-    """Make the folder for a model the user brings: it shows at once (empty) and fills as they copy its files
-    in. Returns its id."""
+def add_user_model(part_id, name, kind_id=None):
+    """Make the folder for a model the user brings, for the engine they chose: it shows at once (empty) and
+    fills as they copy its files in. Returns its id."""
     part = spec(part_id)
-    if part_id not in USER_KINDS:
+    places = _places(part_id)
+    if not places:
         raise PartError('Bu bileşene kendi modelin eklenemiyor.')
+    kind, folder, _ = places[0] if kind_id is None else next(
+        (place for place in places if place[0]['id'] == kind_id), (None, None, None))
+    if kind is None:
+        raise PartError('Böyle bir motor yok.')
+    if kind['engine'] != part.get('engine'):
+        raise PartError(f'{kind["label"]} motoru henüz eklenmedi.')
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', str(name or '')).strip().rstrip('. ')
     if not name:
         raise PartError('Modele bir ad ver.')
     if len(name) > 60:
         raise PartError('Ad en çok 60 harf olabilir.')
-    if any(model['id'] == f'kendi-{_slug(name)}' for model in part['models']):
+    if any(model['id'] == _user_id(part_id, kind, name) for model in part['models']):
         raise PartError('Bu adda bir model zaten var.')
     try:
-        (user_dir(part_id) / name).mkdir(parents=True)
+        (folder / name).mkdir(parents=True)
     except OSError:
         raise PartError('Bu adla klasör açılamadı; başka bir ad dene.') from None
-    return next(model['id'] for model in spec(part_id)['models'] if model['folder'] == f'{USER_DIR}/{name}')
+    return _user_id(part_id, kind, name)
 
 
-def open_folder(part_id, model_id=None):
-    """Show the part's folder of the user's models (or one model's) in this PC's file manager."""
-    part = spec(part_id)
-    if part_id not in USER_KINDS:
-        raise PartError('Bu bileşene kendi modelin eklenemiyor.')
-    folder = models_dir(part_id) / model_spec(part, model_id)['folder'] if model_id else user_dir(part_id)
+def open_folder(part_id, model_id):
+    """Show one of the user's model folders in this PC's file manager, in front of the Orion window."""
+    model = model_spec(spec(part_id), model_id)
+    if not model.get('user'):
+        raise PartError('Yalnızca kendi modellerinin klasörü açılır.')
+    folder = models_dir(part_id) / model['folder']
     folder.mkdir(parents=True, exist_ok=True)
     if os.name == 'nt':
         os.startfile(str(folder))
+        threading.Thread(target=_to_front, args=(folder,), daemon=True).start()
     else:
         subprocess.Popen(['open' if system() == 'mac' else 'xdg-open', str(folder)], stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _to_front(folder, wait=3.0):
+    """Explorer opened by the Hub (a program in the background) sometimes came up behind the Orion window:
+    Windows lets only the program in front give the front away. Joining the front window's input for a moment
+    lets this one bring the folder's window there."""
+    import ctypes
+    from ctypes import wintypes
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    kernel = ctypes.WinDLL('kernel32')
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(window, _):
+        name, title = ctypes.create_unicode_buffer(64), ctypes.create_unicode_buffer(1024)
+        user.GetClassNameW(window, name, 64)
+        if name.value == 'CabinetWClass' and user.IsWindowVisible(window):
+            user.GetWindowTextW(window, title, 1024)
+            if title.value == folder.name or title.value.startswith(f'{folder.name} - ') or str(folder) in title.value:
+                found.append(window)
+        return True
+
+    until = time.monotonic() + wait
+    while not found and time.monotonic() < until:
+        user.EnumWindows(each, 0)
+        if not found:
+            time.sleep(.1)
+    if not found:
+        return
+    window = found[0]
+    front = user.GetForegroundWindow()
+    theirs = user.GetWindowThreadProcessId(front, None)
+    mine = kernel.GetCurrentThreadId()
+    joined = theirs and theirs != mine and user.AttachThreadInput(mine, theirs, True)
+    try:
+        if user.IsIconic(window):
+            user.ShowWindow(window, 9)  # SW_RESTORE
+        user.BringWindowToTop(window)
+        user.SetForegroundWindow(window)
+    finally:
+        if joined:
+            user.AttachThreadInput(mine, theirs, False)
 
 
 def advanced(part, hw, model=None):
@@ -842,8 +891,11 @@ def _python_command(part, model, settings, data=None):
     site = folder / 'site'
     argv = [sys.executable, '-B', '-m', 'services.shared.part_python', str(ROOT / part['script']),
             str(site) if site.is_dir() else '']
+    # Offline: whatever the model lacks, nothing is fetched from the internet in its place (faster-whisper
+    # would download a general dictionary, or a whole model for a name it does not find).
     env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8', ORION_HW_ID='nvidia' if gpu else 'cpu',
-               ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'])
+               ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'], HF_HUB_OFFLINE='1',
+               TRANSFORMERS_OFFLINE='1')
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
     if gpu and settings.get('gpu', 'all') != 'all':
@@ -968,7 +1020,9 @@ def part_status(part, hw, config, data):
             'job': current, 'error': (change or {}).get('error'),
             # What the service runs with (the page compares the choice with it: "not applied yet").
             'applied': applied(part['id']) if state in ('running', 'restarting') else None,
-            'user': {'kinds': kinds, 'folder': str(user_dir(part['id']))} if kinds else None}
+            # The engines the user can bring a model for (one not in Orion yet is shown, not offered).
+            'user': {'kinds': [{**kind, 'ready': kind['engine'] == part['engine']} for kind in kinds],
+                     'folder': str(user_dir(part['id']))} if kinds else None}
 
 
 def status():
@@ -994,7 +1048,7 @@ def _spawn(argv):
         log.close()
 
 
-def start_job(part_id, action, *, model=None, settings=None):
+def start_job(part_id, action, *, model=None, settings=None, fetch=None):
     """`download` fetches a model only; `install` fetches what is missing (engine, model), turns the part on
     and starts it: one press for "Modeli indir ve kur"."""
     data = catalog()
@@ -1016,6 +1070,9 @@ def start_job(part_id, action, *, model=None, settings=None):
         raise PartError('Bu modelin klasöründe eksik dosya var; Modeller panelinde neyin eksik olduğu yazıyor.')
     if action == 'download' and chosen.get('user'):
         raise PartError('Kendi modelin indirilmez: dosyaları klasöründe.')
+    fetch = [role for role in (fetch or []) if role in ('model', 'extra')] or None
+    if fetch and 'extra' in fetch and not chosen.get('mmproj'):
+        raise PartError('Bu modelin ek dosyası yok.')
     if action == 'install':
         values = {'model': chosen['id']}
         if settings:
@@ -1031,7 +1088,7 @@ def start_job(part_id, action, *, model=None, settings=None):
     _write_json(home() / 'jobs' / f'{part_id}.json', {'action': action, 'model': chosen['id'], 'phase': 'queued',
                                                        'label': 'Başlıyor…', 'started': time.time(), 'pid': None,
                                                        'installed': installed})
-    process = _spawn(['job', part_id, action, chosen['id']])
+    process = _spawn(['job', part_id, action, chosen['id']] + (['--fetch', ','.join(fetch)] if fetch else []))
     _update_job(part_id, pid=process.pid)
     return job(part_id)
 
@@ -1092,26 +1149,29 @@ def applied(part_id):
     return _read_json(run_dir(part_id) / 'applied.json', None)
 
 
-def delete_model(part_id, model_id, *, extra=False):
+def delete_model(part_id, model_id, *, extra=False, file=None):
     """Delete a model (all its files; a user's model with its folder), or with `extra` only its extra file
     (mmproj): the model stays and, when it is the chosen one, the choice stops asking for that file.
 
     Any model can go, the chosen one too (the card then offers to download it again). A file the running
     service holds is let go of first: the service stops, then the file goes (in the background, like Durdur);
-    it stays stopped until Başlat."""
+    it stays stopped until Başlat. `file`: one file of a user's model (its folder goes with its last file)."""
     part = spec(part_id)
     model = model_spec(part, model_id)
     if busy(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; bitince sil.')
     if extra and not model.get('mmproj'):
         raise PartError('Bu modelin ek dosyası yok.')
+    if file is not None and (not model.get('user') or file not in model.get('present', [])):
+        raise PartError('Bu dosya bu modelin klasöründe yok.')
     entry = read_config().get(part_id, {})
     if extra and (effective(part, hardware())[0] or {}).get('id') == model_id:
         write_part_config(part_id, settings={**(entry.get('settings') or {}), 'vision': False})
     if not held(part, model_id, extra=extra):
-        _drop(part, model, extra)
+        _drop(part, model, extra, file)
         return
-    write_part_config(part_id, paused=True, drop=[*(entry.get('drop') or []), {'model': model_id, 'extra': extra}])
+    write_part_config(part_id, paused=True,
+                      drop=[*(entry.get('drop') or []), {'model': model_id, 'extra': extra, 'file': file}])
     _move(part_id, 'stopped')
 
 
@@ -1123,10 +1183,14 @@ def held(part, model_id, *, extra=False):
     return answers(int(os.getenv(part['port_key']) or part['port'])) or _supervised(part['id'])
 
 
-def _drop(part, model, extra=False):
+def _drop(part, model, extra=False, file=None):
     folder = models_dir(part['id']) / model['folder']
     try:
-        if extra:
+        if file:
+            (folder / file).unlink(missing_ok=True)
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+        elif extra:
             (folder / model['mmproj']).unlink(missing_ok=True)
         elif folder.is_dir():
             shutil.rmtree(folder)
@@ -1230,7 +1294,7 @@ def apply(part_id, *, wish=None, restart=False):
                 # Files a delete waited for (the service held them): let go of now.
                 for item in entry.get('drop') or []:
                     try:
-                        _drop(part, model_spec(part, item['model']), item.get('extra'))
+                        _drop(part, model_spec(part, item['model']), item.get('extra'), item.get('file'))
                     except PartError:
                         pass
                 if entry.get('drop'):
@@ -1541,17 +1605,19 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _fetch_model(part_id, part, model, cancelled, settings=None, step=''):
+def _fetch_model(part_id, part, model, cancelled, settings=None, step='', roles=None):
     """Fetch what the model lacks for these settings, and say just that: the extra file alone is not "the model"
     (a job that fetched only the mmproj once said "Model indiriliyor" and counted the model already there, as if
     it downloaded it again). `fetch` in the job names the files' roles, so the page marks those lines."""
-    files = model_files(part, model, settings)
-    missing = [path for path in files if not path.is_file()]
+    extra = model.get('mmproj')
+    # `roles`: only these files (the line's own İndir: the extra file whether or not it is used yet).
+    files = model_files(part, model, {**(settings or {}), 'vision': True} if roles and 'extra' in roles else settings)
+    missing = [path for path in files if not path.is_file()
+               and (roles is None or ('extra' if path.name == extra else 'model') in roles)]
     if not missing:
         return
     if model.get('user'):
         raise PartError('Kendi modelinin dosyaları eksik; klasörüne koy.')
-    extra = model.get('mmproj')
     main = [path for path in missing if path.name != extra]
     roles = (['model'] if main else []) + (['extra'] if len(main) < len(missing) else [])
     label = (f'{step}Model indiriliyor: {model["name"]}{" ve ek dosyası" if "extra" in roles else ""}' if main
@@ -1592,7 +1658,7 @@ def _fetch_model(part_id, part, model, cancelled, settings=None, step=''):
         offset += path.stat().st_size
 
 
-def run_job(part_id, action, model_id):
+def run_job(part_id, action, model_id, fetch=None):
     data = catalog()
     part = spec(part_id, data)
     model = model_spec(part, model_id)
@@ -1608,7 +1674,7 @@ def run_job(part_id, action, model_id):
         step = lambda name: f'{steps.index(name) + 1}/{len(steps)} · ' if len(steps) > 1 and name in steps else ''
         if action == 'install':
             _install_engine(part_id, part, settings, data, cancelled, step('engine'))
-        _fetch_model(part_id, part, model, cancelled, settings, step('model'))
+        _fetch_model(part_id, part, model, cancelled, settings, step('model'), fetch)
         if action == 'install':
             again = bool(read_config().get(part_id, {}).get('enabled'))
             write_part_config(part_id, enabled=True, paused=False, model=model_id)
@@ -1647,6 +1713,7 @@ def main(argv=None):
     job_parser.add_argument('part')
     job_parser.add_argument('kind', choices=['download', 'install'])
     job_parser.add_argument('model')
+    job_parser.add_argument('--fetch')
     sub.add_parser('status')
     args = parser.parse_args(argv)
     if args.action == 'serve':
@@ -1656,7 +1723,7 @@ def main(argv=None):
     elif args.action == 'apply':
         return apply(args.part, wish=args.id, restart=args.restart)
     elif args.action == 'job':
-        return run_job(args.part, args.kind, args.model)
+        return run_job(args.part, args.kind, args.model, args.fetch.split(',') if args.fetch else None)
     else:
         print(json.dumps(status(), ensure_ascii=False, indent=2))
     return 0

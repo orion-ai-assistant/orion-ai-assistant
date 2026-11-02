@@ -585,50 +585,56 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     opened = []
     monkeypatch.setattr(P.os, 'startfile', opened.append, raising=False)
     # LLM: the name is the folder's; which file is the model and which the extra is read from them.
-    assert P.add_user_model('llm', 'Benim Qwen') == 'kendi-benim-qwen'
+    assert P.add_user_model('llm', 'Benim Qwen') == 'custom-benim-qwen'
     with pytest.raises(P.PartError):
         P.add_user_model('llm', 'benim qwen')  # The same name.
     folder = P.user_dir('llm') / 'Benim Qwen'
     card = lambda part_id: next(part for part in P.status()['parts'] if part['id'] == part_id)
     row = lambda part_id, model_id: next(m for m in card(part_id)['models'] if m['id'] == model_id)
-    empty = row('llm', 'kendi-benim-qwen')
+    empty = row('llm', 'custom-benim-qwen')
     assert empty['user'] and not empty['complete'] and empty['checklist'][0]['state'] == 'missing'
     gguf(folder / 'qwen-7b-q4.gguf', 'qwen2', context_length=32768)
     gguf(folder / 'vision.gguf', 'clip')
-    model = P.model_spec(P.spec('llm'), 'kendi-benim-qwen')
+    model = P.model_spec(P.spec('llm'), 'custom-benim-qwen')
     assert (model['files'], model['mmproj'], model['complete']) == (['qwen-7b-q4.gguf'], 'vision.gguf', True)
-    assert row('llm', 'kendi-benim-qwen')['context_max'] == 32768
+    assert row('llm', 'custom-benim-qwen')['context_max'] == 32768
     gguf(folder / 'other.gguf', 'llama')  # Two models in one folder: which one is not guessed.
-    assert P.model_spec(P.spec('llm'), 'kendi-benim-qwen')['checklist'][0]['state'] == 'many'
-    P.open_folder('llm', 'kendi-benim-qwen')
+    assert P.model_spec(P.spec('llm'), 'custom-benim-qwen')['checklist'][0]['state'] == 'many'
+    P.open_folder('llm', 'custom-benim-qwen')
     assert opened == [str(folder)]
     # Speech: the files faster-whisper needs, each ticked as it comes.
     stt = P.user_dir('stt') / 'whisper-tr'
     ct2(stt / 'model.bin', mels=80)
     (stt / 'config.json').write_text('{}')
-    states = [item['state'] for item in P.model_spec(P.spec('stt'), 'kendi-whisper-tr')['checklist']]
+    states = [item['state'] for item in P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']]
     assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
     for name in ('tokenizer.json', 'vocabulary.txt'):
         (stt / name).write_text('x')
-    whisper = P.model_spec(P.spec('stt'), 'kendi-whisper-tr')
-    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt']
+    assert not P.model_spec(P.spec('stt'), 'custom-whisper-tr')['complete']  # All five, as ours have them.
+    (stt / 'preprocessor_config.json').write_text('{"feature_size": 80}')
+    whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
+    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt',
+                                                        'preprocessor_config.json']
     engine = P.engine_dir('faster-whisper', 'cpu')
     engine.mkdir(parents=True)
     (engine / '.complete').write_text('x')
     assert P.command(P.spec('stt'), whisper, {'hardware': 'cpu', 'gpu': 'all'})[1]['WHISPER_MODEL'] == str(stt)
-    # Speech out: the engine's two files, told apart by what they are, not by their names; a file of another
-    # kind is named, not taken.
-    tts = P.user_dir('tts') / 'Ses'
-    gguf(tts / 'b.gguf', 'omnivoice-tokenizer')
+    # Speech out: the user picks the engine (a folder each); its two files are told apart by their contents,
+    # whatever their names; a file of another kind is named, not taken. An engine Orion lacks cannot be added.
+    with pytest.raises(P.PartError):
+        P.add_user_model('tts', 'Ses', 'voxcpm2')
+    assert P.add_user_model('tts', 'Ses', 'omnivoice') == 'custom-omnivoice-ses'
+    tts = P.user_dir('tts') / 'OmniVoice' / 'Ses'
+    gguf(tts / 'zz.gguf', 'omnivoice-tokenizer')
     gguf(tts / 'a.gguf', 'omnivoice-lm', context_length=40960)
     gguf(tts / 'c.gguf', 'llama')
-    voice = P.model_spec(P.spec('tts'), 'kendi-ses')
-    assert voice['complete'] and voice['files'] == ['a.gguf', 'b.gguf'] and voice['kind'] == 'omnivoice'
-    assert voice['problems'] == ['c.gguf: bu bileşenin tanıdığı bir dosya değil (mimari: llama).']
+    voice = P.model_spec(P.spec('tts'), 'custom-omnivoice-ses')
+    assert voice['complete'] and voice['files'] == ['a.gguf', 'zz.gguf'] and voice['kind'] == 'omnivoice'
+    assert voice['problems'] == ['c.gguf: tanınmayan dosya (llama).']
     # Memory: a model that does not say how it pools is pooled like ours.
     gguf(P.user_dir('embedding') / 'E' / 'e.gguf', 'qwen2', context_length=8192, embedding_length=1024)
-    assert P.model_spec(P.spec('embedding'), 'kendi-e')['args'] == ['--pooling', 'last']
-    assert row('embedding', 'kendi-e')['dims'] == 1024
+    assert P.model_spec(P.spec('embedding'), 'custom-e')['args'] == ['--pooling', 'last']
+    assert row('embedding', 'custom-e')['dims'] == 1024
 
 
 def ct2(path, *, mels, spec='WhisperSpec'):
@@ -650,15 +656,14 @@ def test_a_speech_model_says_which_files_it_needs(parts):
     ct2(folder / 'model.bin', mels=128)
     for name in ('config.json', 'tokenizer.json', 'vocabulary.json'):
         (folder / name).write_text('{}')
-    checklist = lambda: P.model_spec(P.spec('stt'), 'kendi-turbo')['checklist']
+    checklist = lambda: P.model_spec(P.spec('stt'), 'custom-turbo')['checklist']
     assert P.ct2_meta(folder / 'model.bin') == {'spec': 'WhisperSpec', 'mels': 128}
-    last = checklist()[-1]
-    assert (last['state'], last['optional']) == ('missing', False) and '128' in last['hint']
-    assert not P.model_spec(P.spec('stt'), 'kendi-turbo')['complete']
+    assert (checklist()[-1]['state'], checklist()[-1]['optional']) == ('missing', False)
+    assert not P.model_spec(P.spec('stt'), 'custom-turbo')['complete']
     (folder / 'preprocessor_config.json').write_text('{"feature_size": 80}')
     assert checklist()[-1]['state'] == 'wrong'  # Says 80: as wrong as none.
     (folder / 'preprocessor_config.json').write_text('{"feature_size": 128}')
-    model = P.model_spec(P.spec('stt'), 'kendi-turbo')
+    model = P.model_spec(P.spec('stt'), 'custom-turbo')
     assert model['complete'] and model['files'][-1] == 'preprocessor_config.json'
     ct2(folder / 'model.bin', mels=128, spec='TransformerSpec')  # A translation model is not a Whisper one.
     assert checklist()[0]['state'] == 'wrong'
@@ -689,7 +694,7 @@ def test_removing_keeps_the_users_own_models_unless_asked(parts, monkeypatch):
     monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
     gguf(P.user_dir('llm') / 'Mine' / 'm.gguf', 'qwen2', context_length=4096)
     gguf(P.models_dir('llm') / 'miniplm-qwen-200m' / 'MiniPLM-Qwen-200M-Q3_K_M.gguf', 'qwen2')
-    P.write_part_config('llm', enabled=True, model='kendi-mine')
+    P.write_part_config('llm', enabled=True, model='custom-mine')
     P.remove('llm', delete_models=True)
     assert P.apply('llm') == 0
     assert (P.user_dir('llm') / 'Mine' / 'm.gguf').is_file()
@@ -698,3 +703,29 @@ def test_removing_keeps_the_users_own_models_unless_asked(parts, monkeypatch):
     P.remove('llm', delete_models=True, delete_user_models=True)
     assert P.apply('llm') == 0
     assert not P.user_dir('llm').exists()
+
+
+def test_one_file_at_a_time(parts, server, monkeypatch):
+    """Each file's own line downloads or deletes just it; a user's model goes with its last file."""
+    real = P.catalog
+    data = P.catalog()
+    for part in data['parts']:
+        for model in part.get('models', []):
+            model['url'] = server
+    monkeypatch.setattr(P, 'catalog', lambda: data)
+    P.write_part_config('llm', model='gemma-4-e2b-it-q3-k-s', settings={'vision': False})
+    assert P.run_job('llm', 'download', 'gemma-4-e2b-it-q3-k-s', ['extra']) == 0  # Not used yet: still fetched.
+    folder = P.models_dir('llm') / 'gemma-4-e2b'
+    assert (folder / 'mmproj-BF16.gguf').is_file() and not (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').exists()
+    P.start_job('llm', 'download', model='gemma-4-e2b-it-q3-k-s', fetch=['model'])
+    assert P.spawned[-1][-2:] == ['--fetch', 'model']
+    monkeypatch.setattr(P, 'catalog', real)
+    mine = P.user_dir('llm') / 'Mine'
+    gguf(mine / 'm.gguf', 'qwen2', context_length=4096)
+    gguf(mine / 'v.gguf', 'clip')
+    with pytest.raises(P.PartError):
+        P.delete_model('llm', 'custom-mine', file='../other.gguf')
+    P.delete_model('llm', 'custom-mine', file='v.gguf')
+    assert (mine / 'm.gguf').is_file() and not (mine / 'v.gguf').exists()
+    P.delete_model('llm', 'custom-mine', file='m.gguf')
+    assert not mine.exists()

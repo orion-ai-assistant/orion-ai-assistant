@@ -52,21 +52,25 @@ async def install(part_id: str, change: PartChange, request: Request, current_us
 
 
 @router.post('/{part_id}/models/{model_id}/download')
-async def download(part_id: str, model_id: str, request: Request, current_user: str = Depends(get_current_user)):
+async def download(part_id: str, model_id: str, request: Request, file: str | None = None,
+                   current_user: str = Depends(get_current_user)):
+    """Fetch a model (`?file=model` or `?file=extra`: only that file)."""
     _manage(request)
-    return await _act(local_parts.start_job, part_id, 'download', model=model_id)
+    return await _act(local_parts.start_job, part_id, 'download', model=model_id, fetch=[file] if file else None)
 
 
 @router.delete('/{part_id}/models/{model_id}')
-async def delete_model(part_id: str, model_id: str, request: Request, extra: bool = False,
+async def delete_model(part_id: str, model_id: str, request: Request, extra: bool = False, file: str | None = None,
                        current_user: str = Depends(get_current_user)):
-    """Delete a model's files (`?extra=true`: only its extra file); a service holding them stops first."""
+    """Delete a model's files (`?extra=true`: only its extra file; `?file=<name>`: one file of a user's model);
+    a service holding them stops first."""
     _manage(request)
-    return await _act(local_parts.delete_model, part_id, model_id, extra=extra)
+    return await _act(local_parts.delete_model, part_id, model_id, extra=extra, file=file)
 
 
 class UserModel(BaseModel):
     name: str
+    kind: str | None = None
 
 
 @router.post('/{part_id}/user-models')
@@ -75,16 +79,15 @@ async def add_user_model(part_id: str, body: UserModel, request: Request,
     """A folder for a model the user brings (they copy its files in); answers its id with the status."""
     _manage(request)
     try:
-        added = await asyncio.to_thread(local_parts.add_user_model, part_id, body.name)
+        added = await asyncio.to_thread(local_parts.add_user_model, part_id, body.name, body.kind)
     except local_parts.PartError as error:
         raise HTTPException(400, str(error)) from error
     return {**await _status_body(), 'added': added}
 
 
 @router.post('/{part_id}/user-models/open')
-async def open_folder(part_id: str, request: Request, model: str | None = None,
-                      current_user: str = Depends(get_current_user)):
-    """Show the user's models folder (or one model's) in this PC's file manager."""
+async def open_folder(part_id: str, model: str, request: Request, current_user: str = Depends(get_current_user)):
+    """Show one of the user's model folders in this PC's file manager."""
     _manage(request)
     return await _act(local_parts.open_folder, part_id, model)
 

@@ -50,30 +50,33 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   `/api/v1/parts/<id>/apply`). Durmuş parça yeni ayarları Başlat'ta (gerekirse "İndir ve başlat"), kurulmamış
   olan Kur'da alır. Neyle çalıştığı `run/<parça>/applied.json`'da. Başlatılamayan parça durur ve öyle kalır;
   servis günlüğü her başlatmada sıfırlanır, bellek yetmezliği gibi bilinen hatalar Türkçe söylenir.
-- **Modeller paneli:** her model bir kutucuk: adı ve etiketleri (Önerilen, Seçili, Çalışıyor), sağ üstte
-  yapılabilecekler (İndir · boyut, Klasörü aç, tek bir Sil), altta her dosyası kendi satırında (ne olduğu,
-  boyutu, durumu: İndirildi, İndiriliyor…, İndirilmedi, Yarım). Ek dosyanın (mmproj) satırının başında onu
-  kullanma kutusu var. Kutucuğa dokunmak modeli seçer.
-- **Model silme:** seçili olan dahil her model silinebilir; ne silineceği önce söylenir. Sil düğmesi ek dosyası
-  olan modelde iki seçenek sunar: "Modeli sil (ek dosyasıyla)" ya da "Yalnızca ek dosyayı sil" (seçili
-  modelinse görsel anlama kapanır). Çalışan servisin açık tuttuğu dosya için servis önce durur, dosya sonra
-  silinir (`drop`, `apply` içinde); parça Başlat'a kadar durur.
-- **Kendi modellerin:** her parçanın kendi klasörü var (`models/<parça>/kendi/<ad>/`). Panelde "Kendi
-  modellerin > Ekle": ad verilir, o adla klasör açılır (Explorer'da da açılır), dosyalar kopyalandıkça listede
-  tek tek işaretlenir (kopyalanan dosya "Kopyalanıyor…" görünür). Elle bırakılan klasör de aynı biçimde görünür.
-  Hangi dosyanın ne olduğu ve hangi motora ait olduğu dosyalardan okunur (`USER_KINDS`); kullanıcı bir şey
-  seçmez:
-  - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj), GGUF başlığındaki mimariden ayırt edilir. Bağlam sınırı,
-    vektör boyutu, havuzlama dosyadan okunur.
-  - **STT (faster-whisper):** `model.bin` (başlığı CTranslate2 Whisper olmalı), `config.json`,
-    `tokenizer.json` (yoksa faster-whisper her açılışta internetten genel bir sözlük indirmeye çalışır),
-    `vocabulary.json` ya da `vocabulary.txt`. `preprocessor_config.json` sesin modele nasıl hazırlanacağını
-    söyler: model 80'den çok mel bandı istiyorsa (large-v3 ve turbo: 128) zorunlu, bant sayısı `model.bin`'in
-    başından okunur; dosya başka bir sayı söylüyorsa "Uymuyor" denir. Orion'un kullandığı CTranslate2 4.8.4 ve
-    faster-whisper 1.2.1 ile denendi (2026-11-02): iki sözcük listesi de aynı sonucu verdi, hiçbiri yoksa model
-    açılmadı; turbo, dosyası olmadan hazırlanan sese "128 bant bekleniyordu, 80 geldi" hatası verdi.
-  - **TTS:** dosyaların GGUF mimarisinden hangi motora ait oldukları anlaşılır (OmniVoice: `omnivoice-lm` ve
-    `omnivoice-tokenizer`; ince ayarlı bir OmniVoice da aynı mimariyi taşır). Tanınmayan dosya adıyla söylenir.
+- **Modeller paneli:** her model bir kutucuk: adı ve etiketleri (Önerilen, Seçili, Çalışıyor), altta her
+  dosyası kendi satırında: ne olduğu, boyutu ve satırın sonunda o dosyanın kendi düğmesi (yoksa İndir, varsa
+  Sil, inerken dönen simge). Durum yazısı yok: düğme dosyanın durumunu söyler. Ek dosyanın (mmproj) satırının
+  başında onu kullanma kutusu var. Kendi modellerinde adın yanında klasör simgesi. Kutucuğa dokunmak modeli
+  seçer.
+- **Silme ve indirme dosya dosya:** modelin dosyasının Sil'i modeli (ek dosyasıyla), ek dosyanın Sil'i yalnızca
+  onu siler (seçili modelinse görsel anlama kapanır); İndir yalnızca o satırın dosyasını indirir
+  (`?file=model|extra`). Kendi modelinde her dosyanın Sil'i yalnızca o dosyayı siler, son dosyayla klasör de
+  gider. Seçili olan dahil her model silinebilir; ne silineceği önce söylenir. Çalışan servisin açık tuttuğu
+  dosya için servis önce durur, dosya sonra silinir (`drop`, `apply` içinde); parça Başlat'a kadar durur.
+- **Kendi modellerin:** her parçanın klasörü `models/<parça>/custom/<ad>/`; birden çok motoru olan parçada
+  motor başına bir klasör (`models/tts/custom/OmniVoice/<ad>/`). Panelde "Kendi modellerin > Ekle": motor
+  seçilir (birden çoksa; Orion'da olmayan motor "yakında" diye görünür, seçilemez), ad verilir, o adla klasör
+  açılır ve Explorer'da öne getirilir (`_to_front`: Hub arka planda olduğundan Windows pencereyi bazen geride
+  açıyordu). Dosyalar kopyalandıkça satırlar işaretlenir, kopyalanan dosyada dönen simge. Elle doldurulan
+  klasör de aynı biçimde görünür. Hangi dosyanın ne olduğu dosyaların içinden okunur, adından değil
+  (`USER_KINDS`):
+  - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj), başlıktaki mimariden ayırt edilir. Bağlam sınırı, vektör
+    boyutu, havuzlama dosyadan okunur.
+  - **STT (faster-whisper):** bizim modellerdeki dosyaların hepsi zorunlu: `model.bin` (başlığı CTranslate2
+    Whisper olmalı), `config.json`, `tokenizer.json`, `vocabulary.json` ya da `.txt`, `preprocessor_config.json`
+    (sesin kaç mel bandına bölüneceği; `model.bin`'in istediğiyle aynı olmalı, large-v3 ve turbo 128, eskiler
+    80). faster-whisper bu adlarla açar. CTranslate2 4.8.4 ve faster-whisper 1.2.1 ile denendi (2026-11-02): iki
+    sözcük listesi de aynı sonucu verdi, hiçbiri yoksa model açılmadı; turbo 80 bantlık sese hata verdi. Ses
+    servisleri internete çıkmaz (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine hiçbir şey indirilmez.
+  - **TTS:** motor kullanıcının seçimi (OmniVoice; VoxCPM2 yakında). OmniVoice'un iki dosyası başlıklarındaki
+    mimariden (`omnivoice-lm`, `omnivoice-tokenizer`) ayırt edilir; tanınmayan dosya adıyla söylenir.
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
@@ -127,10 +130,9 @@ Sıra önerisi yukarıdan aşağıya.
    model seçicisinde "Yerel (bu bilgisayar)" diye görünmesi ve parça kapalıyken uyarması.
 10. **Misafir hesaplar** geldiğinde: kurma/kaldırma yalnızca ana kullanıcı (şimdilik Hub bilgisayarındaki pencere).
 11. **Kendi modellerin, kalanlar** (temeli 2026-11-02 yapıldı, yukarıda):
-    - **Başka TTS motoru** (VoxCPM2 GGUF, Kokoro vb.): `USER_KINDS['tts']`'e mimarisiyle ikinci tür eklenir;
-      hangisi olduğu yine dosyalardan anlaşılır (`_kind_of`), kullanıcıya sorulmaz. Kalan iş: parçanın motoru
-      modele göre seçilmeli (şimdi `part['engine']` parça başına tek; türün `engine`'i parçanınkinden farklıysa
-      model "motor henüz yok" der ve seçilemez).
+    - **VoxCPM2 (GGUF):** ekleme ekranında "yakında" diye duruyor (`USER_KINDS['tts']`, motoru `voxcpm2`).
+      Motoru eklenince: türün dosyaları (mimarileriyle), kataloğa motor tarifi ve parçanın motorunun modele göre
+      seçilmesi (şimdi `part['engine']` parça başına tek).
     - **Hafızada embedding olmayan model:** şimdilik reddedilmiyor (GGUF'ta bunu güvenle söyleyen bir alan
       yok); havuzlama söylenmemişse `--pooling last` verilir.
     - **Hafıza modeli değişirse** eski vektörler yeni modelle karşılaştırılamaz (boyut ve uzay farklı): hafıza
