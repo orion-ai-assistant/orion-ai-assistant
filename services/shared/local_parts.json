@@ -426,8 +426,8 @@
       "models": [
         {
           "id": "gemma-4-e2b-it-q3-k-s",
-          "name": "Gemma 4 E2B (görsel destekli)",
-          "description": "Küçük ama yetenekli; resimleri de anlar.",
+          "name": "Gemma 4 E2B",
+          "description": "Küçük ama yetenekli; çok dilli.",
           "folder": "gemma-4-e2b",
           "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
           "files": [
@@ -441,7 +441,9 @@
           ],
           "recommended": true,
           "context_max": 131072,
-          "mmproj_mb": 941
+          "mmproj_mb": 941,
+          "mmproj_name": "Görsel anlama",
+          "mmproj_description": "Resimleri anlar (mmproj dosyası)."
         },
         {
           "id": "miniplm-qwen-200m",

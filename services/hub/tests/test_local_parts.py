@@ -454,3 +454,15 @@ def test_the_button_says_one_total_that_follows_vision(parts):
     folder.mkdir(parents=True)
     (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').write_bytes(b'm')
     assert card()['download_mb'] == 0  # Everything is there: the button says Kur.
+
+
+def test_the_page_gets_the_facts_to_work_sizes_out_itself(parts):
+    card = next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    gemma = next(m for m in card['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
+    assert (gemma['base_mb'], gemma['mmproj_mb'], gemma['main_downloaded'], gemma['vision_downloaded']) == (2332, 941, False, False)
+    assert gemma['name'] == 'Gemma 4 E2B' and gemma['extra_name'] == 'Görsel anlama'
+    assert set(card['engines']) == {'cuda', 'vulkan', 'cpu'}
+    assert card['engines']['cuda']['mb'] > card['engines']['vulkan']['mb'] > 0 and not card['engines']['cuda']['ready']
+    # Labels come from this code even when the hardware came from an old cache.
+    P._hardware.update(at=__import__('time').monotonic(), value={**TWO_CARDS, 'choices': [{'id': 'vulkan', 'label': 'old words'}]})
+    assert P._labelled(P._hardware['value'])['choices'][0]['label'] == 'Ekran kartı (Vulkan)'

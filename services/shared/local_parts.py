@@ -284,12 +284,12 @@ def _other_gpus(run=subprocess.run):
 def hardware(*, refresh=False, run=subprocess.run):
     """This PC: its system, graphics cards and which ways a llama.cpp part can run here (recommended first)."""
     if not refresh and _hardware['value'] and time.monotonic() - _hardware['at'] < HARDWARE_TTL:
-        return _hardware['value']
+        return _labelled(_hardware['value'])
     # Every Hub process asks; the cards do not wait for nvidia-smi and PowerShell each time (seconds).
     saved = None if refresh else _read_json(home() / 'hardware.json', None)
     if saved and 0 <= time.time() - saved.get('at', 0) < HARDWARE_TTL and isinstance(saved.get('value'), dict):
         _hardware.update(at=time.monotonic(), value=saved['value'])
-        return saved['value']
+        return _labelled(saved['value'])
     current = system()
     nvidia = _nvidia(run) if current != 'mac' else []
     others = _other_gpus(run) if current == 'windows' else []
@@ -304,7 +304,13 @@ def hardware(*, refresh=False, run=subprocess.run):
         _write_json(home() / 'hardware.json', {'at': time.time(), 'value': value})
     except OSError:
         pass
-    return value
+    return _labelled(value)
+
+
+def _labelled(value):
+    """Today's labels on cached facts (an old cache once kept an old wording for ten minutes)."""
+    return {**value, 'choices': [{'id': choice['id'], 'label': HARDWARE_LABELS.get(choice['id'], choice['id'])}
+                                 for choice in value.get('choices', [])]}
 
 
 # --- Settings ------------------------------------------------------------------------------------------------
@@ -589,8 +595,11 @@ def part_status(part, hw, config, data):
         partial = sum(p.with_name(p.name + '.part').stat().st_size for p in model_files(part, item, settings)
                       if p.with_name(p.name + '.part').is_file())
         vision_file = models_dir(part['id']) / item['folder'] / item['mmproj'] if item.get('mmproj') else None
+        main_there = all((models_dir(part['id']) / item['folder'] / name).is_file() for name in item['files'])
         models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
                        'size_mb': model_mb(item, settings), 'mmproj_mb': item.get('mmproj_mb'),
+                       'base_mb': item['size_mb'], 'main_downloaded': main_there,
+                       'extra_name': item.get('mmproj_name'), 'extra_description': item.get('mmproj_description'),
                        'recommended': bool(item.get('recommended')),
                        'downloaded': downloaded(part, item, settings), 'partial_mb': round(partial / 1048576, 1),
                        'mmproj': bool(item.get('mmproj')),
@@ -603,6 +612,10 @@ def part_status(part, hw, config, data):
             'note': note,
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')), 'model': model['id'] if model else None,
             'engine_ready': ready, 'engine_mb': round(engine_bytes / 1048576) if engine_bytes else None,
+            # Per way of running: the page switches hardware and shows the engine left to fetch at once.
+            'engines': {choice['id']: {'ready': engine_ready(part['engine'], choice['id'], data),
+                                       'mb': round((engine_size(part['engine'], choice['id'], data) or 0) / 1048576)}
+                        for choice in choices(part, hw)},
             # One number for the button: everything "Modeli indir ve kur" fetches (engine and model, what is left).
             'download_mb': ((missing_mb(part, model, settings) if model else 0)
                             + (round(engine_bytes / 1048576) if engine_bytes else 0)), 'models': models, 'settings': settings, 'advanced': advanced(part, hw, model),
