@@ -143,13 +143,15 @@ def engine_size(engine, hardware, data=None):
     return sum(piece['size'] for piece in pieces) if all('size' in piece for piece in pieces) else None
 
 
-def model_files(part, model):
+def model_files(part, model, settings=None):
+    """The files `model` needs with these settings: its vision file (mmproj) only while vision is on."""
     folder = models_dir(part['id']) / model['folder']
-    return [folder / name for name in model['files'] + ([model['mmproj']] if model.get('mmproj') else [])]
+    vision = model.get('mmproj') and (settings or {}).get('vision', True)
+    return [folder / name for name in model['files'] + ([model['mmproj']] if vision else [])]
 
 
-def downloaded(part, model):
-    return all(path.is_file() for path in model_files(part, model))
+def downloaded(part, model, settings=None):
+    return all(path.is_file() for path in model_files(part, model, settings))
 
 
 def sha256(path):
@@ -292,17 +294,22 @@ def default_settings(part, model, hw):
         size = (model or {}).get('size_mb') or 0
         if vram and size and size * 1.2 > vram:
             layers = 24  # Does not fit: half on the card, the rest on the processor.
-    return {'hardware': hardware_id, 'gpu': 'all', 'gpu_layers': layers, 'context_size': part.get('context_size', 8192),
-            'parallel': 1}
+    settings = {'hardware': hardware_id, 'gpu': 'all', 'gpu_layers': layers,
+                'context_size': part.get('context_size', 8192), 'parallel': 1}
+    if any(item.get('mmproj') for item in part.get('models', [])):
+        settings['vision'] = True
+    return settings
 
 
 def advanced(part, hw):
     """The advanced settings a card shows (all have a default)."""
     fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': choices(part, hw)}]
-    if len(hw['gpus']) > 1:
+    # Only NVIDIA cards are numbered for CUDA (CUDA_VISIBLE_DEVICES); the field shows when there is a choice.
+    nvidia = [gpu for gpu in hw['gpus'] if gpu.get('vendor') == 'nvidia']
+    if len(nvidia) > 1:
         fields.append({'key': 'gpu', 'label': 'Hangi ekran kartı', 'type': 'choice',
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
-                           {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in hw['gpus']]})
+                           {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in nvidia]})
     if part.get('runner') == 'python':
         if part['id'] == 'stt':
             fields.append({'key': 'compute_type', 'label': 'Hesaplama hassasiyeti', 'type': 'choice',
@@ -314,6 +321,9 @@ def advanced(part, hw):
         {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512, 'max': 131072},
         {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8},
     ]
+    if any(item.get('mmproj') for item in part.get('models', [])):
+        # Shown on the model's tile (model panel), kept with the other settings.
+        fields.append({'key': 'vision', 'label': 'Görsel desteği (mmproj)', 'type': 'bool'})
     return fields
 
 
@@ -325,7 +335,11 @@ def clean_settings(part, values, hw):
         field = fields.get(key)
         if field is None:
             raise PartError(f'Bilinmeyen ayar: {key}')
-        if field['type'] == 'choice':
+        if field['type'] == 'bool':
+            if not isinstance(value, bool):
+                raise PartError(f'{field["label"]} açık ya da kapalı olmalı.')
+            result[key] = value
+        elif field['type'] == 'choice':
             if str(value) not in {option['id'] for option in field['options']}:
                 raise PartError(f'{field["label"]}: bu seçenek bu bilgisayarda yok.')
             result[key] = str(value)
@@ -358,12 +372,12 @@ def command(part, model, settings, data=None):
     exe = engine_exe(part['engine'], settings['hardware'], data)
     if exe is None:
         raise PartError('Motor kurulu değil.')
-    files = model_files(part, model)
+    files = model_files(part, model, settings)
     port = str(os.getenv(part['port_key']) or part['port'])
     argv = [str(exe), '-m', str(files[0]), '--port', port, '--host', bind_host(), '--cors-origins', own_origins(port),
             '--no-slots', '-c', str(settings['context_size']), '-np', str(settings['parallel']),
             '-ngl', str(0 if settings['hardware'] == 'cpu' else settings['gpu_layers'])]
-    if model.get('mmproj'):
+    if model.get('mmproj') and len(files) > len(model['files']):
         argv += ['--mmproj', str(files[-1])]
     argv += list(part.get('args', [])) + list(model.get('args', []))
     env = dict(os.environ)
@@ -466,11 +480,14 @@ def part_status(part, hw, config, data):
         state = 'absent'
     models = []
     for item in part['models']:
-        partial = sum(p.with_name(p.name + '.part').stat().st_size for p in model_files(part, item)
+        partial = sum(p.with_name(p.name + '.part').stat().st_size for p in model_files(part, item, settings)
                       if p.with_name(p.name + '.part').is_file())
+        vision_file = models_dir(part['id']) / item['folder'] / item['mmproj'] if item.get('mmproj') else None
         models.append({'id': item['id'], 'name': item['name'], 'description': item['description'],
                        'size_mb': item['size_mb'], 'recommended': bool(item.get('recommended')),
-                       'downloaded': downloaded(part, item), 'partial_mb': round(partial / 1048576, 1)})
+                       'downloaded': downloaded(part, item, settings), 'partial_mb': round(partial / 1048576, 1),
+                       'mmproj': bool(item.get('mmproj')),
+                       'vision_downloaded': bool(vision_file and vision_file.is_file())})
     note = None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).'
     if builds and not python_fits(part['engine'], data):
         builds = None
@@ -555,11 +572,12 @@ def select(part_id, *, model=None, settings=None):
     if settings is not None:
         values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}), **clean_settings(part, settings, hw)}
     entry = write_part_config(part_id, **values)
-    if entry.get('enabled') and not entry.get('paused') and not busy(part_id):
+    current, settings = effective(part, hw)
+    # A running part restarts only when its new files are all there (vision turned on before its file came:
+    # it keeps running without it until "Modeli indir ve kur" fetches it).
+    if entry.get('enabled') and not entry.get('paused') and not busy(part_id) and current             and downloaded(part, current, settings):
         stop_part(part_id)
-        current, _ = effective(part, hw)
-        if current and downloaded(part, current):
-            _spawn(['start', part_id])
+        _spawn(['start', part_id])
     return entry
 
 
@@ -599,9 +617,9 @@ def start(part_id):
     entry = read_config().get(part_id, {})
     if not entry.get('enabled'):
         raise PartError('Bileşen kurulu değil.')
-    model, _ = effective(part, hardware())
-    if model is None or not downloaded(part, model):
-        raise PartError('Modeli indirilmemiş; Modeli indir ve kur ile kur.')
+    model, settings = effective(part, hardware())
+    if model is None or not downloaded(part, model, settings):
+        raise PartError('Modelin dosyaları eksik; Modeli indir ve kur ile tamamla.')
     write_part_config(part_id, paused=False)
     _spawn(['start', part_id])
 
@@ -639,7 +657,7 @@ def keep_running():
         if not part.get('engine') or not entry.get('enabled') or entry.get('paused') or busy(part['id']):
             continue
         model, settings = effective(part, hw, config)
-        if model is None or not downloaded(part, model) or not engine_ready(part['engine'], settings['hardware'], data):
+        if model is None or not downloaded(part, model, settings) or not engine_ready(part['engine'], settings['hardware'], data):
             continue
         if not answers(int(os.getenv(part['port_key']) or part['port'])):
             try:
@@ -783,8 +801,8 @@ def _install_engine(part_id, part, settings, data, cancelled):
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _fetch_model(part_id, part, model, cancelled):
-    files = model_files(part, model)
+def _fetch_model(part_id, part, model, cancelled, settings=None):
+    files = model_files(part, model, settings)
     if all(path.is_file() for path in files):
         return
     estimate = int(model['size_mb'] * 1048576)
@@ -831,7 +849,7 @@ def run_job(part_id, action, model_id):
         if action == 'install':
             _, settings = effective(part, hardware(), read_config())
             _install_engine(part_id, part, settings, data, cancelled)
-        _fetch_model(part_id, part, model, cancelled)
+        _fetch_model(part_id, part, model, cancelled, effective(part, hardware(), read_config())[1])
         if action == 'install':
             write_part_config(part_id, enabled=True, paused=False, model=model_id)
             _update_job(part_id, phase='launching', label='Servis başlatılıyor (model yükleniyor)…', bytes=None, total=None,

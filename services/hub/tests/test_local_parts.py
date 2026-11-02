@@ -20,6 +20,16 @@ TWO_CARDS = {'system': 'windows', 'gpus': [
 NO_CARD = {'system': 'windows', 'gpus': [], 'choices': [{'id': 'cpu', 'label': 'x'}], 'recommended': 'cpu'}
 
 
+@pytest.fixture(autouse=True)
+def private_home(tmp_path, monkeypatch):
+    """Every test, also one without `parts`, keeps its files (hardware cache, jobs) in tmp_path: a test once
+    wrote its made-up graphics cards into the developer's own Parts cache."""
+    monkeypatch.setenv('ORION_PARTS_HOME', str(tmp_path / 'Parts'))
+    P._hardware.update(at=0, value=None)
+    yield
+    P._hardware.update(at=0, value=None)
+
+
 @pytest.fixture
 def parts(tmp_path, monkeypatch):
     monkeypatch.setenv('ORION_PARTS_HOME', str(tmp_path / 'Parts'))
@@ -44,7 +54,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     # With an NVIDIA card the speech engine brings cuBLAS and cuDNN (~1.3 GB); on the processor it is 43 MB.
     assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engine_mb'] > 1300
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
-    assert keys('llm') == ['hardware', 'gpu', 'gpu_layers', 'context_size', 'parallel']  # Two cards: which one.
+    assert keys('llm') == ['hardware', 'gpu', 'gpu_layers', 'context_size', 'parallel', 'vision']  # Two cards: which one.
     assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
     # Speech runs on CUDA or the processor; there is no Vulkan build of it.
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'cpu']
@@ -88,7 +98,6 @@ def test_graphics_cards_are_read_from_nvidia_smi():
     assert [choice['id'] for choice in hw['choices']] == ['cuda', 'vulkan', 'cpu'] and hw['recommended'] == 'cuda'
     nothing = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=1, stdout=''))
     assert nothing['recommended'] == 'cpu'
-    P.hardware(refresh=True, run=run)  # Leave the cache as a test with cards expects; tests patch it anyway.
 
 
 def test_defaults_fit_the_card_and_settings_stay_inside_their_limits(parts):
@@ -205,7 +214,7 @@ def test_a_stopped_part_stays_off_until_started(parts, monkeypatch):
     started = []
     monkeypatch.setattr(P, 'start_part', lambda part_id: started.append(part_id))
     monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
-    monkeypatch.setattr(P, 'downloaded', lambda part, model: True)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
     fake_engine(parts)
     P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
     P.stop('embedding')
@@ -303,3 +312,22 @@ def test_speech_packages_need_the_packaged_python(parts, monkeypatch):
     assert not stt['installable'] and 'Python 3.11' in stt['note'] and '3.14' in stt['note']
     with pytest.raises(P.PartError):
         P.start_job('stt', 'install')
+
+
+def test_the_vision_file_is_optional_and_can_come_later(parts):
+    fake_engine(parts)
+    llm = P.spec('llm')
+    gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
+    off = {**P.default_settings(llm, gemma, TWO_CARDS), **P.clean_settings(llm, {'vision': False}, TWO_CARDS)}
+    assert [f.name for f in P.model_files(llm, gemma, off)] == ['gemma-4-E2B-it-Q3_K_S.gguf']
+    folder = P.models_dir('llm') / gemma['folder']
+    folder.mkdir(parents=True)
+    (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').write_bytes(b'm')
+    assert P.downloaded(llm, gemma, off) and not P.downloaded(llm, gemma, {**off, 'vision': True})
+    argv, _, _ = P.command(llm, gemma, off)
+    assert '--mmproj' not in argv  # Installed and running without images.
+    with pytest.raises(P.PartError):
+        P.clean_settings(llm, {'vision': 'yes'}, TWO_CARDS)
+    status = next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    row = next(m for m in status['models'] if m['id'] == gemma['id'])
+    assert row['mmproj'] and not row['vision_downloaded'] and status['settings']['vision'] is True
