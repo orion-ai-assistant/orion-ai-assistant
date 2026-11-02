@@ -135,10 +135,13 @@ def finish(registry, args, *, added=False):
             updates = 'on' if record['preferences']['automatic_updates'] or not added else 'off'
     firewall = 'skipped'
     if not args.no_firewall and os.environ.get('ORION_SKIP_FIREWALL') != '1':
+        from services.shared.install_plan import firewall_note
         from services.shared.windows_firewall import ensure_rules
-        print('Windows will ask for administrator permission once, to allow Orion on your private network '
-              '(phone and other devices). Declining is fine: Orion still works on this computer.', flush=True)
+        print(firewall_note(getattr(args, 'mode', None) or 'merkez'), flush=True)
         firewall = ensure_rules(registry.read())
+        if firewall in ('declined', 'failed'):
+            print('Ağ izni verilmedi: Orion bu bilgisayarda çalışır; ağdaki cihazlar için Windows ilk kullanımda '
+                  'Python’a izin isteyebilir.', flush=True)
     if args.launch:
         launch(registry, background=args.background)
     return updates, firewall

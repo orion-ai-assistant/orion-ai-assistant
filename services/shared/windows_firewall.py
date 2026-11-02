@@ -1,10 +1,15 @@
 """Private-network inbound rules so Windows does not prompt for every bundled python.exe.
 
 Rules are port based (not program based) so Hub/Router updates, which change the
-python.exe path, never trigger a new prompt. They allow only the Private profile
-and the local subnet. Adding rules needs administrator rights: the installer asks
-once through UAC and keeps installing if the user declines (Orion still works on
-this PC; phones and other devices need the permission).
+python.exe path, never trigger a new prompt (with the port rule in place Windows
+does not ask "allow Python?" when a service starts listening either). They allow
+only the Private profile and the local subnet. Adding rules needs administrator
+rights: the installer asks once through UAC and keeps installing if the user
+declines (Orion still works on this PC; phones and other devices need the permission).
+
+A full Hub opens its phone port and announces itself (mDNS). A light Hub opens no
+TCP port but listens for those announcements ("Cihazları ara"): it gets the
+discovery rule alone.
 """
 import base64
 import ctypes
@@ -58,14 +63,22 @@ def tcp_ports(record):
     return sorted(ports)
 
 
+def wanted(record):
+    """The rules `record` needs, in current_rules' form: TCP for its network ports, discovery for any Hub
+    (a light one too) or network port."""
+    ports = tcp_ports(record)
+    return {'tcp': ports or None, 'udp': bool(ports) or any(c['kind'] == 'hub' for c in record['components'])}
+
+
 def _rule_command(ports):
     tcp = ','.join(map(str, ports))
-    return (
-        f"netsh advfirewall firewall delete rule name='{TCP_RULE}' | Out-Null; "
-        f"netsh advfirewall firewall delete rule name='{UDP_RULE}' | Out-Null; "
-        f"netsh advfirewall firewall add rule name='{TCP_RULE}' dir=in action=allow protocol=TCP "
-        f"localport={tcp} profile=private remoteip=localsubnet enable=yes | Out-Null; "
-        "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; "
+    command = (f"netsh advfirewall firewall delete rule name='{TCP_RULE}' | Out-Null; "
+               f"netsh advfirewall firewall delete rule name='{UDP_RULE}' | Out-Null; ")
+    if ports:
+        command += (f"netsh advfirewall firewall add rule name='{TCP_RULE}' dir=in action=allow protocol=TCP "
+                    f"localport={tcp} profile=private remoteip=localsubnet enable=yes | Out-Null; "
+                    "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; ")
+    return command + (
         f"netsh advfirewall firewall add rule name='{UDP_RULE}' dir=in action=allow protocol=UDP "
         f"localport={MDNS_PORT} profile=private remoteip=localsubnet enable=yes | Out-Null; "
         "exit $LASTEXITCODE")
@@ -87,21 +100,32 @@ def is_admin():
         return False
 
 
-def current_ports(run=subprocess.run):
-    """Local TCP ports of the installed rule, or None when it is missing.
+NO_RULES = {'tcp': None, 'udp': False}
+
+
+def current_rules(run=subprocess.run):
+    """Orion's installed rules: {'tcp': local TCP ports or None when missing, 'udp': discovery rule present}.
 
     Uses the NetSecurity cmdlets: unlike `netsh show rule` their output is not
     localized, and reading needs no administrator rights."""
     command = (f"$r = Get-NetFirewallRule -DisplayName '{TCP_RULE}' -ErrorAction SilentlyContinue; "
-               "if (-not $r) { exit 3 }; ($r | Get-NetFirewallPortFilter).LocalPort")
+               f"if (Get-NetFirewallRule -DisplayName '{UDP_RULE}' -ErrorAction SilentlyContinue) {{ 'udp' }}; "
+               "if ($r) { 'tcp ' + ((($r | Get-NetFirewallPortFilter).LocalPort) -join ',') }")
     result = run([_powershell(), '-NoProfile', '-NonInteractive', '-Command', command],
                  capture_output=True, text=True, creationflags=NO_WINDOW)
+    rules = dict(NO_RULES)
     if result.returncode != 0:
-        return None
-    try:
-        return sorted({int(p) for line in result.stdout.split() for p in line.split(',') if p})
-    except ValueError:
-        return None
+        return rules
+    for line in result.stdout.splitlines():
+        word, _, rest = line.strip().partition(' ')
+        if word == 'udp':
+            rules['udp'] = True
+        elif word == 'tcp':
+            try:
+                rules['tcp'] = sorted({int(p) for p in rest.split(',') if p.strip()}) or None
+            except ValueError:
+                rules['tcp'] = None
+    return rules
 
 
 def _run_command(command, run, elevate):
@@ -124,26 +148,26 @@ def ensure_rules(record, *, run=subprocess.run, elevate=True):
     """Return 'unchanged', 'added', 'declined' or 'failed'. Never raises."""
     if sys.platform != 'win32':
         return 'unsupported'
-    ports = tcp_ports(record)
-    if not ports:
+    want = wanted(record)
+    if want == NO_RULES:
         return 'unchanged'
     try:
-        if current_ports(run) == ports:
+        if current_rules(run) == want:
             return 'unchanged'
-        code = _run_command(_rule_command(ports), run, elevate)
+        code = _run_command(_rule_command(want['tcp'] or []), run, elevate)
         if code == 1223 or code == 1:
             # 1223 is the standard "operation cancelled by the user" result.
             return 'declined' if code == 1223 else 'failed'
-        return 'added' if code == 0 and current_ports(run) == ports else 'failed'
+        return 'added' if code == 0 and current_rules(run) == want else 'failed'
     except (OSError, subprocess.SubprocessError):
         return 'failed'
 
 
 def remove_rules(*, run=subprocess.run, elevate=True):
-    if sys.platform != 'win32' or current_ports(run) is None:
+    if sys.platform != 'win32' or current_rules(run) == NO_RULES:
         return 'unchanged'
     try:
         code = _run_command(_remove_command(), run, elevate)
-        return 'removed' if code == 0 and current_ports(run) is None else ('declined' if code == 1223 else 'failed')
+        return 'removed' if code == 0 and current_rules(run) == NO_RULES else ('declined' if code == 1223 else 'failed')
     except (OSError, subprocess.SubprocessError):
         return 'failed'

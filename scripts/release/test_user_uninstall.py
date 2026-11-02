@@ -19,8 +19,9 @@ class Firewall:
     def __init__(self, answer='removed'):
         self.answer, self.calls = answer, []
 
-    def tcp_ports(self, record):
-        return [9443] if any(c['kind'] == 'router' for c in record['components']) else []
+    def wanted(self, record):
+        kinds = {c['kind'] for c in record['components']}
+        return {'tcp': [9443] if 'router' in kinds else None, 'udp': bool(kinds & {'hub', 'router'})}
 
     def ensure_rules(self, record):
         self.calls.append(('ensure', sorted(c['kind'] for c in record['components'])))

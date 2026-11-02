@@ -2,7 +2,7 @@
 import pytest
 
 from services.shared import install_plan
-from services.shared.windows_firewall import tcp_ports
+from services.shared.windows_firewall import tcp_ports, wanted
 
 
 def test_the_center_gets_everything_and_a_light_install_only_the_window():
@@ -10,7 +10,8 @@ def test_the_center_gets_everything_and_a_light_install_only_the_window():
     assert sorted({row.kind for row in install_plan.components('baglan')}) == ['client', 'hub']
     assert install_plan.settings('merkez') == {}
     assert install_plan.settings('baglan') == {'hub': {'ORION_HUB_MODE': 'relay'}}
-    assert install_plan.firewall('merkez') and not install_plan.firewall('baglan')
+    # Both ask Windows once at install; a light Hub only for finding the center (no TCP port, below).
+    assert install_plan.firewall('merkez') and install_plan.firewall('baglan')
     with pytest.raises(ValueError):
         install_plan.components('router')
 
@@ -31,5 +32,6 @@ def test_a_light_hub_opens_no_firewall_port(tmp_path):
         data.mkdir(parents=True)
         (data / '.env.global.local').write_text(f'ORION_HUB_MODE={mode}\n', encoding='utf-8')
         return {'components': [{'kind': 'hub', 'data_path': str(tmp_path / mode)}]}
-    assert tcp_ports(record('relay')) == []
+    light = record('relay')
+    assert tcp_ports(light) == [] and wanted(light) == {'tcp': None, 'udp': True}
     assert 8443 in tcp_ports(record('full'))

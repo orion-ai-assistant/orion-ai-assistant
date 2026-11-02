@@ -412,8 +412,9 @@ def uninstall_orion(registry, scope, *, keep_data=True, keep_models=True, firewa
         try:
             from . import windows_firewall as default
             api = firewall_api or default
-            ports = api.tcp_ports(after) if after and after['components'] else []
-            result['firewall'] = api.ensure_rules(after) if ports else api.remove_rules()
+            # What is left keeps the rules it needs (a light Hub: discovery alone); nothing left removes them.
+            keep = bool(after and after['components'] and api.wanted(after)['udp'])
+            result['firewall'] = api.ensure_rules(after) if keep else api.remove_rules()
         except Exception as error:
             result['firewall'] = 'failed'
             result['notes'].append('Güvenlik duvarı kuralı değiştirilemedi: ' + type(error).__name__)

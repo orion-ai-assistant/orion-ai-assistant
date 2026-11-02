@@ -3,8 +3,11 @@
     get-orion.ps1 → this bundle's python -m scripts.release.setup_window → a page in an app window
 
 The page is served only on this PC's loopback, under a random one-time path; the work itself is
-install_new.py with --mode (services/shared/install_plan.py decides what each type installs). Ends when
-the window says it is done or after an hour without the page.
+install_new.py with --mode (services/shared/install_plan.py decides what each type installs). Ends a minute
+after the page is gone (five when it never opened); a running install finishes first.
+
+Before a new installation the page names any program that holds the ports Orion will use (Orion could not
+start next to it), and says what the one Windows permission prompt during the install is for.
 """
 import argparse
 import ctypes
@@ -47,6 +50,12 @@ def hub_mode(code_path):
     return mode(code_path)
 
 
+def busy(mode):
+    """Programs holding the ports a new installation of this type needs: [{'ports', 'name', 'orion'}]."""
+    from services.shared.install_ports import defaults, held, holders
+    return holders([port for port in defaults(mode) if held(port)])
+
+
 def elevated():
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -72,6 +81,9 @@ class Setup:
         return {'root': root, 'fixed_root': record is not None,
                 'existing': sorted(c['kind'] for c in (record or {}).get('components', [])),
                 'plans': {mode: install_plan.plan(mode, record, hub_mode=hub_mode) for mode in install_plan.MODES},
+                # Additions start nothing; only a new installation opens Orion right away.
+                'busy': {} if record else {mode: busy(mode) for mode in install_plan.MODES},
+                'firewall': {mode: install_plan.firewall_note(mode) for mode in install_plan.MODES},
                 'running': self.process is not None and self.result is None}
 
     def browse(self, current=None):
@@ -106,6 +118,8 @@ class Setup:
         if all(row['action'] == 'present' for row in rows):
             raise ValueError('Bu türün bütün parçaları zaten kurulu.')
         record = existing()
+        if record is None and busy(mode):
+            raise ValueError('Orion’un kullanacağı portlar başka bir programda; önce o programı kapat.')
         root = record['root'] if record else str(choice.get('root') or default_root())
         command = [sys.executable, '-B', '-m', 'scripts.release.install_new',
                    '--trusted-root', str(self.bundle / 'trusted-root.json'),
@@ -122,8 +136,10 @@ class Setup:
             command.append('--launch')
         self.log_path = registry_path().parent / 'logs' / time.strftime('kurulum-%Y%m%d-%H%M%S.log')
         self._line('Kurulum başladı: ' + ', '.join(row['title'] for row in rows if row['action'] == 'install'))
+        # The bundled Python writes a pipe in the ANSI code page unless told otherwise: Turkish lines stay readable.
         self.process = subprocess.Popen(command, cwd=self.bundle, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                        text=True, encoding='utf-8', errors='replace', creationflags=NO_WINDOW)
+                                        text=True, encoding='utf-8', errors='replace', creationflags=NO_WINDOW,
+                                        env=dict(os.environ, PYTHONIOENCODING='utf-8'))
         threading.Thread(target=self._follow, daemon=True).start()
 
     def _follow(self):
@@ -190,6 +206,7 @@ ul{list-style:none;padding:0;margin:0}li{padding:6px 0;border-bottom:1px solid v
 <h2>3. Kurulacaklar</h2><div class="card"><ul id="plan"></ul></div>
 <div class="card"><label><input type="checkbox" id="startup" checked> Windows açılınca Orion’u başlat</label><br>
 <label><input type="checkbox" id="updates" checked> Güncellemeleri otomatik al</label></div>
+<p id="fwnote"></p>
 <p class="error" id="error"></p>
 <p style="margin-top:16px"><button id="go">Kur</button></p>
 </section>
@@ -200,10 +217,15 @@ const base=location.pathname.replace(/\/$/,'');let state,started;
 const call=(path,body)=>fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Orion-Setup':'1'},body:JSON.stringify(body)}:{}).then(async r=>{const v=await r.json();if(!r.ok)throw new Error(v.error||'Hata');return v});
 const mode=()=>document.querySelector('input[name=mode]:checked').value;
 const words={install:'kurulacak',present:'zaten kurulu, kullanılacak',conflict:'diğer türde kurulu'};
+let recheck=null;
+// Who holds the ports a new Orion needs: it could not start next to that program.
+function busyText(groups){return groups.length?'Orion’un kullanacağı portlar şu an dolu: '+groups.map(g=>(g.orion?'başka bir Orion çalışıyor (kaynak koddan çalışan bir kopya ya da ikinci bir kurulum)':((g.names||[]).join(', ')||'bir program'))+' — port '+g.ports.join(', ')).join('; ')+'. Önce onu kapat; bu sayfa kendini yeniler.':''}
 function draw(){const rows=state.plans[mode()];document.getElementById('plan').innerHTML=rows.map(r=>`<li class="${r.action}"><span class="tag">${words[r.action]}</span><b>${r.title}</b><p>${r.detail}</p></li>`).join('');
-const conflict=rows.some(r=>r.action==='conflict'),done=rows.every(r=>r.action==='present');
-document.getElementById('error').textContent=conflict?'Bu bilgisayarda diğer türde bir Orion kurulu. Önce yukarıdan onu kaldır.':done?'Bu türün bütün parçaları zaten kurulu.':'';
-document.getElementById('go').disabled=conflict||done}
+const conflict=rows.some(r=>r.action==='conflict'),done=rows.every(r=>r.action==='present'),busy=(state.busy||{})[mode()]||[];
+document.getElementById('error').textContent=conflict?'Bu bilgisayarda diğer türde bir Orion kurulu. Önce yukarıdan onu kaldır.':done?'Bu türün bütün parçaları zaten kurulu.':busyText(busy);
+document.getElementById('fwnote').textContent=conflict||done?'':(state.firewall||{})[mode()]||'';
+document.getElementById('go').disabled=conflict||done||busy.length>0;
+clearTimeout(recheck);if(busy.length&&!document.getElementById('form').hidden)recheck=setTimeout(()=>load().catch(()=>{}),4000)}
 async function load(){state=await call('/state');const root=document.getElementById('root');root.value=state.root;root.disabled=state.fixed_root;document.getElementById('browse').hidden=state.fixed_root;
 document.getElementById('rootnote').textContent=state.fixed_root?'Bu bilgisayarda Orion zaten kurulu; eksik parçalar aynı yere eklenir.':'';
 document.getElementById('removerow').hidden=!state.fixed_root;

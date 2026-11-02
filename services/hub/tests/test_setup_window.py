@@ -14,6 +14,7 @@ from scripts.release import setup_window
 def window(tmp_path, monkeypatch):
     monkeypatch.setattr(setup_window, 'existing', lambda: None)
     monkeypatch.setattr(setup_window, 'elevated', lambda: False)
+    monkeypatch.setattr(setup_window, 'busy', lambda mode: [])  # This PC's own ports never decide a test.
     monkeypatch.setattr(setup_window, 'registry_path', lambda: tmp_path / 'Orion' / 'install.json')
     started = []
 
@@ -103,3 +104,24 @@ def test_an_existing_installation_only_gets_what_it_lacks(window, monkeypatch):
     command = started[0]
     assert '--add-missing' in command and command[command.index('--root') + 1] == 'C:/Orion'
     assert '--launch' not in command  # Adding never starts or restarts what the user is running.
+
+
+def test_a_new_install_names_the_program_on_its_ports_and_waits(window, monkeypatch):
+    setup, base, started = window
+    other = [{'ports': [5445, 8910], 'name': 'python.exe', 'orion': True}]
+    monkeypatch.setattr(setup_window, 'busy', lambda mode: other if mode == 'merkez' else [])
+    status, state = request(base + '/' + setup.token + '/state')
+    assert state['busy'] == {'merkez': other, 'baglan': []}
+    assert 'yönetici izni' in state['firewall']['merkez'] and 'yönetici izni' in state['firewall']['baglan']
+    assert request(base + '/' + setup.token + '/install', {'mode': 'merkez'}, {'X-Orion-Setup': '1'})[0] == 400
+    assert started == []
+    assert request(base + '/' + setup.token + '/install', {'mode': 'baglan'}, {'X-Orion-Setup': '1'})[0] == 200
+
+
+def test_an_addition_never_checks_ports(window, monkeypatch):
+    setup, base, _ = window
+    monkeypatch.setattr(setup_window, 'existing', lambda: {'root': 'C:/Orion', 'components': [
+        {'kind': 'router', 'code_path': 'r'}]})
+    monkeypatch.setattr(setup_window, 'busy', lambda mode: [{'ports': [9443], 'name': 'python.exe', 'orion': True}])
+    assert request(base + '/' + setup.token + '/state')[1]['busy'] == {}  # The running Orion holds its own ports.
+    assert request(base + '/' + setup.token + '/install', {'mode': 'merkez'}, {'X-Orion-Setup': '1'})[0] == 200

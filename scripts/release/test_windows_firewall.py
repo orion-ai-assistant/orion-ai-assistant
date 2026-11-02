@@ -1,4 +1,5 @@
 """Firewall rule planning/flow with a fake command runner; never touches the real firewall."""
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -27,8 +28,10 @@ def test_ports_default_and_honor_installed_overrides(tmp_path):
 
 
 class Runner:
-    def __init__(self, existing=None, admin_code=0):
+    """Fake powershell: keeps the two rules as netsh would and answers current_rules' query."""
+    def __init__(self, existing=None, admin_code=0, udp=None):
         self.rule = existing
+        self.udp = existing is not None if udp is None else udp
         self.calls = []
         self.admin_code = admin_code
 
@@ -36,13 +39,14 @@ class Runner:
         command = argv[-1]
         self.calls.append(command)
         if 'Get-NetFirewallRule' in command:
-            if self.rule is None:
-                return SimpleNamespace(returncode=3, stdout='')
-            return SimpleNamespace(returncode=0, stdout='\n'.join(map(str, self.rule)))
+            lines = (['udp'] if self.udp else []) + ([f'tcp {",".join(map(str, self.rule))}'] if self.rule else [])
+            return SimpleNamespace(returncode=0, stdout='\n'.join(lines))
         if self.admin_code == 0 and 'add rule' in command:
-            self.rule = [8443, 9443]
+            tcp = re.search(r'protocol=TCP localport=([\d,]+)', command)
+            self.rule = [int(p) for p in tcp.group(1).split(',')] if tcp else None
+            self.udp = 'protocol=UDP' in command
         if 'add rule' not in command and self.admin_code == 0:
-            self.rule = None
+            self.rule, self.udp = None, False
         return SimpleNamespace(returncode=self.admin_code, stdout='')
 
 
@@ -83,3 +87,30 @@ def test_bootstrap_installer_script_exposes_default_on_switches():
     for name in ('NoStartWithWindows', 'NoAutoUpdate', 'NoFirewall'):
         assert f'[switch]${name}' in source
     assert 'StartWithWindows) { $launch += "--start-with-windows"' not in source
+
+
+def test_a_light_hub_gets_the_discovery_rule_alone(tmp_path, monkeypatch):
+    # It opens no TCP port, but listens for the center's announcement: without the rule Windows would ask
+    # "allow Python?" the first time "Cihazları ara" runs.
+    monkeypatch.setattr(firewall, 'is_admin', lambda: True)
+    monkeypatch.setattr(firewall.sys, 'platform', 'win32')
+    hub = tmp_path / 'hub'
+    (hub / 'services').mkdir(parents=True)
+    (hub / 'services/.env.global.local').write_text('ORION_HUB_MODE=relay\n')
+    light = {'components': [{'kind': 'hub', 'data_path': str(hub)}, {'kind': 'client', 'data_path': str(tmp_path)}]}
+    assert firewall.wanted(light) == {'tcp': None, 'udp': True}
+    runner = Runner()
+    assert firewall.ensure_rules(light, run=runner) == 'added'
+    command = next(c for c in runner.calls if 'add rule' in c)
+    assert 'protocol=TCP' not in command and 'localport=5353' in command and 'profile=private' in command
+    assert firewall.ensure_rules(light, run=runner) == 'unchanged'
+    assert firewall.remove_rules(run=runner) == 'removed'
+    assert firewall.wanted({'components': [{'kind': 'client', 'data_path': str(tmp_path)}]}) == firewall.NO_RULES
+
+
+def test_a_full_hub_that_had_only_discovery_gets_its_port_rule_too(tmp_path, monkeypatch):
+    monkeypatch.setattr(firewall, 'is_admin', lambda: True)
+    monkeypatch.setattr(firewall.sys, 'platform', 'win32')
+    runner = Runner(udp=True)
+    assert firewall.ensure_rules(record(tmp_path), run=runner) == 'added'
+    assert runner.rule == [8443, 9443] and runner.udp

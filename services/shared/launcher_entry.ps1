@@ -79,6 +79,17 @@ function Show-OrionElevated([string]$message) {
     }
     Show-OrionText $text -Warning
 }
+function Show-OrionPortBusy([string]$message) {
+    # Another program holds Orion's ports: nothing is broken, so name it instead of the Repair dialog.
+    if ($NonInteractive) { Write-Output $message; return }
+    $ports = '?'; $programs = '?'; $orion = $false
+    if ($message -match 'ORION-PORT: ports=(\S+) programs=(\S+) orion=(\d)') {
+        $ports = $Matches[1] -replace ',', ', '; $programs = $Matches[2] -replace ',', ', '; $orion = $Matches[3] -eq '1'
+    }
+    if ($orion) { $text = (T 'Orion a\u00e7\u0131lamad\u0131: bu bilgisayarda ba\u015fka bir Orion \u00e7al\u0131\u015f\u0131yor (kaynak koddan \u00e7al\u0131\u015fan bir kopya ya da ikinci bir kurulum) ve Orion''un portlar\u0131n\u0131 tutuyor. Onu kapat\u0131n, sonra Orion''u yeniden a\u00e7\u0131n.') }
+    else { $text = (T 'Orion a\u00e7\u0131lamad\u0131: Orion''un kulland\u0131\u011f\u0131 portlar\u0131 ba\u015fka bir program tutuyor. O program\u0131 kapat\u0131n (ya da bilgisayar\u0131 yeniden ba\u015flat\u0131n), sonra Orion''u yeniden a\u00e7\u0131n.') }
+    Show-OrionText ($text + "`r`n`r`n" + ((T 'Dolu portlar: {0}\r\nProgram: {1}\r\n\r\nVerileriniz de\u011fi\u015ftirilmedi.') -f $ports, $programs)) -Warning
+}
 function Test-OrionElevated {
     try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false }
 }
@@ -285,6 +296,7 @@ try {
 } catch {
     try { $_.Exception.Message | Out-File -LiteralPath (Join-Path $PSScriptRoot 'launcher.log') -Encoding UTF8 } catch {}
     if ($_.Exception.Message -match 'ORION-ELEVATED') { Show-OrionElevated $_.Exception.Message }
+    elseif ($_.Exception.Message -match 'ORION-PORT') { Show-OrionPortBusy $_.Exception.Message }
     elseif ($Stop) { Show-OrionStopFailure $_.Exception.Message } else { Show-OrionRepair $_.Exception.Message }
     exit 1
 }

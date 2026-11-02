@@ -294,6 +294,29 @@ ELEVATED = ('ORION-ELEVATED: Orion baska bir yetki duzeyinde (yonetici olarak) c
             'Tepsiden Cik ile kapatin, sonra Orion\'u normal (yonetici olmadan) acin.')
 ELEVATED_SELF = ('ORION-ELEVATED-SELF: Orion yonetici olarak baslatilamaz. '
                  'Orion\'u normal (yonetici olmayan) bir pencereden acin.')
+PORT_WAIT = 10  # A just-stopped Orion may hold its ports for a moment longer.
+
+
+def ports_taken(record, components, *, wait=PORT_WAIT, sleep=time.sleep):
+    """Before a fresh start: the programs holding this installation's ports, as an ORION-PORT message the entry
+    script shows as a clear dialog (otherwise the start fails deep in a service: "Supervisor startup failed").
+    None when the ports are free, or when this installation's own services run (they hold them)."""
+    if running_services(components):
+        return None
+    from .install_ports import holders, in_use
+    deadline = time.monotonic() + wait
+    busy = in_use(record)
+    while busy and time.monotonic() < deadline:
+        sleep(1)
+        busy = in_use(record)
+    if not busy:
+        return None
+    groups = holders(busy)
+    # ASCII only: the entry script reads this through the console code page and words it itself.
+    names = ','.join(sorted({name.encode('ascii', 'replace').decode().replace(' ', '_')
+                             for g in groups for name in g['names'] or ['?']}))
+    return (f'ORION-PORT: ports={",".join(map(str, busy))} programs={names} '
+            f'orion={int(any(g["orion"] for g in groups))}. Orion acilamadi: portlarini baska bir program tutuyor.')
 
 
 def is_elevated():
@@ -350,7 +373,7 @@ def explain(error):
     """Message for the entry script. Access-denied lifecycle errors mean another integrity level owns the
     services: say that in a form the script turns into a clear Turkish dialog (not the Repair dialog)."""
     text = str(error)
-    if 'ORION-ELEVATED' in text:
+    if 'ORION-ELEVATED' in text or 'ORION-PORT' in text:
         return text
     return ELEVATED if 'access denied' in text.lower() else text
 
@@ -593,6 +616,9 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
             compatible(packages)
         with launch_environment(registry):
             if not stop:
+                taken = ports_taken(record, components)
+                if taken:
+                    raise RegistryError(taken)
                 _start_with_window(registry, components, start_hub, start_router,
                                    show=not background and (not startup or record['preferences']['show_client']))
                 return {'status': 'ready'}
