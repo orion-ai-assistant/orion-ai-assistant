@@ -244,8 +244,8 @@
       "runner": "python",
       "script": "services/stt/whisper/api.py",
       "hardware": [
-        "cuda",
         "vulkan",
+        "cuda",
         "cpu"
       ],
       "models": [

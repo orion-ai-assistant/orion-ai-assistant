@@ -65,7 +65,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     # Both speech parts run on CUDA, Vulkan or the processor, CUDA first on an NVIDIA card: next to each other on
     # one card, one on CUDA and the other on Vulkan starved both (docs/bilesenler.md).
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
-    assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
+    assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['vulkan', 'cuda', 'cpu']
 
 
 def test_every_model_from_hugging_face_is_one_fixed_file_checked_by_its_sha256(parts):
@@ -139,7 +139,7 @@ def test_graphics_cards_are_read_from_nvidia_smi():
     # RTX 3060 Ti, and recognition goes where the voice is (docs/bilesenler.md).
     assert [choice['id'] for choice in hw['choices']] == ['vulkan', 'cuda', 'cpu'] and hw['recommended'] == 'vulkan'
     P._hardware.update(at=__import__('time').monotonic(), value=hw)
-    assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['cuda', 'vulkan', 'cpu']
+    assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['vulkan', 'cuda', 'cpu']
     assert [c['id'] for c in P.choices(P.spec('tts'), P._labelled(hw))] == ['cuda', 'vulkan', 'cpu']
     # An AMD or Intel card alone: the speech voice goes to it on Vulkan.
     amd = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=0, stdout='AMD Radeon RX 7600\n')
@@ -172,14 +172,14 @@ def test_cuda_is_offered_only_where_the_card_runs_that_engine():
     assert [P.cuda_floor(e) for e in ('llama.cpp', 'omnivoice-gguf', 'whisper.cpp')] == [5.0, 7.5, 5.0]
     rtx3060 = on(card('NVIDIA GeForce RTX 3060', 8.6))
     old = {part: ids(part, rtx3060) for part in ('embedding', 'llm', 'stt', 'tts')}
-    assert old['tts'] == old['stt'] == ['cuda', 'vulkan', 'cpu'] and 'cuda' in old['llm']
+    assert old['tts'] == ['cuda', 'vulkan', 'cpu'] and old['stt'] == ['vulkan', 'cuda', 'cpu'] and 'cuda' in old['llm']
     # A GTX 1060 (6.1): llama.cpp and whisper.cpp still have kernels for it, the speech voice does not (Vulkan,
     # else the processor).
     gtx1060 = on(card('NVIDIA GeForce GTX 1060 6GB', 6.1))
     assert ids('embedding', gtx1060) == old['embedding'] and ids('llm', gtx1060) == old['llm']
     assert ids('tts', gtx1060) == ['vulkan', 'cpu'] and ids('stt', gtx1060) == old['stt']
     assert P.default_settings(P.spec('tts'), None, gtx1060)['hardware'] == 'vulkan'
-    assert P.default_settings(P.spec('stt'), None, gtx1060) == {'hardware': 'cuda', 'gpu': 'all'}
+    assert P.default_settings(P.spec('stt'), None, gtx1060) == {'hardware': 'vulkan', 'gpu': 'all'}
     # A Kepler card (3.5) is below even llama.cpp's and whisper.cpp's floor.
     assert ids('stt', on(card('NVIDIA GeForce GTX 780', 3.5))) == ['vulkan', 'cpu']
     # A saved CUDA choice moves too (effective()).

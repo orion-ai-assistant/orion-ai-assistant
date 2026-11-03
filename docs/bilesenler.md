@@ -221,24 +221,24 @@ CUDA, Vulkan ve CPU'da çalışıyor.
   | whisper.cpp CPU turbo q5_0 (6 iş parçacığı) | 8.65 | 1.1 | 10.5 | – |
 
   Türkçe doğruluk iki motorda aynı (60 cümlede ±0.4 WER gürültü). Turbo, small'a göre WER'i yarıya indiriyor.
-- **Sıra `cuda, vulkan, cpu`** (TTS'inkiyle aynı; AMD/Intel kartta CUDA olmadığı için Vulkan). Yalnız çalışınca
-  Vulkan bu kartta CUDA kadar hızlı ve ~120 MB daha az kart belleği kullanıyor; ilk karar bu yüzden Vulkan'dı.
-  Ama aynı kartta TTS de çalışırken (sesli sohbette yanıt okunurken mikrofon dinler) farklı arka uçtaki iki
-  motor birbirini aç bıraktı. Yük testi (2026-11-03, RTX 3060 Ti; TTS durmadan aynı Türkçe cümleyi seslendirirken
-  60 cümlelik STT ölçümü, turbo q5_0; tek başına STT RTFx ~40, canlı 3 sn ~0.18 s; TTS tek başına CUDA 0.332,
-  Vulkan 0.302 cümle/sn):
+- **Sıra `vulkan, cuda, cpu`** (Vulkan varsayılan; CUDA destekleyen NVIDIA kartta seçilebilir). Yalnız çalışınca
+  Vulkan bu kartta CUDA kadar hızlı, ~120 MB daha az kart belleği kullanıyor (887'ye karşı 1007 MB) ve motoru
+  15 MB (CUDA'nınki 685 MB). STT ve TTS aynı kartta aynı anda çalışabilir (sesli sohbette yanıt okunurken mikrofon
+  dinler). Temiz ölçüm (2026-11-03, RTX 3060 Ti; kartta yalnızca bu iki sunucu, kart belleği tepe 2.4-2.7/8 GB,
+  paylaşılan bellek hiç büyümedi; turbo q5_0 + OmniVoice Q8_0):
 
-  | | TTS CUDA'da | TTS Vulkan'da |
-  |---|---|---|
-  | STT Vulkan'da | RTFx 0.7, canlı 3 sn 17.8 s; TTS 0.006 cümle/sn | RTFx 8.0, canlı 1.0 s; TTS 0.131 cümle/sn |
-  | STT CUDA'da | RTFx 2.4, canlı 3.9 s; TTS 0.101 cümle/sn | RTFx 3.7, canlı 2.1 s; TTS 0.137 cümle/sn |
+  | STT / TTS | Canlı 3 sn, boşta | Canlı 3 sn, TTS yanıt okurken | Sürekli yük: STT RTFx / TTS cümle/sn |
+  |---|---|---|---|
+  | CUDA / CUDA | 0.147 s | 0.26 s | 20.5 / 0.45 |
+  | Vulkan / CUDA | 0.172 s | 0.26-0.28 s | 24.3 / 0.44 |
+  | Vulkan / Vulkan | 0.155 s | 0.27 s | 26.1 / 0.39 |
+  | CUDA / Vulkan | 0.142 s | 0.30 s | 21.5 / 0.46 |
 
-  En kötüsü STT Vulkan + TTS CUDA, yani TTS'in NVIDIA'daki varsayılanının yanında Vulkan. Bu yüzden STT de
-  NVIDIA'da önce CUDA. İkisi de Vulkan'da en iyisi; TTS'in sırası değişirse STT'ninki de onunla birlikte
-  değişmeli. Ölçümde kesinlik sınırı: TTS-CUDA sütunu boyunca başka bir oturumun CUDA tts-server'ı da açıktı ve
-  kart belleği 8 GB'ın 7.9'u doluydu. Vulkan'ın bellek dolunca sistem belleğine taşması o hücreyi büyütmüş
-  olabilir. Ayrıca ilk tek başına Vulkan ölçümünde de, başka bir oturumun Vulkan tts-server'ı çalışırken STT 18
-  kat yavaşlamıştı.
+  İkisi aynı anda çalışınca kart sırayla paylaşılıyor: STT'nin canlı sonucu ~0.15'ten ~0.27 s'ye, bir TTS yanıtı
+  ~1.7 kat uzuyor. Dört bileşim birbirinden yalnızca yüzde birkaç farklı: CUDA ile Vulkan'ı karıştırmanın ek bir
+  bedeli yok. Önceki "karışınca 18-30 kat yavaş" ölçümü kirliydi (başka bir oturumun tts-server'ı da açıktı,
+  kart belleği 7.9/8 GB doluydu: Vulkan sistem belleğine taşıyordu). Ölçüm betikleri ve tablonun tamamı oturum
+  notlarında (`stt-vulkan-whisper-cpp.md`).
 - **Güncelleme yolu (eski STT kurulu bilgisayar):** Hub her açılışta bir kez `tidy()` çalıştırır (parçalar
   başlamadan): katalogda adı geçmeyen motor klasörlerini (`engines/faster-whisper-1.2.1-py311`, cuDNN'li
   ~1.4 GB; ileride bir llama.cpp sürüm değişikliğinin eski klasörü de) ve parçanın `retired_models` listesindeki
