@@ -3,7 +3,7 @@
 The process that starts a cluster owns it (Windows): pg_ctl start runs inside a kill-on-close job named
 after the data directory, and only the owner keeps a handle. A clean stop shuts the server down; if the
 owner ends without one (error, Task Manager, Windows signing out) Windows ends the server with it, and the
-next start runs PostgreSQL's normal crash recovery. A running server whose owner is gone is shut down and
+next start runs PostgreSQL's normal crash recovery and waits until it has finished. A running server whose owner is gone is shut down and
 restarted as one's own, never reused ownerless.
 """
 import json
@@ -21,6 +21,7 @@ from services.shared.process_lifecycle import (
 )
 
 NO_WINDOW = {'creationflags': 0x08000000} if os.name == 'nt' else {}
+RECOVERY_LIMIT = 30 * 60  # Seconds a starting server may spend in crash recovery before the start fails.
 
 
 def owner_job_record(data):
@@ -238,10 +239,23 @@ class Postgres:
             if result.returncode or not self._ready_soon():
                 raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
 
+    def starting(self):
+        """The server reports itself still starting (crash recovery included) in its postmaster.pid status line,
+        the same line pg_ctl -w reads; it is not translated, unlike the server's messages."""
+        try:
+            lines = (self.data / 'postmaster.pid').read_text(encoding='utf-8').splitlines()
+        except OSError:
+            return False
+        return len(lines) > 7 and lines[7].strip() == 'starting'
+
     def _ready_soon(self, timeout=10, server=None):
         # pg_ctl -w (Windows) accepts a postmaster.pid younger than 2 s as the new server's: right after a
         # server that had just started was killed, it reports ready while the new one is still recovering.
         deadline = time.monotonic() + timeout
+        # After an unclean stop the server first fsyncs its whole data directory: minutes on a busy hard disk.
+        # Ending it then made the next start begin again from the first file, so the Router never came up.
+        # Our own server that is still starting is waited for, up to RECOVERY_LIMIT.
+        limit, announced = time.monotonic() + RECOVERY_LIMIT, False
         while True:
             if server is not None and server.poll() is not None:
                 return False  # The server ended (port, configuration, data): its log says why.
@@ -249,10 +263,17 @@ class Postgres:
                 if self.ready():
                     return True
             except NotAccepting:
+                now = time.monotonic()
+                if now >= deadline:
+                    if not (server is not None and now < limit and self.starting()):
+                        raise
+                    if not announced:
+                        print('PostgreSQL is still recovering from an unclean stop; waiting for it (server.log).',
+                              flush=True)
+                        announced = True
+            else:
                 if time.monotonic() >= deadline:
-                    raise
-            if time.monotonic() >= deadline:
-                return False
+                    return False
             time.sleep(.2)
 
     def _shutdown(self, owner):
