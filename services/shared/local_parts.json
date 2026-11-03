@@ -393,7 +393,10 @@
           "name": "Jina Embeddings v5 Omni Nano",
           "description": "Çok dilli ve hafif; çoğu bilgisayar için yeterli.",
           "folder": "jina-embeddings",
-          "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/main/",
+          "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/d88747133a88c1ebb884d60392a25be08b8042f7/",
+          "sha256": {
+            "jina-embeddings-v5-omni-nano-retrieval-F16.gguf": "c2cc484bfb4a27556d122f254d85be365b73744cb6c17f5af3fe462a573c9c6a"
+          },
           "files": [
             "jina-embeddings-v5-omni-nano-retrieval-F16.gguf"
           ],
@@ -409,7 +412,10 @@
           "name": "LCO Embedding Omni 7B",
           "description": "Daha güçlü ve uzun metinlerde daha iyi; ekran kartı ister.",
           "folder": "LCO-Embedding",
-          "url": "https://huggingface.co/marksverdhei/LCO-Embedding-Omni-7B-GGUF/resolve/main/",
+          "url": "https://huggingface.co/marksverdhei/LCO-Embedding-Omni-7B-GGUF/resolve/ace63ceae7ececf357d1d3cbf99c15101aa42457/",
+          "sha256": {
+            "LCO-Embedding-Omni-7B-IQ2_M.gguf": "dfba1fff793fc65b9c3e7d53fedbb6e8f7e2a2c24ddcc87b196dd39f49d41e88"
+          },
           "files": [
             "LCO-Embedding-Omni-7B-IQ2_M.gguf"
           ],
@@ -444,7 +450,11 @@
           "name": "Gemma 4 E2B",
           "description": "Küçük ama yetenekli; çok dilli.",
           "folder": "gemma-4-e2b",
-          "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/",
+          "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/",
+          "sha256": {
+            "gemma-4-E2B-it-Q3_K_S.gguf": "80d155f647d3a896669b1d1605b494b97ee9dbd1dcafd27957394134c280d270",
+            "mmproj-BF16.gguf": "a402f10fb5780bf91d03a10cd89061139f522bee2e679b1291bbfdcd71d9547d"
+          },
           "files": [
             "gemma-4-E2B-it-Q3_K_S.gguf"
           ],
@@ -462,7 +472,10 @@
           "name": "MiniPLM Qwen 200M",
           "description": "Çok küçük deneme modeli; zayıf bilgisayarda bile çalışır, yanıtları basittir.",
           "folder": "miniplm-qwen-200m",
-          "url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/main/",
+          "url": "https://huggingface.co/tensorblock/MiniPLM-Qwen-200M-GGUF/resolve/f3fe1241fa4c2343c019b20dbfeb1a042761acdd/",
+          "sha256": {
+            "MiniPLM-Qwen-200M-Q3_K_M.gguf": "47c1986552793577348eb8e79796a9365e9d7b3b10ae63e3b0da678dd9cf0bb8"
+          },
           "files": [
             "MiniPLM-Qwen-200M-Q3_K_M.gguf"
           ],
@@ -553,7 +566,11 @@
           "name": "OmniVoice (GGUF)",
           "description": "Türkçe dahil çok dilli, ses klonlayabilir; ekran kartında az bellek ister.",
           "folder": "omnivoice-gguf",
-          "url": "https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/main/",
+          "url": "https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/017094167b5c9ed565a5076ac9b3b93c5ecf5c73/",
+          "sha256": {
+            "omnivoice-base-Q8_0.gguf": "2882d887921798aea13d45236556bdf8012842ab6f8cd2690943eead6289f298",
+            "omnivoice-tokenizer-Q8_0.gguf": "75204fa566a8e30984e7a1066da6557184c9fd099c8f1bc0cb5b9415edfec255"
+          },
           "files": [
             "omnivoice-base-Q8_0.gguf",
             "omnivoice-tokenizer-Q8_0.gguf"

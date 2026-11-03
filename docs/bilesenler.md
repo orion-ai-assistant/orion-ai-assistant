@@ -46,7 +46,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     (kayıt yeni yeri gösteriyorsa) taşıma bitmiş sayılır.
   - Kurulumun kaydında models konumu yoksa yer değiştirilemez (Değiştir görünmez).
 - **İşler:** indirme/kurulum Hub'ın açtığı ayrı bir süreçte çalışır (`python -m services.shared.local_parts job`).
-  Pencereyi kapatmak işi durdurmaz; tam inen dosyalar (motor parçaları dahil) kalır, yarım kalan dosya baştan iner (kaldığı yerden eklemek bozuk model verebiliyordu; çoğu modelin SHA-256'sı yok). Durum
+  Pencereyi kapatmak işi durdurmaz; tam inen dosyalar (motor parçaları dahil) kalır, yarım kalan dosya baştan iner (kaldığı yerden eklemek bozuk model verebiliyordu). Durum
   `jobs/<parça>.json`'da: aşama, bayt, toplam, hız, hata, indirilen dosyaların rolü (`fetch`: model, ek).
   İş yalnızca eksik olanı adlandırır ve sayar: yalnızca mmproj iniyorsa "Ek dosya indiriliyor: Görsel ve ses
   anlama · x / 941 MB" (eskiden "Model indiriliyor" deyip var olan modeli de sayıyordu). Kutucuğun durumu her
@@ -184,8 +184,14 @@ Sıra önerisi yukarıdan aşağıya.
    Router ayarlarıyla (stt_model, embed modeli) tek yerde tutulmalı.
 5. **macOS ve Linux.** Katalogda `engines.llama.cpp.mac` (Metal, arm64) ve `linux` (cuda/vulkan/cpu) derlemeleri
    eklenince kutucuklar o sistemlerde kurulabilir olur; donanım algılama Metal'i zaten seçenek olarak veriyor.
-6. **İndirme doğrulaması.** Modeller için SHA256 (Hugging Face `x-linked-etag`/LFS oid) ve motor zipleri için
-   sabit özet; şimdilik yalnızca boyut (Content-Length) denetleniyor.
+6. ~~**İndirme doğrulaması.**~~ (2026-11-03 yapıldı) Hugging Face'ten inen her model dosyası (mmproj dahil) sabit bir
+   commit'ten iner (`/resolve/<commit>/`, `main` değil: depo sahibi dosyayı değiştirse bile bizimki değişmez) ve
+   inince kataloğun `sha256`'sıyla denetlenir; tutmazsa silinir, iş "bozuk indi" der. Değerler HF API'sinin LFS
+   özetinden (`/api/models/<depo>/revision/main?blobs=true`); bir model eklerken ya da güncellerken commit ve
+   özetler oradan alınır (indirilmiş Jina dosyasıyla tuttuğu denendi). Motor zipleri zaten SHA-256'lı.
+   `test_every_model_from_hugging_face_is_one_fixed_file_checked_by_its_sha256` eksik olanı yakalar. Modeller
+   kendi yayınımıza taşınmadı (kullanıcı kararı): GitHub bir yayın dosyasını en çok 2 GB alıyor, Gemma ve LCO
+   büyük.
 7. **Disk alanı denetimi** indirmeden önce, yetmezse kutucukta açıkça.
 8. **Eski geliştirici kurulum paneli** (`installer/app`, 127.0.0.1:7171): kullanılmıyor (2026-11-03 kararı). Kod
    şimdilik duruyor ama başlamıyor: `python -m installer.app` ve `manager.py installer` bir uyarıyla çıkar. Kurulu

@@ -1,5 +1,6 @@
 """Bileşenler: optional local AI parts (services/shared/local_parts.py) and their API. Never downloads from the
 internet, never touches a real installation: parts live under tmp_path, files come from a local HTTP server."""
+import hashlib
 import json
 import os
 import threading
@@ -64,6 +65,19 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     # The speech voice runs on CUDA, Vulkan or the processor; recognition has no Vulkan build.
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
     assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['cuda', 'cpu']
+
+
+def test_every_model_from_hugging_face_is_one_fixed_file_checked_by_its_sha256(parts):
+    # Not /resolve/main/: a repository can replace a file there. A commit's file never changes, and each file
+    # (the mmproj too) is checked after its download.
+    for part in P.catalog()['parts']:
+        for model in part['models']:
+            if 'huggingface.co' not in (model.get('url') or ''):
+                continue
+            assert len(model['url'].rstrip('/').rsplit('/', 1)[1]) == 40, model['id']
+            names = model['files'] + ([model['mmproj']] if model.get('mmproj') else [])
+            assert set(model['sha256']) == set(names), model['id']
+            assert all(len(value) == 64 for value in model['sha256'].values()), model['id']
 
 
 def test_speech_services_run_on_orions_python_with_their_engine(parts):
@@ -273,12 +287,28 @@ def test_a_cut_file_starts_over_and_a_finished_one_is_kept(tmp_path, server):
     assert not (tmp_path / 'x.gguf').exists() and not (tmp_path / 'x.gguf.part').exists()  # Nothing half left.
 
 
-def test_a_download_job_fetches_the_model_and_reports_it(parts, server, monkeypatch):
+def served(server, monkeypatch):
+    """The catalog with every model's files on the test server, each with that file's own SHA-256."""
     data = P.catalog()
+    digest = hashlib.sha256(Files.content).hexdigest()
     for part in data['parts']:
         for model in part.get('models', []):
             model['url'] = server
+            model['sha256'] = {name: digest for name in model.get('files', []) + [model.get('mmproj')] if name}
     monkeypatch.setattr(P, 'catalog', lambda: data)
+    return data
+
+
+def test_a_model_file_that_is_not_the_one_named_is_not_kept(parts, server, monkeypatch):
+    data = served(server, monkeypatch)
+    jina = next(m for part in data['parts'] for m in part['models'] if m['id'] == 'jina-v5-omni-nano')
+    jina['sha256'] = {name: '0' * 64 for name in jina['files']}  # The repository's file changed.
+    assert P.run_job('embedding', 'download', 'jina-v5-omni-nano') != 0
+    assert not (P.models_dir('embedding') / jina['folder'] / jina['files'][0]).exists()
+
+
+def test_a_download_job_fetches_the_model_and_reports_it(parts, server, monkeypatch):
+    data = served(server, monkeypatch)
     assert P.run_job('embedding', 'download', 'jina-v5-omni-nano') == 0
     record = P.job('embedding')
     assert record['phase'] == 'done' and record['bytes'] == len(Files.content)
@@ -805,11 +835,7 @@ def test_a_speech_model_says_which_files_it_needs(parts):
 
 
 def test_a_download_names_and_counts_only_what_it_fetches(parts, server, monkeypatch):
-    data = P.catalog()
-    for part in data['parts']:
-        for model in part.get('models', []):
-            model['url'] = server
-    monkeypatch.setattr(P, 'catalog', lambda: data)
+    data = served(server, monkeypatch)
     seen = []
     record = P._update_job
     monkeypatch.setattr(P, '_update_job', lambda part_id, **values: seen.append(values) or record(part_id, **values))
@@ -843,11 +869,7 @@ def test_removing_keeps_the_users_own_models_unless_asked(parts, monkeypatch):
 def test_one_file_at_a_time(parts, server, monkeypatch):
     """Each file's own line downloads or deletes just it; a user's model goes with its last file."""
     real = P.catalog
-    data = P.catalog()
-    for part in data['parts']:
-        for model in part.get('models', []):
-            model['url'] = server
-    monkeypatch.setattr(P, 'catalog', lambda: data)
+    served(server, monkeypatch)
     P.write_part_config('llm', model='gemma-4-e2b-it-q3-k-s', settings={'vision': False})
     assert P.run_job('llm', 'download', 'gemma-4-e2b-it-q3-k-s', ['extra']) == 0  # Not used yet: still fetched.
     folder = P.models_dir('llm') / 'gemma-4-e2b'
