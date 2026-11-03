@@ -477,10 +477,11 @@ def pe_imports(path):
 
 
 def local_archive(piece):
-    """A zip of a recipe that is already on this PC with the catalog's SHA-256: the OmniVoice zips the developer
-    packaged (services/tts/omnivoice-gguf) or any in ORION_ENGINE_ARCHIVES. Tests never download them."""
+    """A zip of a recipe that is already on this PC with the catalog's SHA-256: the TTS zips the developer packaged
+    (services/tts/omnivoice-gguf, services/tts/voxcpm2-gguf) or any in ORION_ENGINE_ARCHIVES. Tests never download
+    them."""
     name = piece['url'].rsplit('/', 1)[-1]
-    places = [P.ROOT / 'services/tts/omnivoice-gguf'] + [
+    places = [P.ROOT / 'services/tts/omnivoice-gguf', P.ROOT / 'services/tts/voxcpm2-gguf'] + [
         Path(folder) for folder in os.environ.get('ORION_ENGINE_ARCHIVES', '').split(os.pathsep) if folder]
     for place in places:
         path = place / name
@@ -836,9 +837,7 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     whisper_ggml(stt / 'ikinci.bin')  # Two models in one folder: which one is not guessed.
     assert P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist'][0]['state'] == 'many'
     # Speech out: the user picks the engine (a folder each); its two files are told apart by their contents,
-    # whatever their names; a file of another kind is named, not taken. An engine Orion lacks cannot be added.
-    with pytest.raises(P.PartError):
-        P.add_user_model('tts', 'Ses', 'voxcpm2')
+    # whatever their names; a file of another kind is named, not taken.
     assert P.add_user_model('tts', 'Ses', 'omnivoice') == 'custom-omnivoice-ses'
     tts = P.user_dir('tts') / 'OmniVoice' / 'Ses'
     gguf(tts / 'zz.gguf', 'omnivoice-tokenizer')
@@ -851,6 +850,51 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     gguf(P.user_dir('embedding') / 'E' / 'e.gguf', 'qwen2', context_length=8192, embedding_length=1024)
     assert P.model_spec(P.spec('embedding'), 'custom-e')['args'] == ['--pooling', 'last']
     assert row('embedding', 'custom-e')['dims'] == 1024
+
+
+def test_voxcpm2_runs_on_its_own_engine_next_to_omnivoice(parts):
+    """The speech voice has two engines: OmniVoice (the part's) and VoxCPM2 (llama.cpp-omni's llama-tts-server),
+    which its model brings; everything about a model (download, install, start, what is ready) follows its own."""
+    tts = P.spec('tts')
+    vox = P.model_spec(tts, 'voxcpm2-gguf')
+    assert vox['engine'] == 'voxcpm2-gguf' and P.part_engines(tts) == ['omnivoice-gguf', 'voxcpm2-gguf']
+    folder = P.models_dir('tts') / vox['folder']
+    for name in vox['files']:
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(b'')
+    settings = {'hardware': 'vulkan', 'gpu': '1'}
+    omni_engine = P.engine_dir('omnivoice-gguf', 'vulkan')
+    omni_engine.mkdir(parents=True)
+    (omni_engine / '.complete').write_text('x')
+    assert not P.ready(tts, vox, settings)  # OmniVoice's engine is here, VoxCPM2's is not.
+    with pytest.raises(P.PartError):
+        P.command(tts, vox, settings)
+    vox_engine = P.engine_dir('voxcpm2-gguf', 'vulkan')
+    vox_engine.mkdir(parents=True)
+    (vox_engine / '.complete').write_text('x')
+    assert P.ready(tts, vox, settings)
+    argv, env, port = P.command(tts, vox, settings)
+    assert port == 8810 and argv[4].endswith('api.py') and env['ENGINE_NAME'] == 'voxcpm2-gguf'
+    assert env['MODEL_PATH'].endswith('VoxCPM2-BaseLM-Q8_0.gguf') and env['ACOUSTIC_PATH'].endswith('VoxCPM2-Acoustic-F16.gguf')
+    assert env['VOXCPM2_BIN_DIR'] == str(vox_engine) and 'OMNIVOICE_BIN_DIR' not in env and 'CODEC_PATH' not in env
+    assert env['GGML_VK_VISIBLE_DEVICES'] == '1'
+    # Its row on the page says what its own engine costs on each hardware (CUDA brings CUDA's runtime too).
+    row = next(m for m in next(p for p in P.status()['parts'] if p['id'] == 'tts')['models'] if m['id'] == vox['id'])
+    assert row['engines']['vulkan']['ready'] and not row['engines']['cuda']['ready']
+    recipe = P.engine_recipe('voxcpm2-gguf', 'cuda')
+    if recipe is not None:
+        assert [a['url'].rsplit('/', 1)[-1] for a in recipe['archives']] == [
+            'voxcpm2-gguf-windows-cuda.zip', 'cudart-llama-bin-win-cuda-12.4-x64.zip']
+    # A user's own VoxCPM2: its two GGUFs told apart by what they say they are.
+    assert P.add_user_model('tts', 'Benim', 'voxcpm2') == 'custom-voxcpm2-benim'
+    mine = P.user_dir('tts') / 'VoxCPM2' / 'Benim'
+    gguf(mine / 'b.gguf', 'voxcpm-acoustic')
+    gguf(mine / 'a.gguf', 'minicpm4', context_length=32768)
+    user = P.model_spec(P.spec('tts'), 'custom-voxcpm2-benim')
+    assert user['complete'] and user['files'] == ['a.gguf', 'b.gguf'] and user['engine'] == 'voxcpm2-gguf'
+    assert P.command(P.spec('tts'), user, settings)[1]['ENGINE_NAME'] == 'voxcpm2-gguf'
+    # Removing the part takes both engines it installed, which no other part uses.
+    assert set(P.unused_engines(tts)) == {omni_engine, vox_engine}
 
 
 def whisper_ggml(path, *, mels=80, audio_ctx=1500, text_ctx=448, magic=0x67676d6c):

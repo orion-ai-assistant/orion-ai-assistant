@@ -8,6 +8,7 @@ except ImportError:
     torch = None
     TORCH_AVAILABLE = False
 import gc
+import io
 import numpy as np
 import logging
 from pathlib import Path
@@ -472,7 +473,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
             }
             if target_voice:
                 payload["voice"] = target_voice
-            generic_models = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+            generic_models = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
             if instruct and instruct.strip() and instruct.strip().lower() not in generic_models:
                 payload["instructions"] = instruct.strip()
             
@@ -551,7 +552,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
         }
         if target_voice:
             payload["voice"] = target_voice
-        generic_models = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+        generic_models = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
         if instruct and instruct.strip() and instruct.strip().lower() not in generic_models:
             payload["instructions"] = instruct.strip()
         
@@ -592,6 +593,142 @@ class OmniVoiceGGUFEngine(TTSEngine):
         finally:
             if is_temp_voice and target_voice:
                 self._delete_voice_from_server(target_voice)
+
+class VoxCPM2GGUFEngine(TTSEngine):
+    """VoxCPM2 without PyTorch: llama.cpp-omni's llama-tts-server (ggml, CUDA/Vulkan/CPU) with its two GGUFs, the
+    BaseLM and the Acoustic model, as a child process on loopback. 48 kHz, 30 languages (Turkish among them).
+    A cloned voice is its WAV sample and the sample's transcript, sent with every request (the server keeps no
+    voices): the sample is processed again each time, so the same 5 s / 20 s rule as OmniVoice's applies."""
+
+    SAMPLE_RATE = 48000
+
+    def __init__(self, model_path: Optional[str] = None, acoustic_path: Optional[str] = None):
+        super().__init__()
+        exe = "llama-tts-server" + (".exe" if os.name == "nt" else "")
+        bin_dir = os.environ.get("VOXCPM2_BIN_DIR") or ""
+        self.server_bin = os.path.join(bin_dir, exe)
+        self.model_path, self.acoustic_path = model_path, acoustic_path
+        for path, what in ((self.server_bin, "llama-tts-server"), (model_path, "VoxCPM2 BaseLM"),
+                           (acoustic_path, "VoxCPM2 Acoustic")):
+            if not path or not os.path.exists(path):
+                logger.warning(f"{what} not found at: {path}")
+        self.host = "127.0.0.1"
+        self.port = int(os.environ.get("VOXCPM2_SERVER_PORT", "8807"))
+        self.server_proc = None
+        self._start_server()
+        import atexit
+        atexit.register(self._shutdown_server)
+
+    def _start_server(self):
+        cmd = [self.server_bin, "--voxcpm2-base-lm", self.model_path, "--voxcpm2-acoustic", self.acoustic_path,
+               "--host", self.host, "--port", str(self.port)]
+        logger.info(f"Starting llama-tts-server: {' '.join(cmd)}")
+        self.server_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                            encoding="utf-8", errors="replace", cwd=os.path.dirname(self.server_bin) or None)
+
+        def _log_server_output():
+            for line in iter(self.server_proc.stdout.readline, ""):
+                if line.strip():
+                    logger.info(f"[llama-tts-server] {line.strip()}")
+        threading.Thread(target=_log_server_output, daemon=True).start()
+        import urllib.request
+        # Loading the two GGUFs (~3.5 GB) from a cold disk takes a while.
+        for _ in range(360):
+            if self.server_proc.poll() is not None:
+                break
+            try:
+                with urllib.request.urlopen(f"http://{self.host}:{self.port}/health", timeout=1) as response:
+                    if response.status == 200:
+                        logger.info("llama-tts-server is up and healthy.")
+                        return
+            except Exception:
+                time.sleep(0.5)
+        logger.error("llama-tts-server failed to start or did not become healthy in time.")
+
+    def _shutdown_server(self):
+        if self.server_proc:
+            self.server_proc.terminate()
+            try:
+                self.server_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.server_proc.kill()
+            self.server_proc = None
+
+    def encode_voice(self, audio_path: str, text: str) -> Any:
+        with open(audio_path, "rb") as f:
+            data = f.read()
+        try:
+            with wave.open(io.BytesIO(data)) as w:
+                seconds = round(w.getnframes() / float(w.getframerate()), 2)
+        except Exception:
+            raise ValueError("VoxCPM2 ses örneğini WAV olarak ister; lütfen temiz bir WAV dosyası yükleyin.") from None
+        check_clone_seconds(seconds)
+        return {"ref_wav": data, "ref_text": text.strip() if text else "", "ref_seconds": seconds}
+
+    def _payload(self, text, voice_cache, instruct, guidance_scale, seed):
+        import base64
+        text = text.strip()
+        generic = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm",
+                   "voxcpm2", "voxcpm2-gguf", "default", "none"}
+        if instruct and instruct.strip() and instruct.strip().lower() not in generic:
+            text = f"({instruct.strip()}){text}"  # VoxCPM2's voice design: a description in parentheses first.
+        payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
+        if isinstance(voice_cache, dict) and voice_cache.get("ref_wav"):
+            payload["reference_audio"] = base64.b64encode(voice_cache["ref_wav"]).decode()
+            if voice_cache.get("ref_text"):
+                payload["prompt_text"] = voice_cache["ref_text"]  # Ultimate cloning: the sample's own words.
+        if seed is not None and seed != -1:
+            payload["seed"] = int(seed)
+        if guidance_scale:
+            payload["cfg_value"] = float(guidance_scale)
+        return payload
+
+    def _request(self, path, payload):
+        import json, urllib.request
+        req = urllib.request.Request(f"http://{self.host}:{self.port}{path}", data=json.dumps(payload).encode("utf-8"),
+                                     method="POST", headers={"Content-Type": "application/json"})
+        return urllib.request.urlopen(req, timeout=600)
+
+    def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0,
+                 guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr",
+                 abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
+        if not text or not text.strip():
+            return self.SAMPLE_RATE, np.array([], dtype=np.int16)
+        try:
+            with self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed)) as res:
+                return streamed_wav(res.read())
+        except Exception as e:
+            logger.error(f"llama-tts-server request failed: {e}")
+            return 500, np.array([], dtype=np.int16)
+
+    def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "",
+                        speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1,
+                        language: str = "tr", abort_event: Optional[Any] = None):
+        yield self.SAMPLE_RATE
+        if not text or not text.strip():
+            return
+        try:
+            with self._request("/v1/audio/speech/stream", self._payload(text, voice_cache, instruct, guidance_scale, seed)) as res:
+                head = b""
+                while b"data" not in head[:-4] and len(head) < 4096:  # The WAV header, then PCM as it comes.
+                    chunk = res.read(64)
+                    if not chunk:
+                        return
+                    head += chunk
+                at = head.find(b"data")
+                if len(head) < at + 8:
+                    head += res.read(at + 8 - len(head))
+                rest = head[at + 8:]
+                if rest:
+                    yield rest
+                while not (abort_event and abort_event.is_set()):
+                    chunk = res.read(4096)
+                    if not chunk:
+                        break
+                    yield chunk
+        except Exception as e:
+            logger.error(f"llama-tts-server stream failed: {e}")
+
 
 # A cloned voice's sample goes into every request together with the new sentence, so its length costs on every
 # one (RTX 3060 Ti, CUDA, 32 steps, real-time factor: no sample 0.24, 4.5 s sample 0.27, 17 s 0.46, 52 s 1.16;
@@ -655,6 +792,9 @@ def get_engine():
         # Bileşenler names both files (a user's own model may call them anything).
         engine = OmniVoiceGGUFEngine(model_path=model_path,
                                      codec_path=get_env("CODEC_PATH", default=None, required=False))
+    elif engine_name == "voxcpm2-gguf":
+        engine = VoxCPM2GGUFEngine(model_path=model_path,
+                                   acoustic_path=get_env("ACOUSTIC_PATH", default=None, required=False))
     else:
         raise ValueError(f"Hata: '{engine_name}' adında bir motor bulunamadı.")
     

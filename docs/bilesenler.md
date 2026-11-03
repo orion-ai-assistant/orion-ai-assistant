@@ -108,8 +108,38 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     whisper.cpp'nin ggml .bin dosyası gerekir" (Systran'ın dosyaları), GGUF, başka bir ggml, safetensors, ONNX,
     PyTorch. Yanlarındaki `config.json` gibi dosyalar model sayılmaz, söylenmez. Ses servisleri internete çıkmaz (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine
     hiçbir şey indirilmez.
-  - **TTS:** motor kullanıcının seçimi (OmniVoice; VoxCPM2 yakında). OmniVoice'un iki dosyası başlıklarındaki
-    mimariden (`omnivoice-lm`, `omnivoice-tokenizer`) ayırt edilir; tanınmayan dosya adıyla söylenir.
+  - **TTS:** motor kullanıcının seçimi (OmniVoice ya da VoxCPM2). OmniVoice'un iki dosyası başlıklarındaki
+    mimariden (`omnivoice-lm`, `omnivoice-tokenizer`), VoxCPM2'ninkiler (`minicpm4` BaseLM, `voxcpm-acoustic`)
+    ayırt edilir; tanınmayan dosya adıyla söylenir.
+
+### VoxCPM2 (2026-11-03)
+
+- **Ne:** OpenBMB'nin VoxCPM2'si (Apache-2.0; 30 dil, Türkçe dahil; 48 kHz; ses tasarımı ve klonlama), PyTorch'suz:
+  GGUF'ları [DennisHuang648/VoxCPM2-GGUF](https://huggingface.co/DennisHuang648/VoxCPM2-GGUF) sabit commit
+  `169f64d`'den (BaseLM Q8_0 1.73 GB + Acoustic F16 1.83 GB, SHA-256 katalogda), çalışma zamanı
+  [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) (MIT; OpenBMB'nin kendi gösterdiği yol)
+  `d30f00f`'deki `llama-tts-server` (OpenAI uyumlu `/v1/audio/speech`, `/stream`).
+- **Parçada:** TTS'in ikinci modeli `voxcpm2-gguf`, kendi motoruyla (`engines.voxcpm2-gguf`, sürüm
+  `voxcpm2-v1.0.0`, `exe: llama-tts-server`; CUDA (7.5+, CUDA çalışma zamanı llama.cpp'nin cudart zipinden), Vulkan,
+  CPU). Bir parçanın modelleri farklı motorlarda çalışabilir: `local_parts.for_model(part, model)` modelin motorunu
+  ve o motorun `env`'ini verir; komut, kurulum işi, hazır olma, bekçi, kaldırırken kullanılmayan motorlar
+  (`part_engines`) bundan geçer. Sayfadaki model satırında kendi motorunun donanım başına durumu var (`engines`).
+- **Servis:** `services/tts/engines.py` `VoxCPM2GGUFEngine`: `llama-tts-server`'ı alt süreç olarak açar
+  (`VOXCPM2_BIN_DIR`, `MODEL_PATH` BaseLM, `ACOUSTIC_PATH`), sesler `*_voxcpm2-gguf.pt` (WAV örneği + metni; sunucu
+  ses tutmaz, her istekte `reference_audio` + `prompt_text` gider). OmniVoice'un klonları VoxCPM2'de geçmez.
+  Klon kuralı aynı (~5 sn önerilir, en çok 20 sn). Ses tasarımı: tarif metnin başına parantez içinde.
+- **Derleme:** `services/tts/voxcpm2-gguf/build_release.bat` (sabit commit + `windows-iovec.patch`: çatalın MoE dosya
+  okuyucusu MSVC'de derlenmiyordu), `package_release.py` zipleri (her biri bütün takım) ve SHA-256'ları verir;
+  ayrıntı [tts-motoru-derleme.md](tts-motoru-derleme.md).
+- **Ölçüm** (RTX 3060 Ti, kartta tek sunucu, aynı altı Türkçe cümle, üç tekrarın ortancası; gerçek zaman oranı):
+  CUDA varsayılan ses 0.258, 4.5 sn klon 0.333; Vulkan 0.372 / 0.458 (OmniVoice: CUDA 0.25 / 0.27-0.29, Vulkan
+  0.30-0.32 / 0.39-0.41). NVIDIA'da CUDA önde, TTS'in `cuda, vulkan, cpu` sırası VoxCPM2'ye de uyar. Model ~4 sn'de
+  yüklenir. CPU ölçülmedi.
+- **Yayın** (2026-11-03): CUDA, Vulkan ve CPU zipleri `voxcpm2-v1.0.0`'da; katalogdaki adreslerden geri indirilip
+  SHA-256 ve boyut tuttu. Bileşenler'in kurulum işiyle (geçici `ORION_PARTS_HOME`, PATH'te CUDA Toolkit yok) VoxCPM2
+  CUDA'da ve Vulkan'da kuruldu, başladı, Orion'un TTS API'sinden ses üretti (`backend=CUDA0`, `Vulkan0`).
+- **Kalan:** sayfa (Flutter) seçilen modelin kendi motorunun boyutunu henüz model satırındaki `engines`'ten
+  almıyor, üstteki `engines` kayıtlı modelin motorudur. Klon yönetimi her motor için ayrı.
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
@@ -338,9 +368,7 @@ Sıra önerisi yukarıdan aşağıya.
    model seçicisinde "Yerel (bu bilgisayar)" diye görünmesi ve parça kapalıyken uyarması.
 10. **Misafir hesaplar** geldiğinde: kurma/kaldırma yalnızca ana kullanıcı (şimdilik Hub bilgisayarındaki pencere).
 11. **Kendi modellerin, kalanlar** (temeli 2026-11-02 yapıldı, yukarıda):
-    - **VoxCPM2 (GGUF):** ekleme ekranında "yakında" diye duruyor (`USER_KINDS['tts']`, motoru `voxcpm2`).
-      Motoru eklenince: türün dosyaları (mimarileriyle), kataloğa motor tarifi ve parçanın motorunun modele göre
-      seçilmesi (şimdi `part['engine']` parça başına tek).
+    - ~~**VoxCPM2 (GGUF)**~~ (2026-11-03 yapıldı): aşağıda "VoxCPM2".
     - **Hafızada embedding olmayan model:** şimdilik reddedilmiyor (GGUF'ta bunu güvenle söyleyen bir alan
       yok); havuzlama söylenmemişse `--pooling last` verilir.
     - **Hafıza modeli değişirse** eski vektörler yeni modelle karşılaştırılamaz (boyut ve uzay farklı): hafıza

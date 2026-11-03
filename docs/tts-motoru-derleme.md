@@ -124,8 +124,27 @@ zip Toolkit'siz bilgisayarda açılmaz.
 
 - **Aynı mimaride yeni GGUF** (ör. OmniVoice'un başka bir nicemlemesi ya da ince ayarı): yeniden derleme yok.
   Dosyalar Bileşenler'den "Kendi modellerin" ile eklenir, aynı `tts-server.exe` çalıştırır.
-- **Başka bir mimari** (ör. VoxCPM2'nin GGUF'u): `tts-server.exe` yalnızca OmniVoice'u tanır. VoxCPM2 için onu
-  çalıştıran ayrı bir ggml motoru gerekir; bu motor bir kez, bu belgedeki gibi CUDA, Vulkan ve CPU için
-  derlenir, zipleri yayına konur ve katalogda `voxcpm2` motoru olarak tarif edilir. Ondan sonra VoxCPM2
-  GGUF'ları yeniden derleme olmadan çalışır. Depodaki `services/tts/voxcpm2` PyTorch'lu Python sürümüdür,
-  Bileşenler'de kullanılmaz.
+- **Başka bir mimari** (ör. VoxCPM2): `tts-server.exe` yalnızca OmniVoice'u tanır; başka mimari kendi ggml
+  motoruyla gelir, bir kez CUDA, Vulkan ve CPU için derlenir, zipleri yayına konur, katalogda motor olarak tarif
+  edilir ve modelin `engine` alanı onu gösterir. Ondan sonra o mimarinin GGUF'ları yeniden derleme olmadan çalışır.
+  Depodaki `services/tts/voxcpm2` PyTorch'lu Python sürümüdür, Bileşenler'de kullanılmaz.
+
+## 7. VoxCPM2 motoru (llama.cpp-omni)
+
+- Kaynak: [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00feadb7ebce95bacd55b0d104e3ef501481`
+  (MIT), yalnızca `llama-tts-server` hedefi. `services/tts/voxcpm2-gguf/build_release.bat [cuda|vulkan|cpu]`
+  kaynağı `%TEMP%\ovx\src`'ye indirir, o commit'e geçer, `windows-iovec.patch`'i uygular (çatalın
+  `src/llama-moe-slot.cpp`'si POSIX `struct iovec` kullanıyor, MSVC'de tanımsız), `%TEMP%\ovx\b-<donanım>`'da derler
+  ve takımı `build\<donanım>\`'a kopyalar. Depo içindeki yol yine 260 karakter sınırına takılıyordu (git checkout
+  bile yarıda kalır; `core.longpaths=true` ile indirilir).
+- Bayraklar: hepsinde `-DGGML_NATIVE=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF
+  -DLLAMA_BUILD_EXAMPLES=OFF`; Vulkan `-DGGML_VULKAN=ON`; CUDA `-DGGML_CUDA=ON`,
+  `CMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real` ve `CUDAFLAGS=-allow-unsupported-compiler`
+  (CUDA 12.1 bu Visual Studio'yu ancak böyle kabul eder; CMake derleyiciyi tanırken bunu ortam değişkeninden okur).
+  Batch argümanında `=` ayırıcıdır: bayrakları argüman olarak değil ortam değişkeniyle geçir.
+- `python package_release.py` her takımı `voxcpm2-gguf-windows-<donanım>.zip` yapar, adres, SHA-256 ve boyutu
+  yazar; ziplerin yeri `voxcpm2-v1.0.0` yayını. CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
+  llama.cpp'nin `cudart` zipi ikinci arşivdir).
+- Denemek: `llama-tts-server.exe --voxcpm2-base-lm VoxCPM2-BaseLM-Q8_0.gguf --voxcpm2-acoustic
+  VoxCPM2-Acoustic-F16.gguf --host 127.0.0.1 --port 18807`; `POST /v1/audio/speech`
+  `{"model": "voxcpm", "input": "...", "reference_audio": "<base64 WAV>", "prompt_text": "<örneğin metni>"}`.

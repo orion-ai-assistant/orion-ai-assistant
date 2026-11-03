@@ -174,6 +174,22 @@ def engine_recipe(engine, hardware, data=None):
     return (engine_builds(engine, data) or {}).get(hardware)
 
 
+def for_model(part, model, data=None):
+    """`part` as `model` runs it. A model may bring its own engine (VoxCPM2 next to OmniVoice in the speech voice),
+    and then that engine's service settings (its `env`) stand for the part's."""
+    engine = (model or {}).get('engine')
+    if not engine or engine == part.get('engine'):
+        return part
+    entry = (data or catalog())['engines'][engine]
+    return {**part, 'engine': engine, 'env': entry.get('env', part.get('env', {}))}
+
+
+def part_engines(part):
+    """Every engine one of the part's models runs on (the part's own first)."""
+    engines = [part.get('engine')] + [m.get('engine') for m in part.get('models', [])]
+    return list(dict.fromkeys(engine for engine in engines if engine))
+
+
 def engine_ready(engine, hardware, data=None):
     folder = engine_dir(engine, hardware, data)
     return (folder / '.complete').is_file() or (engine == 'llama.cpp' and engine_exe(engine, hardware, data) is not None)
@@ -584,7 +600,10 @@ USER_KINDS = {
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
                 {'gguf': 'omnivoice-lm', 'label': 'Ses modeli', 'expect': 'base.gguf'},
                 {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü', 'expect': 'tokenizer.gguf'}]},
-            {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2', 'files': []}],
+            # VoxCPM2's two GGUFs (llama.cpp-omni): the BaseLM says it is a MiniCPM4, the other its acoustic stack.
+            {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2-gguf', 'files': [
+                {'gguf': 'minicpm4', 'label': 'Dil modeli (BaseLM)', 'expect': 'BaseLM.gguf'},
+                {'gguf': 'voxcpm-acoustic', 'label': 'Ses modeli (Acoustic)', 'expect': 'Acoustic.gguf'}]}],
 }
 _SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')  # llama.cpp's own naming of a model split in pieces
 
@@ -709,7 +728,7 @@ def _user_model(part, kind, path, model_id, folder):
             other = None if file.name in copying or whisper_meta(file) else _other_format(file)
             if other:
                 problems.append(f"{file.name}: {other} biçiminde; whisper.cpp'nin ggml .bin dosyası gerekir.")
-    ready = kind['engine'] == part.get('engine')
+    ready = kind['engine'] in part_engines(part)
     if not ready:
         problems.append(f'{kind["label"]} motoru henüz yok.')
     complete = (ready and not copying
@@ -723,7 +742,8 @@ def _user_model(part, kind, path, model_id, folder):
     entry = {'id': model_id, 'name': path.name, 'description': _descriptions().get(f'{part["id"]}/{model_id}', ''),
              'folder': folder,
              'files': [file.name for file in files], 'size_mb': round(sum(file.stat().st_size for file in files) / MB),
-             'args': args, 'user': True, 'kind': kind['id'], 'kind_label': kind['label'], 'complete': complete,
+             'args': args, 'user': True, 'kind': kind['id'], 'kind_label': kind['label'], 'engine': kind['engine'],
+             'complete': complete,
              'present': [file.name for file in present], 'checklist': checklist, 'copying': copying,
              'problems': problems}
     if extra:
@@ -838,7 +858,7 @@ def add_user_model(part_id, name, kind_id=None, description=None):
         (place for place in places if place[0]['id'] == kind_id), (None, None, None))
     if kind is None:
         raise PartError('Böyle bir motor yok.')
-    if kind['engine'] != part.get('engine'):
+    if kind['engine'] not in part_engines(part):
         raise PartError(f'{kind["label"]} motoru henüz eklenmedi.')
     name, description = _clean_name(name), _clean_description(description)
     if any(model['id'] == _user_id(part_id, kind, name) for model in part['models']):
@@ -1002,6 +1022,7 @@ def effective(part, hw, config=None):
 
 def command(part, model, settings, data=None):
     """The argv, environment and port for `part` running `model` with `settings`."""
+    part = for_model(part, model, data)
     if part.get('runner') == 'python':
         return _python_command(part, model, settings, data)
     from .service_access import bind_host, own_origins
@@ -1144,8 +1165,9 @@ def part_status(part, hw, config, data):
         # Not installable from here yet: say whether it already runs (installed another way) and what else works.
         return {**base, 'installable': False, 'note': part.get('pending'), 'state': 'running' if running else 'absent',
                 'models': [], 'advanced': [], 'settings': {}, 'job': None}
-    builds = engine_builds(part['engine'], data, hw['system'])
     model, settings = effective(part, hw, config)
+    run = for_model(part, model, data)  # The saved model's engine (a part's models may run on different ones).
+    builds = engine_builds(run['engine'], data, hw['system'])
     entry = config.get(part['id'], {})
     current = job(part['id'])
     change = transition(part['id'])
@@ -1186,13 +1208,16 @@ def part_status(part, hw, config, data):
                'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
                'dims': meta.get('dims') if part['id'] == 'embedding' else None,
                'source': source_page(item)}
+        if item.get('engine') and item['engine'] != part['engine']:
+            # Its own engine: what the page shows for every hardware when this model is picked.
+            row['engines'] = engine_facts(item['engine'], part, hw, data)
         if item.get('user'):
             row.update(complete=item['complete'], checklist=item['checklist'], copying=item['copying'],
                        problems=item['problems'], path=str(folder))
         models.append(row)
     note = None if builds else 'Bu işletim sistemi için kurulum henüz yok (şimdilik yalnızca Windows).'
-    if not python_fits(part['engine'], data):
-        known = ', '.join(data['engines'][part['engine']]['pythons'])
+    if not python_fits(run['engine'], data):
+        known = ', '.join(data['engines'][run['engine']]['pythons'])
         note = f'Bu parçanın paketleri Python {known} için var; bu Hub Python {_python()} ile çalışıyor.'
     kinds = USER_KINDS.get(part['id'])
     return {**base, 'installable': bool(builds and settings['hardware'] in builds),
@@ -1201,16 +1226,21 @@ def part_status(part, hw, config, data):
             # The saved choice (what Başlat, Kur or Uygula uses).
             'model': model['id'] if model else None, 'settings': settings,
             'vision_off': _vision_off(entry),
-            'engines': {choice['id']: {'ready': engine_ready(part['engine'], choice['id'], data),
-                                       'mb': round((engine_size(part['engine'], choice['id'], data) or 0) / MB)}
-                        for choice in choices(part, hw)},
+            'engines': engine_facts(run['engine'], part, hw, data),
             'models': models, 'advanced': advanced(part, hw),
             'job': current, 'error': (change or {}).get('error'),
             # What the service runs with (the page compares the choice with it: "not applied yet").
             'applied': applied(part['id']) if state in ('running', 'restarting') else None,
             # The engines the user can bring a model for (one not in Orion yet is shown, not offered).
-            'user': {'kinds': [{**kind, 'ready': kind['engine'] == part['engine']} for kind in kinds],
+            'user': {'kinds': [{**kind, 'ready': kind['engine'] in part_engines(part)} for kind in kinds],
                      'folder': str(user_dir(part['id']))} if kinds else None}
+
+
+def engine_facts(engine, part, hw, data):
+    """For every hardware the part can run on here: whether `engine` is installed for it and its download (MB)."""
+    return {choice['id']: {'ready': engine_ready(engine, choice['id'], data),
+                           'mb': round((engine_size(engine, choice['id'], data) or 0) / MB)}
+            for choice in choices(part, hw)}
 
 
 def status():
@@ -1246,10 +1276,6 @@ def start_job(part_id, action, *, model=None, settings=None, fetch=None):
     if not part.get('engine'):
         raise PartError(part.get('pending') or 'Bu bileşen buradan kurulamıyor.')
     hw = hardware()
-    if not python_fits(part['engine'], data):
-        raise PartError('Bu parçanın paketleri bu Python sürümü için yok.')
-    if not engine_builds(part['engine'], data, hw['system']):
-        raise PartError('Bu işletim sistemi için kurulum henüz yok.')
     if busy(part_id):
         raise PartError('Bu bileşende bir iş zaten sürüyor.')
     _not_moving()
@@ -1257,6 +1283,11 @@ def start_job(part_id, action, *, model=None, settings=None, fetch=None):
     chosen = model_spec(part, model) if model else current
     if chosen is None:
         raise PartError('Önce bir model seç.')
+    engine = for_model(part, chosen, data)['engine']
+    if not python_fits(engine, data):
+        raise PartError('Bu parçanın paketleri bu Python sürümü için yok.')
+    if not engine_builds(engine, data, hw['system']):
+        raise PartError('Bu işletim sistemi için kurulum henüz yok.')
     if chosen.get('user') and not chosen['complete']:
         raise PartError('Bu modelin klasöründe eksik dosya var; Modeller panelinde neyin eksik olduğu yazıyor.')
     if action == 'download' and chosen.get('user'):
@@ -1341,7 +1372,8 @@ def apply_choice(part_id):
 
 def ready(part, model, settings, data=None):
     """Everything `model` needs with `settings` is here: its files and the engine for that hardware."""
-    return downloaded(part, model, settings) and engine_ready(part['engine'], settings['hardware'], data)
+    return downloaded(part, model, settings) and engine_ready(for_model(part, model, data)['engine'],
+                                                              settings['hardware'], data)
 
 
 def _signature(model, settings):
@@ -1522,7 +1554,7 @@ def apply(part_id, *, wish=None, restart=False):
                 model, settings = effective(part, hardware())
                 if model is None or not downloaded(part, model, settings):
                     raise MissingFiles('Modelin dosyaları eksik; indir ve başlat ile tamamla')
-                if not engine_ready(part['engine'], settings['hardware']):
+                if not engine_ready(for_model(part, model)['engine'], settings['hardware']):
                     raise MissingFiles('Bu donanımın motoru indirilmedi; indir ve başlat ile tamamla')
                 try:
                     start_part(part_id)
@@ -1551,23 +1583,27 @@ def apply(part_id, *, wish=None, restart=False):
 
 
 def unused_engines(part, data=None):
-    """The folders of `part`'s engine (every hardware) that no other installed part uses: an engine is shared
-    (memory and the local LLM both run llama.cpp), so it goes only with the last part that needs it."""
+    """The folders of `part`'s engines (every hardware, every engine one of its models runs on) that no other
+    installed part uses: an engine is shared (memory and the local LLM both run llama.cpp), so it goes only with
+    the last part that needs it."""
     data = data or catalog()
     hw = hardware()
     config = read_config()
+    mine = part_engines(part)
     used = set()
     for other in data['parts']:
-        if other['id'] == part['id'] or other.get('engine') != part['engine']:
+        if other['id'] == part['id'] or not other.get('engine'):
             continue
         entry = config.get(other['id'], {})
         if entry.get('enabled') or busy(other['id']):
-            used.add(engine_dir(other['engine'], effective(other, hw, config)[1]['hardware'], data))
+            model, settings = effective(other, hw, config)
+            used.add(engine_dir(for_model(other, model, data)['engine'], settings['hardware'], data))
         running = applied(other['id'])
         if running and answers(int(os.getenv(other['port_key']) or other['port'])):
-            used.add(engine_dir(other['engine'], running['settings']['hardware'], data))
-    return [engine_dir(part['engine'], hw_id, data) for hw_id in (engine_builds(part['engine'], data) or {})
-            if engine_dir(part['engine'], hw_id, data).is_dir() and engine_dir(part['engine'], hw_id, data) not in used]
+            model = next((m for m in other.get('models', []) if m['id'] == running.get('model')), None)
+            used.add(engine_dir(for_model(other, model, data)['engine'], running['settings']['hardware'], data))
+    folders = [engine_dir(engine, hw_id, data) for engine in mine for hw_id in (engine_builds(engine, data) or {})]
+    return [folder for folder in folders if folder.is_dir() and folder not in used]
 
 
 HINTS = (('out of memory', 'Ekran kartının belleği yetmedi: bağlam boyutunu ya da aynı anda isteği küçült, '
@@ -1665,7 +1701,7 @@ def keep_running():
                 or transition(part['id'])):
             continue
         model, settings = effective(part, hw, config)
-        if model is None or not downloaded(part, model, settings) or not engine_ready(part['engine'], settings['hardware'], data):
+        if model is None or not ready(part, model, settings, data):
             continue
         if not answers(int(os.getenv(part['port_key']) or part['port'])):
             try:
@@ -1902,6 +1938,7 @@ def run_job(part_id, action, model_id, fetch=None):
     data = catalog()
     part = spec(part_id, data)
     model = model_spec(part, model_id)
+    part = for_model(part, model, data)  # The engine this model runs on, installed and started below.
     marker = home() / 'jobs' / f'{part_id}.cancel'
     cancelled = marker.is_file
     _update_job(part_id, pid=os.getpid(), phase='starting', label='Hazırlanıyor…', error=None)

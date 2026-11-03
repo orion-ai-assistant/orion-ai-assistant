@@ -26,7 +26,7 @@ async function init() {
         document.getElementById('activeModelDisplay').innerText =
             `Aktif Model: ${activeEngine.toUpperCase()} | Donanım: ${devText} | VRAM Tasarrufu: ${lowVramText}`;
 
-        if (activeEngine === 'voxcpm2') {
+        if (activeEngine.startsWith('voxcpm2')) {
             document.getElementById('langContainer')?.classList.add('hidden');
             document.getElementById('voxControls')?.classList.remove('hidden');
             document.getElementById('omniControls')?.classList.add('hidden');
@@ -191,14 +191,14 @@ async function startGeneration(isStream) {
         finalVoice = document.getElementById('voiceSelect').value;
         if (!finalVoice) return alert("Klon modu için bir ses seçmelisiniz.");
     } else {
-        if (activeEngine === 'voxcpm2') {
+        if (activeEngine.startsWith('voxcpm2')) {
             finalInstruct = document.getElementById('voxDescInput').value;
         } else {
             const params = ['vdGender', 'vdAge', 'vdPitch', 'vdStyle', 'vdAccent', 'vdDialect']
                 .map(id => document.getElementById(id).value).filter(Boolean);
             finalInstruct = params.join(", ");
         }
-        if (!finalInstruct && activeEngine === 'voxcpm2') finalInstruct = "A clear voice";
+        if (!finalInstruct && activeEngine.startsWith('voxcpm2')) finalInstruct = "A clear voice";
     }
 
     const langValue = document.getElementById('langInput').value;

@@ -189,7 +189,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
 
-        generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "default", "none"}
+        generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
         instruct_val = getattr(speech_request, "instructions", None)
         if not instruct_val:
             model_val = (speech_request.model or "").strip()
@@ -399,7 +399,7 @@ async def get_design_options():
 async def get_model_info():
     dev = "NVIDIA CUDA (RTX 3060 Ti)" if is_cuda_available() else "CPU"
     info = {"engine": engine_name_env, "device": dev, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
-    if is_omnivoice:
+    if is_omnivoice or engine_name_env == "voxcpm2-gguf":
         # What the clone form says before a file is sent (engines.py checks it again).
         info["clone"] = {"recommended_seconds": CLONE_RECOMMENDED_SECONDS, "max_seconds": CLONE_MAX_SECONDS}
     return info

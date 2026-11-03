@@ -66,6 +66,47 @@
         }
       }
     },
+    "voxcpm2-gguf": {
+      "version": "voxcpm2-v1.0.0",
+      "exe": "llama-tts-server",
+      "env": {
+        "ENGINE_NAME": "voxcpm2-gguf",
+        "MODEL_PATH": "{files[0]}", "ACOUSTIC_PATH": "{files[1]}",
+        "VOXCPM2_BIN_DIR": "{engine_dir}"
+      },
+      "windows": {
+        "cpu": {
+          "archives": [
+            {
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-cpu.zip",
+              "sha256": "ef1617a09582315e7b1656b5023b87eb648f83ca8052f976f66be4b6bd2c3ee5", "size": 3580585
+            }
+          ]
+        },
+        "cuda": {
+          "min_compute": 7.5,
+          "archives": [
+            {
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-cuda.zip",
+              "sha256": "8d60cdeb2838869b487531aa9035e7c4e2cd2e13b93d91ea2b888230bd8f7544", "size": 145232758
+            },
+            {
+              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+              "size": 391443627
+            }
+          ]
+        },
+        "vulkan": {
+          "archives": [
+            {
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-vulkan.zip",
+              "sha256": "6f062c703280ba5e5a64c19363350c925812b4e7de0988abbd006cd7ca018445", "size": 20814730
+            }
+          ]
+        }
+      }
+    },
     "whisper.cpp": {
       "version": "v1.9.5",
       "exe": "whisper-server",
@@ -320,6 +361,23 @@
           ],
           "size_mb": 902,
           "recommended": true
+        },
+        {
+          "id": "voxcpm2-gguf",
+          "name": "VoxCPM2 (GGUF)",
+          "description": "30 dil (Türkçe dahil), 48 kHz, ses tasarımı ve klonlama; OmniVoice'tan daha büyük ve yavaş.",
+          "folder": "voxcpm2-gguf",
+          "engine": "voxcpm2-gguf",
+          "url": "https://huggingface.co/DennisHuang648/VoxCPM2-GGUF/resolve/169f64d8b98bbaab1761e4ca3a83e6af653456cc/",
+          "sha256": {
+            "VoxCPM2-BaseLM-Q8_0.gguf": "0113177abd11303503bf0b705e1613ec5f0a8508cc74a7dfd0f99312b962a962",
+            "VoxCPM2-Acoustic-F16.gguf": "5bde898488ad635ff55d24da53543768fa33d5e5cdc538ce190e5ef831038e85"
+          },
+          "files": [
+            "VoxCPM2-BaseLM-Q8_0.gguf",
+            "VoxCPM2-Acoustic-F16.gguf"
+          ],
+          "size_mb": 3388
         }
       ],
       "env": {
