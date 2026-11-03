@@ -59,7 +59,9 @@ class RouterBootstrapTests(unittest.IsolatedAsyncioTestCase):
         from orion.api.router_connection import Selection, select, discover
         from services.shared.router_connection import read_connection
         manager = SimpleNamespace(lock=asyncio.Lock(), directory=SimpleNamespace(list=unittest.mock.AsyncMock(return_value=[])))
-        with patch('orion.api.router_connection.association', return_value=manager):
+        # The Router admitting this Hub is its own step (access_state); here it admits it.
+        ready = unittest.mock.AsyncMock(return_value={'access_ready': True, 'needs_code': False, 'message': ''})
+        with patch('orion.api.router_connection.association', return_value=manager), patch('orion.api.router_connection.access_state', ready):
             records = await discover(None)
             self.assertEqual(records['routers'][0]['id'], self.tls['id'])
             self.assertNotIn('fp', records['routers'][0])
