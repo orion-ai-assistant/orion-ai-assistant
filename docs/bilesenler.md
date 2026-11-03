@@ -202,8 +202,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     başka hızları hâlâ filtresiz doğrusal ara değerlemeyle çevirir (aşağı örneklemede katlanma); yerel TTS artık
     oraya 24 kHz dışında ses göndermediği için bu genel düzeltme ayrı bir iş.
   - **Uçtan uca, geliştirici Router + Hub** (2026-11-03; Hub'ın kaynak `stream_tts`'i gerçek Router üzerinden,
-    VoxCPM2 CUDA, varsayılan ses, 3 tekrarın ortancası; bu koşuda kartı LLM/STT parçaları da kullanıyordu, aynı
-    anda TTS'e doğrudan istekte de ilk ses 0.60 sn idi, yani Router + Hub ~0.05 sn ekliyor):
+    VoxCPM2 CUDA, varsayılan ses, 3 tekrarın ortancası; aynı anda TTS'e doğrudan istekte ilk ses 0.60 sn idi,
+    yani Router + Hub ~0.05 sn ekliyor; o 0.60'ın nedeni aşağıda):
 
     | Cümle (karakter) | Hub'a gelen | İlk ses | Son parça | Ses |
     |---|---|---|---|---|
@@ -216,6 +216,29 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     | OmniVoice CUDA 1 / 5 | tam WAV | 0.76 / 3.45 | aynı | 2.97 / 15.52 |
 
     (Hub isteğinde tohum yok; ses süreleri bu yüzden yukarıdaki tohum 42'li tablodan farklı.)
+
+  - **İlk sesteki 0.5 sn kartın paylaşılmasından değil, TTS API'sinin tamponundan** (2026-11-03, ölçüm; Orion
+    TTS API'si, yukarıdaki yöntem, 1. / 5. cümle, akışlı ilk parça / son parça, sn):
+
+    | Durum | İlk parça | Son parça |
+    |---|---|---|
+    | `llama-tts-server`'ın kendisi (ham HTTP) | 0.09 | — |
+    | Kart boş, şimdiki kod (48→24 kHz süzgeçli) | 0.54 / 0.58 | 0.93 / 4.40 |
+    | Kart boş, 52afffb öncesi (48 kHz, süzgeçsiz) | 0.31 / 0.36 | 0.92 / 4.35 |
+    | Kart boş, motor sınıfı süreç içinde (api.py'siz), eski ve yeni | 0.09-0.10 | — |
+    | LLM de kartta (gemma-4-E2B Q3_K_S, CUDA), boşta; şimdiki kod | 0.54 / 0.55 | 0.91 / 4.24 |
+    | LLM aynı anda yanıt üretirken; şimdiki kod | 1.34 / 1.51 | 2.32 / 11.76 |
+    | Kart boş; api.py düzeltilmiş (aşağıda) | 0.10 / 0.13 | 0.94 / 4.37 |
+    | LLM boşta; düzeltilmiş | 0.10 / 0.13 | 0.91 / 4.23 |
+    | LLM üretirken; düzeltilmiş | 0.28 / 0.29 | 2.52 / 16.29 (5. cümlede 2.6 sn kesinti) |
+
+    Neden: `api.py` motorun senkron üretecini olay döngüsünün içinde döndürüyor, uvicorn da yazılanları ancak
+    ~64 KB birikince gönderiyor; ses 24 kHz'e inince 64 KB'ın dolması iki kat sürüyor (0.33 → 0.54 sn). Süzgeç
+    kendisi parça başına 0.1 ms. Üreteci iş parçacığında döndürmek (`iterate_in_threadpool`) ilk sesi 0.10 sn'ye
+    indiriyor (geçici kopyada denendi, depoda değil). LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
+    paylaşılan GPU belleği 160 → en çok 380 MB; taşma yok denecek kadar); LLM üretirken TTS ~3 kat yavaşlıyor
+    (LLM de 100 → 32-94 token/sn), uzun cümlede üretim gerçek zamanın gerisine düşebiliyor. STT ölçülmedi:
+    diskte STT modeli yok. Uçtan uca koşudaki 6.3 GB'ı LLM + VoxCPM2 tutuyordu.
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
