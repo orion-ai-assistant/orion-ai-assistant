@@ -651,6 +651,11 @@ def test_the_status_holds_facts_only_so_no_choice_waits_for_it(parts):
     after = card()
     assert facts(after) == facts(before) and after['settings']['hardware'] == 'cpu'
     gemma = next(m for m in after['models'] if m['id'] == 'gemma-4-e2b-it-q3-k-s')
+    # Each model says its own engine for every hardware (TTS: OmniVoice's and VoxCPM2's differ), so picking one
+    # shows its download with the click, whatever the saved model is.
+    tts = next(part for part in P.status()['parts'] if part['id'] == 'tts')
+    sizes = {m['id']: {hw: e['mb'] for hw, e in m['engines'].items()} for m in tts['models']}
+    assert sizes['omnivoice-gguf'] != sizes['voxcpm2-gguf'] and set(sizes['omnivoice-gguf']) == set(tts['engines'])
     assert (gemma['main_mb'], gemma['extra_mb'], gemma['main_there'], gemma['extra_there']) == (2332, 941, False, False)
     assert gemma['name'] == 'Gemma 4 E2B' and gemma['extra_name'] == 'Görsel anlama'
     assert set(after['engines']) == {'cuda', 'vulkan', 'cpu'}

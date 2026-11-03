@@ -1208,9 +1208,9 @@ def part_status(part, hw, config, data):
                'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
                'dims': meta.get('dims') if part['id'] == 'embedding' else None,
                'source': source_page(item)}
-        if item.get('engine') and item['engine'] != part['engine']:
-            # Its own engine: what the page shows for every hardware when this model is picked.
-            row['engines'] = engine_facts(item['engine'], part, hw, data)
+        # Its engine, every model its own (TTS: OmniVoice's or VoxCPM2's): what the page shows for every hardware
+        # the moment this model is picked, not the saved model's.
+        row['engines'] = engine_facts(item.get('engine') or part['engine'], part, hw, data)
         if item.get('user'):
             row.update(complete=item['complete'], checklist=item['checklist'], copying=item['copying'],
                        problems=item['problems'], path=str(folder))
