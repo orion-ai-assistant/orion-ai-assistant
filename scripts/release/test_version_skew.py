@@ -45,6 +45,12 @@ def old_code(tmp_path_factory):
         root = tmp_path_factory.mktemp('hub-' + version)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(root)  # Our own repository's history.
+        # These old Hubs shipped with Python 3.11; on 3.13+ every 0o700 folder carries an OWNER RIGHTS entry that
+        # their private-folder check (fixed since) rejects. Only that check is adjusted, not the code under test.
+        paths = root / 'services/shared/installation_paths.py'
+        text = paths.read_text(encoding='utf-8')
+        assert "'S-1-5-32-544'}" in text
+        paths.write_text(text.replace("'S-1-5-32-544'}", "'S-1-5-32-544', 'S-1-3-4'}"), encoding='utf-8')
         roots[version] = root
     return roots
 

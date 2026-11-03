@@ -108,7 +108,8 @@ def extract_zips(archives, destination, *, max_bytes=8 * 1024**3, max_files=1000
         destination.parent.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(destination.parent).free < total:
             raise PackageError('Insufficient package disk space')
-        with tempfile.TemporaryDirectory(prefix='.orion-package-', dir=destination.parent) as temporary:
+        from .installation_paths import scratch_directory
+        with scratch_directory('.orion-package-', destination.parent) as temporary:
             tree = Path(temporary) / 'tree'
             tree.mkdir()
             files = []

@@ -22,6 +22,7 @@ import json
 import inspect
 import os
 from pathlib import Path
+import secrets
 import socket
 import subprocess
 import sys
@@ -181,7 +182,11 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
         keep=DEFAULT_KEEP, prune=True, timings=None, client_ready=None):
     base = Path(base).resolve()
     base.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix='stage05-', dir=base))
+    # Not mkdtemp: on Python 3.13+ it gives the folder a protected ACL with an OWNER RIGHTS entry, which the
+    # still-installed older Hub (Python 3.11) refuses as a private folder. A plain mkdir inherits the parent's ACL,
+    # like the folders a real installation lives in.
+    scratch = base / ('stage05-' + secrets.token_urlsafe(6).replace('-', 'x'))
+    scratch.mkdir()
     label = 'FULL acceptance (publishable)' if mode == 'full' else 'FAST pre-check (NOT publishable)'
     print(f'Package acceptance [{label}]:', scratch, flush=True)
     T = timings or Timings('acceptance ' + mode)

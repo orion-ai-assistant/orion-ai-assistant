@@ -156,8 +156,8 @@ def main(argv=None, registry_api=None):
     parser.add_argument('--non-interactive', action='store_true')
     parser.add_argument('--plan-only', action='store_true')
     args = parser.parse_args(argv)
-    if sys.version_info < (3, 11):
-        parser.error('Python 3.11 or newer is required by this source installer')
+    if sys.version_info < (3, 14):
+        parser.error('Python 3.14 or newer is required by this source installer')
     if not args.non_interactive and not args.plan_only and not args.root:
         args.root = input('Installation root (blank uses registered/default location): ').strip() or None
     try:

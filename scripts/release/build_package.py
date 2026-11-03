@@ -144,8 +144,8 @@ def build_runtime(kind, args, destination):
             raise ValueError('Build input hash mismatch: ' + name)
         extract_zip(path, destination / ('runtime/python' if name == 'python' else '.local_db/redis'))
     python = destination / 'runtime/python'
-    (python / 'python311._pth').write_text(
-        'python311.zip\n.\nsite-packages\n..\\..\n..\\..\\services\\hub\\src\n..\\..\\installer\nimport site\n', encoding='utf-8')
+    (python / 'python314._pth').write_text(
+        'python314.zip\n.\nsite-packages\n..\\..\n..\\..\\services\\hub\\src\n..\\..\\installer\nimport site\n', encoding='utf-8')
     # Frozen, hashed wheel-only dependencies; no source compiler needed
     # on build or end-user machine and no venv absolute paths shipped.
     subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
@@ -354,7 +354,7 @@ def build(args, timings=None):
                 subprocess.run([str(base / 'tree/runtime/python/python.exe'), '-c',
                     'import sys; sys.path[:0] = sys.argv[1:]; '
                     'import struct,fastapi,asyncpg,cryptography,tuf,psutil; '
-                    'assert sys.version_info[:2] == (3,11) and struct.calcsize("P") == 8; '
+                    'assert sys.version_info[:2] == (3,14) and struct.calcsize("P") == 8; '
                     'assert sys.dont_write_bytecode and sys.stdout.encoding.lower().replace("-", "") == "utf8"; '
                     'print("Türkçe 中文"); import ' + package_import,
                     str(stage), str(stage / 'services/hub/src'), str(stage / 'installer')], cwd=stage, check=True)

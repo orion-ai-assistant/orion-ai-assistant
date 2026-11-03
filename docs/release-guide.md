@@ -53,7 +53,7 @@ deposunun kökünde:
 
 ```powershell
 # Yayın araçlarının Python ortamı
-uv venv .release/tools --python 3.11
+uv venv .release/tools --python 3.14
 uv pip install --python .release/tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
 uv pip install --python .release/tools/Scripts/python.exe pytest
 

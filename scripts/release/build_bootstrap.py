@@ -79,7 +79,7 @@ def build(trusted_root, inputs, output, *, test_only=False, release_source=None,
         requirements = Path(__file__).with_name('requirements.txt')
         extract_zip(archive, tree / 'runtime/python')
         python = tree / 'runtime/python'
-        (python / 'python311._pth').write_text('python311.zip\n.\nsite-packages\n..\\..\nimport site\n')
+        (python / 'python314._pth').write_text('python314.zip\n.\nsite-packages\n..\\..\nimport site\n')
         subprocess.run(['uv', 'pip', 'install', '--python', str(python / 'python.exe'),
             '--target', str(python / 'site-packages'), '--no-compile-bytecode', '--require-hashes', '--only-binary', ':all:',
             '-r', str(requirements)], check=True)

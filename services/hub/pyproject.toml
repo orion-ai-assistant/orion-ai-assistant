@@ -6,14 +6,14 @@ build-backend = "hatchling.build"
 name = "orion-hub"
 version = "0.1.0"
 description = "Stateless API + fake worker scaffold for Orion"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.30.0",
   "redis>=5.0.0",
   "pydantic-settings>=2.2.1",
   "aiohttp>=3.10.0",
-  "av>=18.1,<19",
+  "av>=19.0,<20",
   "asyncpg>=0.29.0",
   "bcrypt>=4.0.0",
   "PyJWT>=2.8.0",

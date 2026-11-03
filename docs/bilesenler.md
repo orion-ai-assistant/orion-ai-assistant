@@ -443,7 +443,7 @@ Sıra önerisi yukarıdan aşağıya.
    - Doğrulandı: kurulu Orion'un Python 3.11'iyle STT ve TTS gerçekten kuruldu; TTS'in ürettiği Türkçe cümle STT ile
      yazıya döndü. Bu sırada TTS'in akışlı WAV'ın yalnızca ilk parçasını döndürdüğü hata düzeltildi.
    - Kalan: STT/TTS paketlerinin sürümünü yenilerken `uv pip compile -c
-     hub-requirements.txt --python-version 3.11 --python-platform x86_64-pc-windows-msvc --generate-hashes`
+     hub-requirements.txt --python-version 3.14 --python-platform x86_64-pc-windows-msvc --generate-hashes`
      ile yeniden çöz, adres ve SHA-256'ları PyPI'den alıp kataloğa yaz (bunu yapan bir betik henüz depoda yok).
 3. **TTS ses klonları:** Bileşenler'in kurduğu TTS klonları `Parts/run/tts/voices` altında tutar; Orion'la gelen
    sesler kod klasöründe. Klon yönetimi ekranı yok.
