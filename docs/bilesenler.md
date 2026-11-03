@@ -244,7 +244,15 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     işlenir, 20 sn'den uzun / WAV olmayan örnek 400; WAV baytları aynı. Akışsız istekte izleyici görev artık
     beklenmez, iptal edilir (beklemek her yanıta 0.5 sn'ye kadar ekliyordu). Açık: akışsız istekte istemci
     kapatınca motor durmaz (iki motorun `generate`'i tek parça istek, `abort_event`'e bakmaz; önceden de böyleydi),
-    sonraki istek onun bitmesini bekler. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
+    sonraki istek onun bitmesini bekler. Python tarafında bağlantıyı kesmek denendi ve geri alındı: OmniVoice'un
+    sunucusu işi yine bitirir (kazanç yok); VoxCPM2'nin `llama-tts-server`'ı ise istekleri sıraya koymaz
+    (`server-voxcpm2.cpp`: `state.mutex` yalnızca çalışma zamanı işaretçisini korur, üretim kilitsiz; httplib iş
+    parçacığı havuzu iki isteği aynı `VoxCPM2Runtime` ve KV önbellek üzerinde çalıştırır). Kesilen akışsız istek
+    sürerken gelen yeni istek "inconsistent sequence positions" ile bozulur, sunucu çöker. Aynı yarış akışta da
+    var (önceden de): akış kesilince sunucu sonraki parçada durur, ama hemen gelen istekle çakışırsa bozulur
+    (süreç içinde kesip beklemeden yeni istek: 2 denemede çöktü; API üzerinden gerçek aralıklarla 4/4 sağlam).
+    Doğru düzeltme sunucuda: üretimi bir kilitle sıraya koymak (ve akışsız uç noktada da kopmayı denetlemek);
+    yama + üç derleme + yeni sürüm ister. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
     paylaşılan GPU belleği 160 → en çok 380 MB; taşma yok denecek kadar); LLM üretirken TTS ~3 kat yavaşlıyor
     (LLM de 100 → 32-94 token/sn), uzun cümlede üretim gerçek zamanın gerisine düşebiliyor. STT ölçülmedi:
     diskte STT modeli yok. Uçtan uca koşudaki 6.3 GB'ı LLM + VoxCPM2 tutuyordu.
