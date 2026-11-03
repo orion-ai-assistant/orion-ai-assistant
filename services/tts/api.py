@@ -231,7 +231,9 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         else:
             async with async_inference_lock:
                 if abort_event.is_set(): return JSONResponse({"status": "aborted"}, status_code=499)
-                sr, audio_data = tts.generate(
+                # In a thread, as the stream: the event loop keeps answering (health, a hang-up that aborts this).
+                sr, audio_data = await run_in_threadpool(
+                    tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
@@ -250,8 +252,9 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         last_request_time = time.time()
         if not should_stream:
             abort_event.set()
-            try: await monitor_task
-            except: pass
+            # Not awaited: the watcher sleeps 0.5 s between checks and now runs while the engine works, so
+            # waiting for it held every answer back by up to half a second.
+            monitor_task.cancel()
 
 # ——————————————————————————————————————————
 # Management & Info
@@ -281,7 +284,9 @@ async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text:
     with open(temp_path, "wb") as f: f.write(await file.read())
     try:
         try:
-            cache_obj = engine.encode_voice(temp_path, text)
+            # The engine works in a thread now (speech too), so a clone waits its turn instead of sharing it.
+            async with async_inference_lock:
+                cache_obj = await run_in_threadpool(engine.encode_voice, temp_path, text)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
             

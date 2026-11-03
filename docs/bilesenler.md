@@ -239,7 +239,12 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     ilk `next`, `iterate_in_threadpool` ile parçalar); ilk ses 0.10 sn. İstemci akışın ortasında (0.05 / 0.5 /
     1.5 / 3 sn) kapatınca motor durur (GPU hemen boşa düşer), hemen gelen sonraki istek kilitte beklemez (ilk
     parça 0.11-0.21 sn, normali 0.10); logda hata yok. Akışsız WAV (0.74 / 3.29 sn) ve OmniVoice'un tam WAV'ı
-    (0.35 / 1.63 sn) öncekiyle aynı. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
+    (0.35 / 1.63 sn) öncekiyle aynı. Akışsız üretim ve klon da iş parçacığında (klon üretim kilidini bekler):
+    üretim sürerken `/health` en çok 0.014 sn'de yanıtlar (önce 3.4 sn), akış sırasında gelen klon akış bitince
+    işlenir, 20 sn'den uzun / WAV olmayan örnek 400; WAV baytları aynı. Akışsız istekte izleyici görev artık
+    beklenmez, iptal edilir (beklemek her yanıta 0.5 sn'ye kadar ekliyordu). Açık: akışsız istekte istemci
+    kapatınca motor durmaz (iki motorun `generate`'i tek parça istek, `abort_event`'e bakmaz; önceden de böyleydi),
+    sonraki istek onun bitmesini bekler. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
     paylaşılan GPU belleği 160 → en çok 380 MB; taşma yok denecek kadar); LLM üretirken TTS ~3 kat yavaşlıyor
     (LLM de 100 → 32-94 token/sn), uzun cümlede üretim gerçek zamanın gerisine düşebiliyor. STT ölçülmedi:
     diskte STT modeli yok. Uçtan uca koşudaki 6.3 GB'ı LLM + VoxCPM2 tutuyordu.
