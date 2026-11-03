@@ -167,16 +167,17 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.closed)
 
     async def test_stream_request_accepts_complete_wav_fallback(self):
-        for provider in ('local', 'openai'):
+        for provider, asked in (('local', 'pcm'), ('openai', 'wav')):
             request = list(await self.request(headers={'Content-Type': 'audio/wav'}, chunks=[b'wave']))
             request[-1] = provider
+            request[2] = {'response_format': 'pcm'}  # As _tts_request builds it.
             payloads = []
             post = request[0].post
             request[0].post = lambda *args, **kwargs: (payloads.append(dict(kwargs['json'])), post(*args, **kwargs))[1]
             with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=tuple(request))):
                 result = [part async for part in stream_tts('hello', SimpleNamespace(tts_timeout_seconds=15))]
             self.assertEqual(result, [(b'wave', {'format': 'wav'})])
-            self.assertEqual(payloads[0]['response_format'], 'wav')
+            self.assertEqual(payloads[0]['response_format'], asked)  # Local asks PCM: VoxCPM2 streams it.
             self.assertTrue(payloads[0]['stream'])
 
     async def test_local_pcm_rate_header_streams_normalized_audio(self):

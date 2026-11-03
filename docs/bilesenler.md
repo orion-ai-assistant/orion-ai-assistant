@@ -186,13 +186,36 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   - **VoxCPM2'nin akışı gerçek:** 160 ms'lik yamalar üretildikçe gelir; kartta ilk ses cümle boyundan bağımsız
     ~0.33 sn (Vulkan 0.5 sn), kesinti yok. Akışlı toplam akışsızdan ~%30 uzun. CPU'da üretim oynatmadan yavaş:
     akış dinleyiciyi bekletir (kullanılmamalı).
-  - **Orion'da akış kullanılmıyor:** Hub yanıtı cümlelere böler (ilk cümle hemen, sonra en çok 3 cümle / 600
-    karakterlik gruplar; `adaptive_tts.py`), her grubu Router'dan `stream: true` + WAV ister; ama Router'ın yerel
-    TTS sağlayıcısı (`orion-router/providers/local/tts.py`) TTS'e her zaman `stream: False` gönderir, bütün WAV'ı
-    bekleyip 64 KB'lık parçalara böler, Hub da yerel TTS'in WAV'ını tamamlanınca 24 kHz PCM'e çevirip çalar
-    (`tts_stream.py` `_batch_wav_pcm`). Yani akış cümle grubu düzeyinde; bir grubun içinde yok. VoxCPM2'nin 48 kHz
-    sesi orada filtresiz 2:1 doğrusal ara değerlemeyle (fiilen her ikinci örnek) 24 kHz'e indirilir (katlanma
-    riski; saf Python döngüsü).
+  - **Orion'da akış (2026-11-03'ten beri, cümle grubunun içinde de):** Hub yanıtı cümlelere böler (ilk cümle
+    hemen, sonra en çok 3 cümle / 600 karakterlik gruplar; `adaptive_tts.py`) ve her grubu Router'dan
+    `stream: true` ister; yerel TTS için PCM (`router.py` `stream_tts`). Router'ın yerel sağlayıcısı
+    (`orion-router/providers/local/tts.py` `generate_speech_stream`) TTS'e `stream: true` + `pcm` gönderip
+    parçaları geldikçe iletir. Akışı olan motor (VoxCPM2) ham 24 kHz PCM gönderir, Hub ilk parçada çalmaya
+    başlar; akışı olmayan (OmniVoice) tek tam WAV döndürür, Router olduğu gibi geçirir (`audio/wav`), Hub onu
+    eskisi gibi tamamlanınca çalar. Önceden Router yerel TTS'e hep `stream: False` gönderiyordu: VoxCPM2'de
+    5. cümlenin ilk sesi Hub'a ancak ~3.3 sn sonra (tam WAV) geliyordu.
+  - **48 → 24 kHz:** Orion'un ses yolu baştan sona 24 kHz mono 16 bit. VoxCPM2'nin 48 kHz'i TTS servisinde,
+    kaynağında yarıya indirilir (`engines.py` `HalfRate`: 63 dokunuşlu Blackman pencereli sinc alçak geçiren,
+    kesim 11 kHz, sonra her ikinci örnek; filtrenin geçmişi parçalar arasında taşınır, eklerde kesinti yok).
+    Ölçülen: 9 kHz'e kadar düz, 11 kHz -6 dB, 12 kHz -22 dB, 13 kHz'den yukarısı -65 dB'nin altında. Akışlı PCM
+    (`X-Sample-Rate: 24000`) ve akışsız WAV ikisi de 24 kHz. Hub'ın `PcmNormalizer`'ı ve `_batch_wav_pcm`'i
+    başka hızları hâlâ filtresiz doğrusal ara değerlemeyle çevirir (aşağı örneklemede katlanma); yerel TTS artık
+    oraya 24 kHz dışında ses göndermediği için bu genel düzeltme ayrı bir iş.
+  - **Uçtan uca, geliştirici Router + Hub** (2026-11-03; Hub'ın kaynak `stream_tts`'i gerçek Router üzerinden,
+    VoxCPM2 CUDA, varsayılan ses, 3 tekrarın ortancası; bu koşuda kartı LLM/STT parçaları da kullanıyordu, aynı
+    anda TTS'e doğrudan istekte de ilk ses 0.60 sn idi, yani Router + Hub ~0.05 sn ekliyor):
+
+    | Cümle (karakter) | Hub'a gelen | İlk ses | Son parça | Ses |
+    |---|---|---|---|---|
+    | 1 (47) | PCM akışı | 0.64 sn | 1.52 | 3.68 |
+    | 2 (67) | PCM akışı | 0.65 | 1.40 | 3.36 |
+    | 3 (79) | PCM akışı | 0.65 | 1.82 | 4.48 |
+    | 4 (77) | PCM akışı | 0.64 | 2.19 | 5.44 |
+    | 5 (238) | PCM akışı | 0.75 | 6.91 | 17.60 |
+    | 6 (187) | PCM akışı | 0.66 | 5.31 | 13.60 |
+    | OmniVoice CUDA 1 / 5 | tam WAV | 0.76 / 3.45 | aynı | 2.97 / 15.52 |
+
+    (Hub isteğinde tohum yok; ses süreleri bu yüzden yukarıdaki tohum 42'li tablodan farklı.)
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i

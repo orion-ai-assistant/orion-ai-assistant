@@ -576,9 +576,11 @@ async def stream_tts(
     """
     session, headers, payload, timeout, urls, provider = await _tts_request(text, settings, voice, "pcm")
     # Request streaming from every provider. The response media type decides
-    # whether to relay PCM immediately or collect a completed WAV batch.
+    # whether to relay PCM immediately or collect a completed WAV batch. The
+    # local TTS streams PCM from an engine that can (VoxCPM2) and answers with
+    # one whole WAV from one that cannot (OmniVoice).
     payload["stream"] = True
-    if provider != "gemini":
+    if provider not in ("gemini", "local"):
         payload["response_format"] = "wav"
     # The Router answers only when the first audio exists, and a provider under load took 20 s for one short sentence
     # (2026-10-31, Gemini 3.1 TTS). The wait grows with the text; the setting can only make it longer.
