@@ -11,7 +11,7 @@ dependencies = [
     "pydantic",
     "python-multipart",
     "numpy",
-    "faster-whisper",
+    "av",
     "websockets",
     "python-dotenv",
 ]

@@ -211,6 +211,14 @@ def downloaded(part, model, settings=None):
     return model.get('complete', True) and all(path.is_file() for path in model_files(part, model, settings))
 
 
+def public_opener():
+    """For models and engines from the internet (Hugging Face, GitHub): Windows verifies the certificate, as for
+    Orion's own updates (windows_trust.py). Python's check alone fails on GitHub's new Sectigo chain until Windows
+    has fetched its root for a connection of its own: an engine from GitHub then never downloaded."""
+    from .windows_trust import context
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=context()))
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with Path(path).open('rb') as source:
@@ -338,7 +346,7 @@ def hardware(*, refresh=False, run=subprocess.run):
     else:
         # Vulkan first (the default): one build for every card, and on an RTX 3060 Ti it generated faster than
         # the CUDA build (about 100 against 60-70 tokens a second). CUDA stays a choice. Speech lists its own
-        # order: recognition has only CUDA, and the speech voice puts CUDA before Vulkan (choices()).
+        # order (choices()): the voice ran faster on CUDA, and recognition beside it on Vulkan starved both.
         choices = (['vulkan'] if nvidia or others else []) + (['cuda'] if nvidia else []) + ['cpu']
     value = {'system': current, 'gpus': nvidia + others, 'choices': [{'id': c, 'label': HARDWARE_LABELS[c]} for c in choices],
              'recommended': choices[0]}
@@ -357,10 +365,6 @@ def _labelled(value):
 
 
 # --- Settings ------------------------------------------------------------------------------------------------
-
-COMPUTE_TYPES = [{'id': 'int8_float16', 'label': 'int8 + float16 (önerilen)'},
-                 {'id': 'int8', 'label': 'int8 (en az bellek)'}, {'id': 'float16', 'label': 'float16 (en doğru, çok bellek)'}]
-
 
 def choices(part, hw):
     """The ways this part can run on this PC, best first: in the part's own order where it lists one (speech
@@ -404,10 +408,7 @@ def default_settings(part, model, hw):
     """What a part runs with unless the user changes it (Gelişmiş ayarlar)."""
     hardware_id = choices(part, hw)[0]['id']
     if part.get('runner') == 'python':
-        settings = {'hardware': hardware_id, 'gpu': 'all'}
-        if part['id'] == 'stt':
-            settings['compute_type'] = 'int8' if hardware_id == 'cpu' else 'int8_float16'
-        return settings
+        return {'hardware': hardware_id, 'gpu': 'all'}
     settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1}
     if any(item.get('mmproj') for item in part.get('models', [])):
         settings['vision'] = True
@@ -483,7 +484,7 @@ _fetching = threading.Lock()
 def remote_meta(url, *, opener=None):
     """The header of a GGUF file on the internet: a few KB of it (a range request), not the file."""
     import io
-    opener = opener or urllib.request.build_opener()
+    opener = opener or public_opener()
     for size in (65536, 4 << 20):
         request = urllib.request.Request(url, headers={'Range': f'bytes=0-{size - 1}', 'User-Agent': 'Orion'})
         with opener.open(request, timeout=20) as response:
@@ -563,29 +564,21 @@ def extra_info(part, model):
 USER_DIR = 'custom'
 MB = 1048576
 
-# What each engine needs from a model folder, in the order the service takes the files. `names`: one of these
-# exact files (faster-whisper loads them by name); `gguf`: a GGUF file whose header says this architecture ('*':
-# any model, not an mmproj or a sibling's). A kind whose engine Orion does not have yet (`engine` other than the
-# part's) is shown and cannot be added.
+# What each engine needs from a model folder, in the order the service takes the files. `gguf`: a GGUF file
+# whose header says this architecture ('*': any model, not an mmproj or a sibling's); `whisper`: a whisper.cpp
+# model (ggml), whatever its name. A kind whose engine Orion does not have yet (`engine` other than the part's)
+# is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Model'},
         {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
         {'gguf': '*', 'label': 'Model'}]}],
-    # As the models people download have them: Systran's small and medium (older conversions, ours too) bring
-    # vocabulary.txt and no preprocessor_config.json; large-v3 and turbo bring vocabulary.json and need
-    # preprocessor_config.json (128 bands: without it the audio is prepared with 80 and refused). So either
-    # vocabulary name, and preprocessor_config.json only for a model that hears more than 80 bands (read from
-    # model.bin). tokenizer.json always: nothing is fetched from the internet in place of a missing file.
-    'stt': [{'id': 'faster-whisper', 'label': 'faster-whisper (CTranslate2 Whisper)', 'engine': 'faster-whisper',
-             'files': [
-        {'names': ['model.bin'], 'label': 'Model'},
-        {'names': ['config.json'], 'label': 'Ayarlar'},
-        {'names': ['tokenizer.json'], 'label': 'Sözlük'},
-        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'Sözcük listesi'},
-        # Optional until model.bin says it hears more than 80 bands; then _whisper makes it required and says why.
-        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'Ses ayarları'}]}],
+    # One file, as whisper.cpp's own models come (ggml-small.bin, ggml-large-v3-turbo-q5_0.bin...), read from its
+    # header, whatever its name (`expect` says what is wanted while it is missing); another model format put
+    # there by mistake is named (_other_format).
+    'stt': [{'id': 'ggml', 'label': 'whisper.cpp (ggml)', 'engine': 'whisper.cpp', 'files': [
+        {'whisper': True, 'label': 'Model', 'expect': 'whisper.cpp ggml .bin'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
                 {'gguf': 'omnivoice-lm', 'label': 'Ses modeli'},
                 {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü'}]},
@@ -622,76 +615,53 @@ def _settled(path):
     return True
 
 
-def ct2_meta(path):
-    """What a CTranslate2 model file says about itself: its kind (`spec`, 'WhisperSpec' for Whisper) and, for
-    Whisper, how many mel bands its audio input has (large-v3 and turbo 128, the older ones 80). Read from the
-    header: the weights are skipped, not read."""
+def whisper_meta(path):
+    """What a whisper.cpp model file (ggml) says about itself, from its first bytes: how many mel bands it hears,
+    its layers (audio, text) and vocabulary. None when it is not one: the magic and Whisper's fixed audio (1500)
+    and text (448) windows tell it from an old llama.cpp ggml file or the Silero VAD."""
     path = Path(path)
     try:
-        key = ('ct2', str(path), path.stat().st_mtime_ns)
+        key = ('whisper', str(path), path.stat().st_mtime_ns)
     except OSError:
         return None
     if key not in _metas:
-        _metas[key] = _ct2_header(path)
+        try:
+            with path.open('rb') as stream:
+                head = stream.read(48)
+        except OSError:
+            head = b''
+        meta = None
+        if len(head) == 48 and struct.unpack_from('<I', head)[0] == 0x67676d6c:
+            vocab, audio_ctx, _, _, audio_layers, text_ctx, _, _, text_layers, mels, _ = struct.unpack_from('<11i', head, 4)
+            if audio_ctx == 1500 and text_ctx == 448 and mels in (80, 128):
+                meta = {'mels': mels, 'audio_layers': audio_layers, 'text_layers': text_layers, 'vocab': vocab}
+        _metas[key] = meta
     return _metas[key]
 
 
-def _ct2_header(path):
+# Model formats people download that whisper.cpp does not read, by suffix where the header does not tell.
+_FORMATS = {'.safetensors': 'safetensors (Hugging Face)', '.onnx': 'ONNX', '.pt': 'PyTorch', '.pth': 'PyTorch',
+            '.ckpt': 'PyTorch'}
+
+
+def _other_format(path):
+    """The format of a model file that is not a whisper.cpp model, or None for a file that is no model (a
+    config.json): GGUF, faster-whisper's CTranslate2 (Systran's model.bin), another ggml file (the Silero VAD,
+    an old llama.cpp model), else from its suffix ('tanınmayan' for a .bin nothing says more about)."""
     try:
         with path.open('rb') as stream:
-            def read(size):
-                data = stream.read(size)
-                if len(data) < size:
-                    raise EOFError
-                return data
-
-            def string():
-                return read(struct.unpack('<H', read(2))[0])[:-1].decode('utf-8', 'replace')
-
-            version = struct.unpack('<I', read(4))[0]
-            if not 1 <= version <= 100:
-                return None
-            spec = string() if version >= 2 else None
-            if version >= 3:
-                read(4)  # The spec's revision.
-            for _ in range(min(struct.unpack('<I', read(4))[0], 100000)):
-                name = string()
-                rank = read(1)[0]
-                dims = struct.unpack(f'<{rank}I', read(4 * rank))
-                if version >= 4:
-                    read(1)  # Its type.
-                size = struct.unpack('<I', read(4))[0]
-                if name == 'encoder/conv1/weight':  # [width, mel bands, kernel]
-                    return {'spec': spec, 'mels': dims[1] if len(dims) == 3 else None}
-                stream.seek(size, 1)
-            return {'spec': spec, 'mels': None}
-    except (OSError, EOFError, struct.error):
+            head = stream.read(64)
+    except OSError:
         return None
-
-
-def _whisper(path, kind, checklist):
-    """faster-whisper's own rules, from the files: model.bin must be a Whisper model, and the audio must be prepared
-    with as many mel bands as it hears: preprocessor_config.json is needed past 80 (without it faster-whisper uses
-    80, and a turbo model refuses that), and when present it must say the model's number."""
-    items = {spec['names'][0]: item for spec, item in zip(kind['files'], checklist)}
-    model, prepare = items['model.bin'], items['preprocessor_config.json']
-    if model['state'] != 'ok':
-        return
-    meta = ct2_meta(path / 'model.bin')
-    if not meta or meta['spec'] != 'WhisperSpec':
-        model.update(state='wrong', hint='Whisper modeli değil.')
-        return
-    mels = meta['mels']
-    if mels and mels != 80:
-        prepare.update(optional=False, hint=f'Bu model {mels} bantlı: gerekli')
-    if prepare['state'] == 'ok' and mels:
-        try:
-            said = json.loads((path / 'preprocessor_config.json').read_text(encoding='utf-8')).get('feature_size', 80)
-        except (OSError, ValueError, AttributeError):
-            said = None
-        if said != mels:
-            prepare.update(state='wrong', hint=f'{said} bant diyor, model {mels} bant istiyor.' if said
-                           else 'Okunamadı.')
+    if head[:4] == b'GGUF':
+        return 'GGUF'
+    if len(head) >= 4 and struct.unpack_from('<I', head)[0] == 0x67676d6c:
+        return 'başka bir ggml'
+    if len(head) >= 8 and 1 <= struct.unpack_from('<I', head)[0] <= 100:
+        size = struct.unpack_from('<H', head, 4)[0]
+        if re.fullmatch(rb'[A-Za-z0-9]+Spec\0', head[6:6 + size]):
+            return 'faster-whisper (CTranslate2)'
+    return _FORMATS.get(path.suffix.lower(), 'tanınmayan' if path.suffix.lower() == '.bin' else None)
 
 
 def _user_model(part, kind, path, model_id, folder):
@@ -699,13 +669,14 @@ def _user_model(part, kind, path, model_id, folder):
     a checklist of what its engine needs: each file there, missing, more than one candidate, or not right."""
     present = sorted(file for file in path.iterdir() if file.is_file())
     copying = [file.name for file in present if not _settled(file)]
-    ggufs = [(file, file_meta(file)) for file in present if file.suffix.lower() == '.gguf' and file.name not in copying]
+    ggufs = [(file, file_meta(file)) for file in present if file.suffix.lower() == '.gguf' and file.name not in copying
+             and any('gguf' in spec for spec in kind['files'])]
     claimed = {spec['gguf'] for spec in kind['files'] if spec.get('gguf', '*') != '*'} | {'clip'}
     problems = [f'{file.name}: okunamadı.' for file, meta in ggufs if meta is None]
     checklist, picked = [], []
     for spec in kind['files']:
-        if 'names' in spec:
-            matches = [path / name for name in spec['names'] if (path / name).is_file() and name not in copying][:1]
+        if spec.get('whisper'):
+            matches = [file for file in present if file.name not in copying and whisper_meta(file)]
         else:
             matches = [file for file, meta in ggufs if meta and (
                 meta['architecture'] == spec['gguf'] or spec['gguf'] == '*' and meta['architecture'] not in claimed)]
@@ -715,7 +686,7 @@ def _user_model(part, kind, path, model_id, folder):
         # `label` says what the file is for, `names` which file it is; `expect` the name it must have (an engine
         # that loads its files by name), shown while it is missing.
         item = {'label': spec['label'], 'optional': bool(spec.get('optional')), 'hint': spec.get('hint'),
-                'role': spec.get('role'), 'expect': ' / '.join(spec.get('names') or []) or None,
+                'role': spec.get('role'), 'expect': ' / '.join(spec.get('names') or []) or spec.get('expect'),
                 'state': 'ok' if len(matches) == 1 else 'many' if matches else 'missing',
                 'names': [file.name for file in matches]}
         if len(matches) == 1:
@@ -731,8 +702,11 @@ def _user_model(part, kind, path, model_id, folder):
     used = {name for item in checklist for name in item['names']}
     problems += [f'{file.name}: tanınmayan dosya ({meta["architecture"]}).'
                  for file, meta in ggufs if meta and file.name not in used]
-    if kind['id'] == 'faster-whisper':
-        _whisper(path, kind, checklist)
+    if any(spec.get('whisper') for spec in kind['files']):
+        for file in present:
+            other = None if file.name in copying or whisper_meta(file) else _other_format(file)
+            if other:
+                problems.append(f"{file.name}: {other} biçiminde; whisper.cpp'nin ggml .bin dosyası gerekir.")
     ready = kind['engine'] == part.get('engine')
     if not ready:
         problems.append(f'{kind["label"]} motoru henüz yok.')
@@ -891,9 +865,6 @@ def advanced(part, hw, model=None):
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
                            {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in nvidia]})
     if part.get('runner') == 'python':
-        if part['id'] == 'stt':
-            fields.append({'key': 'compute_type', 'label': 'Hesaplama hassasiyeti', 'type': 'choice',
-                           'options': COMPUTE_TYPES, 'hint': 'İşlemcide her zaman int8 kullanılır.'})
         return fields
     # No layer count: on a card the whole model goes to it, on the processor none can (command()).
     fields += [
@@ -940,9 +911,12 @@ def clean_settings(part, values, hw, model=None):
 def effective(part, hw, config=None):
     config = (read_config() if config is None else config).get(part['id'], {})
     model_id = config.get('model') or next((m['id'] for m in part.get('models', []) if m.get('recommended')), None)
+    # A model the catalog replaced (speech's CTranslate2 models by whisper.cpp's): its successor is the choice.
+    model_id = part.get('retired_models', {}).get(model_id, model_id)
     model = next((m for m in part.get('models', []) if m['id'] == model_id), None)
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
     settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
+    settings.pop('compute_type', None)  # Speech's on faster-whisper; a ggml model carries its own precision.
     if 'context_size' in settings:
         # Never past what the model was trained for (a context saved for another model, or the default).
         settings['context_size'] = min(int(settings['context_size']), context_max(part, model))
@@ -984,14 +958,13 @@ def _python_command(part, model, settings, data=None):
     gpu = settings['hardware'] != 'cpu'
     # `files`: the model's files in the order its kind lists them (a user's model names them its own way).
     values = {'model_folder': model['folder'], 'model_dir': str(models_dir(part['id']) / model['folder']),
-              'files': [str(path) for path in model_files(part, model, settings)],
-              'engine_dir': str(folder), 'compute_type': settings.get('compute_type', 'int8') if gpu else 'int8'}
+              'files': [str(path) for path in model_files(part, model, settings)], 'engine_dir': str(folder)}
     site = folder / 'site'
     argv = [sys.executable, '-B', '-m', 'services.shared.part_python', str(ROOT / part['script']),
             str(site) if site.is_dir() else '']
-    # Offline: whatever the model lacks, nothing is fetched from the internet in its place (faster-whisper
-    # would download a general dictionary, or a whole model for a name it does not find).
-    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8', ORION_HW_ID='nvidia' if gpu else 'cpu',
+    # Offline: whatever the model lacks, nothing is fetched from the internet in its place (a library that
+    # finds no model or dictionary under a name may download one).
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8', ORION_HW_ID=settings['hardware'],
                ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'], HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1')
     env[part['port_key']] = port
@@ -1552,12 +1525,37 @@ def stop_part(part_id):
         return False
 
 
+_tidied = []
+
+
+def tidy(data):
+    """What an Orion update left behind, once per Hub start (before its parts start): the engine folders the
+    catalog no longer names (another version, or an engine gone: faster-whisper's 1.4 GB went with whisper.cpp)
+    and the folders of the models it retired (`retired_models`, the old model's folder by its id). A file still
+    open stays and goes at a later start."""
+    if _tidied:
+        return
+    _tidied.append(True)
+    current = set()
+    for name, entry in data['engines'].items():
+        tags = ['-py' + version.replace('.', '') for version in entry['pythons']] if 'pythons' in entry else ['']
+        current |= {f'{name}-{entry["version"]}{tag}' for tag in tags}
+    folder = home() / 'engines'
+    for path in folder.iterdir() if folder.is_dir() else []:
+        if path.is_dir() and path.name not in current and path.name != 'downloads' and not path.name.startswith('unpack-'):
+            shutil.rmtree(path, ignore_errors=True)
+    for part in data['parts']:
+        for old in part.get('retired_models', {}):
+            shutil.rmtree(models_dir(part['id']) / old, ignore_errors=True)
+
+
 def keep_running():
     """The Hub's owner process calls this at start and then now and then: every part the user installed runs
     (a crashed one comes back), none of the others does."""
     if moving():
         return  # The move stopped them; it starts them again from the new place.
     data = catalog()
+    tidy(data)
     config = read_config()
     hw = hardware()
     for part in data['parts']:
@@ -1636,7 +1634,7 @@ def download(url, target, *, report, cancelled, chunk=1 << 20, opener=None):
         return
     partial = target.with_name(target.name + '.part')
     partial.unlink(missing_ok=True)
-    opener = opener or urllib.request.build_opener()
+    opener = opener or public_opener()
     try:
         with opener.open(urllib.request.Request(url, headers={'User-Agent': 'Orion'}), timeout=30) as response:
             length = response.headers.get('Content-Length')
@@ -1683,7 +1681,7 @@ class _Progress:
 def _remote_size(urls):
     """The bytes all `urls` hold, asked before downloading (None when a server does not say)."""
     total = 0
-    opener = urllib.request.build_opener()
+    opener = public_opener()
     for url in urls:
         try:
             with opener.open(urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Orion'}), timeout=15) as reply:
@@ -1697,7 +1695,8 @@ def _remote_size(urls):
 
 
 def _install_engine(part_id, part, settings, data, cancelled, step=''):
-    """Put the engine together in a scratch folder (Orion's bundled files, archives, wheels), then move it in."""
+    """Put the engine together in a scratch folder (Orion's bundled files, archives, wheels), then move it in.
+    An archive is unpacked when it is a zip and goes in as it is otherwise."""
     hardware_id = settings['hardware']
     if engine_ready(part['engine'], hardware_id, data):
         return
@@ -1727,10 +1726,14 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
             verify(archive, piece.get('sha256'), 'Motor dosyası')
             offset += archive.stat().st_size
             _update_job(part_id, phase='engine', label='Motor açılıyor…', rate=0)
-            with zipfile.ZipFile(archive) as bundle:
-                bundle.extractall(unpacked / 'site' if kind == 'wheel' else unpacked)
-        if part.get('runner', 'llama') == 'llama' and not any(unpacked.rglob('llama-server.exe' if os.name == 'nt' else 'llama-server')):
-            raise PartError('İndirilen motorda llama-server yok.')
+            if kind == 'wheel' or archive.suffix.lower() == '.zip':
+                with zipfile.ZipFile(archive) as bundle:
+                    bundle.extractall(unpacked / 'site' if kind == 'wheel' else unpacked)
+            else:  # One file the engine needs, as its source publishes it (whisper.cpp's VAD model).
+                shutil.copy2(archive, unpacked / archive.name)
+        exe = data['engines'][part['engine']].get('exe') or ('llama-server' if part.get('runner', 'llama') == 'llama' else None)
+        if exe and not any(unpacked.rglob(exe + '.exe' if os.name == 'nt' else exe)):
+            raise PartError(f'İndirilen motorda {exe} yok.')
         (unpacked / '.complete').write_text(data['engines'][part['engine']]['version'], encoding='utf-8')
         final.parent.mkdir(parents=True, exist_ok=True)
         if final.exists():

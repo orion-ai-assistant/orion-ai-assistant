@@ -1,5 +1,9 @@
 # Whisper CT2 model releases
 
+> **Retired (2026-11-03):** speech recognition runs on whisper.cpp now, with ggml models from Hugging Face
+> (docs/bilesenler.md, "Ses tanıma (STT)"). The CT2 packages below are no longer used; an update deletes
+> them. The language catalog section at the end still holds.
+
 The installer downloads versioned CT2 packages from this repository's GitHub
 Releases. Model assets are separate from application releases and do not replace
 the application's latest release.

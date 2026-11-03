@@ -1,6 +1,6 @@
 import sounddevice as sd
 import numpy as np
-from model_loading import load_whisper_robust
+from whisper_server import WhisperServer
 from prompts import select_transcription_prompt
 import time
 import sys
@@ -27,30 +27,14 @@ import os
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(CURRENT_DIR, ".env"), override=True)
-model_folder = os.path.dirname(os.getenv("MODEL_FILE", "").strip())
-model_name = model_folder or os.getenv("WHISPER_MODEL", "whisper-small-finetuned-tr").strip()
-LOCAL_MODEL = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), model_name)
-MODEL_SIZE = LOCAL_MODEL if os.path.isdir(LOCAL_MODEL) else model_name
+MODELS_DIR = os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models'))
+# The ggml model (a file name in the models folder, or a full path) and the whisper-server folder that
+# Bileşenler installed (Parts/engines/whisper.cpp-<version>/<cuda|vulkan|cpu>).
+MODEL_PATH = os.path.join(MODELS_DIR, os.getenv("WHISPER_MODEL", "ggml-small-q8_0.bin").strip())
+ENGINE_DIR = os.getenv("WHISPER_BIN_DIR", "")
 
-# Cihaz Seçimi: "cuda" (GPU) veya "cpu" (İşlemci)
-DEVICE = os.getenv("WHISPER_DEVICE", os.getenv("DEVICE", "cuda")).lower()
-if os.getenv("ORION_HW_ID", "").lower() == "cpu":
-    DEVICE = "cpu"
-
-# CPU için "int8" kullanılır.
-# GPU için "int8_float16" veya "float16"'dır.
-if DEVICE == "cpu":
-    COMPUTE_TYPE = "int8"
-    # CPU'da maksimum hız için sistemdeki tüm mantıksal/fiziksel çekirdekleri kullanalım
-    CPU_THREADS = os.cpu_count() or 4
-else:
-    COMPUTE_TYPE = "int8_float16"
-    CPU_THREADS = 0
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", COMPUTE_TYPE).strip()
-if DEVICE == "cpu":
-    COMPUTE_TYPE = "int8"
-elif COMPUTE_TYPE not in ("int8_float16", "float16", "int8"):
-    COMPUTE_TYPE = "int8_float16"
+# Nerede çalışsın: "vulkan" ya da "cuda" (ekran kartı; motor klasörü hangisiyse) veya "cpu" (işlemci)
+DEVICE = os.getenv("WHISPER_DEVICE", os.getenv("ORION_HW_ID", "vulkan")).lower()
 
 LIVE_BEAM_SIZE = 2
 FINAL_BEAM_SIZE = 4
@@ -110,14 +94,11 @@ def main():
         print(f"Windows mikrofonuna erişilirken bir hata oluştu (Önemli değil, devam ediliyor): {e}")
     # =========================================================
 
-    print(
-        f"[{MODEL_SIZE}] model yükleniyor "
-        f"({DEVICE.upper()}, {COMPUTE_TYPE})..."
-    )
+    print(f"[{MODEL_PATH}] model yükleniyor ({DEVICE.upper()})...")
 
-    model, active_device, active_compute = load_whisper_robust(MODEL_SIZE, DEVICE, COMPUTE_TYPE)
+    model = WhisperServer(MODEL_PATH, ENGINE_DIR, DEVICE)
 
-    print(f"Model yüklendi: {active_device.upper()} ({active_compute})\n")
+    print(f"Model yüklendi: {DEVICE.upper()}\n")
 
     print(
         "\n======================================================="

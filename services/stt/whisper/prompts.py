@@ -2,7 +2,6 @@
 import json
 import os
 from pathlib import Path
-from faster_whisper.audio import decode_audio
 
 
 CATALOG_PATH = Path(os.getenv(
@@ -30,8 +29,6 @@ def select_transcription_prompt(model, audio, language=None, prompt=None,
         language = LANGUAGE_CATALOG["aliases"].get(language, language)
     custom_prompt = (prompt or "").strip()
     if language is None and not custom_prompt:
-        if isinstance(audio, str):
-            audio = decode_audio(audio, sampling_rate=16000)
         language, _, _ = model.detect_language(audio=audio)
     selected = custom_prompt or LANGUAGE_PROMPTS.get(language, "")
     if context and context_language == language:

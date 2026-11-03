@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import numpy as np
 
@@ -10,6 +10,11 @@ spec = importlib.util.spec_from_file_location(
 )
 prompts = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prompts)
+server_spec = importlib.util.spec_from_file_location(
+    "whisper_server_names", Path(__file__).resolve().parents[1] / "whisper_server.py"
+)
+server = importlib.util.module_from_spec(server_spec)
+server_spec.loader.exec_module(server)
 
 
 class PromptTests(unittest.TestCase):
@@ -59,8 +64,8 @@ class PromptTests(unittest.TestCase):
         model.detect_language.assert_not_called()
 
     def test_all_whisper_languages_have_a_localized_hint(self):
-        from faster_whisper.tokenizer import _LANGUAGE_CODES
-        self.assertEqual(set(prompts.LANGUAGE_PROMPTS), set(_LANGUAGE_CODES))
+        # whisper.cpp's languages: a detected one comes back by name and is turned into these codes.
+        self.assertEqual(set(prompts.LANGUAGE_PROMPTS), set(server.LANGUAGES))
         self.assertEqual(len(prompts.LANGUAGE_PROMPTS), 100)
         for language, hint in prompts.LANGUAGE_PROMPTS.items():
             self.assertTrue(hint.strip())
@@ -70,14 +75,3 @@ class PromptTests(unittest.TestCase):
 
     def test_unknown_language_has_no_default_hint(self):
         self.assertEqual(prompts.select_transcription_prompt(Mock(), None, "xx"), ("xx", None))
-
-    def test_rest_file_is_decoded_for_language_detection(self):
-        audio = np.ones(16000, dtype=np.float32)
-        model = Mock()
-        model.detect_language.return_value = ("tr", .99, [])
-        with patch.object(prompts, "decode_audio", return_value=audio) as decode:
-            language, hint = prompts.select_transcription_prompt(model, "upload.wav")
-        decode.assert_called_once_with("upload.wav", sampling_rate=16000)
-        model.detect_language.assert_called_once_with(audio=audio)
-        self.assertEqual(language, "tr")
-        self.assertEqual(hint, prompts.LANGUAGE_PROMPTS["tr"])

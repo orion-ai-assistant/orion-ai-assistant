@@ -66,310 +66,52 @@
         }
       }
     },
-    "faster-whisper": {
-      "version": "1.2.1",
-      "pythons": {
-        "3.11": {
-          "windows": {
-            "cpu": {
-              "wheels": [
-                {
-                  "name": "ctranslate2==4.8.4",
-                  "url": "https://files.pythonhosted.org/packages/45/a0/7f9744949aac9a143a1245511fb0ce5f62434aed9b1ca026cb72d9ff6e5f/ctranslate2-4.8.4-cp311-cp311-win_amd64.whl",
-                  "sha256": "01bfca5d6e1736e38602511066a437677470c690e1458fa7c72ff322a3cfc4f9",
-                  "size": 20369372
-                },
-                {
-                  "name": "faster-whisper==1.2.1",
-                  "url": "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl",
-                  "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
-                  "size": 1118909
-                },
-                {
-                  "name": "filelock==4.2.6",
-                  "url": "https://files.pythonhosted.org/packages/b7/8d/3f849fcb79359259737bc2d8ddcaee6149ffb773239a260c9ff20179736f/filelock-4.2.6-py3-none-any.whl",
-                  "sha256": "fd7d4fca497bf3e3d0945a13261f8e684f2aef12ce7cf76aef26e13bf7388b88",
-                  "size": 164378
-                },
-                {
-                  "name": "fsspec==2026.9.0",
-                  "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
-                  "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
-                  "size": 221738
-                },
-                {
-                  "name": "hf-xet==1.8.0",
-                  "url": "https://files.pythonhosted.org/packages/97/4d/2c76a992b370ff77d0b5219275779f8c9a7dabb8ee649deb265dfed84d0f/hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
-                  "sha256": "92188598dedc1e1f5609bd718d4db8687a6c89915553912571e2f587892eecec",
-                  "size": 3911559
-                },
-                {
-                  "name": "httpcore2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/af/c2/ce417c397afa5181f0e3c6ff01a4d01639414e1adef08730d97571297151/httpcore2-2.16.0-py3-none-any.whl",
-                  "sha256": "5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f",
-                  "size": 85070
-                },
-                {
-                  "name": "httpx2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/7b/3d/2e4bc4fd1ef9770871669adb348d612a6e4786b303a23f9935b81c48dd60/httpx2-2.16.0-py3-none-any.whl",
-                  "sha256": "fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a",
-                  "size": 97880
-                },
-                {
-                  "name": "huggingface-hub==2.4.0",
-                  "url": "https://files.pythonhosted.org/packages/d4/55/ff47f1b082ecf5f43f4bc1e3b932d68eead171dabbbd1a92666c686301d7/huggingface_hub-2.4.0-py3-none-any.whl",
-                  "sha256": "42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801",
-                  "size": 857021
-                },
-                {
-                  "name": "onnxruntime==1.31.1",
-                  "url": "https://files.pythonhosted.org/packages/69/82/2e2bf967ade9567d77c307533566ef56a19c32e2114fc062a405703def88/onnxruntime-1.31.1-cp311-cp311-win_amd64.whl",
-                  "sha256": "c3d91b5de31e2fc82d71bd65b2b22bddee8b49057a3a36338e9a868e0ea90c05",
-                  "size": 14885761
-                },
-                {
-                  "name": "tokenizers==0.23.3",
-                  "url": "https://files.pythonhosted.org/packages/d1/6c/24f074c9a0efb98e61b20aafe6b2641922d5db24e447d5d6daffd9e17555/tokenizers-0.23.3-cp310-abi3-win_amd64.whl",
-                  "sha256": "1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3",
-                  "size": 2872101
-                }
-              ]
+    "whisper.cpp": {
+      "version": "v1.9.5",
+      "exe": "whisper-server",
+      "windows": {
+        "vulkan": {
+          "archives": [
+            {
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whispercpp-v1.9.5/whisper-cpp-v1.9.5-windows-vulkan.zip",
+              "sha256": "9b02390bb76275689dacd6bc0815cd4a4fa9c02f8054d9bb093a03c5be70b669",
+              "size": 15457383
             },
-            "cuda": {
-              "min_compute": 7.5,
-              "wheels": [
-                {
-                  "name": "ctranslate2==4.8.4",
-                  "url": "https://files.pythonhosted.org/packages/45/a0/7f9744949aac9a143a1245511fb0ce5f62434aed9b1ca026cb72d9ff6e5f/ctranslate2-4.8.4-cp311-cp311-win_amd64.whl",
-                  "sha256": "01bfca5d6e1736e38602511066a437677470c690e1458fa7c72ff322a3cfc4f9",
-                  "size": 20369372
-                },
-                {
-                  "name": "faster-whisper==1.2.1",
-                  "url": "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl",
-                  "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
-                  "size": 1118909
-                },
-                {
-                  "name": "filelock==4.2.6",
-                  "url": "https://files.pythonhosted.org/packages/b7/8d/3f849fcb79359259737bc2d8ddcaee6149ffb773239a260c9ff20179736f/filelock-4.2.6-py3-none-any.whl",
-                  "sha256": "fd7d4fca497bf3e3d0945a13261f8e684f2aef12ce7cf76aef26e13bf7388b88",
-                  "size": 164378
-                },
-                {
-                  "name": "fsspec==2026.9.0",
-                  "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
-                  "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
-                  "size": 221738
-                },
-                {
-                  "name": "hf-xet==1.8.0",
-                  "url": "https://files.pythonhosted.org/packages/97/4d/2c76a992b370ff77d0b5219275779f8c9a7dabb8ee649deb265dfed84d0f/hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
-                  "sha256": "92188598dedc1e1f5609bd718d4db8687a6c89915553912571e2f587892eecec",
-                  "size": 3911559
-                },
-                {
-                  "name": "httpcore2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/af/c2/ce417c397afa5181f0e3c6ff01a4d01639414e1adef08730d97571297151/httpcore2-2.16.0-py3-none-any.whl",
-                  "sha256": "5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f",
-                  "size": 85070
-                },
-                {
-                  "name": "httpx2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/7b/3d/2e4bc4fd1ef9770871669adb348d612a6e4786b303a23f9935b81c48dd60/httpx2-2.16.0-py3-none-any.whl",
-                  "sha256": "fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a",
-                  "size": 97880
-                },
-                {
-                  "name": "huggingface-hub==2.4.0",
-                  "url": "https://files.pythonhosted.org/packages/d4/55/ff47f1b082ecf5f43f4bc1e3b932d68eead171dabbbd1a92666c686301d7/huggingface_hub-2.4.0-py3-none-any.whl",
-                  "sha256": "42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801",
-                  "size": 857021
-                },
-                {
-                  "name": "onnxruntime==1.31.1",
-                  "url": "https://files.pythonhosted.org/packages/69/82/2e2bf967ade9567d77c307533566ef56a19c32e2114fc062a405703def88/onnxruntime-1.31.1-cp311-cp311-win_amd64.whl",
-                  "sha256": "c3d91b5de31e2fc82d71bd65b2b22bddee8b49057a3a36338e9a868e0ea90c05",
-                  "size": 14885761
-                },
-                {
-                  "name": "tokenizers==0.23.3",
-                  "url": "https://files.pythonhosted.org/packages/d1/6c/24f074c9a0efb98e61b20aafe6b2641922d5db24e447d5d6daffd9e17555/tokenizers-0.23.3-cp310-abi3-win_amd64.whl",
-                  "sha256": "1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3",
-                  "size": 2872101
-                },
-                {
-                  "name": "nvidia-cublas-cu12==12.9.2.10",
-                  "url": "https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl",
-                  "sha256": "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661",
-                  "size": 553162896
-                },
-                {
-                  "name": "nvidia-cuda-nvrtc-cu12==12.9.86",
-                  "url": "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl",
-                  "sha256": "72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349",
-                  "size": 76408187
-                },
-                {
-                  "name": "nvidia-cudnn-cu12==9.27.0.42",
-                  "url": "https://files.pythonhosted.org/packages/aa/38/f856579877f7c1c5066e61182e7de7bc27bf35a78c8d1b0fa592e6985bc4/nvidia_cudnn_cu12-9.27.0.42-py3-none-win_amd64.whl",
-                  "sha256": "06e9b0026f3bad97d2b58666330fabec04fe1672f776661ecb0ce0029c27f142",
-                  "size": 743068852
-                }
-              ]
+            {
+              "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+              "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+              "size": 885098
             }
-          }
+          ]
         },
-        "3.14": {
-          "windows": {
-            "cpu": {
-              "wheels": [
-                {
-                  "name": "ctranslate2==4.8.4",
-                  "url": "https://files.pythonhosted.org/packages/50/98/6bd005eb63150a8d029aa06076180bc3452243b56da592c770128ac6f47b/ctranslate2-4.8.4-cp314-cp314-win_amd64.whl",
-                  "sha256": "4b322215f3b8eaab1db45b9e6aebfb8ddfe1336651e15a569c90826bfdb4b136",
-                  "size": 20638792
-                },
-                {
-                  "name": "faster-whisper==1.2.1",
-                  "url": "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl",
-                  "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
-                  "size": 1118909
-                },
-                {
-                  "name": "filelock==4.2.6",
-                  "url": "https://files.pythonhosted.org/packages/b7/8d/3f849fcb79359259737bc2d8ddcaee6149ffb773239a260c9ff20179736f/filelock-4.2.6-py3-none-any.whl",
-                  "sha256": "fd7d4fca497bf3e3d0945a13261f8e684f2aef12ce7cf76aef26e13bf7388b88",
-                  "size": 164378
-                },
-                {
-                  "name": "fsspec==2026.9.0",
-                  "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
-                  "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
-                  "size": 221738
-                },
-                {
-                  "name": "hf-xet==1.8.0",
-                  "url": "https://files.pythonhosted.org/packages/97/4d/2c76a992b370ff77d0b5219275779f8c9a7dabb8ee649deb265dfed84d0f/hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
-                  "sha256": "92188598dedc1e1f5609bd718d4db8687a6c89915553912571e2f587892eecec",
-                  "size": 3911559
-                },
-                {
-                  "name": "httpcore2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/af/c2/ce417c397afa5181f0e3c6ff01a4d01639414e1adef08730d97571297151/httpcore2-2.16.0-py3-none-any.whl",
-                  "sha256": "5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f",
-                  "size": 85070
-                },
-                {
-                  "name": "httpx2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/7b/3d/2e4bc4fd1ef9770871669adb348d612a6e4786b303a23f9935b81c48dd60/httpx2-2.16.0-py3-none-any.whl",
-                  "sha256": "fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a",
-                  "size": 97880
-                },
-                {
-                  "name": "huggingface-hub==2.4.0",
-                  "url": "https://files.pythonhosted.org/packages/d4/55/ff47f1b082ecf5f43f4bc1e3b932d68eead171dabbbd1a92666c686301d7/huggingface_hub-2.4.0-py3-none-any.whl",
-                  "sha256": "42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801",
-                  "size": 857021
-                },
-                {
-                  "name": "onnxruntime==1.31.1",
-                  "url": "https://files.pythonhosted.org/packages/e5/e9/9112e9322aef42bff80e805915b61cdcbb82577589bdd42dedf73a5ff9b6/onnxruntime-1.31.1-cp314-cp314-win_amd64.whl",
-                  "sha256": "0a3998e18cb667ef54287556bd62291a788ed235723dd90c83b2294b24e71d81",
-                  "size": 15268752
-                },
-                {
-                  "name": "tokenizers==0.23.3",
-                  "url": "https://files.pythonhosted.org/packages/d1/6c/24f074c9a0efb98e61b20aafe6b2641922d5db24e447d5d6daffd9e17555/tokenizers-0.23.3-cp310-abi3-win_amd64.whl",
-                  "sha256": "1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3",
-                  "size": 2872101
-                }
-              ]
+        "cuda": {
+          "min_compute": 5.0,
+          "archives": [
+            {
+              "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-12.4.0-x64.zip",
+              "sha256": "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a",
+              "size": 684913404
             },
-            "cuda": {
-              "min_compute": 7.5,
-              "wheels": [
-                {
-                  "name": "ctranslate2==4.8.4",
-                  "url": "https://files.pythonhosted.org/packages/50/98/6bd005eb63150a8d029aa06076180bc3452243b56da592c770128ac6f47b/ctranslate2-4.8.4-cp314-cp314-win_amd64.whl",
-                  "sha256": "4b322215f3b8eaab1db45b9e6aebfb8ddfe1336651e15a569c90826bfdb4b136",
-                  "size": 20638792
-                },
-                {
-                  "name": "faster-whisper==1.2.1",
-                  "url": "https://files.pythonhosted.org/packages/05/99/49ee85903dee060d9f08297b4a342e5e0bcfca2f027a07b4ee0a38ab13f9/faster_whisper-1.2.1-py3-none-any.whl",
-                  "sha256": "79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7",
-                  "size": 1118909
-                },
-                {
-                  "name": "filelock==4.2.6",
-                  "url": "https://files.pythonhosted.org/packages/b7/8d/3f849fcb79359259737bc2d8ddcaee6149ffb773239a260c9ff20179736f/filelock-4.2.6-py3-none-any.whl",
-                  "sha256": "fd7d4fca497bf3e3d0945a13261f8e684f2aef12ce7cf76aef26e13bf7388b88",
-                  "size": 164378
-                },
-                {
-                  "name": "fsspec==2026.9.0",
-                  "url": "https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl",
-                  "sha256": "8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f",
-                  "size": 221738
-                },
-                {
-                  "name": "hf-xet==1.8.0",
-                  "url": "https://files.pythonhosted.org/packages/97/4d/2c76a992b370ff77d0b5219275779f8c9a7dabb8ee649deb265dfed84d0f/hf_xet-1.8.0-cp38-abi3-win_amd64.whl",
-                  "sha256": "92188598dedc1e1f5609bd718d4db8687a6c89915553912571e2f587892eecec",
-                  "size": 3911559
-                },
-                {
-                  "name": "httpcore2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/af/c2/ce417c397afa5181f0e3c6ff01a4d01639414e1adef08730d97571297151/httpcore2-2.16.0-py3-none-any.whl",
-                  "sha256": "5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f",
-                  "size": 85070
-                },
-                {
-                  "name": "httpx2==2.16.0",
-                  "url": "https://files.pythonhosted.org/packages/7b/3d/2e4bc4fd1ef9770871669adb348d612a6e4786b303a23f9935b81c48dd60/httpx2-2.16.0-py3-none-any.whl",
-                  "sha256": "fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a",
-                  "size": 97880
-                },
-                {
-                  "name": "huggingface-hub==2.4.0",
-                  "url": "https://files.pythonhosted.org/packages/d4/55/ff47f1b082ecf5f43f4bc1e3b932d68eead171dabbbd1a92666c686301d7/huggingface_hub-2.4.0-py3-none-any.whl",
-                  "sha256": "42ecfd93ede47bdd333daebbf66a32d7bfe2e18752754fe4d2d4f98a0179d801",
-                  "size": 857021
-                },
-                {
-                  "name": "onnxruntime==1.31.1",
-                  "url": "https://files.pythonhosted.org/packages/e5/e9/9112e9322aef42bff80e805915b61cdcbb82577589bdd42dedf73a5ff9b6/onnxruntime-1.31.1-cp314-cp314-win_amd64.whl",
-                  "sha256": "0a3998e18cb667ef54287556bd62291a788ed235723dd90c83b2294b24e71d81",
-                  "size": 15268752
-                },
-                {
-                  "name": "tokenizers==0.23.3",
-                  "url": "https://files.pythonhosted.org/packages/d1/6c/24f074c9a0efb98e61b20aafe6b2641922d5db24e447d5d6daffd9e17555/tokenizers-0.23.3-cp310-abi3-win_amd64.whl",
-                  "sha256": "1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3",
-                  "size": 2872101
-                },
-                {
-                  "name": "nvidia-cublas-cu12==12.9.2.10",
-                  "url": "https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl",
-                  "sha256": "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661",
-                  "size": 553162896
-                },
-                {
-                  "name": "nvidia-cuda-nvrtc-cu12==12.9.86",
-                  "url": "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl",
-                  "sha256": "72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349",
-                  "size": 76408187
-                },
-                {
-                  "name": "nvidia-cudnn-cu12==9.27.0.42",
-                  "url": "https://files.pythonhosted.org/packages/aa/38/f856579877f7c1c5066e61182e7de7bc27bf35a78c8d1b0fa592e6985bc4/nvidia_cudnn_cu12-9.27.0.42-py3-none-win_amd64.whl",
-                  "sha256": "06e9b0026f3bad97d2b58666330fabec04fe1672f776661ecb0ce0029c27f142",
-                  "size": 743068852
-                }
-              ]
+            {
+              "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+              "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+              "size": 885098
             }
-          }
+          ]
+        },
+        "cpu": {
+          "archives": [
+            {
+              "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip",
+              "sha256": "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb",
+              "size": 8928640
+            },
+            {
+              "url": "https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v6.2.0.bin",
+              "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987",
+              "size": 885098
+            }
+          ]
         }
       }
     }
@@ -495,7 +237,7 @@
       "id": "stt",
       "title": "Ses tanıma (STT)",
       "description": "Konuşmanı bu bilgisayarda yazıya çevirir (sesli yazma).",
-      "engine": "faster-whisper",
+      "engine": "whisper.cpp",
       "port_key": "STT_PORT",
       "port": 9009,
       "cloud": "Gemini ile yazıya çevirme Router'da var; canlı sesli yazma şimdilik yerel servisi ister.",
@@ -503,48 +245,47 @@
       "script": "services/stt/whisper/api.py",
       "hardware": [
         "cuda",
+        "vulkan",
         "cpu"
       ],
       "models": [
         {
-          "id": "whisper-small-official",
-          "name": "Whisper Small",
+          "id": "whisper-small",
+          "name": "Whisper Small (q8_0)",
           "description": "Hafif ve hızlı; işlemcide de rahat çalışır.",
-          "folder": "whisper-small-official",
-          "source": "https://huggingface.co/Systran/faster-whisper-small",
-          "archive": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-small-ct2.zip",
-          "archive_sha256": "f04c6dadeef3493e357b96a7b65a68a0b1cae7f30ea74d8f6cf2ba9814e1a374",
+          "folder": "whisper-small",
+          "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/",
           "files": [
-            "model.bin",
-            "config.json",
-            "tokenizer.json",
-            "vocabulary.txt"
+            "ggml-small-q8_0.bin"
           ],
-          "size_mb": 428,
+          "sha256": {
+            "ggml-small-q8_0.bin": "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f"
+          },
+          "size_mb": 252,
           "recommended": true
         },
         {
-          "id": "whisper-large-v3-turbo-ct2",
-          "name": "Whisper Large-v3 Turbo",
+          "id": "whisper-large-v3-turbo",
+          "name": "Whisper Large-v3 Turbo (q5_0)",
           "description": "Türkçede çok daha iyi; ekran kartıyla rahat, işlemcide yavaş.",
-          "folder": "whisper-large-v3-turbo-ct2",
-          "source": "https://huggingface.co/openai/whisper-large-v3-turbo",
-          "archive": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-large-v3-turbo-ct2.zip",
-          "archive_sha256": "091af9c6f80f4cf6851ef8a46918e05040da0fb58c27c1269993508011b95d61",
+          "folder": "whisper-large-v3-turbo",
+          "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/",
           "files": [
-            "model.bin",
-            "config.json",
-            "preprocessor_config.json",
-            "tokenizer.json",
-            "vocabulary.json"
+            "ggml-large-v3-turbo-q5_0.bin"
           ],
-          "size_mb": 1428
+          "sha256": {
+            "ggml-large-v3-turbo-q5_0.bin": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+          },
+          "size_mb": 547
         }
       ],
+      "retired_models": {
+        "whisper-small-official": "whisper-small",
+        "whisper-large-v3-turbo-ct2": "whisper-large-v3-turbo"
+      },
       "env": {
-        "WHISPER_MODEL": "{model_dir}",
-        "WHISPER_COMPUTE_TYPE": "{compute_type}",
-        "MODEL_FILE": ""
+        "WHISPER_MODEL": "{files[0]}",
+        "WHISPER_BIN_DIR": "{engine_dir}"
       }
     },
     {

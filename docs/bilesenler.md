@@ -46,6 +46,10 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     (kayıt yeni yeri gösteriyorsa) taşıma bitmiş sayılır.
   - Kurulumun kaydında models konumu yoksa yer değiştirilemez (Değiştir görünmez).
 - **İşler:** indirme/kurulum Hub'ın açtığı ayrı bir süreçte çalışır (`python -m services.shared.local_parts job`).
+  İnternetten inen her şeyin (motor, model, GGUF başlığı) sertifikasını Windows doğrular (`public_opener`,
+  `windows_trust.py`, güncellemelerdeki gibi). Python'un kendi denetimi GitHub'ın yeni Sectigo zincirinde
+  "unable to get issuer certificate" verip GitHub'dan gelen motorları (llama.cpp, TTS, STT) hiç indirmiyordu
+  (2026-11-03, bu bilgisayarda). Paketli Python'da `truststore` yoksa eski denetim kullanılır.
   Pencereyi kapatmak işi durdurmaz; tam inen dosyalar (motor parçaları dahil) kalır, yarım kalan dosya baştan iner (kaldığı yerden eklemek bozuk model verebiliyordu). Durum
   `jobs/<parça>.json`'da: aşama, bayt, toplam, hız, hata, indirilen dosyaların rolü (`fetch`: model, ek).
   İş yalnızca eksik olanı adlandırır ve sayar: yalnızca mmproj iniyorsa "Ek dosya indiriliyor: Görsel ve ses
@@ -96,13 +100,14 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   (`USER_KINDS`):
   - **LLM ve hafıza:** GGUF (+ isteğe bağlı mmproj), başlıktaki mimariden ayırt edilir. Bağlam sınırı, vektör
     boyutu, havuzlama dosyadan okunur.
-  - **STT (faster-whisper):** `model.bin` (başlığı CTranslate2 Whisper olmalı), `config.json`, `tokenizer.json`,
-    `vocabulary.json` ya da `vocabulary.txt` (Systran'ın small/medium modelleri ve bizim small `.txt` getirir).
-    `preprocessor_config.json` sesin kaç mel bandına bölüneceğini söyler: model 80'den çok bant istiyorsa
-    (large-v3, turbo: 128; `model.bin`'den okunur) zorunlu, değilse isteğe bağlı; varsa sayısı modelinkiyle aynı
-    olmalı. CTranslate2 4.8.4 ve faster-whisper 1.2.1 ile denendi (2026-11-02): iki sözcük listesi de aynı sonucu
-    verdi, hiçbiri yoksa model açılmadı; turbo 80 bantlık sese hata verdi. Ses servisleri internete çıkmaz
-    (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine hiçbir şey indirilmez.
+  - **STT (whisper.cpp):** tek dosya, adı ne olursa olsun (`ggml-small.bin`, `ggml-large-v3-turbo-q5_0.bin`...).
+    Whisper modeli olduğu başlığından okunur (`whisper_meta`): `ggml` imzası, Whisper'ın sabit ses (1500) ve metin
+    (448) pencereleri, 80 ya da 128 mel bandı. Silero VAD dosyası ve eski llama.cpp ggml dosyaları böylece
+    ayrılır. Klasörde birden çok Whisper dosyası varsa hangisi olduğu tahmin edilmez ("many"). Yanlış biçimde bir
+    model dosyası adı ve biçimiyle söylenir (`_other_format`): "model.bin: faster-whisper (CTranslate2) biçiminde;
+    whisper.cpp'nin ggml .bin dosyası gerekir" (Systran'ın dosyaları), GGUF, başka bir ggml, safetensors, ONNX,
+    PyTorch. Yanlarındaki `config.json` gibi dosyalar model sayılmaz, söylenmez. Ses servisleri internete çıkmaz (`HF_HUB_OFFLINE`): eksik bir dosyanın yerine
+    hiçbir şey indirilmez.
   - **TTS:** motor kullanıcının seçimi (OmniVoice; VoxCPM2 yakında). OmniVoice'un iki dosyası başlıklarındaki
     mimariden (`omnivoice-lm`, `omnivoice-tokenizer`) ayırt edilir; tanınmayan dosya adıyla söylenir.
 
@@ -113,7 +118,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 - **Yetki:** durumu oturum açmış herkes görür (telefon salt okunur). Kurma, kaldırma, ayar yalnızca Hub
   bilgisayarındaki Orion penceresinden (`update_routes.local_control`, güncellemelerle aynı kural).
 - **Donanım:** `nvidia-smi` ile NVIDIA kartları ve bellekleri; Windows'ta diğer kartların adları. Varsayılan:
-  ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; STT'de yalnızca CUDA; TTS NVIDIA'da önce CUDA,
+  ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; TTS ve STT NVIDIA'da önce CUDA,
   AMD/Intel kartta Vulkan: parçanın `hardware` sırası, `choices()`), yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
   Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
 - **CUDA'nın alt sınırı:** kartın compute capability'si ayrı bir `nvidia-smi --query-gpu=index,compute_cap`
@@ -128,16 +133,127 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   |---|---|---|
   | llama.cpp b11026 (hafıza, LLM) | 5.0 | resmi `llama-b11026-bin-win-cuda-12.4-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 |
   | OmniVoice `tts-v1.0.0` (TTS) | 7.5 | `CMakeLists.txt` `CMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real` (CUDA 12.1 ile); `bin/cuda/ggml-cuda.dll`: ELF sm_86, 89; PTX sm_75, 80 |
-  | faster-whisper / CTranslate2 4.8.4 (STT) | 7.5 | `ctranslate2.dll`: ELF sm_53-86, PTX sm_86 (kendisi 5.3); ama `nvidia-cudnn-cu12 9.27.0.42` `cudnn_ops64_9.dll` ve `cudnn_cnn64_9.dll`: ELF sm_75, 80, (86,) 90, 100, 120, 121, PTX yalnızca sm_121, yani cuDNN 7.5'ten başlıyor. Whisper'ın kodlayıcısındaki evrişimler cuDNN'den geçer. `nvidia-cublas-cu12 12.9.2.10` `cublas64_12.dll`: sm_50'den başlıyor, sınırı belirlemiyor |
+  | whisper.cpp v1.9.5 (STT) | 5.0 | resmi `b5454/whisper-bin-win-cuda-12.4.0-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 (llama.cpp'ninkiyle aynı); yanındaki `cublas64_12.dll` (CUDA 12.4) sm_50'den başlıyor. 2026-11-03'e kadar STT faster-whisper/CTranslate2 idi ve sınırı cuDNN yüzünden 7.5'ti |
 
-  Örnek: GTX 1060 (6.1) hafıza ve LLM'de CUDA'yı görür, TTS'te Vulkan ya da CPU, STT'de yalnızca CPU; GTX 16xx/RTX
-  20xx (7.5) ve sonrası her parçada CUDA'yı görür. Motor ya da cuDNN sürümü değişince sınır yeniden okunur:
+  Örnek: GTX 1060 (6.1) hafıza, LLM ve STT'de CUDA'yı görür, TTS'te Vulkan ya da CPU; GTX 16xx/RTX 20xx (7.5) ve
+  sonrası her parçada CUDA'yı görür. Motor ya da cuDNN sürümü değişince sınır yeniden okunur:
   `cuobjdump --list-elf --list-ptx <dll>` (CUDA 12.1'inki yeni cuDNN/cuBLAS DLL'lerinde sm_100+ girdilerinde
   takılıyor; o zaman fatbin başlıkları doğrudan okunur: `0xBA55ED50` imzası, her girdide tür ve `sm` alanı).
 
 Doğrulandı (2026-11-02, bu bilgisayarda): hafıza parçası CPU motoru + Jina v5 Omni Nano ile gerçekten indirildi,
 kuruldu, `/health` "ok" ve `/v1/embeddings` vektör döndü; Kaldır servisi durdurdu; bekçi kurulu parçayı açtı;
 ayar değişince yeniden başladı.
+
+## Neyi kim yayınlar
+
+Bizim GitHub yayınlarımızda yalnızca **bizim derlediğimiz** dosyalar durur (STT'nin Vulkan zipi, TTS'in zipleri).
+Başkasının yayınladığı her şey (resmi whisper.cpp/llama.cpp zipleri, modeller, VAD) **kaynağından** iner: sabit
+sürümden (Hugging Face'te `/resolve/<commit>/`, GitHub'da sürüm etiketli adres) ve katalogdaki SHA-256 ile
+denetlenerek. Kullanıcının kararı (2026-11-03): "ya hepsini alcaz ya da hiçbirini"; yarısını aynalamak tutarsız.
+
+## Ses tanıma (STT): whisper.cpp
+
+2026-11-03'te faster-whisper/CTranslate2'den whisper.cpp'ye geçildi (kullanıcının kararı): CTranslate2'nin ekran
+kartı desteği yalnızca CUDA, yani AMD/Intel kartta ses tanıma işlemcide kalıyordu. whisper.cpp ggml tabanlı,
+CUDA, Vulkan ve CPU'da çalışıyor.
+
+- **Servis:** `services/stt/whisper/api.py` dış katman olarak kaldı (REST, canlı WebSocket, ipucu cümlesi,
+  halüsinasyon süzgeçleri, dil kataloğu). Model çağrıları `whisper_server.py`'ye gider. O, motor klasöründeki
+  `whisper-server.exe`'yi kendi loopback portunda alt süreç olarak açar (TTS'in `tts-server`'ı gibi) ve
+  faster-whisper'ın `transcribe`/`detect_language` arayüzünü taklit eder; bu yüzden canlı akışın kodu ve
+  testleri değişmedi. Karşılıklar:
+  - `beam_size`, `language`, `initial_prompt` → `prompt`, `temperature` (tek değer ya da faster-whisper'ın
+    0, 0.2... dizisi → `temperature_inc`), `no_speech_threshold` → `no_speech_thold`, `log_prob_threshold` →
+    `logprob_thold`, `without_timestamps` → `no_timestamps`.
+  - Yanıt `verbose_json` (her parçanın `no_speech_prob`'u canlı süzgeç için). `no_language_probabilities=true`
+    gönderilir; yoksa sunucu dil olasılıkları için sesi bir kez daha kodlar.
+  - `vad_filter` + `vad_parameters` → whisper.cpp'nin kendi Silero VAD'ı (`--vad -vm ggml-silero-v6.2.0.bin`,
+    istek başına `vad_threshold`, `vad_min_speech_duration_ms`, `vad_min_silence_duration_ms`,
+    `vad_speech_pad_ms`; parametre verilmezse faster-whisper'ın varsayılanları).
+  - `detect_language` → `detect_language=true`; sunucu dilin tam adını döndürür ("turkish"), koda
+    whisper.cpp'nin tablosuyla çevrilir (`LANGUAGES`, `stt_languages.json`'daki 100 dilin aynısı; testi var).
+  - Karşılığı olmayanlar: `compression_ratio_threshold` (whisper.cpp yeniden denemeye entropiyle karar verir) ve
+    `condition_on_previous_text` (sunucu istekler arasında metin taşımaz).
+  - whisper-server ffmpeg olmadan yalnızca WAV/MP3/FLAC okur. REST'e gelen her biçim (Router'ın oyun alanından
+    webm/ogg/m4a) servis içinde PyAV ile çözülür (`av` zaten Hub'ın paketli Python'unda) ve 16 kHz WAV gider.
+  - CPU'da `-t <çekirdek sayısı>` (Ryzen 5600X'te 12 iş parçacığı 6'dan %20 hızlı), kartta sunucunun
+    varsayılanı (4).
+- **Motor tarifi** (`engines.whisper.cpp`, `exe: whisper-server`: indirilen motorda bu program yoksa kurulum
+  reddedilir). Her tarif yalnızca o donanım seçilince iner:
+
+  | Donanım | Parça | Boyut |
+  |---|---|---|
+  | vulkan | `stt-whispercpp-v1.9.5/whisper-cpp-v1.9.5-windows-vulkan.zip` (bizim derlememiz) | 15.5 MB |
+  | cuda (`min_compute` 5.0) | whisper.cpp'nin `b5454/whisper-bin-win-cuda-12.4.0-x64.zip`'i (cuBLAS ve cudart içinde) | 685 MB |
+  | cpu | whisper.cpp'nin `b5454/whisper-bin-x64.zip`'i (işlemciye göre seçilen `ggml-cpu-*.dll` varyantları) | 8.9 MB |
+  | hepsi | Silero VAD, whisper.cpp biçiminde: Hugging Face `ggml-org/whisper-vad`, revizyon `9ffd54a1`, `ggml-silero-v6.2.0.bin` (zip değil, olduğu gibi motor klasörüne konur) | 0.9 MB |
+
+  `b5454`, whisper.cpp v1.9.5 ile aynı commit'in (d1be6fde) gece derlemesi; v1.9.5 etiketinde dosya yok. Her
+  parçanın SHA-256'sı katalogda (resmi zip'lerinki GitHub'ın kendi özetiyle, VAD'ınki HF'nin LFS özetiyle aynı).
+  Motor parçası zip ise açılır, değilse olduğu gibi konur (`_install_engine`). CUDA'da eski STT GPU
+  paketlerinin (cuBLAS + cuDNN + NVRTC, ~1.37 GB) yarısı iner, cuDNN gerekmez.
+- **Vulkan zipi:** whisper.cpp'nin yayınında Windows Vulkan derlemesi yok. `services/stt/whisper/engine/build_vulkan.bat`
+  v1.9.5'i `%TEMP%\wcpp`'ye indirir, `%TEMP%\wcpp-vk`'de derler (Vulkan SDK + VS 2022, kısa yol: 260 karakter
+  sınırı; `GGML_NATIVE=OFF`). `python services/stt/whisper/engine/package.py` zipi (whisper-server + 5 DLL +
+  whisper.cpp lisansı) yapar, SHA-256'yı ve boyutu yazar. Yayın `gh release create ... --latest=false` ile (güncelleme akışı `feed` etiketinden okunur, ama "Latest"
+  rozetini başka yayınlara kaptırmamak için). MSVC çalışma zamanı (MSVCP140, VCRUNTIME140, VCOMP140) resmi
+  zip'lerde de, llama.cpp ve TTS'te de System32'den gelir.
+- **Modeller:** Hugging Face `ggerganov/whisper.cpp`, revizyon `5359861c739e955e79d9a303bcbc70fb988958b1`
+  (adres sabit commit'e bağlı; her dosyanın SHA-256'sı katalogda, HF'nin LFS özetiyle aynı). Katalogda her
+  boyuttan yalnızca bir nicemleme var, adında yazıyor. Başka nicemleme ya da boyut isteyen kendi modelini ekler.
+  - **Whisper Small (q8_0):** `ggml-small-q8_0.bin`, 252 MB (önerilen; işlemcide de rahat).
+  - **Whisper Large-v3 Turbo (q5_0):** `ggml-large-v3-turbo-q5_0.bin`, 547 MB. q8_0 ve f16 ile aynı doğruluk,
+    kartta ~0.9 GB.
+
+  Eski CTranslate2 modelleri (`stt-whisper-ct2-v1` yayını) kullanılmıyor; yayın 2026-11-03'te silindi.
+- **Ölçüm** (2026-11-03, RTX 3060 Ti, Ryzen 5 5600X; FLEURS tr_tr dev setinden 60 farklı cümle, 12.2 dk; Orion'un
+  son cümle ayarları: beam 4, Türkçe ipucu, temperature 0; whisper.cpp HTTP üzerinden, WAV yükleme dahil;
+  "canlı 3 sn" = 3 saniyelik sesin beam 2 ile deşifresi, canlı yazmadaki tek çağrı):
+
+  | | WER % | RTFx | canlı 3 sn (s) | VRAM (MB) |
+  |---|---|---|---|---|
+  | faster-whisper CUDA turbo (eski) | 8.55 | 41.7 | 0.215 | 1155 |
+  | whisper.cpp CUDA turbo q5_0 | 8.15 | 42.7 | 0.174 | 1022 |
+  | whisper.cpp **Vulkan** turbo q5_0 | 8.25 | 38.6 | 0.196 | 902 |
+  | whisper.cpp Vulkan turbo q8_0 | 8.15 | 42.4 | 0.168 | 1192 |
+  | faster-whisper CPU small (eski) | 16.0 | 5.4 | 1.61 | – |
+  | whisper.cpp CPU small q8_0 (12 iş parçacığı) | 15.5 | 5.9 | 1.46 | – |
+  | whisper.cpp CPU turbo q5_0 (6 iş parçacığı) | 8.65 | 1.1 | 10.5 | – |
+
+  Türkçe doğruluk iki motorda aynı (60 cümlede ±0.4 WER gürültü). Turbo, small'a göre WER'i yarıya indiriyor.
+- **Sıra `cuda, vulkan, cpu`** (TTS'inkiyle aynı; AMD/Intel kartta CUDA olmadığı için Vulkan). Yalnız çalışınca
+  Vulkan bu kartta CUDA kadar hızlı ve ~120 MB daha az kart belleği kullanıyor; ilk karar bu yüzden Vulkan'dı.
+  Ama aynı kartta TTS de çalışırken (sesli sohbette yanıt okunurken mikrofon dinler) farklı arka uçtaki iki
+  motor birbirini aç bıraktı. Yük testi (2026-11-03, RTX 3060 Ti; TTS durmadan aynı Türkçe cümleyi seslendirirken
+  60 cümlelik STT ölçümü, turbo q5_0; tek başına STT RTFx ~40, canlı 3 sn ~0.18 s; TTS tek başına CUDA 0.332,
+  Vulkan 0.302 cümle/sn):
+
+  | | TTS CUDA'da | TTS Vulkan'da |
+  |---|---|---|
+  | STT Vulkan'da | RTFx 0.7, canlı 3 sn 17.8 s; TTS 0.006 cümle/sn | RTFx 8.0, canlı 1.0 s; TTS 0.131 cümle/sn |
+  | STT CUDA'da | RTFx 2.4, canlı 3.9 s; TTS 0.101 cümle/sn | RTFx 3.7, canlı 2.1 s; TTS 0.137 cümle/sn |
+
+  En kötüsü STT Vulkan + TTS CUDA, yani TTS'in NVIDIA'daki varsayılanının yanında Vulkan. Bu yüzden STT de
+  NVIDIA'da önce CUDA. İkisi de Vulkan'da en iyisi; TTS'in sırası değişirse STT'ninki de onunla birlikte
+  değişmeli. Ölçümde kesinlik sınırı: TTS-CUDA sütunu boyunca başka bir oturumun CUDA tts-server'ı da açıktı ve
+  kart belleği 8 GB'ın 7.9'u doluydu. Vulkan'ın bellek dolunca sistem belleğine taşması o hücreyi büyütmüş
+  olabilir. Ayrıca ilk tek başına Vulkan ölçümünde de, başka bir oturumun Vulkan tts-server'ı çalışırken STT 18
+  kat yavaşlamıştı.
+- **Güncelleme yolu (eski STT kurulu bilgisayar):** Hub her açılışta bir kez `tidy()` çalıştırır (parçalar
+  başlamadan): katalogda adı geçmeyen motor klasörlerini (`engines/faster-whisper-1.2.1-py311`, cuDNN'li
+  ~1.4 GB; ileride bir llama.cpp sürüm değişikliğinin eski klasörü de) ve parçanın `retired_models` listesindeki
+  eski model klasörlerini (`models/stt/whisper-small-official`, `whisper-large-v3-turbo-ct2`) siler. Açık tutulan
+  bir dosya kalırsa sonraki açılışta gider. Kayıtlı seçim kendiliğinden yenisine geçer (`retired_models`:
+  small → `whisper-small`, turbo → `whisper-large-v3-turbo`). Eski `compute_type` ayarı atılır. Kayıtlı donanım
+  (cuda/cpu) geçerli kalır. Yeni motor ve model inmeden parça başlamaz: kutucuk "İndir ve başlat" gösterir.
+  Kullanıcının `custom/` klasöründeki CTranslate2 modelleri silinmez, ama "whisper.cpp modeli değil" der.
+- **Kalanlar:**
+  - Eski geliştirici kurulum paneli (`installer/app`) ve Docker dosyaları
+    (`services/stt/whisper/manifest.json`, `docker-compose.*.yml`) hâlâ faster-whisper'ı anlatıyor. Panelin
+    kendisi kullanılmıyor; kaldırılınca bunlar da gider (Yapılacaklar 8).
+  - Flutter'daki gelişmiş ayar özetinde `compute_type` satırı var ama Hub artık bu ayarı göndermiyor, ekranda
+    görünmüyor.
+  - Gerçek bir AMD/Intel kartta denenmedi.
 
 ## Yapılacaklar
 
@@ -149,9 +265,7 @@ Sıra önerisi yukarıdan aşağıya.
    [Bileşenleri aç]" kutucuğu (`offerPart(part: 'embedding')`). Tasarım notları: `embedtaktik.md`,
    `assets/yz hafıza sistemi/`.
 2. ~~Yerel STT ve TTS'yi buradan kurmak~~ (2026-11-02 yapıldı, PyTorch'suz):
-   - **STT:** Orion'un paketli Python'u (3.11) + faster-whisper/CTranslate2 paketleri (43 MB, sabit sürüm ve
-     SHA-256, `uv pip compile` ile Hub paketleriyle uyumlu çözüldü). GPU için ek olarak NVIDIA cuBLAS/cuDNN/NVRTC
-     (~1.3 GB, yalnızca "Ekran kartı" seçilince). Modeller bizim `stt-whisper-ct2-v1` yayınımızdaki SHA'lı ziplerden.
+   - **STT:** önce faster-whisper/CTranslate2 idi; 2026-11-03'ten beri whisper.cpp (aşağıda "Ses tanıma (STT)").
    - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU takımı Orion paketinde (`services/tts/omnivoice-gguf/bin`),
      CUDA zipi `tts-v1.1.0` yayınından. Her biri bütün takım (`tts-server.exe`, `omnivoice-codec.exe`, `ggml*.dll`;
      CUDA'da ek olarak `ggml-cuda.dll`), birbirine karışmaz: `ggml.dll` derlendiği arka ucun DLL'ine doğrudan

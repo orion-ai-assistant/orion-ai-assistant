@@ -56,15 +56,16 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     assert set(by_id) == {'embedding', 'llm', 'stt', 'tts'}
     assert all(part['installable'] and part['state'] == 'absent' for part in by_id.values())
     assert by_id['embedding']['model'] == 'jina-v5-omni-nano'  # The recommended model, nothing installed yet.
-    # With an NVIDIA card the speech engine brings cuBLAS and cuDNN (~1.3 GB); on the processor it is 43 MB.
-    assert by_id['stt']['model'] == 'whisper-small-official' and by_id['stt']['engines']['cuda']['mb'] > 1300
-    assert by_id['stt']['engines']['cpu']['mb'] < 100
+    # Speech recognition's CUDA engine brings cuBLAS (~650 MB); Vulkan and the processor are small.
+    assert by_id['stt']['model'] == 'whisper-small' and 600 < by_id['stt']['engines']['cuda']['mb'] < 700
+    assert by_id['stt']['engines']['vulkan']['mb'] < 20 and by_id['stt']['engines']['cpu']['mb'] < 20
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
     assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vision']  # Two cards: which one.
-    assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
-    # The speech voice runs on CUDA, Vulkan or the processor; recognition has no Vulkan build.
+    assert keys('stt') == ['hardware', 'gpu'] and keys('tts') == ['hardware', 'gpu']
+    # Both speech parts run on CUDA, Vulkan or the processor, CUDA first on an NVIDIA card: next to each other on
+    # one card, one on CUDA and the other on Vulkan starved both (docs/bilesenler.md).
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
-    assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['cuda', 'cpu']
+    assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
 
 
 def test_every_model_from_hugging_face_is_one_fixed_file_checked_by_its_sha256(parts):
@@ -91,13 +92,13 @@ def test_speech_services_run_on_orions_python_with_their_engine(parts):
         (folder / 'site').mkdir(parents=True)
         (folder / '.complete').write_text('x')
     stt = P.spec('stt')
-    small = P.model_spec(stt, 'whisper-small-official')
-    argv, env, port = P.command(stt, small, {'hardware': 'cpu', 'gpu': 'all', 'compute_type': 'float16'})
+    small = P.model_spec(stt, 'whisper-small')
+    argv, env, port = P.command(stt, small, {'hardware': 'cpu', 'gpu': 'all'})
     assert port == 9009 and argv[1:4] == ['-B', '-m', 'services.shared.part_python']
     assert argv[4].endswith('api.py') and argv[5].endswith('site')
-    assert env['WHISPER_MODEL'] == str(P.models_dir('stt') / 'whisper-small-official')
-    assert env['WHISPER_COMPUTE_TYPE'] == 'int8'  # CPU: int8.
-    assert env['ORION_HW_ID'] == 'cpu' and env['MODEL_FILE'] == ''
+    # whisper-server's model file and folder; where it runs said as it is (cuda, vulkan, cpu).
+    assert env['WHISPER_MODEL'] == str(P.models_dir('stt') / 'whisper-small' / 'ggml-small-q8_0.bin')
+    assert env['WHISPER_BIN_DIR'] == str(P.engine_dir('whisper.cpp', 'cpu')) and env['ORION_HW_ID'] == 'cpu'
     tts = P.spec('tts')
     argv, env, port = P.command(tts, P.model_spec(tts, 'omnivoice-gguf'), {'hardware': 'cpu', 'gpu': 'all'})
     assert port == 8810 and env['ENGINE_NAME'] == 'omnivoice-gguf'
@@ -134,16 +135,17 @@ def test_graphics_cards_are_read_from_nvidia_smi():
         pytest.skip('Windows hardware layout')
     assert [gpu['name'] for gpu in hw['gpus']] == ['NVIDIA GeForce RTX 3060', 'RTX 2060', 'Intel(R) UHD Graphics 770']
     assert [gpu.get('compute') for gpu in hw['gpus']] == [8.6, 7.5, None]
-    # Vulkan first (the default); speech starts on CUDA: recognition has no Vulkan build, and the speech voice
-    # ran faster on CUDA than on Vulkan on an RTX 3060 Ti (docs/bilesenler.md).
+    # Vulkan first (the default); speech starts on CUDA: the speech voice ran faster on CUDA than on Vulkan on an
+    # RTX 3060 Ti, and recognition goes where the voice is (docs/bilesenler.md).
     assert [choice['id'] for choice in hw['choices']] == ['vulkan', 'cuda', 'cpu'] and hw['recommended'] == 'vulkan'
     P._hardware.update(at=__import__('time').monotonic(), value=hw)
-    assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['cuda', 'cpu']
+    assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['cuda', 'vulkan', 'cpu']
     assert [c['id'] for c in P.choices(P.spec('tts'), P._labelled(hw))] == ['cuda', 'vulkan', 'cpu']
     # An AMD or Intel card alone: the speech voice goes to it on Vulkan.
     amd = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=0, stdout='AMD Radeon RX 7600\n')
                      if argv[0] != 'nvidia-smi' else SimpleNamespace(returncode=1, stdout=''))
     assert [c['id'] for c in P.choices(P.spec('tts'), amd)] == ['vulkan', 'cpu']
+    assert [c['id'] for c in P.choices(P.spec('stt'), amd)] == ['vulkan', 'cpu']
     assert P.default_settings(P.spec('tts'), None, amd)['hardware'] == 'vulkan'
     nothing = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=1, stdout=''))
     assert nothing['recommended'] == 'cpu'
@@ -167,21 +169,24 @@ def test_cuda_is_offered_only_where_the_card_runs_that_engine():
     if P.system() != 'windows':
         pytest.skip('Windows builds')
     # Each CUDA build's lowest compute capability (docs/bilesenler.md says where each comes from).
-    assert [P.cuda_floor(e) for e in ('llama.cpp', 'omnivoice-gguf', 'faster-whisper')] == [5.0, 7.5, 7.5]
+    assert [P.cuda_floor(e) for e in ('llama.cpp', 'omnivoice-gguf', 'whisper.cpp')] == [5.0, 7.5, 5.0]
     rtx3060 = on(card('NVIDIA GeForce RTX 3060', 8.6))
     old = {part: ids(part, rtx3060) for part in ('embedding', 'llm', 'stt', 'tts')}
-    assert old['tts'] == ['cuda', 'vulkan', 'cpu'] and old['stt'] == ['cuda', 'cpu'] and 'cuda' in old['llm']
-    # A GTX 1060 (6.1): llama.cpp still has kernels for it, the speech engines do not (Vulkan, else the processor).
+    assert old['tts'] == old['stt'] == ['cuda', 'vulkan', 'cpu'] and 'cuda' in old['llm']
+    # A GTX 1060 (6.1): llama.cpp and whisper.cpp still have kernels for it, the speech voice does not (Vulkan,
+    # else the processor).
     gtx1060 = on(card('NVIDIA GeForce GTX 1060 6GB', 6.1))
     assert ids('embedding', gtx1060) == old['embedding'] and ids('llm', gtx1060) == old['llm']
-    assert ids('tts', gtx1060) == ['vulkan', 'cpu'] and ids('stt', gtx1060) == ['cpu']
+    assert ids('tts', gtx1060) == ['vulkan', 'cpu'] and ids('stt', gtx1060) == old['stt']
     assert P.default_settings(P.spec('tts'), None, gtx1060)['hardware'] == 'vulkan'
-    assert P.default_settings(P.spec('stt'), None, gtx1060) == {'hardware': 'cpu', 'gpu': 'all', 'compute_type': 'int8'}
+    assert P.default_settings(P.spec('stt'), None, gtx1060) == {'hardware': 'cuda', 'gpu': 'all'}
+    # A Kepler card (3.5) is below even llama.cpp's and whisper.cpp's floor.
+    assert ids('stt', on(card('NVIDIA GeForce GTX 780', 3.5))) == ['vulkan', 'cpu']
     # A saved CUDA choice moves too (effective()).
     _, settings = P.effective(P.spec('tts'), gtx1060, {'tts': {'settings': {'hardware': 'cuda'}}})
     assert settings['hardware'] == 'vulkan'
     # Capability unknown (a driver without the field, or hardware.json from before): the card is taken to fit.
-    assert ids('stt', on(card('NVIDIA GeForce GTX 1060 6GB', None))) == ['cuda', 'cpu']
+    assert ids('tts', on(card('NVIDIA GeForce GTX 1060 6GB', None))) == ['cuda', 'vulkan', 'cpu']
     # Two cards: the card field lists only the ones that part's CUDA build runs on.
     both = on(card('NVIDIA GeForce RTX 3060', 8.6), card('NVIDIA GeForce GTX 1060 6GB', 6.1, index=1))
     gpu_ids = lambda part: [o['id'] for f in P.advanced(P.spec(part), both) if f['key'] == 'gpu' for o in f['options']]
@@ -407,41 +412,48 @@ class Archives(BaseHTTPRequestHandler):
 
 
 def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, monkeypatch, tmp_path):
+    """No part's engine is Python packages today (speech recognition was, on faster-whisper); the way stays."""
     import hashlib
     httpd = ThreadingHTTPServer(('127.0.0.1', 0), Archives)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     base = f'http://127.0.0.1:{httpd.server_address[1]}/'
-    wheel = zip_bytes({'faster_whisper/__init__.py': 'x = 1\n'})
-    model = zip_bytes({'whisper-small-ct2/model.bin': 'm', 'whisper-small-ct2/config.json': '{}',
-                       'whisper-small-ct2/tokenizer.json': '{}', 'whisper-small-ct2/vocabulary.txt': 'v'})
-    Archives.files = {'fw.whl': wheel, 'small.zip': model, 'bad.whl': b'not this'}
+    wheel = zip_bytes({'speech/__init__.py': 'x = 1\n'})
+    model = zip_bytes({'whisper-small/ggml-small-q8_0.bin': 'm'})
+    Archives.files = {'speech.whl': wheel, 'small.zip': model, 'bad.whl': b'not this'}
     bundled = tmp_path / 'bundled'
     bundled.mkdir()
     (bundled / 'tool.dll').write_text('dll')
     data = P.catalog()
     monkeypatch.setattr(P, 'ROOT', tmp_path)
-    data['engines']['faster-whisper'] = {'version': 'test', 'pythons': {P._python(): {'windows': {
+    data['engines']['speech'] = {'version': 'test', 'pythons': {P._python(): {'windows': {
         'cpu': {'bundled': 'bundled', 'wheels': [
-            {'url': base + 'fw.whl', 'sha256': hashlib.sha256(wheel).hexdigest(), 'size': len(wheel)}]}}}}}
+            {'url': base + 'speech.whl', 'sha256': hashlib.sha256(wheel).hexdigest(), 'size': len(wheel)}]}}}}}
     stt = next(part for part in data['parts'] if part['id'] == 'stt')
-    small = next(m for m in stt['models'] if m['id'] == 'whisper-small-official')
+    stt['engine'] = 'speech'
+    small = next(m for m in stt['models'] if m['id'] == 'whisper-small')
     small.update(archive=base + 'small.zip', archive_sha256=hashlib.sha256(model).hexdigest())
     monkeypatch.setattr(P, 'catalog', lambda: data)
+    monkeypatch.setattr(P, '_catalog_file', lambda: data)  # Where the CUDA floor is read.
     monkeypatch.setattr(P, 'hardware', lambda **kwargs: {**NO_CARD, 'system': 'windows'})
     monkeypatch.setattr(P, 'start_part', lambda part_id: True)
     monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
     try:
-        assert P.run_job('stt', 'install', 'whisper-small-official') == 0, P.job('stt')
-        folder = P.engine_dir('faster-whisper', 'cpu')
-        assert (folder / 'tool.dll').is_file() and (folder / 'site/faster_whisper/__init__.py').is_file()
+        assert P.run_job('stt', 'install', 'whisper-small') == 0, P.job('stt')
+        folder = P.engine_dir('speech', 'cpu')
+        assert (folder / 'tool.dll').is_file() and (folder / 'site/speech/__init__.py').is_file()
         assert P.downloaded(stt, small) and P.read_config()['stt']['enabled']
         # A piece that does not match its SHA-256 is refused and nothing is installed.
-        data['engines']['faster-whisper']['pythons'][P._python()]['windows']['cuda'] = {
+        data['engines']['speech']['pythons'][P._python()]['windows']['cuda'] = {
             'wheels': [{'url': base + 'bad.whl', 'sha256': '0' * 64}]}
         P.write_part_config('stt', settings={'hardware': 'cuda'}, enabled=False)
         monkeypatch.setattr(P, 'hardware', lambda **kwargs: TWO_CARDS)
-        assert P.run_job('stt', 'install', 'whisper-small-official') == 1
-        assert 'SHA-256' in P.job('stt')['error'] and not P.engine_ready('faster-whisper', 'cuda')
+        assert P.run_job('stt', 'install', 'whisper-small') == 1
+        assert 'SHA-256' in P.job('stt')['error'] and not P.engine_ready('speech', 'cuda')
+        # An engine that names its program (whisper.cpp: whisper-server) is refused without it.
+        data['engines']['speech'] = {'version': 'test2', 'exe': 'whisper-server', 'windows': {
+            'cuda': {'archives': [{'url': base + 'speech.whl', 'sha256': hashlib.sha256(wheel).hexdigest()}]}}}
+        assert P.run_job('stt', 'install', 'whisper-small') == 1
+        assert 'whisper-server yok' in P.job('stt')['error'] and not P.engine_ready('speech', 'cuda')
     finally:
         httpd.shutdown()
 
@@ -509,9 +521,14 @@ def test_an_engine_brings_every_dll_it_needs(tmp_path):
     assert ('omnivoice-gguf', 'cpu') in checked  # Orion's own files: always here.
 
 
-def test_speech_packages_need_a_python_they_are_built_for(parts, monkeypatch):
+def test_python_packages_need_a_python_they_are_built_for(parts, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setenv('ORION_PARTS_HOME', str(parts))
+    data = P.catalog()
+    data['engines']['speech'] = {'version': 'test', 'pythons': {'3.11': {'windows': {'cpu': {'wheels': []}}},
+                                                                '3.14': {'windows': {'cpu': {'wheels': []}}}}}
+    next(part for part in data['parts'] if part['id'] == 'stt')['engine'] = 'speech'
+    monkeypatch.setattr(P, 'catalog', lambda: data)
     monkeypatch.setattr(P, 'hardware', lambda **kwargs: NO_CARD)
     monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
     monkeypatch.setattr(P, '_python', lambda: '3.9')  # A Python the catalog has no packages for.
@@ -778,24 +795,22 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     assert P.model_spec(P.spec('llm'), 'custom-benim-qwen')['checklist'][0]['state'] == 'many'
     P.open_folder('llm', 'custom-benim-qwen')
     assert opened == [str(folder)]
-    # Speech: the files faster-whisper needs, each ticked as it comes.
+    # Speech: one whisper.cpp file, whatever its name.
+    assert P.add_user_model('stt', 'whisper-tr') == 'custom-whisper-tr'
     stt = P.user_dir('stt') / 'whisper-tr'
-    ct2(stt / 'model.bin', mels=80)
-    (stt / 'config.json').write_text('{}')
-    states = [item['state'] for item in P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']]
-    assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
-    # Each line says what the file is for; the name it must have shows while it is missing.
     lines = P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']
-    assert [item['label'] for item in lines] == ['Model', 'Ayarlar', 'Sözlük', 'Sözcük listesi', 'Ses ayarları']
-    assert (lines[0]['names'], lines[3]['expect']) == (['model.bin'], 'vocabulary.json / vocabulary.txt')
-    for name in ('tokenizer.json', 'vocabulary.txt'):  # As Systran's small brings them: no preprocessor file.
-        (stt / name).write_text('x')
+    assert [(item['state'], item['label'], item['expect']) for item in lines] == [
+        ('missing', 'Model', 'whisper.cpp ggml .bin')]
+    whisper_ggml(stt / 'benim-modelim.bin')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
-    assert whisper['complete'] and whisper['files'] == ['model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt']
-    engine = P.engine_dir('faster-whisper', 'cpu')
+    assert whisper['complete'] and whisper['files'] == ['benim-modelim.bin'] and whisper['kind'] == 'ggml'
+    engine = P.engine_dir('whisper.cpp', 'cpu')
     engine.mkdir(parents=True)
     (engine / '.complete').write_text('x')
-    assert P.command(P.spec('stt'), whisper, {'hardware': 'cpu', 'gpu': 'all'})[1]['WHISPER_MODEL'] == str(stt)
+    env = P.command(P.spec('stt'), whisper, {'hardware': 'cpu', 'gpu': 'all'})[1]
+    assert env['WHISPER_MODEL'] == str(stt / 'benim-modelim.bin')
+    whisper_ggml(stt / 'ikinci.bin')  # Two models in one folder: which one is not guessed.
+    assert P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist'][0]['state'] == 'many'
     # Speech out: the user picks the engine (a folder each); its two files are told apart by their contents,
     # whatever their names; a file of another kind is named, not taken. An engine Orion lacks cannot be added.
     with pytest.raises(P.PartError):
@@ -814,36 +829,67 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     assert row('embedding', 'custom-e')['dims'] == 1024
 
 
-def ct2(path, *, mels, spec='WhisperSpec'):
-    """A CTranslate2 model.bin holding only its header: the spec and the first convolution (its mel bands)."""
+def whisper_ggml(path, *, mels=80, audio_ctx=1500, text_ctx=448, magic=0x67676d6c):
+    """A whisper.cpp model file holding only its header (whisper.cpp's whisper_model_load reads it so): the magic
+    and the hyperparameters, here those of small (12 layers)."""
     import struct
-    def string(text):
-        data = text.encode() + b'\0'
-        return struct.pack('<H', len(data)) + data
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(struct.pack('<I', 6) + string(spec) + struct.pack('<II', 3, 2)
-                     + string('decoder/embeddings/weight') + struct.pack('<B2IBI', 2, 4, 4, 0, 16) + bytes(16)
-                     + string('encoder/conv1/weight') + struct.pack('<B3IBI', 3, 384, mels, 3, 0, 0))
+    path.write_bytes(struct.pack('<I11i', magic, 51865, audio_ctx, 768, 12, 12, text_ctx, 768, 12, 12, mels, 8)
+                     + bytes(64))
 
 
-def test_a_speech_model_says_which_files_it_needs(parts):
-    """Tried with Orion's CTranslate2 and faster-whisper: a model hearing 128 mel
-    bands (large-v3, turbo) refuses audio prepared without preprocessor_config.json."""
-    folder = P.user_dir('stt') / 'turbo'
-    ct2(folder / 'model.bin', mels=128)
-    for name in ('config.json', 'tokenizer.json', 'vocabulary.json'):
+def test_a_speech_model_is_known_by_its_header(parts):
+    """Only a whisper.cpp model counts, whatever its name: not a faster-whisper (CTranslate2) folder from before,
+    not the Silero VAD (ggml too, other numbers), not an old llama.cpp ggml file."""
+    folder = P.user_dir('stt') / 'eski'
+    (folder / 'model.bin').parent.mkdir(parents=True)
+    (folder / 'model.bin').write_bytes(b'\x06\x00\x00\x00\x0c\x00WhisperSpec\x00' + bytes(64))
+    for name in ('config.json', 'tokenizer.json', 'vocabulary.txt'):
         (folder / name).write_text('{}')
-    checklist = lambda: P.model_spec(P.spec('stt'), 'custom-turbo')['checklist']
-    assert P.ct2_meta(folder / 'model.bin') == {'spec': 'WhisperSpec', 'mels': 128}
-    assert (checklist()[-1]['state'], checklist()[-1]['optional']) == ('missing', False)
-    assert not P.model_spec(P.spec('stt'), 'custom-turbo')['complete']
-    (folder / 'preprocessor_config.json').write_text('{"feature_size": 80}')
-    assert checklist()[-1]['state'] == 'wrong'  # Says 80: as wrong as none.
-    (folder / 'preprocessor_config.json').write_text('{"feature_size": 128}')
-    model = P.model_spec(P.spec('stt'), 'custom-turbo')
-    assert model['complete'] and model['files'][-1] == 'preprocessor_config.json'
-    ct2(folder / 'model.bin', mels=128, spec='TransformerSpec')  # A translation model is not a Whisper one.
-    assert checklist()[0]['state'] == 'wrong'
+    model = P.model_spec(P.spec('stt'), 'custom-eski')
+    assert not model['complete'] and model['checklist'][0]['state'] == 'missing'
+    # Systran's faster-whisper files said for what they are; the JSON files beside them are no model.
+    assert model['problems'] == ["model.bin: faster-whisper (CTranslate2) biçiminde; whisper.cpp'nin ggml .bin dosyası gerekir."]
+    whisper_ggml(folder / 'silero.bin', audio_ctx=64)
+    whisper_ggml(folder / 'llama.bin', audio_ctx=4096, text_ctx=32)
+    assert P.whisper_meta(folder / 'silero.bin') is None and P.whisper_meta(folder / 'llama.bin') is None
+    gguf(folder / 'whisper.gguf', 'whisper')
+    (folder / 'model.safetensors').write_bytes(b'{}')
+    whisper_ggml(folder / 'turbo.bin', mels=128)
+    assert P.whisper_meta(folder / 'turbo.bin') == {'mels': 128, 'audio_layers': 12, 'text_layers': 12, 'vocab': 51865}
+    model = P.model_spec(P.spec('stt'), 'custom-eski')
+    assert model['complete'] and model['files'] == ['turbo.bin']
+    assert sorted(problem.split(' biçiminde')[0] for problem in model['problems']) == [
+        'llama.bin: başka bir ggml', 'model.bin: faster-whisper (CTranslate2)',
+        'model.safetensors: safetensors (Hugging Face)', 'silero.bin: başka bir ggml', 'whisper.gguf: GGUF']
+
+
+def test_an_update_leaves_no_faster_whisper_behind(parts):
+    """A PC that ran speech recognition on faster-whisper: its engine (1.4 GB with cuDNN) and our CTranslate2
+    models go at the first start of the new Hub; the choice moves to whisper.cpp's model of the same size.
+    The user's own models stay, and so does a job's scratch folder."""
+    engines = P.home() / 'engines'
+    old = engines / 'faster-whisper-1.2.1-py311' / 'cuda'
+    old.mkdir(parents=True)
+    (old / 'cudnn.dll').write_bytes(b'x')
+    current = P.engine_dir('llama.cpp', 'cpu')
+    current.mkdir(parents=True)
+    (engines / 'unpack-123').mkdir()
+    retired = P.models_dir('stt') / 'whisper-small-official'
+    retired.mkdir(parents=True)
+    (retired / 'model.bin').write_bytes(b'x')
+    whisper_ggml(P.user_dir('stt') / 'benim' / 'm.bin')
+    P.write_part_config('stt', enabled=True, model='whisper-small-official',
+                        settings={'hardware': 'cuda', 'gpu': 'all', 'compute_type': 'int8_float16'})
+    P._tidied.clear()
+    P.tidy(P.catalog())
+    assert not (engines / 'faster-whisper-1.2.1-py311').exists() and current.is_dir() and (engines / 'unpack-123').is_dir()
+    assert not retired.exists() and (P.user_dir('stt') / 'benim' / 'm.bin').is_file()
+    model, settings = P.effective(P.spec('stt'), TWO_CARDS)
+    assert model['id'] == 'whisper-small' and settings == {'hardware': 'cuda', 'gpu': 'all'}
+    (engines / 'faster-whisper-1.2.1-py311').mkdir()
+    P.tidy(P.catalog())  # Once per Hub start: what an update leaves comes only with an update.
+    assert (engines / 'faster-whisper-1.2.1-py311').is_dir()
 
 
 def test_a_download_names_and_counts_only_what_it_fetches(parts, server, monkeypatch):
@@ -898,3 +944,15 @@ def test_one_file_at_a_time(parts, server, monkeypatch):
     assert (mine / 'm.gguf').is_file() and not (mine / 'v.gguf').exists()
     P.delete_model('llm', 'custom-mine', file='m.gguf')
     assert not mine.exists()
+
+
+def test_internet_downloads_are_verified_by_windows(monkeypatch):
+    """Engines and models from GitHub and Hugging Face go through Windows' own certificate check (truststore), as
+    Orion's updates do: Python's alone refused GitHub's new Sectigo chain and no engine from GitHub downloaded."""
+    import ssl
+    import urllib.request
+    from services.shared import windows_trust
+    made = ssl.create_default_context()
+    monkeypatch.setattr(windows_trust, 'context', lambda: made)
+    handler = next(h for h in P.public_opener().handlers if isinstance(h, urllib.request.HTTPSHandler))
+    assert handler._context is made

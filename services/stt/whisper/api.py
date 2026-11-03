@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from model_loading import load_whisper_robust
+from whisper_server import WhisperServer, decode_audio
 from prompts import select_transcription_prompt, WHISPER_LANGUAGES, LANGUAGE_CATALOG
 import re
 
@@ -36,52 +36,24 @@ try:
 except ImportError:
     pass
 
-# Determine device (CUDA if available or specified, fallback to CPU)
-hw_id = os.getenv("ORION_HW_ID", "").lower()
-env_device = os.getenv("WHISPER_DEVICE", os.getenv("DEVICE", "")).lower()
-if hw_id == "cpu" or env_device == "cpu":
-    DEVICE = "cpu"
-else:
-    DEVICE = "cuda"
+# Where whisper-server runs: Bileşenler says it (ORION_HW_ID: cuda, vulkan or cpu, with the engine built for it in
+# WHISPER_BIN_DIR); a developer's .env may say WHISPER_DEVICE=cpu.
+HARDWARE = (os.getenv("ORION_HW_ID") or os.getenv("WHISPER_DEVICE") or "vulkan").lower()
+ENGINE_DIR = os.getenv("WHISPER_BIN_DIR", "")
 
-compute_type_env = os.getenv("WHISPER_COMPUTE_TYPE", "").strip()
-if DEVICE == "cpu":
-    COMPUTE_TYPE = "int8"
-    CPU_THREADS = os.cpu_count() or 4
-else:
-    COMPUTE_TYPE = compute_type_env if compute_type_env in ["int8_float16", "int8", "float16"] else "int8_float16"
-    CPU_THREADS = 0
 
 def resolve_model():
-    # 1. Try MODEL_FILE directory (e.g. whisper-small-finetuned-tr/model.bin)
-    model_file = os.getenv("MODEL_FILE", "").strip()
-    if model_file:
-        folder = os.path.dirname(model_file)
-        if folder:
-            p = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), folder)
-            if os.path.isdir(p):
-                return p
+    """The ggml model file: WHISPER_MODEL (Bileşenler gives its full path; a developer may give a file name in
+    the models folder), else the first ggml file there."""
+    models = os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models'))
+    named = os.getenv("WHISPER_MODEL", "").strip()
+    if named:
+        return named if os.path.isfile(named) else os.path.join(models, named)
+    found = sorted(name for name in os.listdir(models) if name.startswith("ggml-") and name.endswith(".bin"))         if os.path.isdir(models) else []
+    return os.path.join(models, found[0]) if found else os.path.join(models, "ggml-small-q8_0.bin")
 
-    # 2. Try WHISPER_MODEL
-    whisper_model = os.getenv("WHISPER_MODEL", "").strip()
-    if whisper_model:
-        if os.path.isdir(whisper_model):
-            return whisper_model
-        clean_name = os.path.basename(whisper_model.rstrip("/\\"))
-        p = os.path.join(os.environ.get('ORION_NATIVE_MODELS_DIR', os.path.join(CURRENT_DIR, 'models')), clean_name)
-        if os.path.isdir(p):
-            return p
-        if os.path.isdir(f"/models/{clean_name}"):
-            return f"/models/{clean_name}"
-        return whisper_model
 
-    # 3. Fallback to default local model
-    default_p = os.path.join(CURRENT_DIR, "models", "whisper-small-finetuned-tr")
-    if os.path.isdir(default_p):
-        return default_p
-    return "whisper-small"
-
-MODEL_SIZE = resolve_model()
+MODEL_PATH = resolve_model()
 
 RATE = 16000
 LIVE_BEAM_SIZE = 2
@@ -99,14 +71,19 @@ model = None
 
 @app.on_event("startup")
 async def startup_event():
-    global model, DEVICE, COMPUTE_TYPE
-    logger.info(f"Loading Whisper model: {MODEL_SIZE} on {DEVICE.upper()}...")
+    global model
+    logger.info(f"Loading Whisper model: {MODEL_PATH} on {HARDWARE}...")
     try:
-        model, DEVICE, COMPUTE_TYPE = load_whisper_robust(MODEL_SIZE, DEVICE, COMPUTE_TYPE)
-        logger.info("Whisper model loaded successfully.")
+        model = await asyncio.to_thread(WhisperServer, MODEL_PATH, ENGINE_DIR, HARDWARE)
     except Exception as e:
         logger.error(f"Failed to load Whisper model: {e}")
         raise
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if model:
+        model.close()
 
 # =========================================================
 # UI & STATIC
@@ -143,49 +120,46 @@ async def create_transcription(
     
     start_time = time.perf_counter()
     temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{file.filename}")
-    
+    temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{os.path.basename(file.filename or 'audio')}")
+
     # Save the uploaded file temporarily
     with open(temp_path, "wb") as buffer:
         buffer.write(await file.read())
-        
+
     try:
-        # If language is None, empty, or 'auto', faster-whisper will automatically detect the language
+        # Any format a client sends (webm, ogg, m4a...): whisper-server itself reads only WAV, MP3 and FLAC.
+        audio = await asyncio.to_thread(decode_audio, temp_path, RATE)
+        # If language is None, empty, or 'auto', the language is detected first
         lang_param = None if (not language or language.strip().lower() in ("auto", "none")) else language.strip().lower()
         lang_param, initial_prompt = await asyncio.to_thread(
-            select_transcription_prompt, model, temp_path, lang_param, prompt
+            select_transcription_prompt, model, audio, lang_param, prompt
         )
 
-        # Transcribe directly from the saved temp file
-        # faster-whisper uses ffmpeg internally to decode
-        segments, info = model.transcribe(
-            temp_path,
+        segments, info = await asyncio.to_thread(
+            model.transcribe,
+            audio,
             task="transcribe",
             beam_size=FINAL_BEAM_SIZE,
             language=lang_param,
             initial_prompt=initial_prompt,
             vad_filter=True
         )
-        
+
         text = "".join([segment.text for segment in segments]).strip()
         infer_duration = time.perf_counter() - start_time
         detected_lang = lang_param if lang_param else (getattr(info, "language", "unknown") if hasattr(info, "language") else "unknown")
 
         # Cache debug audio ONLY if actual speech text was transcribed
         if text and re.search(r'[a-zA-Z0-9çğıöşüÇĞİÖŞÜ]', text):
-            try:
-                from faster_whisper.audio import decode_audio
-                global last_debug_audio
-                last_debug_audio = decode_audio(temp_path, sampling_rate=RATE)
-            except Exception as err:
-                logger.warning(f"Could not cache debug audio: {err}")
+            global last_debug_audio
+            last_debug_audio = audio
 
         return JSONResponse({
             "text": text,
             "language": detected_lang,
             "duration": infer_duration
         })
-        
+
     except Exception as e:
         logger.error(f"Transcription error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,11 +198,10 @@ async def get_audio_languages():
 @app.get("/v1/models")
 async def get_audio_info():
     """Whisper aktif model ve donanım bilgilerini döner."""
-    model_name = os.path.basename(MODEL_SIZE) if isinstance(MODEL_SIZE, str) else str(MODEL_SIZE)
+    model_name = os.path.basename(MODEL_PATH)
     return {
         "model": model_name,
-        "device": DEVICE,
-        "compute_type": COMPUTE_TYPE,
+        "device": HARDWARE,
         "status": "ready" if model is not None else "loading",
         "data": [{"id": model_name, "object": "model"}]
     }
