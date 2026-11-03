@@ -125,6 +125,7 @@ async def delete_model(part_id: str, model_id: str, request: Request, extra: boo
 class UserModel(BaseModel):
     name: str
     kind: str | None = None
+    description: str | None = None
 
 
 @router.post('/{part_id}/user-models')
@@ -133,7 +134,8 @@ async def add_user_model(part_id: str, body: UserModel, request: Request,
     """A folder for a model the user brings (they copy its files in); answers its id with the status."""
     _manage(request)
     try:
-        added = await asyncio.to_thread(local_parts.add_user_model, part_id, body.name, body.kind)
+        added = await asyncio.to_thread(local_parts.add_user_model, part_id, body.name, body.kind,
+                                        body.description)
     except local_parts.PartError as error:
         raise HTTPException(400, str(error)) from error
     return {**await _status_body(), 'added': added}

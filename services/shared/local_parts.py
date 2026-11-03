@@ -718,7 +718,8 @@ def _user_model(part, kind, path, model_id, folder):
     main = file_meta(files[0]) if files and files[0].suffix.lower() == '.gguf' else None
     # An embedding model that does not say how it pools is pooled like ours (the last token).
     args = ['--pooling', 'last'] if part['id'] == 'embedding' and main and main.get('pooling') is None else []
-    entry = {'id': model_id, 'name': path.name, 'description': '', 'folder': folder,
+    entry = {'id': model_id, 'name': path.name, 'description': _descriptions().get(f'{part["id"]}/{model_id}', ''),
+             'folder': folder,
              'files': [file.name for file in files], 'size_mb': round(sum(file.stat().st_size for file in files) / MB),
              'args': args, 'user': True, 'kind': kind['id'], 'kind_label': kind['label'], 'complete': complete,
              'present': [file.name for file in present], 'checklist': checklist, 'copying': copying,
@@ -762,9 +763,18 @@ def user_models(part):
     return models
 
 
-def add_user_model(part_id, name, kind_id=None):
+DESCRIPTION_MAX = 80
+
+
+def _descriptions():
+    """The words the user gave their own models, by model id (kept beside the jobs, not in the model folder:
+    the folder holds only the model's files)."""
+    return _read_json(home() / 'user-models.json', {})
+
+
+def add_user_model(part_id, name, kind_id=None, description=None):
     """Make the folder for a model the user brings, for the engine they chose: it shows at once (empty) and
-    fills as they copy its files in. Returns its id."""
+    fills as they copy its files in. `description` shows under its name, as ours do. Returns its id."""
     _not_moving()
     part = spec(part_id)
     places = _places(part_id)
@@ -783,11 +793,20 @@ def add_user_model(part_id, name, kind_id=None):
         raise PartError('Ad en çok 60 harf olabilir.')
     if any(model['id'] == _user_id(part_id, kind, name) for model in part['models']):
         raise PartError('Bu adda bir model zaten var.')
+    description = ' '.join(str(description or '').split())
+    if len(description) > DESCRIPTION_MAX:
+        raise PartError(f'Açıklama en çok {DESCRIPTION_MAX} harf olabilir.')
     try:
         (folder / name).mkdir(parents=True)
     except OSError:
         raise PartError('Bu adla klasör açılamadı; başka bir ad dene.') from None
-    return _user_id(part_id, kind, name)
+    model_id = _user_id(part_id, kind, name)
+    descriptions = _descriptions()
+    descriptions.pop(f'{part_id}/{model_id}', None)  # A folder made again under an old name starts bare.
+    if description:
+        descriptions[f'{part_id}/{model_id}'] = description
+    _write_json(home() / 'user-models.json', descriptions)
+    return model_id
 
 
 def open_folder(part_id, model_id):

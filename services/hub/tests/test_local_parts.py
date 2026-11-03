@@ -775,13 +775,16 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     opened = []
     monkeypatch.setattr(P.os, 'startfile', opened.append, raising=False)
     # LLM: the name is the folder's; which file is the model and which the extra is read from them.
-    assert P.add_user_model('llm', 'Benim Qwen') == 'custom-benim-qwen'
+    with pytest.raises(P.PartError):
+        P.add_user_model('llm', 'Uzun', description='x' * 81)  # Its words fit under its name.
+    assert P.add_user_model('llm', 'Benim Qwen', description='  Türkçe sohbet  için ') == 'custom-benim-qwen'
     with pytest.raises(P.PartError):
         P.add_user_model('llm', 'benim qwen')  # The same name.
     folder = P.user_dir('llm') / 'Benim Qwen'
     card = lambda part_id: next(part for part in P.status()['parts'] if part['id'] == part_id)
     row = lambda part_id, model_id: next(m for m in card(part_id)['models'] if m['id'] == model_id)
     empty = row('llm', 'custom-benim-qwen')
+    assert empty['description'] == 'Türkçe sohbet için'  # Under its name, as ours have theirs.
     assert empty['user'] and not empty['complete'] and empty['checklist'][0]['state'] == 'missing'
     gguf(folder / 'qwen-7b-q4.gguf', 'qwen2', context_length=32768)
     gguf(folder / 'vision.gguf', 'clip')
