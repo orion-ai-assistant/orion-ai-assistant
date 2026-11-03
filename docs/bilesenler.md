@@ -75,7 +75,9 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   servis günlüğü her başlatmada sıfırlanır, bellek yetmezliği gibi bilinen hatalar Türkçe söylenir.
 - **Modeller paneli:** her model bir kutucuk: adı ve etiketleri (Önerilen, Seçili, Çalışıyor), altta her
   dosyası kendi satırında: ne olduğu, boyutu ve satırın sonunda o dosyanın kendi düğmesi (yoksa İndir, varsa
-  Sil, inerken dönen simge). Durum yazısı yok: düğme dosyanın durumunu söyler. Ek dosyanın (mmproj) satırının
+  Sil, inerken dönen simge). Durum yazısı yok: düğme dosyanın durumunu söyler. Katalog modelinin adının yanında kaynak
+  düğmesi: modelin geldiği sayfayı açar (`source`: kataloğun `source`'u, yoksa Hugging Face deposunun sayfası;
+  kullanıcının kendi modelinde yok). Ek dosyanın (mmproj) satırının
   başında onu kullanma kutusu var. Kendi modellerinde adın yanında klasör simgesi. Kutucuğa dokunmak modeli
   seçer.
 - **Silme ve indirme dosya dosya:** modelin dosyasının Sil'i modeli (ek dosyasıyla), ek dosyanın Sil'i yalnızca

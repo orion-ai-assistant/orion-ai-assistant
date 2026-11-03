@@ -78,6 +78,11 @@ def test_every_model_from_hugging_face_is_one_fixed_file_checked_by_its_sha256(p
             names = model['files'] + ([model['mmproj']] if model.get('mmproj') else [])
             assert set(model['sha256']) == set(names), model['id']
             assert all(len(value) == 64 for value in model['sha256'].values()), model['id']
+    # The page shows where each model comes from: its repository's page, not the fixed commit.
+    llm = next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    gemma = next(model for model in llm['models'] if model['id'] == 'gemma-4-e2b-it-q3-k-s')
+    assert gemma['source'] == 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF'
+    assert P.source_page({'user': True, 'url': gemma['source'] + '/resolve/main/'}) is None  # A user's own model.
 
 
 def test_speech_services_run_on_orions_python_with_their_engine(parts):

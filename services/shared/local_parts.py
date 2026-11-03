@@ -1058,6 +1058,20 @@ def _supervised(part_id):
         return False
 
 
+def source_page(model):
+    """The page a catalog model comes from, for the user to see: the catalog's `source`, else the Hugging Face
+    repository its files are downloaded from (its page, not the fixed commit the files come from). A user's own
+    model has none."""
+    if model.get('user'):
+        return None
+    if model.get('source'):
+        return model['source']
+    url = model.get('url') or ''
+    if url.startswith('https://huggingface.co/') and '/resolve/' in url:
+        return url.split('/resolve/', 1)[0]
+    return None
+
+
 def part_status(part, hw, config, data):
     port = int(os.getenv(part['port_key']) or part['port'])
     running = answers(port)
@@ -1107,7 +1121,8 @@ def part_status(part, hw, config, data):
                'extra_there': bool(item.get('mmproj')) and (folder / item.get('mmproj', '')).is_file(),
                'extra_name': extra[0], 'extra_description': extra[1],
                'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
-               'dims': meta.get('dims') if part['id'] == 'embedding' else None}
+               'dims': meta.get('dims') if part['id'] == 'embedding' else None,
+               'source': source_page(item)}
         if item.get('user'):
             row.update(complete=item['complete'], checklist=item['checklist'], copying=item['copying'],
                        problems=item['problems'], path=str(folder))
