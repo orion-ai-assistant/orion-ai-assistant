@@ -4,10 +4,10 @@ import io
 import logging
 import time
 import wave
-import struct
 from contextlib import suppress
 from collections.abc import Awaitable, Callable
 
+from orion.worker.services.pcm_normalizer import PcmNormalizer
 from orion.worker.services.router import stream_tts
 
 # A speech part that fails is asked for once more after this pause; two parts in a row that fail
@@ -31,19 +31,8 @@ def _batch_wav_pcm(data):
         raise RuntimeError("TTS returned an incomplete or empty WAV")
     if channels == 1 and rate == 24000:
         return raw
-    samples = struct.unpack(f"<{frames * channels}h", raw)
-    mono = samples if channels == 1 else [
-        (samples[i] + samples[i + 1]) / 2 for i in range(0, len(samples), 2)
-    ]
-    count = frames * 24000 // rate
-    result = bytearray(count * 2)
-    for i in range(count):
-        source = i * rate / 24000
-        left = min(int(source), frames - 1)
-        right = min(left + 1, frames - 1)
-        value = round(mono[left] + (mono[right] - mono[left]) * (source - left))
-        struct.pack_into("<h", result, i * 2, max(-32768, min(32767, value)))
-    return bytes(result)
+    # The same filtered conversion as a streamed part (no hiss folded in from above 12 kHz).
+    return PcmNormalizer(rate, channels).feed(raw, final=True)
 
 
 class PartialSpeech(Exception):
