@@ -16,6 +16,28 @@ from .update_helper import UpdateHelper, UpdateError, inventory, StoppedPackages
 from .update_gate import TERMINAL
 
 TRASH = '.trash-'  # A folder being deleted: renamed first, so a half-deleted release never looks like a release.
+HISTORY = 'history.json'  # One line per finished update whose folder was deleted (the Settings history).
+HISTORY_KEEP = 10
+HISTORY_FIELDS = ('operation_id', 'installation_id', 'phase', 'reason', 'changes', 'updated_at')
+
+
+def remember(base, journals):
+    """Keep a few fields of each finished update before its folder goes: the folder (downloads, backups) is
+    deleted, the history line stays. Only the latest HISTORY_KEEP are kept, so the file stays a few KB."""
+    if not journals:
+        return
+    path = base / HISTORY
+    try:
+        kept = read_json(path, [])
+        kept = kept if isinstance(kept, list) else []
+    except (ValueError, OSError):
+        kept = []  # An unreadable history is replaced, never a reason to keep update folders.
+    seen = {entry.get('operation_id') for entry in kept if isinstance(entry, dict)}
+    for journal in journals:
+        if journal.get('operation_id') not in seen:
+            kept.append({key: journal.get(key) for key in HISTORY_FIELDS})
+    kept.sort(key=lambda entry: entry.get('updated_at') or 0, reverse=True)
+    write_json(path, kept[:HISTORY_KEEP])
 
 
 # An update in these phases has not switched anything yet (the active version is unchanged), exactly what an
@@ -238,17 +260,22 @@ def _retire(registry, helper):
             if path not in keep and (name.fullmatch(path.name) or path.name.startswith(TRASH)):
                 removed += _delete(path)
     active = (tx or {}).get('operation_id')
+    finished_journals = []
     for path in _children(helper.base):
         if path.name.startswith(TRASH):
             removed += _delete(path)
             continue
         try:
-            finished = (str(uuid.UUID(path.name)) == path.name and path.name != active
-                        and read_json(path / 'journal.json', {}).get('phase') in TERMINAL)
+            journal = read_json(path / 'journal.json', {}) if str(uuid.UUID(path.name)) == path.name else {}
+            finished = path.name != active and journal.get('phase') in TERMINAL
         except (ValueError, OSError, AttributeError):
             finished = False  # Not an operation folder, or a journal that cannot tell: kept.
         if finished:
-            removed += _delete(path)
+            gone = _delete(path)
+            removed += gone
+            if gone:
+                finished_journals.append(journal)
+    remember(helper.base, finished_journals)
     return removed
 
 

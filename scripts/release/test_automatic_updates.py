@@ -347,3 +347,21 @@ def test_history_shows_the_updater_renewing_itself_newest_first(automatic):
     assert len(history) == 2 and history[1]['phase'] == 'completed'
     path.write_text(json.dumps({'schema': 1, 'state': 'trial'}))  # Not confirmed yet: not in the history.
     assert len(service.status()['history']) == 1
+
+
+def test_history_lists_updates_whose_folders_were_cleaned(automatic):
+    service, now, data, host = automatic
+    service.check()
+    assert service.startup()['phase'] == 'completed'
+    install = service.registry.read()['installation_id']
+    (service.base / 'history.json').write_text(json.dumps([
+        {'operation_id': 'old', 'installation_id': install, 'phase': 'rolled_back', 'reason': 'x',
+         'changes': ['hub'], 'updated_at': now[0] - 100},
+        {'operation_id': 'half', 'installation_id': install, 'phase': 'failed', 'reason': 'Superseded',
+         'changes': ['hub'], 'updated_at': now[0] - 50},
+        {'operation_id': 'other', 'installation_id': 'another-pc', 'phase': 'completed',
+         'changes': ['hub'], 'updated_at': now[0] - 10}]))
+    history = service.status()['history']
+    assert [entry['phase'] for entry in history] == ['completed', 'rolled_back']
+    assert history[1] == {'operation_id': 'old', 'phase': 'rolled_back', 'changes': ['hub'],
+                          'updated_at': now[0] - 100}

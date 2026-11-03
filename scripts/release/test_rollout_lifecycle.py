@@ -252,6 +252,10 @@ def test_completed_update_leaves_only_the_active_release(router_installed):
     assert not Path(old['code_path']).exists() and not older.exists() and not leftover.exists()
     assert Path(new['code_path']).exists() and Path(new['state_path']).exists()
     assert (helper.base / first).exists()  # The latest update folder stays (its journal is the update status).
+    # The deleted update's folder is gone, its line in the history is not.
+    kept = json.loads((helper.base / maintenance.HISTORY).read_text())
+    assert [entry['operation_id'] for entry in kept] == [None]  # The fixture journal had no id.
+    assert kept[0]['phase'] == 'completed' and set(kept[0]) == set(maintenance.HISTORY_FIELDS)
     assert unknown.exists()  # Only what Orion names `orion-<kind>-...` is ever removed.
     assert (data / 'persistent/tls.key').read_bytes() == b'fixture TLS sentinel'
     assert maintenance.prune_old_releases(registry, helper) == []
@@ -358,3 +362,16 @@ def test_stop_closes_only_the_orion_app_window(tmp_path, monkeypatch):
     child.terminate.assert_called_once()
     theirs.terminate.assert_not_called()
     other.terminate.assert_not_called()
+
+
+def test_history_keeps_only_the_latest_lines(tmp_path):
+    journals = [{'operation_id': str(n), 'phase': 'completed', 'updated_at': n, 'staged': 'x' * 1000}
+                for n in range(15)]
+    maintenance.remember(tmp_path, journals[:8])
+    maintenance.remember(tmp_path, journals[5:])  # Already-kept ones are not doubled.
+    kept = json.loads((tmp_path / maintenance.HISTORY).read_text())
+    assert [entry['operation_id'] for entry in kept] == [str(n) for n in range(14, 4, -1)]
+    assert 'staged' not in kept[0]  # Only the few fields the history shows, so the file stays small.
+    (tmp_path / maintenance.HISTORY).write_text('not json')
+    maintenance.remember(tmp_path, journals[:1])  # A damaged history is replaced.
+    assert len(json.loads((tmp_path / maintenance.HISTORY).read_text())) == 1

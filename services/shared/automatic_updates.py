@@ -350,6 +350,17 @@ class AutomaticUpdates:
                 if value.get('phase') == 'failed' and value.get('reason') == 'Superseded':
                     continue  # A half-published release replaced by the complete one is not a failure.
                 history.append({k: value.get(k) for k in ('operation_id', 'phase', 'changes', 'updated_at')})
+        # Updates whose folders the cleanup deleted leave one line each (package_maintenance.remember).
+        try:
+            kept = read_json(self.base / 'history.json', [])
+        except (ValueError, OSError):
+            kept = []
+        listed = {entry['operation_id'] for entry in history}
+        for value in kept if isinstance(kept, list) else []:
+            if (isinstance(value, dict) and value.get('installation_id') == record['installation_id']
+                    and value.get('operation_id') not in listed
+                    and not (value.get('phase') == 'failed' and value.get('reason') == 'Superseded')):
+                history.append({k: value.get(k) for k in ('operation_id', 'phase', 'changes', 'updated_at')})
         # The updater replaces itself outside any journal (bootstrap/self-update.json, the latest renewal only):
         # without this the history never showed it, although "Kurulu sürümler" had the new version.
         try:
@@ -362,6 +373,7 @@ class AutomaticUpdates:
         except (OSError, ValueError, TypeError):
             pass
         history.sort(key=lambda entry: entry.get('updated_at') or 0, reverse=True)
+        history = history[:10]
         pending = None
         if tx and tx['phase'] not in TERMINAL:
             pending = {'phase': tx['phase'], 'operation_id': tx['operation_id'],
