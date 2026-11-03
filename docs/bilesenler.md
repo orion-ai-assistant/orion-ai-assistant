@@ -156,6 +156,43 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   SHA-256 ve boyut tuttu. Bileşenler'in kurulum işiyle (geçici `ORION_PARTS_HOME`, PATH'te CUDA Toolkit yok) VoxCPM2
   CUDA'da ve Vulkan'da kuruldu, başladı, Orion'un TTS API'sinden ses üretti (`backend=CUDA0`, `Vulkan0`).
 - **Kalan:** klon yönetimi her motor için ayrı (OmniVoice'un klonları VoxCPM2'de geçmez).
+- **Akışlı / akışsız, cümle cümle** (2026-11-03; Orion TTS API'si `services/tts/api.py` üzerinden, Bileşenler'in
+  kurduğu motorlarla, Router'ın kendi isteğiyle: `steps` 15, `guidance_scale` 2.0, varsayılan ses; tek sunucu,
+  ısınma sayılmaz, 3 tekrarın ortancası). Akışsız: istekten tam WAV'a. Akışlı: ilk parça (dinleme başlar), son
+  parça; kesinti: ilk parçada çalmaya başlayan dinleyicinin beklediği toplam süre.
+
+  | Motor, donanım | Cümle (karakter) | Ses | Akışsız tam WAV | Akışlı ilk / son parça | Kesinti |
+  |---|---|---|---|---|---|
+  | OmniVoice CUDA | 1 (47) | 2.62 sn | 0.34 | (akış yok) | — |
+  | OmniVoice CUDA | 2 (67) | 3.47 | 0.51 | | |
+  | OmniVoice CUDA | 3 (79) | 4.32 | 0.61 | | |
+  | OmniVoice CUDA | 4 (77) | 4.43 | 0.57 | | |
+  | OmniVoice CUDA | 5 (238) | 13.53 | 1.63 | | |
+  | OmniVoice CUDA | 6 (187) | 10.43 | 1.22 | | |
+  | VoxCPM2 CUDA | 1 (47) | 2.56 | 0.73 | 0.32 / 0.90 | yok |
+  | VoxCPM2 CUDA | 2 (67) | 2.72 | 0.75 | 0.32 / 0.94 | yok |
+  | VoxCPM2 CUDA | 3 (79) | 5.12 | 1.42 | 0.34 / 1.81 | yok |
+  | VoxCPM2 CUDA | 4 (77) | 4.64 | 1.26 | 0.32 / 1.61 | yok |
+  | VoxCPM2 CUDA | 5 (238) | 12.48 | 3.25 | 0.34 / 4.23 | yok |
+  | VoxCPM2 CUDA | 6 (187) | 12.48 | 3.27 | 0.36 / 4.28 | yok |
+  | OmniVoice Vulkan | 1 / 5 | 2.63 / 13.65 | 0.42 / 1.98 | (akış yok) | — |
+  | VoxCPM2 Vulkan | 1 / 5 | 2.56 / 12.48 | 1.00 / 4.70 | 0.51 / 1.45, 0.54 / 6.86 | yok |
+  | OmniVoice CPU | 1 / 5 | 2.60 / 13.54 | 11.15 / 58.84 | (akış yok) | — |
+  | VoxCPM2 CPU | 1 / 5 | 2.72 / 12.48 | 15.27 / 64.14 | 6.14 / 20.18, 8.28 / 93.25 | 11.2 / 73.4 sn |
+
+  - **OmniVoice'un akışı yok:** MaskGIT bütün cümleyi birlikte çözer (30 sn'ye kadar tek parça), sunucusu PCM'i
+    ancak bitince gönderir; `api.py` OmniVoice'ta `stream`'i yok sayar (tam WAV döner). 15 adımla CUDA'da
+    tam WAV, sesin ~%12'si kadar sürede gelir; beklemek yine de cümle başına 0.3-1.6 sn.
+  - **VoxCPM2'nin akışı gerçek:** 160 ms'lik yamalar üretildikçe gelir; kartta ilk ses cümle boyundan bağımsız
+    ~0.33 sn (Vulkan 0.5 sn), kesinti yok. Akışlı toplam akışsızdan ~%30 uzun. CPU'da üretim oynatmadan yavaş:
+    akış dinleyiciyi bekletir (kullanılmamalı).
+  - **Orion'da akış kullanılmıyor:** Hub yanıtı cümlelere böler (ilk cümle hemen, sonra en çok 3 cümle / 600
+    karakterlik gruplar; `adaptive_tts.py`), her grubu Router'dan `stream: true` + WAV ister; ama Router'ın yerel
+    TTS sağlayıcısı (`orion-router/providers/local/tts.py`) TTS'e her zaman `stream: False` gönderir, bütün WAV'ı
+    bekleyip 64 KB'lık parçalara böler, Hub da yerel TTS'in WAV'ını tamamlanınca 24 kHz PCM'e çevirip çalar
+    (`tts_stream.py` `_batch_wav_pcm`). Yani akış cümle grubu düzeyinde; bir grubun içinde yok. VoxCPM2'nin 48 kHz
+    sesi orada filtresiz 2:1 doğrusal ara değerlemeyle (fiilen her ikinci örnek) 24 kHz'e indirilir (katlanma
+    riski; saf Python döngüsü).
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
