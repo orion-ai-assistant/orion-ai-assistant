@@ -35,19 +35,18 @@
       }
     },
     "omnivoice-gguf": {
-      "version": "tts-v1.0.0",
+      "version": "tts-v1.1.0",
       "windows": {
         "cpu": {
           "bundled": "services/tts/omnivoice-gguf/bin"
         },
         "cuda": {
           "min_compute": 7.5,
-          "bundled": "services/tts/omnivoice-gguf/bin",
           "archives": [
             {
-              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/tts-v1.0.0/omnivoice-gguf-windows-cuda.zip",
-              "sha256": "e54519c3136ac14a64aa4448278dd917b3693bb8d3c2766f1cab4215d6e31904",
-              "size": 134075395
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/tts-v1.1.0/omnivoice-gguf-windows-cuda.zip",
+              "sha256": "1c22599cc9ab453bbcdc776cff3817cac4766a60aa171878c7f6732a69014f92",
+              "size": 134097193
             }
           ]
         },

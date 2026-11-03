@@ -410,6 +410,43 @@ def test_an_engine_is_put_together_from_bundled_files_and_checked_wheels(parts, 
         httpd.shutdown()
 
 
+def pe_imports(path):
+    """The DLL names a Windows exe or DLL imports (its import table)."""
+    import struct
+    data = path.read_bytes()
+    pe = struct.unpack_from('<I', data, 0x3c)[0]
+    sections, optional_size = struct.unpack_from('<H', data, pe + 6)[0], struct.unpack_from('<H', data, pe + 20)[0]
+    optional = pe + 24
+    directories = optional + (112 if struct.unpack_from('<H', data, optional)[0] == 0x20b else 96)
+    table = [struct.unpack_from('<IIII', data, optional + optional_size + 40 * i + 8) for i in range(sections)]
+    offset = lambda rva: next(raw + rva - start for size, start, _, raw in table if start <= rva < start + size)
+    name = lambda rva: data[offset(rva):data.index(b'\0', offset(rva))].decode()
+    entry, names = offset(struct.unpack_from('<I', data, directories + 8)[0]), []
+    while struct.unpack_from('<I', data, entry + 12)[0]:
+        names.append(name(struct.unpack_from('<I', data, entry + 12)[0]))
+        entry += 20
+    return names
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows engines')
+def test_a_bundled_engine_brings_every_dll_it_needs():
+    """An engine made only of Orion's own files (no zip on top) starts on a PC that has nothing else: the TTS CPU
+    set once imported ggml-cuda.dll, which only the developer's bin/ had, and never opened (0xC0000135)."""
+    system32 = os.path.join(os.environ['SYSTEMROOT'], 'System32')
+    checked = 0
+    for engine in P.catalog()['engines']:
+        for hardware, recipe in (P.engine_builds(engine) or {}).items():
+            if not recipe.get('bundled') or recipe.get('archives') or recipe.get('wheels'):
+                continue
+            folder = P.ROOT / recipe['bundled']
+            for path in [*folder.glob('*.exe'), *folder.glob('*.dll')]:
+                missing = [dll for dll in pe_imports(path) if not dll.lower().startswith('api-ms-')
+                           and not (folder / dll).is_file() and not os.path.isfile(os.path.join(system32, dll))]
+                assert not missing, f'{engine} {hardware}: {path.name} needs {missing}'
+                checked += 1
+    assert checked >= 5  # tts-server.exe, omnivoice-codec.exe and the three ggml DLLs.
+
+
 def test_speech_packages_need_a_python_they_are_built_for(parts, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setenv('ORION_PARTS_HOME', str(parts))

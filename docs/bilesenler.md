@@ -148,8 +148,26 @@ Sıra önerisi yukarıdan aşağıya.
    - **STT:** Orion'un paketli Python'u (3.11) + faster-whisper/CTranslate2 paketleri (43 MB, sabit sürüm ve
      SHA-256, `uv pip compile` ile Hub paketleriyle uyumlu çözüldü). GPU için ek olarak NVIDIA cuBLAS/cuDNN/NVRTC
      (~1.3 GB, yalnızca "Ekran kartı" seçilince). Modeller bizim `stt-whisper-ct2-v1` yayınımızdaki SHA'lı ziplerden.
-   - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU dosyaları Orion paketinde, CUDA zipi `tts-v1.0.0` yayınından,
-     Vulkan zipi (bütün takım, Orion paketindekiler kullanılmaz) `tts-v1.1.0` yayınından.
+   - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU takımı Orion paketinde (`services/tts/omnivoice-gguf/bin`),
+     CUDA zipi `tts-v1.1.0` yayınından. Her biri bütün takım (`tts-server.exe`, `omnivoice-codec.exe`, `ggml*.dll`;
+     CUDA'da ek olarak `ggml-cuda.dll`), birbirine karışmaz: `ggml.dll` derlendiği arka ucun DLL'ine doğrudan
+     bağlı (`GGML_BACKEND_DL=OFF`), CUDA tarifi paketteki dosyaları hiç kullanmaz. İkisi de `GGML_NATIVE=OFF`
+     (AVX2 tabanı), yani yalnızca derlendiği işlemcide değil, AVX2'li her işlemcide çalışır. Derleme
+     `build_release.bat` (`cpu` ya da `cuda` yalnızca birini derler; CPU takımı `bin/`'e, CUDA takımı
+     `build/cuda/`'ya), CUDA zipi `package_release.py`. Vulkan zipi de bütün takım (`build_release_vulkan.bat`,
+     `package_release.py vulkan`), `tts-v1.1.0` yayınından.
+     - 2026-11-03'e kadar `bin/` CUDA derlemesindendi: `ggml.dll` `ggml-cuda.dll`'yi istiyordu, o pakete girmediği
+       için kurulu Orion'da "İşlemci (CPU)" seçeneği hiç açılmıyordu (0xC0000135). Geliştirici bilgisayarında
+       `bin/`'de izlenmeyen bir `ggml-cuda.dll` durduğu için görünmüyordu. `test_a_bundled_engine_brings_every_dll_it_needs`
+       artık yalnızca paketten kurulan her motorun içe aktardığı DLL'lerin yanında (ya da Windows'ta) olduğunu denetler.
+     - Doğrulandı (2026-11-03): yalnızca `bin/`'deki beş dosyanın olduğu bir klasörde, PATH'te yalnızca System32
+       varken `tts-server.exe` CPU'da ses üretti; çıktı eski (yerel işlemciye göre derlenmiş) takımla bayt bayt
+       aynı, hız da aynı (2,7 sn ses ~21 sn, 6 iş parçacığı). CUDA zipi tek başına açılıp CUDA0'da çalıştı.
+     - **Kalan (CUDA):** `ggml-cuda.dll` `cudart64_12.dll` ve `cublas64_12.dll` (o da `cublasLt64_12.dll`) istiyor;
+       eski zip de yeni zip de bunları getirmiyor. CUDA Toolkit'i PATH'te olmayan bir bilgisayarda TTS'in CUDA
+       seçeneği de 0xC0000135 ile açılmaz (bu bilgisayarda Toolkit kurulu olduğu için görünmüyor). Çözüm adayı:
+       CUDA tarifine llama.cpp'nin `cudart-llama-bin-win-cuda-12.4-x64.zip`'i (CUDA 12 içinde küçük sürüm uyumu)
+       ya da STT'nin NVIDIA paketleri.
    - Servisler `services/shared/part_python.py` ile başlar; `ORION_PART` varken servisler depodaki geliştirici
      `.env`'sini okumaz. Kaynaktan çalışan Hub başka bir Python sürümündeyse (3.14) STT kutucuğu bunu söyler.
    - Doğrulandı: kurulu Orion'un Python 3.11'iyle STT ve TTS gerçekten kuruldu; TTS'in ürettiği Türkçe cümle STT ile
