@@ -158,16 +158,17 @@ Sıra önerisi yukarıdan aşağıya.
      `package_release.py vulkan`), `tts-v1.1.0` yayınından.
      - 2026-11-03'e kadar `bin/` CUDA derlemesindendi: `ggml.dll` `ggml-cuda.dll`'yi istiyordu, o pakete girmediği
        için kurulu Orion'da "İşlemci (CPU)" seçeneği hiç açılmıyordu (0xC0000135). Geliştirici bilgisayarında
-       `bin/`'de izlenmeyen bir `ggml-cuda.dll` durduğu için görünmüyordu. `test_a_bundled_engine_brings_every_dll_it_needs`
-       artık yalnızca paketten kurulan her motorun içe aktardığı DLL'lerin yanında (ya da Windows'ta) olduğunu denetler.
+       `bin/`'de izlenmeyen bir `ggml-cuda.dll` durduğu için görünmüyordu. `test_an_engine_brings_every_dll_it_needs`
+       artık tariften kurulan her motorun içe aktardığı DLL'lerin yanında (ya da Windows'ta, ekran kartı
+       sürücüsünde) olduğunu denetler; arşivli tarifleri, zipleri bu bilgisayarda varsa (hiçbir şey indirmez).
      - Doğrulandı (2026-11-03): yalnızca `bin/`'deki beş dosyanın olduğu bir klasörde, PATH'te yalnızca System32
        varken `tts-server.exe` CPU'da ses üretti; çıktı eski (yerel işlemciye göre derlenmiş) takımla bayt bayt
        aynı, hız da aynı (2,7 sn ses ~21 sn, 6 iş parçacığı). CUDA zipi tek başına açılıp CUDA0'da çalıştı.
-     - **Kalan (CUDA):** `ggml-cuda.dll` `cudart64_12.dll` ve `cublas64_12.dll` (o da `cublasLt64_12.dll`) istiyor;
-       eski zip de yeni zip de bunları getirmiyor. CUDA Toolkit'i PATH'te olmayan bir bilgisayarda TTS'in CUDA
-       seçeneği de 0xC0000135 ile açılmaz (bu bilgisayarda Toolkit kurulu olduğu için görünmüyor). Çözüm adayı:
-       CUDA tarifine llama.cpp'nin `cudart-llama-bin-win-cuda-12.4-x64.zip`'i (CUDA 12 içinde küçük sürüm uyumu)
-       ya da STT'nin NVIDIA paketleri.
+     - **CUDA çalışma zamanı** (2026-11-03 düzeldi): `ggml-cuda.dll` `cudart64_12.dll` ve `cublas64_12.dll` (o da
+       `cublasLt64_12.dll`) istiyor; eski zip de yeni zip de bunları getirmiyordu, CUDA Toolkit'siz bilgisayarda TTS'in
+       CUDA seçeneği de 0xC0000135 ile açılmazdı. CUDA tarifinin ikinci arşivi artık llama.cpp'nin
+       `cudart-llama-bin-win-cuda-12.4-x64.zip`'i (yalnızca bu üç DLL, 391 MB, SHA-256 katalogda; CUDA 12 içinde
+       küçük sürüm uyumu). PATH'te Toolkit yokken iki zip birlikte CUDA0'da ses üretti.
    - Servisler `services/shared/part_python.py` ile başlar; `ORION_PART` varken servisler depodaki geliştirici
      `.env`'sini okumaz. Kaynaktan çalışan Hub başka bir Python sürümündeyse (3.14) STT kutucuğu bunu söyler.
    - Doğrulandı: kurulu Orion'un Python 3.11'iyle STT ve TTS gerçekten kuruldu; TTS'in ürettiği Türkçe cümle STT ile
@@ -206,7 +207,7 @@ Sıra önerisi yukarıdan aşağıya.
 13. ~~**TTS Vulkan derlemesi**~~ (2026-11-03 yapıldı, yayını kalan): OmniVoice `GGML_VULKAN=ON` ile derleniyor
     (`build_release_vulkan.bat`, LunarG Vulkan SDK gerekir; `python package_release.py vulkan` zipi ve SHA-256'yı
     verir; nasıl kurulup derlendiği: [tts-motoru-derleme.md](tts-motoru-derleme.md)). Zip bütün takımı taşır (`tts-server.exe`, `omnivoice-codec.exe`, `ggml*.dll`, `ggml-vulkan.dll`):
-    paketteki `bin/ggml.dll` `ggml-cuda.dll`'ye bağlı, onsuz açılmaz.
+    her `ggml.dll` derlendiği arka uca bağlı, takımlar karışmaz.
     - **İşlemler:** OmniVoice'un kullandığı her ggml işlemi Vulkan'da; CPU'ya düşen yok (`GGML_SCHED_DEBUG=2`:
       ses çözücü ve WAV'dan ses kaydı (HuBERT + DAC) tamamen `Vulkan0`'da, dil modeli grafiği "doğrudan" yolda,
       o yol yalnızca her işlem destekleniyorsa seçilir).
@@ -219,11 +220,19 @@ Sıra önerisi yukarıdan aşağıya.
       | Varsayılan ses, 22 adım | 0.17 | 0.21 | 0.20 | |
       | Klon ses, 32 adım | 0.45 | 0.77 | 0.67 | |
       | Klon ses, 22 adım | 0.32 | 0.53 | 0.46 | |
+      | Ekran kartı belleği: yüklenince | 1049 MB | 908 MB | | 0 |
+      | Ekran kartı belleği: konuşurken en çok (varsayılan / klon) | 1453 / 1523-1554 MB | 1301-1305 / 1364-1417 MB | | 0 |
+
+      Bellek: `nvidia-smi` kartın tamamında kullanılan bellek, sunucu açılmadan önceye göre fark; aynı model, aynı
+      uzun cümle, ikişer ölçüm. Vulkan ~150 MB az kullanıyor.
 
       Sunucunun açılmasında arka uç fark etmiyor: önce 28-79 sn'ye 1.5 sn göründü, ama CUDA model dosyalarını
       D: (HDD) üzerinden soğuk okuyordu, Vulkan ise önbellekten. Soğukken üçü de 13-54 sn, ısınmışken 1-2 sn.
       NVIDIA'da CUDA hızlı (Vulkan varsayılan seste 1.2-1.35, klon seste ~1.7 kat yavaş), bu yüzden TTS'in sırası
       `cuda, vulkan, cpu`. AMD/Intel kartta Vulkan CPU'dan 30-40 kat hızlı. Vulkan her yeni şekilde bir kez
       pipeline derler (sunucu açıldıktan sonraki ilk istekler birkaç saniye uzun).
-    - **Kalan:** zipi `tts-v1.1.0` yayınına yüklemek (kullanıcı; adres, SHA-256 ve boyut katalogda). Gerçek bir
-      AMD/Intel kartta denenmedi.
+    - **Yayın** (2026-11-03): CUDA ve Vulkan zipleri `tts-v1.1.0`'da. Katalogdaki adreslerden geri indirilip SHA-256
+      ve boyut tuttu. Bileşenler'in kendi kurulum işiyle (`local_parts job tts install`, geçici `ORION_PARTS_HOME`,
+      PATH'te CUDA Toolkit yok) TTS hem CUDA'da hem Vulkan'da kuruldu, başladı ve Orion'un TTS API'sinden ses üretti
+      (günlükte `CUDA0`, `Vulkan0`). Kullanıcılar bunu bir sonraki Hub yayınıyla alır (katalog Hub paketinde).
+    - **Kalan:** gerçek bir AMD/Intel kartta denenmedi.

@@ -4,6 +4,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -428,23 +429,49 @@ def pe_imports(path):
     return names
 
 
+def local_archive(piece):
+    """A zip of a recipe that is already on this PC with the catalog's SHA-256: the OmniVoice zips the developer
+    packaged (services/tts/omnivoice-gguf) or any in ORION_ENGINE_ARCHIVES. Tests never download them."""
+    name = piece['url'].rsplit('/', 1)[-1]
+    places = [P.ROOT / 'services/tts/omnivoice-gguf'] + [
+        Path(folder) for folder in os.environ.get('ORION_ENGINE_ARCHIVES', '').split(os.pathsep) if folder]
+    for place in places:
+        path = place / name
+        if path.is_file() and piece.get('sha256') and P.sha256(path) == piece['sha256']:
+            return path
+    return None
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows engines')
-def test_a_bundled_engine_brings_every_dll_it_needs():
-    """An engine made only of Orion's own files (no zip on top) starts on a PC that has nothing else: the TTS CPU
-    set once imported ggml-cuda.dll, which only the developer's bin/ had, and never opened (0xC0000135)."""
+def test_an_engine_brings_every_dll_it_needs(tmp_path):
+    """An engine put together from its recipe starts on a PC that has only Windows and the card's driver: the TTS
+    CPU set once imported ggml-cuda.dll, which only the developer's bin/ had, and the TTS CUDA zip needed
+    cudart64_12.dll and cuBLAS, which only a PC with the CUDA Toolkit had (0xC0000135 both times). A recipe with
+    zips is checked when all of them are here (`local_archive`)."""
+    import zipfile
     system32 = os.path.join(os.environ['SYSTEMROOT'], 'System32')
-    checked = 0
+    driver = {'nvcuda.dll', 'vulkan-1.dll'}  # Come with the graphics card's driver, not with Orion.
+    checked = set()
     for engine in P.catalog()['engines']:
         for hardware, recipe in (P.engine_builds(engine) or {}).items():
-            if not recipe.get('bundled') or recipe.get('archives') or recipe.get('wheels'):
+            if recipe.get('wheels'):
                 continue
-            folder = P.ROOT / recipe['bundled']
-            for path in [*folder.glob('*.exe'), *folder.glob('*.dll')]:
+            pieces = [local_archive(piece) for piece in recipe.get('archives', [])]
+            if None in pieces:
+                continue
+            folder = tmp_path / engine / hardware
+            if recipe.get('bundled'):
+                __import__('shutil').copytree(P.ROOT / recipe['bundled'], folder)
+            for piece in pieces:
+                with zipfile.ZipFile(piece) as bundle:
+                    bundle.extractall(folder)
+            for path in [*folder.rglob('*.exe'), *folder.rglob('*.dll')]:
                 missing = [dll for dll in pe_imports(path) if not dll.lower().startswith('api-ms-')
-                           and not (folder / dll).is_file() and not os.path.isfile(os.path.join(system32, dll))]
+                           and dll.lower() not in driver and not (path.parent / dll).is_file()
+                           and not os.path.isfile(os.path.join(system32, dll))]
                 assert not missing, f'{engine} {hardware}: {path.name} needs {missing}'
-                checked += 1
-    assert checked >= 5  # tts-server.exe, omnivoice-codec.exe and the three ggml DLLs.
+            checked.add((engine, hardware))
+    assert ('omnivoice-gguf', 'cpu') in checked  # Orion's own files: always here.
 
 
 def test_speech_packages_need_a_python_they_are_built_for(parts, monkeypatch):

@@ -56,7 +56,16 @@ klasörden çağırınca cmd betiğin kendisini bulamaz ("is not recognized").
 `ggml.dll`'si `ggml-cuda.dll`'yi, Vulkan'ınki `ggml-vulkan.dll`'yi ister. Bu yüzden her takım bütündür ve
 birbirine karışmaz: `bin/` yalnızca CPU, CUDA ve Vulkan zipleri kendi `tts-server.exe`, `omnivoice-codec.exe` ve
 `ggml*.dll`'lerini taşır. 2026-11-03'e kadar `bin/` CUDA derlemesindendi ve kurulu Orion'da CPU seçeneği
-açılmıyordu (0xC0000135); `test_a_bundled_engine_brings_every_dll_it_needs` bunu artık yakalar.
+açılmıyordu (0xC0000135); `test_an_engine_brings_every_dll_it_needs` bunu artık yakalar.
+
+**CUDA çalışma zamanı:** `ggml-cuda.dll` ayrıca `cudart64_12.dll`, `cublas64_12.dll` ve (onun üzerinden)
+`cublasLt64_12.dll` ister. Bunlar yalnızca CUDA Toolkit kurulu bilgisayarda vardır, sürücüyle gelmez. Bizim zipimize
+konmaz: CUDA tarifinin ikinci arşivi llama.cpp'nin `cudart-llama-bin-win-cuda-12.4-x64.zip`'idir (yalnızca bu üç
+DLL, 391 MB; SHA-256 katalogda). Derleme 12.1 ile yapılıyor, 12.4 çalışma zamanı aynı ana sürüm olduğu için onu
+çalıştırır (2026-11-03'te PATH'te Toolkit yokken CUDA0'da ses üretti; yalnızca bizim zip 0xC0000135 verdi).
+Test, ziplerin hepsi bu bilgisayardaysa (`services/tts/omnivoice-gguf/` ya da `ORION_ENGINE_ARCHIVES` klasörü,
+katalogdaki SHA-256'yla) tarifin kurduğu klasörü açıp her `.exe`/`.dll`'nin istediği DLL'in yanında, System32'de
+ya da ekran kartı sürücüsünde (`nvcuda.dll`, `vulkan-1.dll`) olduğunu denetler. Test hiçbir şey indirmez.
 `GGML_BACKEND_DL=ON` (tek takım, arka uçlar sonradan yüklenen DLL'ler) seçilmedi: arka uç DLL'i tam o
 `ggml-base.dll` derlemesine bağlanır, yani her yeniden derlemede bütün zipler yine yenilenir.
 
@@ -71,8 +80,10 @@ GGML_BACKEND=Vulkan0 services/tts/omnivoice-gguf/build/vulkan/tts-server.exe --m
 ```
 
 İstek: `POST /v1/audio/speech` `{"input": "...", "response_format": "wav", "seed": 42, "steps": 22}`. Klon ses için
-önce `POST /v1/audio/voices` `{"name", "ref_text", "rvq_b64" | "wav_b64"}`. Başka bir klasöre yalnızca bu altı
-dosyayı koyup çalıştırmak, zipin kendi kendine yettiğini gösterir.
+önce `POST /v1/audio/voices` `{"name", "ref_text", "rvq_b64" | "wav_b64"}`. Tarifin kendi kendine yettiğini
+görmek için: tarifin bütün arşivlerini boş bir klasöre açıp PATH'te yalnızca `C:\Windows\System32` varken
+çalıştır. Vulkan için tek zip yeter. CUDA için kendi zipimizle birlikte `cudart` zipi de gerekir; yalnızca bizim
+zip Toolkit'siz bilgisayarda açılmaz.
 
 ## 4. Paketlemek ve yayına koymak (herkesin indirebilmesi için)
 
@@ -80,7 +91,8 @@ dosyayı koyup çalıştırmak, zipin kendi kendine yettiğini gösterir.
    boyutu yazar. CPU takımı zip değildir: `bin/` commit'lenir, Hub paketiyle gider.
    Zip `services/tts/omnivoice-gguf/` altında durur; `.gitignore` onu dışarıda tutar.
 2. Zip, bu deponun GitHub yayınına yüklenir. Etiket `tts-v<sürüm>`; CUDA ve Vulkan zipleri `tts-v1.1.0`'da
-   (katalogdaki motor sürümü de `tts-v1.1.0`):
+   (katalogdaki motor sürümü de `tts-v1.1.0`). CUDA'nın ikinci arşivi (`cudart`) llama.cpp'nin yayınından
+   gelir, bizim yayına yüklenmez:
    ```bash
    gh release create tts-v1.1.0 services/tts/omnivoice-gguf/omnivoice-gguf-windows-cuda.zip services/tts/omnivoice-gguf/omnivoice-gguf-windows-vulkan.zip --title "TTS — Ses Sentezi Paketleri (CUDA, Vulkan)" --notes "OmniVoice tts-server: CUDA (NVIDIA) ve Vulkan (AMD, Intel, NVIDIA), her biri bütün takım."
    ```
@@ -98,11 +110,12 @@ dosyayı koyup çalıştırmak, zipin kendi kendine yettiğini gösterir.
   eskileri bu derlemeyle çalışmaz. Bu sınır `local_parts.json`'da tarifin `min_compute` alanıdır (`7.5`):
   kartın compute capability'si (`nvidia-smi --query-gpu=index,compute_cap`) altındaysa TTS'te CUDA seçeneği hiç
   çıkmaz, parça Vulkan'a (yoksa CPU'ya) geçer. Okunamazsa kart uygun sayılır. Derlenen `ggml-cuda.dll`'de
-  gerçekten ne olduğu `cuobjdump --list-elf --list-ptx bin/cuda/ggml-cuda.dll` ile görülür (2026-11-03: ELF
+  gerçekten ne olduğu `cuobjdump --list-elf --list-ptx build/cuda/ggml-cuda.dll` ile görülür (2026-11-03: ELF
   sm_86, sm_89; PTX sm_75, sm_80). Mimari listesi değişirse `min_compute` de değişir; öteki motorların sınırları
   [bilesenler.md](bilesenler.md)'de ("CUDA'nın alt sınırı").
+  CUDA tarifi CUDA 12.4 çalışma zamanını getirir; sürücünün CUDA 12 desteklemesi gerekir.
 - **Vulkan:** AMD, Intel ve NVIDIA (sürücü Vulkan 1.2+ desteklediği sürece). NVIDIA'da CUDA'dan yavaş
-  (RTX 3060 Ti: varsayılan seste 1.2-1.35, klon seste ~1.7 kat).
+  (RTX 3060 Ti: varsayılan seste 1.2-1.35, klon seste ~1.7 kat), ekran kartı belleğinde ~150 MB daha az.
 - **Sıra** (`local_parts.choices()`): TTS parçası `cuda, vulkan, cpu` listeler. NVIDIA'lı bilgisayarda varsayılan
   CUDA, yalnızca AMD/Intel kartı olanda ya da NVIDIA kartı 7.5'in altında olanda Vulkan, kartsızda CPU. CUDA
   seçeneği yalnızca `nvidia-smi` 7.5 ya da üstü (veya capability'si bilinmeyen) bir kart bulursa çıkar.
