@@ -240,7 +240,8 @@ Adım adım ne olur:
    sürüm commit'leri ve o dalda bekleyen diğer commit'ler. Başarısız olursa yayın bozulmaz, yalnızca uyarı
    yazılır (`--no-push` ile atlanır).
 
-En baştan önce: `.release/tools` yoksa `release.cmd` onu kurar, `.release/inputs` eksikse `release.py` indirir.
+En baştan önce: `.release/tools` yoksa ya da Python 3.14 değilse `release.cmd` onu (yeniden) kurar ve her seferinde
+`requirements.txt`'e getirir (değişiklik yoksa hızlı), `.release/inputs` eksikse `release.py` indirir.
 
 Ara dosyalar (`.tmp` altındakilerin hepsi silinebilir; `.release` silinmemeli ama silinirse kendiliğinden yeniden kurulur):
 - `.tmp/build-cache`: önbellek, silinebilir.
