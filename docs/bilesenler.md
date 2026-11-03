@@ -371,8 +371,23 @@ Sıra önerisi yukarıdan aşağıya.
 
       Sunucunun açılmasında arka uç fark etmiyor: önce 28-79 sn'ye 1.5 sn göründü, ama CUDA model dosyalarını
       D: (HDD) üzerinden soğuk okuyordu, Vulkan ise önbellekten. Soğukken üçü de 13-54 sn, ısınmışken 1-2 sn.
-      NVIDIA'da CUDA hızlı (Vulkan varsayılan seste 1.2-1.35, klon seste ~1.7 kat yavaş), bu yüzden TTS'in sırası
-      `cuda, vulkan, cpu`. AMD/Intel kartta Vulkan CPU'dan 30-40 kat hızlı. Vulkan her yeni şekilde bir kez
+      Bu tablodaki klon 17 sn'lik zephyr2 ve üç sunucu aynı anda açıktı; temiz ölçüm aşağıda.
+    - **Temiz ölçüm** (2026-11-03): kartta her seferinde tek `tts-server` (öncesinde ve boyunca başka TTS, whisper,
+      llama sunucusu yok; parçalar kapalı), turlar sırayla CUDA, Vulkan, CUDA, Vulkan; her turda ısınma sayılmaz,
+      altı cümlenin beş tekrarı; Windows GPU sayaçlarında paylaşılan bellek CUDA 78 MB, Vulkan 175 MB ve sabit
+      (taşma yok). Klon: zephyr2'nin ilk cümlesi (4.5 sn). Gerçek zaman oranı, turun ortancası (en az-en çok),
+      iki tur:
+
+      | | CUDA 1. tur | CUDA 2. tur | Vulkan 1. tur | Vulkan 2. tur |
+      |---|---|---|---|---|
+      | Varsayılan ses, 32 adım | 0.259 (0.247-0.303) | 0.247 (0.234-0.255) | 0.322 (0.295-0.326) | 0.303 (0.297-0.316) |
+      | Klon 4.5 sn, 32 adım | 0.291 (0.269-0.321) | 0.269 (0.258-0.275) | 0.405 (0.381-0.420) | 0.387 (0.385-0.414) |
+      | Varsayılan ses, 22 adım | 0.187 (0.170-0.208) | 0.170 (0.163-0.175) | 0.212 (0.203-0.227) | 0.207 (0.204-0.217) |
+      | Klon 4.5 sn, 22 adım | 0.208 (0.199-0.238) | 0.198 (0.188-0.201) | 0.270 (0.258-0.277) | 0.262 (0.258-0.278) |
+      | Kart belleği (sunucu, en çok) | 1693 MB | 1687 MB | 1448 MB | 1448 MB |
+
+      NVIDIA'da CUDA her durumda hızlı (Vulkan varsayılan seste 1.15-1.25, klon seste 1.3-1.45 kat yavaş), bu yüzden
+      TTS'in sırası `cuda, vulkan, cpu`. AMD/Intel kartta Vulkan CPU'dan 30-40 kat hızlı. Vulkan her yeni şekilde bir kez
       pipeline derler (sunucu açıldıktan sonraki ilk istekler birkaç saniye uzun).
     - **Yayın** (2026-11-03): CUDA ve Vulkan zipleri `tts-v1.1.0`'da. Katalogdaki adreslerden geri indirilip SHA-256
       ve boyut tuttu. Bileşenler'in kendi kurulum işiyle (`local_parts job tts install`, geçici `ORION_PARTS_HOME`,
