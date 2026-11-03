@@ -570,18 +570,20 @@ MB = 1048576
 # is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model'},
-        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama'}]}],
+        {'gguf': '*', 'label': 'Model', 'expect': '.gguf'},
+        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama', 'expect': 'mmproj .gguf'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model'}]}],
+        {'gguf': '*', 'label': 'Model', 'expect': '.gguf'}]}],
+    # `expect`: what a missing file is, the same way for every part (its kind of file; OmniVoice's two are its
+    # base and tokenizer GGUFs, as their names say).
     # One file, as whisper.cpp's own models come (ggml-small.bin, ggml-large-v3-turbo-q5_0.bin...), read from its
     # header, whatever its name (`expect` says what is wanted while it is missing); another model format put
     # there by mistake is named (_other_format).
     'stt': [{'id': 'ggml', 'label': 'whisper.cpp (ggml)', 'engine': 'whisper.cpp', 'files': [
-        {'whisper': True, 'label': 'Model', 'expect': 'whisper.cpp ggml .bin'}]}],
+        {'whisper': True, 'label': 'Model', 'expect': '.bin'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
-                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli'},
-                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü'}]},
+                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli', 'expect': 'base .gguf'},
+                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü', 'expect': 'tokenizer .gguf'}]},
             {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2', 'files': []}],
 }
 _SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')  # llama.cpp's own naming of a model split in pieces
@@ -772,6 +774,58 @@ def _descriptions():
     return _read_json(home() / 'user-models.json', {})
 
 
+def _clean_name(name):
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', str(name or '')).strip().rstrip('. ')
+    if not name:
+        raise PartError('Modele bir ad ver.')
+    if len(name) > 60:
+        raise PartError('Ad en çok 60 harf olabilir.')
+    return name
+
+
+def _clean_description(description):
+    description = ' '.join(str(description or '').split())
+    if len(description) > DESCRIPTION_MAX:
+        raise PartError(f'Açıklama en çok {DESCRIPTION_MAX} harf olabilir.')
+    return description
+
+
+def _describe(part_id, model_id, description, *, was=None):
+    descriptions = _descriptions()
+    descriptions.pop(f'{part_id}/{was or model_id}', None)
+    if description:
+        descriptions[f'{part_id}/{model_id}'] = description
+    _write_json(home() / 'user-models.json', descriptions)
+
+
+def edit_user_model(part_id, model_id, name, description=None):
+    """Rename one of the user's models (its folder) and set its description. The saved choice follows a new
+    name; a model its service has open keeps its name until the service stops (Windows will not move an open
+    file's folder). Returns its id."""
+    _not_moving()
+    part = spec(part_id)
+    model = model_spec(part, model_id)
+    if not model.get('user'):
+        raise PartError('Yalnızca kendi modellerin düzenlenir.')
+    name, description = _clean_name(name), _clean_description(description)
+    kind = next(place[0] for place in _places(part_id) if place[0]['id'] == model['kind'])
+    new_id = _user_id(part_id, kind, name)
+    folder = models_dir(part_id) / model['folder']
+    if name != folder.name:
+        if new_id != model_id and any(other['id'] == new_id for other in part['models']):
+            raise PartError('Bu adda bir model zaten var.')
+        if held(part, model_id):
+            raise PartError('Model çalışırken adı değişmez; önce durdur.')
+        try:
+            folder.rename(folder.with_name(name))
+        except OSError:
+            raise PartError('Klasörün adı değiştirilemedi; içindeki bir dosya açık olabilir.') from None
+        if (read_config().get(part_id) or {}).get('model') == model_id:
+            write_part_config(part_id, model=new_id)
+    _describe(part_id, new_id, description, was=model_id)
+    return new_id
+
+
 def add_user_model(part_id, name, kind_id=None, description=None):
     """Make the folder for a model the user brings, for the engine they chose: it shows at once (empty) and
     fills as they copy its files in. `description` shows under its name, as ours do. Returns its id."""
@@ -786,26 +840,15 @@ def add_user_model(part_id, name, kind_id=None, description=None):
         raise PartError('Böyle bir motor yok.')
     if kind['engine'] != part.get('engine'):
         raise PartError(f'{kind["label"]} motoru henüz eklenmedi.')
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', str(name or '')).strip().rstrip('. ')
-    if not name:
-        raise PartError('Modele bir ad ver.')
-    if len(name) > 60:
-        raise PartError('Ad en çok 60 harf olabilir.')
+    name, description = _clean_name(name), _clean_description(description)
     if any(model['id'] == _user_id(part_id, kind, name) for model in part['models']):
         raise PartError('Bu adda bir model zaten var.')
-    description = ' '.join(str(description or '').split())
-    if len(description) > DESCRIPTION_MAX:
-        raise PartError(f'Açıklama en çok {DESCRIPTION_MAX} harf olabilir.')
     try:
         (folder / name).mkdir(parents=True)
     except OSError:
         raise PartError('Bu adla klasör açılamadı; başka bir ad dene.') from None
     model_id = _user_id(part_id, kind, name)
-    descriptions = _descriptions()
-    descriptions.pop(f'{part_id}/{model_id}', None)  # A folder made again under an old name starts bare.
-    if description:
-        descriptions[f'{part_id}/{model_id}'] = description
-    _write_json(home() / 'user-models.json', descriptions)
+    _describe(part_id, model_id, description)  # A folder made again under an old name starts bare.
     return model_id
 
 

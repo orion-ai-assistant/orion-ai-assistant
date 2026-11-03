@@ -141,6 +141,24 @@ async def add_user_model(part_id: str, body: UserModel, request: Request,
     return {**await _status_body(), 'added': added}
 
 
+class UserModelEdit(BaseModel):
+    name: str
+    description: str | None = None
+
+
+@router.put('/{part_id}/user-models/{model_id}')
+async def edit_user_model(part_id: str, model_id: str, body: UserModelEdit, request: Request,
+                          current_user: str = Depends(get_current_user)):
+    """Rename one of the user's models and set its description; answers its (new) id with the status."""
+    _manage(request)
+    try:
+        edited = await asyncio.to_thread(local_parts.edit_user_model, part_id, model_id, body.name,
+                                         body.description)
+    except local_parts.PartError as error:
+        raise HTTPException(400, str(error)) from error
+    return {**await _status_body(), 'edited': edited}
+
+
 @router.post('/{part_id}/user-models/open')
 async def open_folder(part_id: str, model: str, request: Request, current_user: str = Depends(get_current_user)):
     """Show one of the user's model folders in this PC's file manager."""

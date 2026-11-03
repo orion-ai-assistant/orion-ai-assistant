@@ -796,6 +796,18 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     assert (gemma['main_files'], gemma['extra_file']) == (['gemma-4-E2B-it-Q3_K_S.gguf'], 'mmproj-BF16.gguf')
     gguf(folder / 'other.gguf', 'llama')  # Two models in one folder: which one is not guessed.
     assert P.model_spec(P.spec('llm'), 'custom-benim-qwen')['checklist'][0]['state'] == 'many'
+    # Renamed from the page: the folder moves, the saved choice and the description follow it.
+    P.write_part_config('llm', model='custom-benim-qwen')
+    assert P.edit_user_model('llm', 'custom-benim-qwen', 'Qwen 7B', 'Kod için') == 'custom-qwen-7b'
+    assert not folder.exists() and (P.user_dir('llm') / 'Qwen 7B' / 'qwen-7b-q4.gguf').is_file()
+    assert P.read_config()['llm']['model'] == 'custom-qwen-7b'
+    assert row('llm', 'custom-qwen-7b')['description'] == 'Kod için'
+    with monkeypatch.context() as patch:
+        patch.setattr(P, 'held', lambda *a, **k: True)
+        with pytest.raises(P.PartError, match='önce durdur'):
+            P.edit_user_model('llm', 'custom-qwen-7b', 'Başka')  # Its service has the file open.
+        assert P.edit_user_model('llm', 'custom-qwen-7b', 'Qwen 7B', '') == 'custom-qwen-7b'  # Words only: fine.
+    P.edit_user_model('llm', 'custom-qwen-7b', 'Benim Qwen')
     P.open_folder('llm', 'custom-benim-qwen')
     assert opened == [str(folder)]
     # Speech: one whisper.cpp file, whatever its name.
@@ -803,7 +815,7 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     stt = P.user_dir('stt') / 'whisper-tr'
     lines = P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']
     assert [(item['state'], item['label'], item['expect']) for item in lines] == [
-        ('missing', 'Model', 'whisper.cpp ggml .bin')]
+        ('missing', 'Model', '.bin')]
     whisper_ggml(stt / 'benim-modelim.bin')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
     assert whisper['complete'] and whisper['files'] == ['benim-modelim.bin'] and whisper['kind'] == 'ggml'
