@@ -642,7 +642,7 @@ def test_the_status_holds_facts_only_so_no_choice_waits_for_it(parts):
     the page works out with the click. The status never says it: a value only the Hub worked out once showed late
     on the page, so whatever the user chooses, every fact stays the same and only the choice changes."""
     card = lambda: next(part for part in P.status()['parts'] if part['id'] == 'llm')
-    facts = lambda value: {key: item for key, item in value.items() if key not in ('model', 'settings')}
+    facts = lambda value: {key: item for key, item in value.items() if key not in ('model', 'settings', 'vision_off')}
     before = card()
     assert not {'download_mb', 'engine_ready', 'engine_mb'} & set(before)
     assert not {'size_mb', 'downloaded'} & set(before['models'][0])
@@ -766,7 +766,16 @@ def test_the_extra_file_goes_alone_and_the_choice_stops_asking_for_it(parts):
     P.write_part_config('llm', enabled=True, model='gemma-4-e2b-it-q3-k-s', settings={'vision': True})
     P.delete_model('llm', 'gemma-4-e2b-it-q3-k-s', extra=True)
     assert (folder / 'gemma-4-E2B-it-Q3_K_S.gguf').is_file() and not (folder / 'mmproj-BF16.gguf').exists()
-    assert P.read_config()['llm']['settings']['vision'] is False
+    assert P.read_config()['llm']['vision_off'] == ['gemma-4-e2b-it-q3-k-s']  # That model's only.
+    assert P.effective(P.spec('llm'), P.hardware())[1]['vision'] is False
+    # Each model keeps its own switch: off for one is not off for another.
+    P.select('llm', vision_off=[])
+    P.select('llm', model='miniplm-qwen-200m', settings={'vision': False})  # No extra file: nothing to keep.
+    assert P.read_config()['llm']['vision_off'] == []
+    P.select('llm', model='gemma-4-e2b-it-q3-k-s', settings={'vision': False})
+    assert P.read_config()['llm']['vision_off'] == ['gemma-4-e2b-it-q3-k-s']
+    llm = next(part for part in P.status()['parts'] if part['id'] == 'llm')
+    assert llm['vision_off'] == ['gemma-4-e2b-it-q3-k-s']  # The page draws each model's switch from it.
     with pytest.raises(P.PartError):
         P.delete_model('llm', 'miniplm-qwen-200m', extra=True)  # It has no extra file.
 
@@ -815,7 +824,7 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     stt = P.user_dir('stt') / 'whisper-tr'
     lines = P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']
     assert [(item['state'], item['label'], item['expect']) for item in lines] == [
-        ('missing', 'Model', '.bin')]
+        ('missing', 'Model', 'model.bin')]
     whisper_ggml(stt / 'benim-modelim.bin')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')
     assert whisper['complete'] and whisper['files'] == ['benim-modelim.bin'] and whisper['kind'] == 'ggml'

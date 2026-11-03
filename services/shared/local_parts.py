@@ -570,20 +570,20 @@ MB = 1048576
 # is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model', 'expect': '.gguf'},
-        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama', 'expect': 'mmproj .gguf'}]}],
+        {'gguf': '*', 'label': 'Model', 'expect': 'model.gguf'},
+        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama', 'expect': 'mmproj.gguf'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model', 'expect': '.gguf'}]}],
-    # `expect`: what a missing file is, the same way for every part (its kind of file; OmniVoice's two are its
-    # base and tokenizer GGUFs, as their names say).
+        {'gguf': '*', 'label': 'Model', 'expect': 'model.gguf'}]}],
+    # `expect`: what a missing file is, the same way for every part: a plain file name of its kind (OmniVoice's
+    # two are its base and tokenizer GGUFs, as their own names say); any name does, the contents decide.
     # One file, as whisper.cpp's own models come (ggml-small.bin, ggml-large-v3-turbo-q5_0.bin...), read from its
     # header, whatever its name (`expect` says what is wanted while it is missing); another model format put
     # there by mistake is named (_other_format).
     'stt': [{'id': 'ggml', 'label': 'whisper.cpp (ggml)', 'engine': 'whisper.cpp', 'files': [
-        {'whisper': True, 'label': 'Model', 'expect': '.bin'}]}],
+        {'whisper': True, 'label': 'Model', 'expect': 'model.bin'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
-                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli', 'expect': 'base .gguf'},
-                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü', 'expect': 'tokenizer .gguf'}]},
+                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli', 'expect': 'base.gguf'},
+                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü', 'expect': 'tokenizer.gguf'}]},
             {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2', 'files': []}],
 }
 _SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')  # llama.cpp's own naming of a model split in pieces
@@ -765,7 +765,7 @@ def user_models(part):
     return models
 
 
-DESCRIPTION_MAX = 80
+NAME_MAX, DESCRIPTION_MAX = 40, 80  # The page counts down to these.
 
 
 def _descriptions():
@@ -778,8 +778,8 @@ def _clean_name(name):
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', str(name or '')).strip().rstrip('. ')
     if not name:
         raise PartError('Modele bir ad ver.')
-    if len(name) > 60:
-        raise PartError('Ad en çok 60 harf olabilir.')
+    if len(name) > NAME_MAX:
+        raise PartError(f'Ad en çok {NAME_MAX} harf olabilir.')
     return name
 
 
@@ -970,6 +970,14 @@ def clean_settings(part, values, hw, model=None):
     return result
 
 
+def _vision_off(entry):
+    """The models whose extra file (mmproj) the user turned off, from a part's saved entry. An entry from before
+    this was kept per model has one `vision` setting: it was the chosen model's."""
+    if 'vision_off' in entry:
+        return list(entry['vision_off'])
+    return [entry['model']] if entry.get('model') and (entry.get('settings') or {}).get('vision') is False else []
+
+
 def effective(part, hw, config=None):
     config = (read_config() if config is None else config).get(part['id'], {})
     model_id = config.get('model') or next((m['id'] for m in part.get('models', []) if m.get('recommended')), None)
@@ -977,6 +985,9 @@ def effective(part, hw, config=None):
     model_id = part.get('retired_models', {}).get(model_id, model_id)
     model = next((m for m in part.get('models', []) if m['id'] == model_id), None)
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
+    if 'vision' in settings and model is not None:
+        # Each model keeps its own: the extra file is on unless that model's was turned off.
+        settings['vision'] = model['id'] not in _vision_off(config)
     settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
     settings.pop('compute_type', None)  # Speech's on faster-whisper; a ggml model carries its own precision.
     if 'context_size' in settings:
@@ -1073,7 +1084,21 @@ def _not_moving():
         raise PartError('Modeller taşınıyor; bitince yeniden dene.')
 
 
+def _listening(port):
+    """Something on this PC listens on the port (None: cannot tell). Asked first because on Windows a connection
+    to a port nobody listens on is not refused at once: each such probe took the whole half-second timeout, and
+    the Bileşenler page waited 2 s for every status (four parts, most of them stopped)."""
+    try:
+        import psutil
+        return any(conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port
+                   for conn in psutil.net_connections('tcp'))
+    except Exception:
+        return None
+
+
 def answers(port, timeout=.5):
+    if _listening(port) is False:
+        return False
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(f'http://127.0.0.1:{port}/health', timeout=timeout) as response:
@@ -1175,6 +1200,7 @@ def part_status(part, hw, config, data):
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')),
             # The saved choice (what Başlat, Kur or Uygula uses).
             'model': model['id'] if model else None, 'settings': settings,
+            'vision_off': _vision_off(entry),
             'engines': {choice['id']: {'ready': engine_ready(part['engine'], choice['id'], data),
                                        'mb': round((engine_size(part['engine'], choice['id'], data) or 0) / MB)}
                         for choice in choices(part, hw)},
@@ -1263,15 +1289,27 @@ def cancel(part_id):
         (home() / 'jobs' / f'{part_id}.cancel').touch()
 
 
-def select(part_id, *, model=None, settings=None):
-    """Save the chosen model and settings. Nothing restarts: a running part keeps what it runs until the user
-    presses Uygula (`apply_choice`); a stopped one takes them when it starts, a new one when it is installed."""
+def select(part_id, *, model=None, settings=None, vision_off=None):
+    """Save the chosen model and settings, and which models have their extra file off (`vision_off`, each
+    model its own). Nothing restarts: a running part keeps what it runs until the user presses Uygula
+    (`apply_choice`); a stopped one takes them when it starts, a new one when it is installed."""
     data = catalog()
     part = spec(part_id, data)
     hw = hardware()
     values = {}
     if model is not None:
         values['model'] = model_spec(part, model)['id']
+    known = {item['id'] for item in part['models'] if item.get('mmproj') or item.get('user')}  # Ones with a switch.
+    if vision_off is not None:
+        values['vision_off'] = sorted({str(item) for item in vision_off} & known)
+    if settings is not None and 'vision' in settings:
+        # The chosen model's switch (an older page): kept for that model.
+        entry = read_config().get(part_id, {})
+        chosen = values.get('model') or (effective(part, hw)[0] or {}).get('id')
+        off = set(values['vision_off'] if 'vision_off' in values else _vision_off(entry))
+        off.discard(chosen) if settings['vision'] else off.add(chosen)
+        values['vision_off'] = sorted(off & known)
+        settings = {key: value for key, value in settings.items() if key != 'vision'}
     if settings is not None:
         target = model_spec(part, values['model']) if 'model' in values else effective(part, hw)[0]
         values['settings'] = {**(read_config().get(part_id, {}).get('settings') or {}),
@@ -1332,8 +1370,9 @@ def delete_model(part_id, model_id, *, extra=False, file=None):
     if file is not None and (not model.get('user') or file not in model.get('present', [])):
         raise PartError('Bu dosya bu modelin klasöründe yok.')
     entry = read_config().get(part_id, {})
-    if extra and (effective(part, hardware())[0] or {}).get('id') == model_id:
-        write_part_config(part_id, settings={**(entry.get('settings') or {}), 'vision': False})
+    if extra:
+        # Its extra file is gone: that model's choice stops asking for it (the others keep theirs).
+        write_part_config(part_id, vision_off=sorted({*_vision_off(entry), model_id}))
     if not held(part, model_id, extra=extra):
         _drop(part, model, extra, file)
         return

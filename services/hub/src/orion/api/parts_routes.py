@@ -19,6 +19,7 @@ router = APIRouter(prefix='/api/v1/parts')
 class PartChange(BaseModel):
     model: str | None = None
     settings: dict | None = None
+    vision_off: list[str] | None = None
 
 
 def _manage(request):
@@ -170,7 +171,8 @@ async def open_folder(part_id: str, model: str, request: Request, current_user: 
 async def change(part_id: str, change: PartChange, request: Request, current_user: str = Depends(get_current_user)):
     """Choose the model and/or advanced settings: saved only; a running part takes them on Uygula (/apply)."""
     _manage(request)
-    return await _act(local_parts.select, part_id, model=change.model, settings=change.settings)
+    return await _act(local_parts.select, part_id, model=change.model, settings=change.settings,
+                      vision_off=change.vision_off)
 
 
 class PartRemove(BaseModel):

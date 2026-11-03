@@ -251,7 +251,7 @@
       "models": [
         {
           "id": "whisper-small",
-          "name": "Whisper Small (q8_0)",
+          "name": "Whisper Small",
           "description": "Hafif ve hızlı; işlemcide de rahat çalışır.",
           "folder": "whisper-small",
           "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/",
@@ -266,7 +266,7 @@
         },
         {
           "id": "whisper-large-v3-turbo",
-          "name": "Whisper Large-v3 Turbo (q5_0)",
+          "name": "Whisper Large-v3 Turbo",
           "description": "Türkçede çok daha iyi; ekran kartıyla rahat, işlemcide yavaş.",
           "folder": "whisper-large-v3-turbo",
           "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/",
