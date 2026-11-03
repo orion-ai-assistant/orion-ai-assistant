@@ -5,10 +5,11 @@ echo  "build_release.bat cuda", "vulkan" or "cpu" builds one set; no argument bu
 echo  Needs Visual Studio 2022, git, CUDA Toolkit 12.x (cuda) and the LunarG Vulkan SDK (vulkan).
 echo ============================================================
 
-rem The source: tc-mb/llama.cpp-omni at a fixed commit (OpenBMB's own on-device path for VoxCPM2),
-rem with windows-iovec.patch (its MoE file reader does not build with MSVC otherwise).
-set REPO=https://github.com/tc-mb/llama.cpp-omni
-set COMMIT=d30f00feadb7ebce95bacd55b0d104e3ef501481
+rem The source: our fork of tc-mb/llama.cpp-omni (OpenBMB's own on-device path for VoxCPM2), branch orion:
+rem upstream d30f00f plus two commits: it builds with MSVC (ssize_t, struct iovec), and the TTS server runs one
+rem generation at a time and stops a whole-waveform request whose client hung up.
+set REPO=https://github.com/krstalacam/llama.cpp-omni
+set COMMIT=0f0b09497e8aeb3ecc1e7d36d42412776ead317a
 
 set WHAT=%~1
 if "%WHAT%"=="" set WHAT=all
@@ -28,8 +29,9 @@ if not exist "%SRC%\.git" (
 )
 cd /d "%SRC%"
 git -c core.longpaths=true fetch -q origin %COMMIT% 2>nul
+git remote set-url origin %REPO%
+git -c core.longpaths=true fetch -q origin %COMMIT% 2>nul
 git checkout -q -f %COMMIT% || exit /b 1
-git apply --check "%HERE%\windows-iovec.patch" 2>nul && git apply "%HERE%\windows-iovec.patch"
 cd /d "%HERE%"
 
 rem GGML_NATIVE=OFF: the sets run on other processors too (AVX2 baseline). Only llama-tts-server is built.

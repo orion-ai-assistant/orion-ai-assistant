@@ -131,10 +131,15 @@ zip Toolkit'siz bilgisayarda açılmaz.
 
 ## 7. VoxCPM2 motoru (llama.cpp-omni)
 
-- Kaynak: [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00feadb7ebce95bacd55b0d104e3ef501481`
-  (MIT), yalnızca `llama-tts-server` hedefi. `services/tts/voxcpm2-gguf/build_release.bat [cuda|vulkan|cpu]`
-  kaynağı `%TEMP%\ovx\src`'ye indirir, o commit'e geçer, `windows-iovec.patch`'i uygular (çatalın
-  `src/llama-moe-slot.cpp`'si POSIX `struct iovec` kullanıyor, MSVC'de tanımsız), `%TEMP%\ovx\b-<donanım>`'da derler
+- Kaynak: kendi fork'umuz [krstalacam/llama.cpp-omni](https://github.com/krstalacam/llama.cpp-omni), `orion` dalı
+  `0f0b09497e8aeb3ecc1e7d36d42412776ead317a` (MIT), yalnızca `llama-tts-server` hedefi. Üst depo
+  [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00f` üstüne iki commit: MSVC'de derlenir
+  (`src/llama-moe-slot.cpp` POSIX `ssize_t` / `struct iovec` kullanıyordu) ve TTS sunucusu üretimi tek tek yapar
+  (`server-voxcpm2.cpp` `generate_mutex`; önce httplib iki isteği aynı KV önbellekte çalıştırıp çöküyordu), akışsız
+  `/v1/audio/speech` istemci kopunca durur (`VoxCPM2GenerateParams::cancelled`, `decode_loop` her adımda sorar).
+  Yeni bir düzeltme o dala commit'lenir, `build_release.bat`'taki `COMMIT` güncellenir.
+  `services/tts/voxcpm2-gguf/build_release.bat [cuda|vulkan|cpu]` kaynağı `%TEMP%\ovx\src`'ye indirir, o commit'e
+  geçer, `%TEMP%\ovx\b-<donanım>`'da derler
   ve takımı `build\<donanım>\`'a kopyalar. Depo içindeki yol yine 260 karakter sınırına takılıyordu (git checkout
   bile yarıda kalır; `core.longpaths=true` ile indirilir).
 - Bayraklar: hepsinde `-DGGML_NATIVE=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF

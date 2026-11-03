@@ -67,7 +67,7 @@
       }
     },
     "voxcpm2-gguf": {
-      "version": "voxcpm2-v1.0.0",
+      "version": "voxcpm2-v1.0.1",
       "exe": "llama-tts-server",
       "env": {
         "ENGINE_NAME": "voxcpm2-gguf",
@@ -78,8 +78,8 @@
         "cpu": {
           "archives": [
             {
-              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-cpu.zip",
-              "sha256": "ef1617a09582315e7b1656b5023b87eb648f83ca8052f976f66be4b6bd2c3ee5", "size": 3580585
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.1/voxcpm2-gguf-windows-cpu.zip",
+              "sha256": "ae173c95023879c6686062531c08a20bf101bb0fb34f3a6bae15ccf37669f87f", "size": 3581732
             }
           ]
         },
@@ -87,8 +87,8 @@
           "min_compute": 7.5,
           "archives": [
             {
-              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-cuda.zip",
-              "sha256": "8d60cdeb2838869b487531aa9035e7c4e2cd2e13b93d91ea2b888230bd8f7544", "size": 145232758
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.1/voxcpm2-gguf-windows-cuda.zip",
+              "sha256": "8e96ae05256d8346aa4c336c1a37774b54825d2dbe9129eb973ef22a469262e6", "size": 145233758
             },
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
@@ -100,8 +100,8 @@
         "vulkan": {
           "archives": [
             {
-              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.0/voxcpm2-gguf-windows-vulkan.zip",
-              "sha256": "6f062c703280ba5e5a64c19363350c925812b4e7de0988abbd006cd7ca018445", "size": 20814730
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/voxcpm2-v1.0.1/voxcpm2-gguf-windows-vulkan.zip",
+              "sha256": "df7b78ded93a9575dbc57e402959dc0612a29d7c83e169c65c693040bf5160b9", "size": 20815880
             }
           ]
         }

@@ -1,2 +1,0 @@
-# Applied with git apply to llama.cpp-omni: kept byte for byte (no CRLF conversion on checkout).
-*.patch -text

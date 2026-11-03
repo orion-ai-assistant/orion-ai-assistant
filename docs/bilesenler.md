@@ -128,8 +128,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   (`VOXCPM2_BIN_DIR`, `MODEL_PATH` BaseLM, `ACOUSTIC_PATH`), sesler `*_voxcpm2-gguf.pt` (WAV örneği + metni; sunucu
   ses tutmaz, her istekte `reference_audio` + `prompt_text` gider). OmniVoice'un klonları VoxCPM2'de geçmez.
   Klon kuralı aynı (~5 sn önerilir, en çok 20 sn). Ses tasarımı: tarif metnin başına parantez içinde.
-- **Derleme:** `services/tts/voxcpm2-gguf/build_release.bat` (sabit commit + `windows-iovec.patch`: çatalın MoE dosya
-  okuyucusu MSVC'de derlenmiyordu), `package_release.py` zipleri (her biri bütün takım) ve SHA-256'ları verir;
+- **Derleme:** `services/tts/voxcpm2-gguf/build_release.bat` (kendi fork'umuz krstalacam/llama.cpp-omni, `orion`
+  dalı: MSVC düzeltmesi ve sunucuda tek seferde tek üretim + kopunca durma), `package_release.py` zipleri (her biri bütün takım) ve SHA-256'ları verir;
   ayrıntı [tts-motoru-derleme.md](tts-motoru-derleme.md).
 - **Ölçüm** (RTX 3060 Ti, kartta tek sunucu, aynı altı Türkçe cümle, üç tekrarın ortancası; gerçek zaman oranı):
   CUDA varsayılan ses 0.258, 4.5 sn klon 0.333; Vulkan 0.372 / 0.458 (OmniVoice: CUDA 0.25 / 0.27-0.29, Vulkan
@@ -251,8 +251,13 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     sürerken gelen yeni istek "inconsistent sequence positions" ile bozulur, sunucu çöker. Aynı yarış akışta da
     var (önceden de): akış kesilince sunucu sonraki parçada durur, ama hemen gelen istekle çakışırsa bozulur
     (süreç içinde kesip beklemeden yeni istek: 2 denemede çöktü; API üzerinden gerçek aralıklarla 4/4 sağlam).
-    Doğru düzeltme sunucuda: üretimi bir kilitle sıraya koymak (ve akışsız uç noktada da kopmayı denetlemek);
-    yama + üç derleme + yeni sürüm ister. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
+    **Düzeltildi (voxcpm2-v1.0.1, 2026-11-04):** fork'umuz krstalacam/llama.cpp-omni `orion` dalında sunucu
+    üretimi kilitle tek tek yapar, akışsız uç nokta istemci kopunca durur. Ölçüm (CUDA): akışı kesip beklemeden
+    yeni istek 36/36 sağlam (önce 0/18, sunucu çöküyordu); aynı anda iki istek ikisi de doğru, tek başına
+    üretilenle aynı bayt (önce biri 500); akışsız istek kesilince sunucu durur, sonraki kısa istek 0.74 sn (normali);
+    ses v1.0.0 ile bayt bayt aynı, hız aynı (akışsız 5. cümle 3.33 / 3.29 sn, akış ilk parça 0.11 sn). Bileşenler'den
+    kurulup CUDA ve Vulkan'da konuştu. OmniVoice'un sunucusu istekleri zaten sırayla işler; kesilen işi bitirir.
+    LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
     paylaşılan GPU belleği 160 → en çok 380 MB; taşma yok denecek kadar); LLM üretirken TTS ~3 kat yavaşlıyor
     (LLM de 100 → 32-94 token/sn), uzun cümlede üretim gerçek zamanın gerisine düşebiliyor. STT ölçülmedi:
     diskte STT modeli yok. Uçtan uca koşudaki 6.3 GB'ı LLM + VoxCPM2 tutuyordu.
