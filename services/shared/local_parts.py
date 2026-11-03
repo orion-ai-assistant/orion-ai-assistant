@@ -569,10 +569,10 @@ MB = 1048576
 # part's) is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model dosyası'},
+        {'gguf': '*', 'label': 'Model'},
         {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model dosyası'}]}],
+        {'gguf': '*', 'label': 'Model'}]}],
     # As the models people download have them: Systran's small and medium (older conversions, ours too) bring
     # vocabulary.txt and no preprocessor_config.json; large-v3 and turbo bring vocabulary.json and need
     # preprocessor_config.json (128 bands: without it the audio is prepared with 80 and refused). So either

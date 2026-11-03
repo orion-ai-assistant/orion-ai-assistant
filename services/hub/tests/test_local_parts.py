@@ -771,7 +771,7 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     model = P.model_spec(P.spec('llm'), 'custom-benim-qwen')
     assert (model['files'], model['mmproj'], model['complete']) == (['qwen-7b-q4.gguf'], 'vision.gguf', True)
     assert row('llm', 'custom-benim-qwen')['context_max'] == 32768
-    assert [item['label'] for item in model['checklist']] == ['Model dosyası', 'Görsel ve ses anlama']
+    assert [item['label'] for item in model['checklist']] == ['Model', 'Görsel ve ses anlama']
     gemma = row('llm', 'gemma-4-e2b-it-q3-k-s')  # Ours name their files too, under the same words.
     assert (gemma['main_files'], gemma['extra_file']) == (['gemma-4-E2B-it-Q3_K_S.gguf'], 'mmproj-BF16.gguf')
     gguf(folder / 'other.gguf', 'llama')  # Two models in one folder: which one is not guessed.
