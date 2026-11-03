@@ -771,6 +771,9 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     model = P.model_spec(P.spec('llm'), 'custom-benim-qwen')
     assert (model['files'], model['mmproj'], model['complete']) == (['qwen-7b-q4.gguf'], 'vision.gguf', True)
     assert row('llm', 'custom-benim-qwen')['context_max'] == 32768
+    assert [item['label'] for item in model['checklist']] == ['Model dosyası', 'Görsel ve ses anlama']
+    gemma = row('llm', 'gemma-4-e2b-it-q3-k-s')  # Ours name their files too, under the same words.
+    assert (gemma['main_files'], gemma['extra_file']) == (['gemma-4-E2B-it-Q3_K_S.gguf'], 'mmproj-BF16.gguf')
     gguf(folder / 'other.gguf', 'llama')  # Two models in one folder: which one is not guessed.
     assert P.model_spec(P.spec('llm'), 'custom-benim-qwen')['checklist'][0]['state'] == 'many'
     P.open_folder('llm', 'custom-benim-qwen')
@@ -781,6 +784,10 @@ def test_users_own_models_are_read_from_their_folders(parts, monkeypatch):
     (stt / 'config.json').write_text('{}')
     states = [item['state'] for item in P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']]
     assert states == ['ok', 'ok', 'missing', 'missing', 'missing']
+    # Each line says what the file is for; the name it must have shows while it is missing.
+    lines = P.model_spec(P.spec('stt'), 'custom-whisper-tr')['checklist']
+    assert [item['label'] for item in lines] == ['Model', 'Ayarlar', 'Sözlük', 'Sözcük listesi', 'Ses ayarları']
+    assert (lines[0]['names'], lines[3]['expect']) == (['model.bin'], 'vocabulary.json / vocabulary.txt')
     for name in ('tokenizer.json', 'vocabulary.txt'):  # As Systran's small brings them: no preprocessor file.
         (stt / name).write_text('x')
     whisper = P.model_spec(P.spec('stt'), 'custom-whisper-tr')

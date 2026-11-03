@@ -511,6 +511,7 @@
           "name": "Whisper Small",
           "description": "Hafif ve hızlı; işlemcide de rahat çalışır.",
           "folder": "whisper-small-official",
+          "source": "https://huggingface.co/Systran/faster-whisper-small",
           "archive": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-small-ct2.zip",
           "archive_sha256": "f04c6dadeef3493e357b96a7b65a68a0b1cae7f30ea74d8f6cf2ba9814e1a374",
           "files": [
@@ -527,6 +528,7 @@
           "name": "Whisper Large-v3 Turbo",
           "description": "Türkçede çok daha iyi; ekran kartıyla rahat, işlemcide yavaş.",
           "folder": "whisper-large-v3-turbo-ct2",
+          "source": "https://huggingface.co/openai/whisper-large-v3-turbo",
           "archive": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/stt-whisper-ct2-v1/whisper-large-v3-turbo-ct2.zip",
           "archive_sha256": "091af9c6f80f4cf6851ef8a46918e05040da0fb58c27c1269993508011b95d61",
           "files": [

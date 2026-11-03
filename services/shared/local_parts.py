@@ -551,8 +551,7 @@ EXTRAS = {(True, True): ('Görsel ve ses anlama', 'Resimleri ve sesleri anlar.')
 def extra_info(part, model):
     """The name of a model's extra file (mmproj) from what it understands, as the file says."""
     meta = model_meta(part, model, model['mmproj']) or {}
-    name, text = EXTRAS.get((meta.get('vision', False), meta.get('audio', False)), ('Görsel anlama', 'Resimleri anlar.'))
-    return name, f'{text} (mmproj dosyası)'
+    return EXTRAS.get((meta.get('vision', False), meta.get('audio', False)), ('Görsel anlama', 'Resimleri anlar.'))
 
 
 # --- The user's own models -----------------------------------------------------------------------------------
@@ -570,11 +569,10 @@ MB = 1048576
 # part's) is shown and cannot be added.
 USER_KINDS = {
     'llm': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Model dosyası (.gguf)'},
-        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Ek dosya (mmproj, .gguf)',
-         'hint': 'Resim ve ses anlamak için.'}]}],
+        {'gguf': '*', 'label': 'Model dosyası'},
+        {'gguf': 'clip', 'role': 'mmproj', 'optional': True, 'label': 'Görsel ve ses anlama'}]}],
     'embedding': [{'id': 'gguf', 'label': 'GGUF (llama.cpp)', 'engine': 'llama.cpp', 'files': [
-        {'gguf': '*', 'label': 'Embedding modeli (.gguf)'}]}],
+        {'gguf': '*', 'label': 'Model dosyası'}]}],
     # As the models people download have them: Systran's small and medium (older conversions, ours too) bring
     # vocabulary.txt and no preprocessor_config.json; large-v3 and turbo bring vocabulary.json and need
     # preprocessor_config.json (128 bands: without it the audio is prepared with 80 and refused). So either
@@ -582,15 +580,15 @@ USER_KINDS = {
     # model.bin). tokenizer.json always: nothing is fetched from the internet in place of a missing file.
     'stt': [{'id': 'faster-whisper', 'label': 'faster-whisper (CTranslate2 Whisper)', 'engine': 'faster-whisper',
              'files': [
-        {'names': ['model.bin'], 'label': 'model.bin', 'hint': 'Model'},
-        {'names': ['config.json'], 'label': 'config.json', 'hint': 'Ayarlar'},
-        {'names': ['tokenizer.json'], 'label': 'tokenizer.json', 'hint': 'Sözlük'},
-        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'vocabulary.json / .txt', 'hint': 'Sözcük listesi'},
-        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'preprocessor_config.json',
-         'hint': 'Ses ayarları; large-v3 ve turbo için gerekli'}]}],
+        {'names': ['model.bin'], 'label': 'Model'},
+        {'names': ['config.json'], 'label': 'Ayarlar'},
+        {'names': ['tokenizer.json'], 'label': 'Sözlük'},
+        {'names': ['vocabulary.json', 'vocabulary.txt'], 'label': 'Sözcük listesi'},
+        # Optional until model.bin says it hears more than 80 bands; then _whisper makes it required and says why.
+        {'names': ['preprocessor_config.json'], 'optional': True, 'label': 'Ses ayarları'}]}],
     'tts': [{'id': 'omnivoice', 'label': 'OmniVoice', 'folder': 'OmniVoice', 'engine': 'omnivoice-gguf', 'files': [
-                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli (.gguf)'},
-                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü (.gguf)'}]},
+                {'gguf': 'omnivoice-lm', 'label': 'Ses modeli'},
+                {'gguf': 'omnivoice-tokenizer', 'label': 'Ses çözücü'}]},
             {'id': 'voxcpm2', 'label': 'VoxCPM2', 'folder': 'VoxCPM2', 'engine': 'voxcpm2', 'files': []}],
 }
 _SPLIT = re.compile(r'-(\d{5})-of-\d{5}\.gguf$')  # llama.cpp's own naming of a model split in pieces
@@ -714,8 +712,10 @@ def _user_model(part, kind, path, model_id, folder):
             parts = [file for file in matches if _SPLIT.search(file.name)]
             if parts and len(parts) == len(matches):
                 matches = [min(parts, key=lambda file: file.name)]  # A split model loads from its first piece.
+        # `label` says what the file is for, `names` which file it is; `expect` the name it must have (an engine
+        # that loads its files by name), shown while it is missing.
         item = {'label': spec['label'], 'optional': bool(spec.get('optional')), 'hint': spec.get('hint'),
-                'role': spec.get('role'),
+                'role': spec.get('role'), 'expect': ' / '.join(spec.get('names') or []) or None,
                 'state': 'ok' if len(matches) == 1 else 'many' if matches else 'missing',
                 'names': [file.name for file in matches]}
         if len(matches) == 1:
@@ -723,6 +723,9 @@ def _user_model(part, kind, path, model_id, folder):
             meta = file_meta(matches[0]) if matches[0].suffix.lower() == '.gguf' else None
             if meta:
                 item['architecture'], item['context'] = meta['architecture'], meta['context']
+                if spec.get('role') == 'mmproj':  # What it understands, as the file says (as for ours).
+                    item['label'] = EXTRAS.get((meta.get('vision', False), meta.get('audio', False)),
+                                               (spec['label'],))[0]
         checklist.append(item)
         picked.append(matches[0] if len(matches) == 1 else None)
     used = {name for item in checklist for name in item['names']}
@@ -1119,7 +1122,7 @@ def part_status(part, hw, config, data):
                'main_there': item.get('complete', True) and all((folder / name).is_file() for name in item['files']),
                'extra': bool(item.get('mmproj')), 'extra_mb': item.get('mmproj_mb'),
                'extra_there': bool(item.get('mmproj')) and (folder / item.get('mmproj', '')).is_file(),
-               'extra_name': extra[0], 'extra_description': extra[1],
+               'extra_name': extra[0], 'main_files': item['files'], 'extra_file': item.get('mmproj'),
                'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
                'dims': meta.get('dims') if part['id'] == 'embedding' else None,
                'source': source_page(item)}

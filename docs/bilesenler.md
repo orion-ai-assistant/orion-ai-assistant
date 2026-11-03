@@ -74,7 +74,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   olan Kur'da alır. Neyle çalıştığı `run/<parça>/applied.json`'da. Başlatılamayan parça durur ve öyle kalır;
   servis günlüğü her başlatmada sıfırlanır, bellek yetmezliği gibi bilinen hatalar Türkçe söylenir.
 - **Modeller paneli:** her model bir kutucuk: adı ve etiketleri (Önerilen, Seçili, Çalışıyor), altta her
-  dosyası kendi satırında: ne olduğu, boyutu ve satırın sonunda o dosyanın kendi düğmesi (yoksa İndir, varsa
+  dosyası kendi satırında, bizim modellerde de kendi modellerinde de aynı düzende: üstte ne için olduğu (Model
+  dosyası, Görsel ve ses anlama, Sözlük...), altında hangi dosya olduğu (yoksa taşıması gereken ad), boyutu ve satırın sonunda o dosyanın kendi düğmesi (yoksa İndir, varsa
   Sil, inerken dönen simge). Durum yazısı yok: düğme dosyanın durumunu söyler. Katalog modelinin adının yanında kaynak
   düğmesi: modelin geldiği sayfayı açar (`source`: kataloğun `source`'u, yoksa Hugging Face deposunun sayfası;
   kullanıcının kendi modelinde yok). Ek dosyanın (mmproj) satırının
