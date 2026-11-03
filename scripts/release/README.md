@@ -17,7 +17,7 @@ Local equivalents, from the Hub repository. `release.cmd` does the first four li
 to stay); after a published round `release.py` pushes the release commits (`--no-push` keeps them local).
 
 ```powershell
-uv venv .release/tools --python 3.11
+uv venv .release/tools --python 3.14
 uv pip install --python .release/tools/Scripts/python.exe --require-hashes -r scripts/release/requirements.txt
 uv pip install --python .release/tools/Scripts/python.exe pytest
 python scripts/release/download_inputs.py .release/inputs

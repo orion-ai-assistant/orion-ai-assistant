@@ -1,8 +1,8 @@
 {
   "python": {
-    "filename": "python-3.11.9-embed-amd64.zip",
-    "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
-    "sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
+    "filename": "python-3.14.8-embed-amd64.zip",
+    "url": "https://www.python.org/ftp/python/3.14.8/python-3.14.8-embed-amd64.zip",
+    "sha256": "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310"
   },
   "redis": {
     "filename": "Redis-x64-5.0.14.1.zip",

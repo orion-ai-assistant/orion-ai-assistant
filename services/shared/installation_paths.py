@@ -181,7 +181,9 @@ def _validate_windows_acl(record):
         own_sid = record['current_sid']
         if not isinstance(own_sid, str) or not own_sid.startswith('S-1-'):
             raise ValueError()
-        allowed = {own_sid, 'S-1-5-18', 'S-1-5-32-544'}  # current user, SYSTEM, Administrators
+        # current user, SYSTEM, Administrators, and OWNER RIGHTS (S-1-3-4: stands for the owner, which must be
+        # allowed anyway; Python 3.13+ adds it to every directory it creates with mode 0o700)
+        allowed = {own_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4'}
         if record['owner_sid'] not in allowed:
             raise PathValidationError('Private directory is owned by another user')
         write_mask = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000
