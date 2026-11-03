@@ -6,6 +6,7 @@ import sys
 import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tts'))
@@ -50,3 +51,45 @@ def test_a_clone_follows_the_same_length_rule_and_wants_a_wav(tmp_path):
     with pytest.raises(ValueError) as refused:
         engine().encode_voice(str(mp3), '')
     assert 'WAV' in str(refused.value)
+
+
+def tone(freq, seconds=1.0, rate=48000):
+    t = np.arange(int(seconds * rate)) / rate
+    return (10000 * np.sin(2 * np.pi * freq * t)).astype(np.int16)
+
+
+def halved(x, pieces):
+    """x through HalfRate in the given byte sizes (odd ones too), as a stream arrives."""
+    half, data, out, at = engines.HalfRate(), x.tobytes(), [], 0
+    for size in pieces:
+        out.append(half.feed(data[at:at + size]))
+        at += size
+    out.append(half.feed(data[at:]))
+    out.append(half.flush())
+    return np.concatenate(out)
+
+
+def level(y):
+    return np.sqrt(np.mean(y[200:-200].astype(np.float64) ** 2))
+
+
+def test_48k_is_halved_with_the_voice_kept_and_nothing_above_12k_folded_in():
+    for freq in (440, 3000, 8000):
+        y = halved(tone(freq), [])
+        assert len(y) == 24000 and abs(level(y) / level(tone(freq)) - 1) < 0.02
+    for freq in (14000, 18000, 23000):  # Unfiltered, these would come back as 10, 6 and 1 kHz at full level.
+        assert level(halved(tone(freq), [])) < level(tone(freq)) * 0.001
+
+
+def test_the_pieces_join_seamlessly_whatever_their_size():
+    x = (tone(440) + tone(5000) // 2).astype(np.int16)
+    whole = halved(x, [])
+    assert np.array_equal(halved(x, [1, 3, 4096, 7, 333, 64, 9999]), whole)
+    assert np.array_equal(halved(x, [2] * 3000), whole)
+    # In line with the input (no delay): sample i of the output is input sample 2i, filtered.
+    assert np.abs(whole[100:-100].astype(int) - x[200:-200:2].astype(int)).max() < 200
+
+
+def test_a_stream_shorter_than_the_filter_still_halves():
+    assert len(halved(tone(440, seconds=20 / 48000), [5])) == 10
+    assert len(halved(np.array([], dtype=np.int16), [])) == 0

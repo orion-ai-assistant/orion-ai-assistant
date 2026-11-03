@@ -600,7 +600,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
     A cloned voice is its WAV sample and the sample's transcript, sent with every request (the server keeps no
     voices): the sample is processed again each time, so the same 5 s / 20 s rule as OmniVoice's applies."""
 
-    SAMPLE_RATE = 48000
+    SAMPLE_RATE = 24000  # Orion's whole speech path is 24 kHz mono 16-bit; the server's 48 kHz is halved here.
 
     def __init__(self, model_path: Optional[str] = None, acoustic_path: Optional[str] = None):
         super().__init__()
@@ -696,7 +696,11 @@ class VoxCPM2GGUFEngine(TTSEngine):
             return self.SAMPLE_RATE, np.array([], dtype=np.int16)
         try:
             with self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed)) as res:
-                return streamed_wav(res.read())
+                rate, audio = streamed_wav(res.read())
+            if rate == 2 * self.SAMPLE_RATE:
+                half = HalfRate()
+                audio = np.concatenate([half.feed(audio.tobytes()), half.flush()])
+            return self.SAMPLE_RATE, audio
         except Exception as e:
             logger.error(f"llama-tts-server request failed: {e}")
             return 500, np.array([], dtype=np.int16)
@@ -718,16 +722,66 @@ class VoxCPM2GGUFEngine(TTSEngine):
                 at = head.find(b"data")
                 if len(head) < at + 8:
                     head += res.read(at + 8 - len(head))
-                rest = head[at + 8:]
-                if rest:
-                    yield rest
-                while not (abort_event and abort_event.is_set()):
-                    chunk = res.read(4096)
-                    if not chunk:
+                half = HalfRate() if int.from_bytes(head[24:28], "little") == 2 * self.SAMPLE_RATE else None
+                pending = head[at + 8:]
+                while True:
+                    if pending:
+                        out = half.feed(pending).tobytes() if half else pending
+                        if out:
+                            yield out
+                    if abort_event and abort_event.is_set():
+                        return
+                    pending = res.read(4096)
+                    if not pending:
                         break
-                    yield chunk
+                if half:
+                    tail = half.flush().tobytes()
+                    if tail:
+                        yield tail
         except Exception as e:
             logger.error(f"llama-tts-server stream failed: {e}")
+
+
+class HalfRate:
+    """48 kHz -> 24 kHz, 16-bit mono, as the audio arrives: a windowed-sinc low-pass (cut at 11 kHz, below the new
+    Nyquist) and every second sample. The filter's past and the odd byte or sample carry over between pieces, so
+    the joins are seamless. (Dropping every other sample without the filter folds 12-24 kHz into the voice.)"""
+
+    TAPS = 63
+
+    def __init__(self):
+        n = np.arange(self.TAPS) - (self.TAPS - 1) / 2
+        cut = 11000 / 48000
+        h = 2 * cut * np.sinc(2 * cut * n) * np.blackman(self.TAPS)
+        self.h = h / h.sum()
+        self.history = np.zeros(self.TAPS - 1)
+        self.byte = b""
+        self.phase = 0  # Which input sample is the next kept one (0 or 1), counted over the whole stream.
+        self.pad = (self.TAPS - 1) // 2  # The filter's delay, given back at flush.
+
+    def feed(self, data: bytes) -> np.ndarray:
+        data = self.byte + data
+        even = len(data) & ~1
+        self.byte = data[even:]
+        x = np.frombuffer(data[:even], dtype=np.int16).astype(np.float64)
+        if not len(x):
+            return np.array([], dtype=np.int16)
+        joined = np.concatenate([self.history, x])
+        y = np.convolve(joined, self.h, mode="valid")  # One output per new input sample.
+        self.history = joined[-(self.TAPS - 1):]
+        # Skip the delay at the start so the output lines up with the input (no 0.6 ms of silence first).
+        skip = min(self.pad, len(y))
+        self.pad -= skip
+        y = y[skip:]
+        kept = y[self.phase::2]
+        self.phase = (self.phase + len(y)) % 2
+        return np.clip(np.round(kept), -32768, 32767).astype(np.int16)
+
+    def flush(self) -> np.ndarray:
+        """The last samples still inside the filter (its delay), once the input has ended."""
+        # Silence as long as the delay pushes them out; whatever delay is still unskipped (a stream shorter than
+        # the filter) is skipped from these, so the output always has half as many samples as the input.
+        return self.feed(np.zeros((self.TAPS - 1) // 2, dtype=np.int16).tobytes())
 
 
 # A cloned voice's sample goes into every request together with the new sentence, so its length costs on every
