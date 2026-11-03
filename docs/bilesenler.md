@@ -134,12 +134,28 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 - **Ölçüm** (RTX 3060 Ti, kartta tek sunucu, aynı altı Türkçe cümle, üç tekrarın ortancası; gerçek zaman oranı):
   CUDA varsayılan ses 0.258, 4.5 sn klon 0.333; Vulkan 0.372 / 0.458 (OmniVoice: CUDA 0.25 / 0.27-0.29, Vulkan
   0.30-0.32 / 0.39-0.41). NVIDIA'da CUDA önde, TTS'in `cuda, vulkan, cpu` sırası VoxCPM2'ye de uyar. Model ~4 sn'de
-  yüklenir. CPU ölçülmedi.
+  yüklenir.
+- **CPU** (2026-11-03, aynı altı cümle ve 4.5 sn klon, 32 adım, bir tur; Ryzen 5 5600X, OmniVoice 6 iş parçacığıyla): VoxCPM2 varsayılan
+  ses 4.74, klon 6.00; OmniVoice (paketteki yalnızca CPU `bin/`) 9.04 / 13.08. CPU'da VoxCPM2 iki kat hızlı ama
+  ikisi de gerçek zamandan çok yavaş: kartsız bilgisayarda yalnızca kısa cümleler için.
+- **Uçtan uca** (2026-11-03, geliştirici Hub'ının kendi `.local_parts`'ı, Bileşenler API'sinin çağırdığı
+  `select` + `start_job`/`apply_choice`; Orion TTS API'si 8810'da, aynı Türkçe cümle):
+
+  | Adım | Nasıl | Hazır | Arka uç | Ses / süre |
+  |---|---|---|---|---|
+  | OmniVoice + CUDA | Kur (motor indi) | 100 sn | CUDA0 | 2.71 sn / 1.1 sn |
+  | OmniVoice + Vulkan | Uygula (motor indi) | 23 sn | Vulkan0 | 2.71 sn / 1.1 sn |
+  | OmniVoice + CPU | Uygula (paketteki) | 20 sn | CPU | 2.71 sn / 21.0 sn |
+  | VoxCPM2 + CPU | Uygula (model ve motor değişti) | 23 sn | CPU | 2.72 sn / 12.8 sn |
+  | VoxCPM2 + Vulkan | Uygula | 26 sn | Vulkan0 | 2.56 sn / 1.3 sn |
+  | VoxCPM2 + CUDA | Uygula (motor + cudart indi) | 91 sn | CUDA0 | 2.56 sn / 1.0 sn |
+
+  Her geçişte eski sunucu kapandı (aynı anda tek TTS süreci); Kaldır (modeller kalsın) servisi ve
+  `llama-tts-server`'ı durdurdu, motorlar yerinde kaldı.
 - **Yayın** (2026-11-03): CUDA, Vulkan ve CPU zipleri `voxcpm2-v1.0.0`'da; katalogdaki adreslerden geri indirilip
   SHA-256 ve boyut tuttu. Bileşenler'in kurulum işiyle (geçici `ORION_PARTS_HOME`, PATH'te CUDA Toolkit yok) VoxCPM2
   CUDA'da ve Vulkan'da kuruldu, başladı, Orion'un TTS API'sinden ses üretti (`backend=CUDA0`, `Vulkan0`).
-- **Kalan:** sayfa (Flutter) seçilen modelin kendi motorunun boyutunu henüz model satırındaki `engines`'ten
-  almıyor, üstteki `engines` kayıtlı modelin motorudur. Klon yönetimi her motor için ayrı.
+- **Kalan:** klon yönetimi her motor için ayrı (OmniVoice'un klonları VoxCPM2'de geçmez).
 
   "Kaldır + indirilen dosyaları da sil" kullanıcının modellerini ayrıca sormadan silmez.
 - **Çalıştırma:** her parça Orion'un süreç yöneticisiyle (`process_lifecycle`) çalışır, yalnızca 127.0.0.1'i
