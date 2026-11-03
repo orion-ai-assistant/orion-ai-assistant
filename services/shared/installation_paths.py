@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import secrets
 import tempfile
+from contextlib import contextmanager
 
 from .installation_registry import validate_record
 
@@ -222,6 +224,19 @@ def validate_private_directory(path):
 
 
 SANDBOXED_APP_SID = 'S-1-15-'  # AppContainer package/capability SIDs: sandboxed apps of this same user
+
+
+@contextmanager
+def scratch_directory(prefix, parent):
+    """A temporary folder inside `parent` that inherits `parent`'s permissions. `tempfile` folders do not: on Python
+    3.13+ mkdtemp gives them a protected ACL with an OWNER RIGHTS entry, and a folder renamed out of one (a
+    package tree that becomes <Orion>/bootstrap) would be refused by the older Hubs' private-folder check."""
+    path = Path(parent) / (prefix + secrets.token_hex(8))
+    path.mkdir()
+    try:
+        yield str(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def ensure_private_directory(path):
