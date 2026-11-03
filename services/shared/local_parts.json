@@ -4,6 +4,7 @@
       "version": "b11026",
       "windows": {
         "cuda": {
+          "min_compute": 5.0,
           "archives": [
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-cuda-12.4-x64.zip",
@@ -40,12 +41,22 @@
           "bundled": "services/tts/omnivoice-gguf/bin"
         },
         "cuda": {
+          "min_compute": 7.5,
           "bundled": "services/tts/omnivoice-gguf/bin",
           "archives": [
             {
               "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/tts-v1.0.0/omnivoice-gguf-windows-cuda.zip",
               "sha256": "e54519c3136ac14a64aa4448278dd917b3693bb8d3c2766f1cab4215d6e31904",
               "size": 134075395
+            }
+          ]
+        },
+        "vulkan": {
+          "archives": [
+            {
+              "url": "https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/tts-v1.1.0/omnivoice-gguf-windows-vulkan.zip",
+              "sha256": "7cc264775cd59bfce4bc303ec25e5c50b506cc6a1f03ba59f05accd58d2a4c35",
+              "size": 18630280
             }
           ]
         }
@@ -121,6 +132,7 @@
               ]
             },
             "cuda": {
+              "min_compute": 7.5,
               "wheels": [
                 {
                   "name": "ctranslate2==4.8.4",
@@ -271,6 +283,7 @@
               ]
             },
             "cuda": {
+              "min_compute": 7.5,
               "wheels": [
                 {
                   "name": "ctranslate2==4.8.4",
@@ -527,6 +540,7 @@
       "script": "services/tts/api.py",
       "hardware": [
         "cuda",
+        "vulkan",
         "cpu"
       ],
       "models": [

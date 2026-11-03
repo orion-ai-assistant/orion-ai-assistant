@@ -1,7 +1,8 @@
 """
-OmniVoice-GGUF Release Packaging Tool (CUDA Only)
-=================================================
-Prepares the CUDA distribution zip and SHA256 checksum for GitHub Releases.
+OmniVoice-GGUF Release Packaging Tool (CUDA, Vulkan)
+====================================================
+Prepares the CUDA distribution zip and SHA256 checksum for GitHub Releases;
+`python package_release.py vulkan` prepares the Vulkan zip instead.
 
 Note: CPU binaries are already bundled directly in the Git repository (~2.4 MB).
 Only the heavy CUDA runtime (ggml-cuda.dll, ~370 MB uncompressed, ~127 MB compressed)
@@ -83,5 +84,58 @@ def package_cuda_release():
     print("=" * 65)
 
 
+# The Vulkan build is a whole set: the bundled ggml.dll in bin/ is linked to ggml-cuda.dll and cannot start
+# without it, so this zip brings its own ggml.dll (linked to ggml-vulkan.dll) and everything next to it.
+VULKAN_FILES = [
+    "tts-server.exe",
+    "omnivoice-codec.exe",
+    "ggml.dll",
+    "ggml-base.dll",
+    "ggml-cpu.dll",
+    "ggml-vulkan.dll",
+]
+
+VULKAN_ZIP_NAME = "omnivoice-gguf-windows-vulkan.zip"
+
+
+def package_vulkan_release():
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(root_dir, "build", "vulkan")
+
+    print("=" * 65)
+    print(" OmniVoice-GGUF Vulkan Release Packaging Tool")
+    print(f" Source directory: {build_dir}")
+    print("=" * 65)
+
+    missing = [name for name in VULKAN_FILES if not os.path.exists(os.path.join(build_dir, name))]
+    if missing:
+        print(f"[ERROR] Missing in {build_dir}: {', '.join(missing)}")
+        print("  Please build it first using build_release_vulkan.bat")
+        sys.exit(1)
+
+    zip_path = os.path.join(root_dir, VULKAN_ZIP_NAME)
+    print(f"\n[*] Creating {VULKAN_ZIP_NAME} ...")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for name in VULKAN_FILES:
+            path = os.path.join(build_dir, name)
+            print(f"    + {name} ({os.path.getsize(path) / (1024 * 1024):.2f} MB)")
+            zf.write(path, arcname=name)
+
+    size = os.path.getsize(zip_path)
+    sha = calculate_sha256(zip_path)
+    print("\n" + "=" * 65)
+    print(" PACKAGING COMPLETE!")
+    print("=" * 65)
+    print(f"  {VULKAN_ZIP_NAME} ({size / (1024 * 1024):.2f} MB)")
+    print(f"  SHA256: {sha}")
+    print(f"  size:   {size}")
+    print("  -> Upload this zip to the next tts-v... GitHub Release and put its url, sha256 and size")
+    print("     into services/shared/local_parts.json (omnivoice-gguf -> windows -> vulkan).")
+    print("=" * 65)
+
+
 if __name__ == "__main__":
-    package_cuda_release()
+    if sys.argv[1:] == ["vulkan"]:
+        package_vulkan_release()
+    else:
+        package_cuda_release()

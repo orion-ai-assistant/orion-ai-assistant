@@ -25,6 +25,7 @@ recipe for this system is shown but cannot be installed here yet. Two kinds of p
              (services/shared/part_python.py); no PyTorch anywhere
 """
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -272,7 +273,30 @@ def _nvidia(run=subprocess.run):
             except ValueError:
                 vram = None
             gpus.append({'index': int(cells[0]), 'name': cells[1], 'vram_mb': vram, 'vendor': 'nvidia'})
+    caps = _compute_caps(run) if gpus else {}
+    for gpu in gpus:
+        if gpu['index'] in caps:
+            gpu['compute'] = caps[gpu['index']]
     return gpus
+
+
+def _compute_caps(run=subprocess.run):
+    """{index: compute capability} of the NVIDIA cards. Asked on its own: a driver that does not know the field
+    still lists its cards (a card whose capability is unknown is taken to fit every CUDA build, cuda_cards())."""
+    try:
+        result = run(['nvidia-smi', '--query-gpu=index,compute_cap', '--format=csv,noheader'],
+                     capture_output=True, text=True, timeout=8, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    caps = {}
+    for line in result.stdout.splitlines() if result.returncode == 0 else []:
+        cells = [cell.strip() for cell in line.split(',')]
+        if len(cells) == 2 and cells[0].isdigit():
+            try:
+                caps[int(cells[0])] = float(cells[1])
+            except ValueError:
+                pass
+    return caps
 
 
 def _other_gpus(run=subprocess.run):
@@ -313,7 +337,8 @@ def hardware(*, refresh=False, run=subprocess.run):
         choices = ['metal', 'cpu'] if platform.machine().lower() in {'arm64', 'aarch64'} else ['cpu']
     else:
         # Vulkan first (the default): one build for every card, and on an RTX 3060 Ti it generated faster than
-        # the CUDA build (about 100 against 60-70 tokens a second). CUDA stays a choice; speech has only CUDA.
+        # the CUDA build (about 100 against 60-70 tokens a second). CUDA stays a choice. Speech lists its own
+        # order: recognition has only CUDA, and the speech voice puts CUDA before Vulkan (choices()).
         choices = (['vulkan'] if nvidia or others else []) + (['cuda'] if nvidia else []) + ['cpu']
     value = {'system': current, 'gpus': nvidia + others, 'choices': [{'id': c, 'label': HARDWARE_LABELS[c]} for c in choices],
              'recommended': choices[0]}
@@ -338,9 +363,41 @@ COMPUTE_TYPES = [{'id': 'int8_float16', 'label': 'int8 + float16 (önerilen)'},
 
 
 def choices(part, hw):
-    """The ways this part can run on this PC, best first."""
-    allowed = part.get('hardware') or [choice['id'] for choice in hw['choices']]
-    return [choice for choice in hw['choices'] if choice['id'] in allowed] or [{'id': 'cpu', 'label': HARDWARE_LABELS['cpu']}]
+    """The ways this part can run on this PC, best first: in the part's own order where it lists one (speech
+    runs faster on CUDA than on Vulkan on an NVIDIA card), else in this PC's."""
+    offered = {choice['id']: choice for choice in hw['choices']}
+    if 'cuda' in offered and _nvidia_cards(hw) and not cuda_cards(part, hw):
+        del offered['cuda']  # Every NVIDIA card is older than this part's CUDA build: Vulkan or the processor.
+    order = part.get('hardware') or list(offered)
+    return [offered[i] for i in order if i in offered] or [{'id': 'cpu', 'label': HARDWARE_LABELS['cpu']}]
+
+
+def _nvidia_cards(hw):
+    return [gpu for gpu in hw['gpus'] if gpu.get('vendor') == 'nvidia']
+
+
+@functools.lru_cache(maxsize=None)
+def _catalog_file():
+    """local_parts.json as shipped (choices() asks it often; catalog() also looks for the user's models)."""
+    return json.loads(CATALOG.read_text(encoding='utf-8'))
+
+
+def cuda_floor(engine):
+    """The lowest compute capability this engine's CUDA build has kernels for here, or None (no limit known).
+    Each one's source is in docs/bilesenler.md."""
+    return ((engine_builds(engine, _catalog_file()) or {}).get('cuda') or {}).get('min_compute')
+
+
+def cuda_cards(part, hw):
+    """The NVIDIA cards this part's CUDA build runs on. A card below its floor would load nothing ("no kernel
+    image"); one whose capability is unknown (an older driver, a cache from before) is taken to fit."""
+    floor = cuda_floor(part['engine']) if part.get('engine') else None
+    return [gpu for gpu in _nvidia_cards(hw) if floor is None or gpu.get('compute') is None or gpu['compute'] >= floor]
+
+
+def _numbered_cards(part, hw):
+    """The cards "Hangi ekran kartı" lists: where the part runs on CUDA here, only the ones its CUDA build runs on."""
+    return cuda_cards(part, hw) if any(c['id'] == 'cuda' for c in choices(part, hw)) else _nvidia_cards(hw)
 
 
 def default_settings(part, model, hw):
@@ -776,6 +833,13 @@ def _to_front(folder, wait=3.0):
     """Explorer opened by the Hub (a program in the background) sometimes came up behind the Orion window:
     Windows lets only the program in front give the front away. Joining the front window's input for a moment
     lets this one bring the folder's window there."""
+    to_front(lambda name, title: name == 'CabinetWClass' and (
+        title == folder.name or title.startswith(f'{folder.name} - ') or str(folder) in title), wait)
+
+
+def to_front(matches, wait=3.0):
+    """Bring the first visible window that `matches(class_name, title)` to the front once it shows (see
+    `_to_front`)."""
     import ctypes
     from ctypes import wintypes
     user = ctypes.WinDLL('user32', use_last_error=True)
@@ -786,9 +850,9 @@ def _to_front(folder, wait=3.0):
     def each(window, _):
         name, title = ctypes.create_unicode_buffer(64), ctypes.create_unicode_buffer(1024)
         user.GetClassNameW(window, name, 64)
-        if name.value == 'CabinetWClass' and user.IsWindowVisible(window):
+        if user.IsWindowVisible(window):
             user.GetWindowTextW(window, title, 1024)
-            if title.value == folder.name or title.value.startswith(f'{folder.name} - ') or str(folder) in title.value:
+            if matches(name.value, title.value):
                 found.append(window)
         return True
 
@@ -818,7 +882,7 @@ def advanced(part, hw, model=None):
     """The advanced settings a card shows (all have a default)."""
     fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': choices(part, hw)}]
     # Only NVIDIA cards are numbered for CUDA (CUDA_VISIBLE_DEVICES); the field shows when there is a choice.
-    nvidia = [gpu for gpu in hw['gpus'] if gpu.get('vendor') == 'nvidia']
+    nvidia = _numbered_cards(part, hw)
     if len(nvidia) > 1:
         fields.append({'key': 'gpu', 'label': 'Hangi ekran kartı', 'type': 'choice',
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
@@ -881,6 +945,8 @@ def effective(part, hw, config=None):
         settings['context_size'] = min(int(settings['context_size']), context_max(part, model))
     if settings['hardware'] not in {choice['id'] for choice in choices(part, hw)}:
         settings['hardware'] = choices(part, hw)[0]['id']  # A card that is gone, or a config copied from another PC.
+    if settings.get('gpu', 'all') != 'all' and settings['gpu'] not in {str(gpu['index']) for gpu in _numbered_cards(part, hw)}:
+        settings['gpu'] = 'all'  # That card is gone, or this part's CUDA build does not run on it.
     return model, settings
 
 
@@ -928,7 +994,7 @@ def _python_command(part, model, settings, data=None):
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
     if gpu and settings.get('gpu', 'all') != 'all':
-        env['CUDA_VISIBLE_DEVICES'] = settings['gpu']
+        env['CUDA_VISIBLE_DEVICES' if settings['hardware'] == 'cuda' else 'GGML_VK_VISIBLE_DEVICES'] = settings['gpu']
     return argv, env, int(port)
 
 
@@ -1073,18 +1139,20 @@ def status():
     prefetch_headers(data)
     hw = hardware()
     config = read_config()
-    return {'system': hw['system'], 'hardware': hw, 'parts': [part_status(p, hw, config, data) for p in data['parts']]}
+    from .parts_location import facts
+    return {'system': hw['system'], 'hardware': hw, 'parts': [part_status(p, hw, config, data) for p in data['parts']],
+            'location': facts()}
 
 
 # --- Actions (the Hub API calls these) -----------------------------------------------------------------------
 
-def _spawn(argv):
+def _spawn(argv, module='services.shared.local_parts'):
     """A job/serve process of its own: closing the window or ending a request never ends it."""
     env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8')
     (home() / 'jobs').mkdir(parents=True, exist_ok=True)
     log = (home() / 'jobs' / 'jobs.log').open('ab')
     try:
-        return subprocess.Popen([sys.executable, '-B', '-m', 'services.shared.local_parts', *argv], cwd=str(ROOT),
+        return subprocess.Popen([sys.executable, '-B', '-m', module, *argv], cwd=str(ROOT),
                                 env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                 creationflags=NO_WINDOW | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
     finally:

@@ -4,6 +4,8 @@ Source files are never deleted. Runtime, source code, Router, database, identity
 browser-profile migration are deliberately unsupported. Callers must hold consumers
 and download writers quiescent for the entire operation (including recovery).
 """
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 import hashlib
 import json
@@ -20,6 +22,37 @@ MARKER = '.orion-content-migration.json'
 
 class MigrationError(RuntimeError):
     """Preserve both trees and the journal; explicit repair may be required."""
+
+
+_progress = ContextVar('content_migration_progress', default=None)
+
+
+@contextmanager
+def reporting(callback):
+    """While inside, `callback(kind, size)` hears every block read for a hash ('hash') or copied ('copy'), so a
+    host can show how far a long move is. It must not raise."""
+    token = _progress.set(callback)
+    try:
+        yield
+    finally:
+        _progress.reset(token)
+
+
+def _report(kind, size):
+    callback = _progress.get()
+    if callback is not None and size:
+        callback(kind, size)
+
+
+class _Reported:
+    """A reader that reports what is copied through it."""
+    def __init__(self, stream):
+        self.stream = stream
+
+    def read(self, size=-1):
+        block = self.stream.read(size)
+        _report('copy', len(block))
+        return block
 
 
 def registry_revision(record):
@@ -91,6 +124,7 @@ def _hash(path):
     with path.open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(block)
+            _report('hash', len(block))
     return digest.hexdigest()
 
 
@@ -182,7 +216,7 @@ def _copy_files(source, destination, journal, path, gate, fault):
             _canonical(partial)
             if not partial.exists():
                 with original.open('rb') as reader, partial.open('xb') as writer:
-                    shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                    shutil.copyfileobj(_Reported(reader), writer, length=1024 * 1024)
                     writer.flush()
                     os.fsync(writer.fileno())
             if partial.stat().st_size != expected['size'] or _hash(partial) != expected['sha256']:

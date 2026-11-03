@@ -60,8 +60,9 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
     assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vision']  # Two cards: which one.
     assert keys('stt') == ['hardware', 'gpu', 'compute_type'] and keys('tts') == ['hardware', 'gpu']
-    # Speech runs on CUDA or the processor; there is no Vulkan build of it.
-    assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'cpu']
+    # The speech voice runs on CUDA, Vulkan or the processor; recognition has no Vulkan build.
+    assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
+    assert [c['id'] for c in by_id['stt']['advanced'][0]['options']] == ['cuda', 'cpu']
 
 
 def test_speech_services_run_on_orions_python_with_their_engine(parts):
@@ -83,6 +84,14 @@ def test_speech_services_run_on_orions_python_with_their_engine(parts):
     # Both files named (a user's own model may call them anything).
     assert env['MODEL_PATH'].endswith('omnivoice-base-Q8_0.gguf') and env['CODEC_PATH'].endswith('omnivoice-tokenizer-Q8_0.gguf')
     assert env['OMNIVOICE_BIN_DIR'] == str(P.engine_dir('omnivoice-gguf', 'cpu'))
+    # Vulkan: its own whole set (the bundled ggml.dll needs ggml-cuda.dll), the card picked the Vulkan way.
+    recipe = P.engine_recipe('omnivoice-gguf', 'vulkan')
+    assert recipe is None if P.system() != 'windows' else 'bundled' not in recipe and [a['url'].rsplit('/', 1)[-1] for a in recipe['archives']] == ['omnivoice-gguf-windows-vulkan.zip']
+    (P.engine_dir('omnivoice-gguf', 'vulkan')).mkdir(parents=True)
+    (P.engine_dir('omnivoice-gguf', 'vulkan') / '.complete').write_text('x')
+    argv, env, port = P.command(tts, P.model_spec(tts, 'omnivoice-gguf'), {'hardware': 'vulkan', 'gpu': '1'})
+    assert env['OMNIVOICE_BIN_DIR'] == str(P.engine_dir('omnivoice-gguf', 'vulkan'))
+    assert env['GGML_VK_VISIBLE_DEVICES'] == '1' and env.get('CUDA_VISIBLE_DEVICES') == os.environ.get('CUDA_VISIBLE_DEVICES')
 
 
 def test_another_system_shows_the_cards_but_cannot_install_yet(parts, monkeypatch):
@@ -95,6 +104,8 @@ def test_another_system_shows_the_cards_but_cannot_install_yet(parts, monkeypatc
 
 def test_graphics_cards_are_read_from_nvidia_smi():
     def run(argv, **kwargs):
+        if argv[0] == 'nvidia-smi' and 'compute_cap' in argv[1]:
+            return SimpleNamespace(returncode=0, stdout='0, 8.6\n1, 7.5\n')
         if argv[0] == 'nvidia-smi':
             return SimpleNamespace(returncode=0, stdout='0, NVIDIA GeForce RTX 3060, 12288, 581.0\n1, RTX 2060, 6144, 581.0\n')
         return SimpleNamespace(returncode=0, stdout='NVIDIA GeForce RTX 3060\nIntel(R) UHD Graphics 770\n')
@@ -102,12 +113,72 @@ def test_graphics_cards_are_read_from_nvidia_smi():
     if hw['system'] != 'windows':
         pytest.skip('Windows hardware layout')
     assert [gpu['name'] for gpu in hw['gpus']] == ['NVIDIA GeForce RTX 3060', 'RTX 2060', 'Intel(R) UHD Graphics 770']
-    # Vulkan first (the default); speech, which has no Vulkan build, starts on CUDA.
+    assert [gpu.get('compute') for gpu in hw['gpus']] == [8.6, 7.5, None]
+    # Vulkan first (the default); speech starts on CUDA: recognition has no Vulkan build, and the speech voice
+    # ran faster on CUDA than on Vulkan on an RTX 3060 Ti (docs/bilesenler.md).
     assert [choice['id'] for choice in hw['choices']] == ['vulkan', 'cuda', 'cpu'] and hw['recommended'] == 'vulkan'
     P._hardware.update(at=__import__('time').monotonic(), value=hw)
     assert [c['id'] for c in P.choices(P.spec('stt'), P._labelled(hw))] == ['cuda', 'cpu']
+    assert [c['id'] for c in P.choices(P.spec('tts'), P._labelled(hw))] == ['cuda', 'vulkan', 'cpu']
+    # An AMD or Intel card alone: the speech voice goes to it on Vulkan.
+    amd = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=0, stdout='AMD Radeon RX 7600\n')
+                     if argv[0] != 'nvidia-smi' else SimpleNamespace(returncode=1, stdout=''))
+    assert [c['id'] for c in P.choices(P.spec('tts'), amd)] == ['vulkan', 'cpu']
+    assert P.default_settings(P.spec('tts'), None, amd)['hardware'] == 'vulkan'
     nothing = P.hardware(refresh=True, run=lambda argv, **kwargs: SimpleNamespace(returncode=1, stdout=''))
     assert nothing['recommended'] == 'cpu'
+
+
+def card(name, compute, index=0):
+    gpu = {'index': index, 'name': name, 'vram_mb': 6144, 'vendor': 'nvidia'}
+    return gpu if compute is None else {**gpu, 'compute': compute}
+
+
+def on(*gpus):
+    return {'system': 'windows', 'gpus': list(gpus), 'recommended': 'vulkan',
+            'choices': [{'id': c, 'label': 'x'} for c in ('vulkan', 'cuda', 'cpu')]}
+
+
+def ids(part_id, hw):
+    return [c['id'] for c in P.choices(P.spec(part_id), hw)]
+
+
+def test_cuda_is_offered_only_where_the_card_runs_that_engine():
+    if P.system() != 'windows':
+        pytest.skip('Windows builds')
+    # Each CUDA build's lowest compute capability (docs/bilesenler.md says where each comes from).
+    assert [P.cuda_floor(e) for e in ('llama.cpp', 'omnivoice-gguf', 'faster-whisper')] == [5.0, 7.5, 7.5]
+    rtx3060 = on(card('NVIDIA GeForce RTX 3060', 8.6))
+    old = {part: ids(part, rtx3060) for part in ('embedding', 'llm', 'stt', 'tts')}
+    assert old['tts'] == ['cuda', 'vulkan', 'cpu'] and old['stt'] == ['cuda', 'cpu'] and 'cuda' in old['llm']
+    # A GTX 1060 (6.1): llama.cpp still has kernels for it, the speech engines do not (Vulkan, else the processor).
+    gtx1060 = on(card('NVIDIA GeForce GTX 1060 6GB', 6.1))
+    assert ids('embedding', gtx1060) == old['embedding'] and ids('llm', gtx1060) == old['llm']
+    assert ids('tts', gtx1060) == ['vulkan', 'cpu'] and ids('stt', gtx1060) == ['cpu']
+    assert P.default_settings(P.spec('tts'), None, gtx1060)['hardware'] == 'vulkan'
+    assert P.default_settings(P.spec('stt'), None, gtx1060) == {'hardware': 'cpu', 'gpu': 'all', 'compute_type': 'int8'}
+    # A saved CUDA choice moves too (effective()).
+    _, settings = P.effective(P.spec('tts'), gtx1060, {'tts': {'settings': {'hardware': 'cuda'}}})
+    assert settings['hardware'] == 'vulkan'
+    # Capability unknown (a driver without the field, or hardware.json from before): the card is taken to fit.
+    assert ids('stt', on(card('NVIDIA GeForce GTX 1060 6GB', None))) == ['cuda', 'cpu']
+    # Two cards: the card field lists only the ones that part's CUDA build runs on.
+    both = on(card('NVIDIA GeForce RTX 3060', 8.6), card('NVIDIA GeForce GTX 1060 6GB', 6.1, index=1))
+    gpu_ids = lambda part: [o['id'] for f in P.advanced(P.spec(part), both) if f['key'] == 'gpu' for o in f['options']]
+    assert gpu_ids('llm') == ['all', '0', '1'] and gpu_ids('tts') == []  # One card left: nothing to pick.
+    assert ids('tts', both) == ['cuda', 'vulkan', 'cpu']
+    _, settings = P.effective(P.spec('tts'), both, {'tts': {'settings': {'hardware': 'cuda', 'gpu': '1'}}})
+    assert settings['gpu'] == 'all'
+    _, settings = P.effective(P.spec('llm'), both, {'llm': {'settings': {'hardware': 'cuda', 'gpu': '1'}}})
+    assert settings['gpu'] == '1'
+
+
+def test_an_old_driver_without_compute_cap_still_lists_its_cards():
+    def run(argv, **kwargs):
+        if 'compute_cap' in argv[1]:
+            return SimpleNamespace(returncode=2, stdout='Field "compute_cap" is not a valid field to query.\n')
+        return SimpleNamespace(returncode=0, stdout='0, NVIDIA GeForce GTX 1060 6GB, 6144, 472.12\n')
+    assert P._nvidia(run) == [{'index': 0, 'name': 'NVIDIA GeForce GTX 1060 6GB', 'vram_mb': 6144, 'vendor': 'nvidia'}]
 
 
 def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(parts):

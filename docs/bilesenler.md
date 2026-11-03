@@ -16,12 +16,35 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 |---|---|
 | Katalog (parçalar, modeller, motor adresleri, işletim sistemine göre) | `services/shared/local_parts.json` |
 | Donanım, durum, işler, servisin başlatılması | `services/shared/local_parts.py` |
+| Modellerin yeri ve taşınması | `services/shared/parts_location.py` (+ `content_migration.py`) |
 | Hub API (`/api/v1/parts`) | `services/hub/src/orion/api/parts_routes.py` |
 | Hub açılınca kurulu parçaları başlatan bekçi | `services/hub/src/orion/api/main.py` (`keep_parts`) |
 | Flutter sayfası, model paneli, `offerPart` | `orion-ai-assistant-flutter/.../features/settings/components_page.dart` |
 
 - **Nerede durur:** kurulu Orion'da `%LOCALAPPDATA%\Orion\Parts` (modeller, kurulumun models konumu varsa
-  orada), kaynaktan çalışan Hub'da depo içindeki `.local_parts/`.
+  orada: `<konum>/parts/<parça>`), kaynaktan çalışan Hub'da depo içindeki `.local_parts/` (modeller
+  `.local_parts/models/<parça>`). Motorlar her zaman `Parts/engines` altında; yalnızca modeller taşınır.
+- **Modellerin yeri** (sayfanın üstü: "Modeller: <yol> · X GB · Değiştir"; `services/shared/parts_location.py`,
+  `/api/v1/parts/location/*`): yer `local_parts.location()`. Kurulu Orion'da `install.json`'un `locations.models`
+  konumu; kaynak Hub'da `.local_parts/models`, taşınınca kendi küçük kaydı (`.local_parts/location/install.json`;
+  kurulu Orion'un kaydına hiç yazmaz).
+  - Değiştir: alan şimdiki yerle dolu açılır (üstünde kayan etiket yok); yol yazılır ya da "Gözat…" Hub bilgisayarında Windows'un klasör penceresini açar (Orion
+    penceresinin önüne getirilir, `to_front`). Hub klasörü denetler (`check`: modeller tam olarak nereye gider,
+    o diskte ne kadar boş, neden olmaz); sayfa sığıp sığmadığını kendisi hesaplar ("Hedefte yer yetmiyor",
+    Taşı kapalı). İçinde başka dosya olan klasör seçilirse modeller onun `Orion Models` klasörüne gider. Ağ,
+    çıkarılabilir ya da NTFS olmayan disk, dolu klasör, şimdiki yerin içi kabul edilmez.
+  - Taşı: iş kendi sürecinde (`python -m services.shared.parts_location move <yol>`, durumu `jobs/move.json`).
+    Çalışan parçalar durur; `content_migration` her dosyayı kopyalar, kopyayı ve kaynağı SHA-256 ile denetler,
+    kayıttaki yeri değiştirir; duran parçalar yeni yerden yeniden başlar. Sayfa aşamayı (okunuyor, kopyalanıyor,
+    denetleniyor), payı, boyutu ve hızı gösterir. Taşınırken hiçbir parça başlamaz, inmez, silinmez
+    (`local_parts.moving`; bekçi de bekler). Yer yetmeyecekse iş hiç başlamaz.
+  - Eski klasör: kopya denetlenip yer değişince Hub onu kendisi siler (kullanıcının isteği, 2026-11-03: "başarıyla
+    taşıdıktan sonra sil orayı"). İçinde Orion dışından açık tutulan bir dosya yüzünden silinemezse sayfada "Eski
+    klasör silinemedi: <yol> · X GB [Kalsın] [Sil]" çıkar (Sil önce sorar). Yarıda kalan ya da başarısız taşıma eski
+    klasöre hiç dokunmaz, eski yeri kullanmaya devam eder; yalnızca kendi kopyaladığı (kendi işaretli) klasör
+    silinir ve günlüğü `migrations/undone/` altına alınır, bir sonraki taşımayı engellemez. Yer değişmişse
+    (kayıt yeni yeri gösteriyorsa) taşıma bitmiş sayılır.
+  - Kurulumun kaydında models konumu yoksa yer değiştirilemez (Değiştir görünmez).
 - **İşler:** indirme/kurulum Hub'ın açtığı ayrı bir süreçte çalışır (`python -m services.shared.local_parts job`).
   Pencereyi kapatmak işi durdurmaz; tam inen dosyalar (motor parçaları dahil) kalır, yarım kalan dosya baştan iner (kaldığı yerden eklemek bozuk model verebiliyordu; çoğu modelin SHA-256'sı yok). Durum
   `jobs/<parça>.json`'da: aşama, bayt, toplam, hız, hata, indirilen dosyaların rolü (`fetch`: model, ek).
@@ -86,8 +109,27 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 - **Yetki:** durumu oturum açmış herkes görür (telefon salt okunur). Kurma, kaldırma, ayar yalnızca Hub
   bilgisayarındaki Orion penceresinden (`update_routes.local_control`, güncellemelerle aynı kural).
 - **Donanım:** `nvidia-smi` ile NVIDIA kartları ve bellekleri; Windows'ta diğer kartların adları. Varsayılan:
-  ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; STT ve TTS'te yalnızca CUDA), yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
+  ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; STT'de yalnızca CUDA; TTS NVIDIA'da önce CUDA,
+  AMD/Intel kartta Vulkan: parçanın `hardware` sırası, `choices()`), yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
   Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
+- **CUDA'nın alt sınırı:** kartın compute capability'si ayrı bir `nvidia-smi --query-gpu=index,compute_cap`
+  çağrısıyla okunur (bu alanı bilmeyen eski sürücüde kart listesi kaybolmasın diye ayrı; okunamazsa kart uygun
+  sayılır, `hardware.json`'daki eski önbellek de öyle). Her CUDA tarifinde `min_compute` var; hiçbir NVIDIA kart
+  o sınıra yetmiyorsa o parçada CUDA seçeneği çıkmaz, parça Vulkan'a (varsa) ya da CPU'ya geçer; kaydedilmiş bir
+  CUDA seçimi de (`effective()`). Birden çok kartta "Hangi ekran kartı" yalnızca o parçanın CUDA derlemesinin
+  çalıştığı kartları listeler. Sınırlar, indirilen dosyaların içindeki GPU kodundan (fatbin: ELF = hazır kod,
+  PTX = sürücünün o karta derlediği ara kod; en düşük mimari sınırdır) 2026-11-03'te okundu:
+
+  | Motor | `min_compute` | Kaynak |
+  |---|---|---|
+  | llama.cpp b11026 (hafıza, LLM) | 5.0 | resmi `llama-b11026-bin-win-cuda-12.4-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 |
+  | OmniVoice `tts-v1.0.0` (TTS) | 7.5 | `CMakeLists.txt` `CMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real` (CUDA 12.1 ile); `bin/cuda/ggml-cuda.dll`: ELF sm_86, 89; PTX sm_75, 80 |
+  | faster-whisper / CTranslate2 4.8.4 (STT) | 7.5 | `ctranslate2.dll`: ELF sm_53-86, PTX sm_86 (kendisi 5.3); ama `nvidia-cudnn-cu12 9.27.0.42` `cudnn_ops64_9.dll` ve `cudnn_cnn64_9.dll`: ELF sm_75, 80, (86,) 90, 100, 120, 121, PTX yalnızca sm_121, yani cuDNN 7.5'ten başlıyor. Whisper'ın kodlayıcısındaki evrişimler cuDNN'den geçer. `nvidia-cublas-cu12 12.9.2.10` `cublas64_12.dll`: sm_50'den başlıyor, sınırı belirlemiyor |
+
+  Örnek: GTX 1060 (6.1) hafıza ve LLM'de CUDA'yı görür, TTS'te Vulkan ya da CPU, STT'de yalnızca CPU; GTX 16xx/RTX
+  20xx (7.5) ve sonrası her parçada CUDA'yı görür. Motor ya da cuDNN sürümü değişince sınır yeniden okunur:
+  `cuobjdump --list-elf --list-ptx <dll>` (CUDA 12.1'inki yeni cuDNN/cuBLAS DLL'lerinde sm_100+ girdilerinde
+  takılıyor; o zaman fatbin başlıkları doğrudan okunur: `0xBA55ED50` imzası, her girdide tür ve `sm` alanı).
 
 Doğrulandı (2026-11-02, bu bilgisayarda): hafıza parçası CPU motoru + Jina v5 Omni Nano ile gerçekten indirildi,
 kuruldu, `/health` "ok" ve `/v1/embeddings` vektör döndü; Kaldır servisi durdurdu; bekçi kurulu parçayı açtı;
@@ -106,7 +148,8 @@ Sıra önerisi yukarıdan aşağıya.
    - **STT:** Orion'un paketli Python'u (3.11) + faster-whisper/CTranslate2 paketleri (43 MB, sabit sürüm ve
      SHA-256, `uv pip compile` ile Hub paketleriyle uyumlu çözüldü). GPU için ek olarak NVIDIA cuBLAS/cuDNN/NVRTC
      (~1.3 GB, yalnızca "Ekran kartı" seçilince). Modeller bizim `stt-whisper-ct2-v1` yayınımızdaki SHA'lı ziplerden.
-   - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU dosyaları Orion paketinde, CUDA zipi `tts-v1.0.0` yayınından.
+   - **TTS:** omnivoice-gguf (`tts-server.exe`); CPU dosyaları Orion paketinde, CUDA zipi `tts-v1.0.0` yayınından,
+     Vulkan zipi (bütün takım, Orion paketindekiler kullanılmaz) `tts-v1.1.0` yayınından.
    - Servisler `services/shared/part_python.py` ile başlar; `ORION_PART` varken servisler depodaki geliştirici
      `.env`'sini okumaz. Kaynaktan çalışan Hub başka bir Python sürümündeyse (3.14) STT kutucuğu bunu söyler.
    - Doğrulandı: kurulu Orion'un Python 3.11'iyle STT ve TTS gerçekten kuruldu; TTS'in ürettiği Türkçe cümle STT ile
@@ -142,6 +185,27 @@ Sıra önerisi yukarıdan aşağıya.
       dizini modelin kimliği ve boyutuyla tutulmalı, model değişince arkada yeniden hesaplanmalı.
 12. **Tanıtım ekranı** (2026-11-03, sonra): Flutter uygulaması ilk açılınca uygulamanın nasıl kullanıldığını
     anlatan kısa bir tanıtım; içinde Bileşenler ekranına (hafıza, yerel model, ses) yönlendiren adım.
-13. **TTS Vulkan derlemesi:** OmniVoice motoru (`services/tts/omnivoice-gguf`, kendi ggml'i) şimdi CUDA 12.1 ve CPU
-    için derleniyor. `GGML_VULKAN=ON` ile derlenip denenirse AMD/Intel kartlarda da çalışabilir; OmniVoice'un
-    kullandığı her işlemin ggml'in Vulkan tarafında olması gerekir. Hız farkı ölçülerek anlaşılır.
+13. ~~**TTS Vulkan derlemesi**~~ (2026-11-03 yapıldı, yayını kalan): OmniVoice `GGML_VULKAN=ON` ile derleniyor
+    (`build_release_vulkan.bat`, LunarG Vulkan SDK gerekir; `python package_release.py vulkan` zipi ve SHA-256'yı
+    verir; nasıl kurulup derlendiği: [tts-motoru-derleme.md](tts-motoru-derleme.md)). Zip bütün takımı taşır (`tts-server.exe`, `omnivoice-codec.exe`, `ggml*.dll`, `ggml-vulkan.dll`):
+    paketteki `bin/ggml.dll` `ggml-cuda.dll`'ye bağlı, onsuz açılmaz.
+    - **İşlemler:** OmniVoice'un kullandığı her ggml işlemi Vulkan'da; CPU'ya düşen yok (`GGML_SCHED_DEBUG=2`:
+      ses çözücü ve WAV'dan ses kaydı (HuBERT + DAC) tamamen `Vulkan0`'da, dil modeli grafiği "doğrudan" yolda,
+      o yol yalnızca her işlem destekleniyorsa seçilir).
+    - **Ölçüm** (RTX 3060 Ti, aynı GGUF Q8_0, aynı tohum, altı Türkçe cümle, istekler sunucular arasında sırayla,
+      üç tekrarın ortancası; gerçek zaman oranı = sentez süresi / ses süresi):
+
+      | | CUDA | Vulkan | Vulkan, coopmat2 kapalı | CPU |
+      |---|---|---|---|---|
+      | Varsayılan ses, 32 adım | 0.24 | 0.31 | 0.29 | ~10 |
+      | Varsayılan ses, 22 adım | 0.17 | 0.21 | 0.20 | |
+      | Klon ses, 32 adım | 0.45 | 0.77 | 0.67 | |
+      | Klon ses, 22 adım | 0.32 | 0.53 | 0.46 | |
+
+      Sunucunun açılmasında arka uç fark etmiyor: önce 28-79 sn'ye 1.5 sn göründü, ama CUDA model dosyalarını
+      D: (HDD) üzerinden soğuk okuyordu, Vulkan ise önbellekten. Soğukken üçü de 13-54 sn, ısınmışken 1-2 sn.
+      NVIDIA'da CUDA hızlı (Vulkan varsayılan seste 1.2-1.35, klon seste ~1.7 kat yavaş), bu yüzden TTS'in sırası
+      `cuda, vulkan, cpu`. AMD/Intel kartta Vulkan CPU'dan 30-40 kat hızlı. Vulkan her yeni şekilde bir kez
+      pipeline derler (sunucu açıldıktan sonraki ilk istekler birkaç saniye uzun).
+    - **Kalan:** zipi `tts-v1.1.0` yayınına yüklemek (kullanıcı; adres, SHA-256 ve boyut katalogda). Gerçek bir
+      AMD/Intel kartta denenmedi.

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from orion.api.auth_routes import get_current_user
 from orion.api.update_routes import local_control
-from services.shared import local_parts
+from services.shared import local_parts, parts_location
 
 router = APIRouter(prefix='/api/v1/parts')
 
@@ -42,6 +42,60 @@ async def _status_body():
 async def parts(request: Request, current_user: str = Depends(get_current_user)):
     return JSONResponse({**await _status_body(), 'can_manage': local_control(request)},
                         headers={'Cache-Control': 'no-store'})
+
+
+# --- Where the models are (before the /{part_id} routes, which would take "location" for a part) ---
+
+class Place(BaseModel):
+    path: str
+
+
+async def _answer(function, *args):
+    try:
+        return await asyncio.to_thread(function, *args)
+    except local_parts.PartError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post('/location/check')
+async def check_location(body: Place, request: Request, current_user: str = Depends(get_current_user)):
+    """Where the models would go for a folder the user typed, that disk's free space, why it cannot be."""
+    _manage(request)
+    return await _answer(parts_location.check, body.path)
+
+
+@router.post('/location/pick')
+async def pick_location(request: Request, current_user: str = Depends(get_current_user)):
+    """A folder dialog on the Hub PC; answers its id at once (the choice: GET /location/pick/<id>)."""
+    _manage(request)
+    return {'id': await _answer(parts_location.pick)}
+
+
+@router.get('/location/pick/{key}')
+async def picked_location(key: str, request: Request, current_user: str = Depends(get_current_user)):
+    _manage(request)
+    return await _answer(parts_location.picked, key)
+
+
+@router.post('/location/move')
+async def move_location(body: Place, request: Request, current_user: str = Depends(get_current_user)):
+    """Move the models there: in the background, the running parts stop and start again from the new place."""
+    _manage(request)
+    return await _act(parts_location.start_move, body.path)
+
+
+@router.post('/location/old/delete')
+async def delete_old(body: Place, request: Request, current_user: str = Depends(get_current_user)):
+    """Delete an old copy a move left."""
+    _manage(request)
+    return await _act(parts_location.drop_old, body.path)
+
+
+@router.post('/location/old/keep')
+async def keep_old(body: Place, request: Request, current_user: str = Depends(get_current_user)):
+    """Keep an old copy (its files stay; the page stops asking)."""
+    _manage(request)
+    return await _act(parts_location.keep_old, body.path)
 
 
 @router.post('/{part_id}/install')
