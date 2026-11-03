@@ -3,6 +3,9 @@ import * as audioPlayer from './audio-player.js';
 
 let currentMode = "clone";
 let activeEngine = "";
+// A cloned voice's sample is processed again with every sentence: OmniVoice's limits come from /v1/model_info.
+let cloneLimits = null;
+let cloneSeconds = null;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -11,6 +14,12 @@ async function init() {
     try {
         const info = await api.getModelInfo();
         activeEngine = info.engine;
+        cloneLimits = info.clone || null;
+        const hint = document.getElementById('cloneHint');
+        if (!cloneLimits) hint?.classList.add('hidden');
+        else if (hint) hint.textContent = `Yaklaşık ${cloneLimits.recommended_seconds} saniyelik temiz bir kayıt önerilir. `
+            + `Örnek her konuşmada yeni cümleyle birlikte işlenir: daha uzun örnekler her konuşmanın süresini uzatır `
+            + `(en çok ${cloneLimits.max_seconds} saniye).`;
         const lowVramText = info.low_vram ? 'ACIK' : 'KAPALI';
         const idleCleanupText = Number.isFinite(info.idle_cleanup_mins) ? `${info.idle_cleanup_mins} dk` : '-';
         const devText = info.device || 'NVIDIA CUDA (GPU)';
@@ -130,6 +139,8 @@ function setupEventListeners() {
     safeSetClick('generateStreamBtn', () => startGeneration(true));
     safeSetClick('cloneBtn', handleClone);
     safeSetClick('delVoiceBtn', handleDeleteVoice);
+    const cloneFile = document.getElementById('cloneFile');
+    if (cloneFile) cloneFile.onchange = showCloneDuration;
     
     // Toggle buttons for advanced sections
     document.querySelectorAll('.toggle-btn').forEach(btn => {
@@ -265,6 +276,34 @@ async function startGeneration(isStream) {
     finally { btn.disabled = false; streamBtn.disabled = false; loader.style.display = "none"; }
 }
 
+// The chosen file's length, read in the browser: shown at once, with a warning past the recommendation.
+async function showCloneDuration() {
+    const line = document.getElementById('cloneDuration');
+    const file = document.getElementById('cloneFile').files[0];
+    cloneSeconds = null;
+    line.style.display = "none";
+    if (!file || !cloneLimits) return;
+    try {
+        const context = new AudioContext();
+        const audio = await context.decodeAudioData(await file.arrayBuffer());
+        context.close();
+        if (document.getElementById('cloneFile').files[0] !== file) return;  // Another file was chosen meanwhile.
+        cloneSeconds = audio.duration;
+    } catch (e) { return; }  // The server reads the file anyway and says what is wrong with it.
+    const seconds = cloneSeconds.toFixed(1);
+    if (cloneSeconds > cloneLimits.max_seconds) {
+        line.style.color = "#ef4444";
+        line.textContent = `Süre: ${seconds} sn. En çok ${cloneLimits.max_seconds} saniye olabilir; daha kısa bir parça seçin.`;
+    } else if (cloneSeconds > cloneLimits.recommended_seconds + 1) {
+        line.style.color = "#f59e0b";
+        line.textContent = `Süre: ${seconds} sn. Kabul edilir, ama her konuşma daha yavaş olur; yaklaşık ${cloneLimits.recommended_seconds} saniye önerilir.`;
+    } else {
+        line.style.color = "#10b981";
+        line.textContent = `Süre: ${seconds} sn.`;
+    }
+    line.style.display = "block";
+}
+
 async function handleClone() {
     const btn = document.getElementById('cloneBtn');
     const loader = document.getElementById('cloneLoader');
@@ -273,6 +312,9 @@ async function handleClone() {
     const file = document.getElementById('cloneFile').files[0];
 
     if (!name || !file) return alert("İsim ve dosya gerekli.");
+    if (cloneLimits && cloneSeconds > cloneLimits.max_seconds) {
+        return alert(`Ses örneği ${cloneSeconds.toFixed(1)} saniye; en çok ${cloneLimits.max_seconds} saniye olabilir.`);
+    }
 
     btn.disabled = true; loader.style.display = "block";
     const formData = new FormData();
@@ -280,9 +322,13 @@ async function handleClone() {
 
     try {
         const res = await api.cloneVoice(formData);
-        if (!res.ok) throw new Error("Klonlama başarısız");
-        document.getElementById('cloneStatus').style.display = "block";
-        setTimeout(() => document.getElementById('cloneStatus').style.display = "none", 3000);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.detail || "Klonlama başarısız");
+        const status = document.getElementById('cloneStatus');
+        status.style.color = body.warning ? "#f59e0b" : "#10b981";
+        status.textContent = body.warning || "Ses tensöre dönüştürüldü ve kaydedildi!";
+        status.style.display = "block";
+        setTimeout(() => status.style.display = "none", body.warning ? 8000 : 3000);
         loadVoices();
     } catch (e) { alert(e.message); }
     finally { btn.disabled = false; loader.style.display = "none"; }

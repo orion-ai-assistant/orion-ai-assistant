@@ -355,6 +355,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
             raise ValueError("Codec dosyası bulunamadı. Lütfen kurulumu kontrol edin.")
                 
         import tempfile, shutil
+        rvq_bytes = None
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_wav = os.path.join(tmp_dir, "ref.wav")
             shutil.copy2(audio_path, tmp_wav)
@@ -364,11 +365,14 @@ class OmniVoiceGGUFEngine(TTSEngine):
                 tmp_rvq = os.path.join(tmp_dir, "ref.rvq")
                 if os.path.exists(tmp_rvq):
                     with open(tmp_rvq, "rb") as f:
-                        return {"rvq_bytes": f.read(), "ref_text": ref_text}
+                        rvq_bytes = f.read()
             except Exception as e:
                 logger.error(f"Failed to encode voice with codec: {e}")
-                
-        raise ValueError("Ses dosyası bozuk veya uyumsuz formatta. Lütfen geçerli bir ses dosyası (örneğin temiz bir WAV) yükleyin.")
+        if not rvq_bytes:
+            raise ValueError("Ses dosyası bozuk veya uyumsuz formatta. Lütfen geçerli bir ses dosyası (örneğin temiz bir WAV) yükleyin.")
+        seconds = rvq_seconds(rvq_bytes)
+        check_clone_seconds(seconds)
+        return {"rvq_bytes": rvq_bytes, "ref_text": ref_text, "ref_seconds": seconds}
 
     def _register_voice_to_server(self, voice_cache: Any, target_name: str = None) -> str:
         if not voice_cache:
@@ -588,6 +592,39 @@ class OmniVoiceGGUFEngine(TTSEngine):
         finally:
             if is_temp_voice and target_voice:
                 self._delete_voice_from_server(target_voice)
+
+# A cloned voice's sample goes into every request together with the new sentence, so its length costs on every
+# one (RTX 3060 Ti, CUDA, 32 steps, real-time factor: no sample 0.24, 4.5 s sample 0.27, 17 s 0.46, 52 s 1.16;
+# docs/bilesenler.md). About 5 s is enough for the voice.
+CLONE_RECOMMENDED_SECONDS = 5
+# The upper limit: OmniVoice itself trims a sample past 20 s (upstream trim_long_audio), and well before the
+# model's context the card runs out: on 8 GB a 69 s sample took +4.9 GB and spoke at 2.6x real time, a 121 s
+# one spilled into system memory and needed over 15 minutes for one sentence.
+CLONE_MAX_SECONDS = 20
+RVQ_FRAMES_PER_SECOND = 25  # omnivoice-tokenizer: 24 kHz, hop 960.
+RVQ_BITS_PER_FRAME = 8 * 11  # 8 codebooks of 11 bits, packed with no header (omnivoice-gguf/src/rvq-file.h).
+
+
+def rvq_seconds(rvq_bytes: bytes) -> float:
+    """How long the audio behind an OmniVoice .rvq code stream is."""
+    return round(len(rvq_bytes) * 8 // RVQ_BITS_PER_FRAME / RVQ_FRAMES_PER_SECOND, 2)
+
+
+def check_clone_seconds(seconds: float) -> None:
+    if seconds > CLONE_MAX_SECONDS:
+        raise ValueError(
+            f"Ses örneği {seconds:.1f} saniye; en çok {CLONE_MAX_SECONDS} saniye olabilir. Örnek her konuşmada yeni "
+            f"cümleyle birlikte işlendiği için uzun örnek her konuşmayı yavaşlatır (17 saniyelik örnek 5 saniyelikten "
+            f"~1,7 kat yavaş). Yaklaşık {CLONE_RECOMMENDED_SECONDS} saniyelik temiz bir kayıt yeterli.")
+
+
+def clone_advice(seconds: float) -> str:
+    """What to tell the user about an accepted sample that is longer than recommended ('' when it is not)."""
+    if seconds <= CLONE_RECOMMENDED_SECONDS + 1:
+        return ""
+    return (f"Ses örneği {seconds:.1f} saniye. Kaydedildi, ama daha uzun örnekler her konuşmanın süresini uzatır; "
+            f"yaklaşık {CLONE_RECOMMENDED_SECONDS} saniyelik temiz bir kayıt önerilir.")
+
 
 def streamed_wav(wav_data: bytes) -> Tuple[int, np.ndarray]:
     """tts-server streams its WAV, so the header's sizes describe only the first part (a 2.4 s sentence came

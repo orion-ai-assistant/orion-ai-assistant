@@ -296,6 +296,25 @@ Sıra önerisi yukarıdan aşağıya.
      ile yeniden çöz, adres ve SHA-256'ları PyPI'den alıp kataloğa yaz (bunu yapan bir betik henüz depoda yok).
 3. **TTS ses klonları:** Bileşenler'in kurduğu TTS klonları `Parts/run/tts/voices` altında tutar; Orion'la gelen
    sesler kod klasöründe. Klon yönetimi ekranı yok.
+   - **Örneğin uzunluğu** (2026-11-03): örneğin kodları bir kez çıkarılıp saklanır, ama örnek her konuşmada yeni
+     cümleyle birlikte modelden geçer; uzun örnek her konuşmayı yavaşlatır. Önerilen ~5 sn, üst sınır 20 sn
+     (`services/tts/engines.py` `CLONE_RECOMMENDED_SECONDS`, `CLONE_MAX_SECONDS`). Süre kodlardan hesaplanır
+     (`rvq_seconds`: 8 kod kitabı x 11 bit, saniyede 25 kare). 20 sn üstü Türkçe nedeniyle reddedilir; 6 sn üstü
+     kaydedilir ama uyarılır (`/v1/voices/clone` yanıtında `seconds`, `warning`). TTS paneli (`services/tts/dashboard`,
+     tek ses ekleme yeri) seçilen dosyanın süresini hemen gösterir; sınırlar `/v1/model_info` `clone` alanından.
+   - **Ölçüm** (RTX 3060 Ti, CUDA, zephyr2'nin 17 sn'lik kaydı cümle sonlarından kesilip ve art arda eklenip, altı
+     Türkçe cümle, üç tekrarın ortancası; gerçek zaman oranı, klonsuz ses 0.24):
+
+     | Örnek | 4.5 sn | 9 sn | 13.4 sn | 17 sn | 34 sn | 52 sn |
+     |---|---|---|---|---|---|---|
+     | 32 adım | 0.27 | 0.33 | 0.41 | 0.46 | 0.76 | 1.16 |
+     | 22 adım | 0.20 | 0.24 | 0.28 | 0.31 | 0.53 | 0.83 |
+
+   - **Neden 20 sn:** OmniVoice'un kendisi 20 sn'den uzun örneği kırpar (`omnivoice/utils/audio.py`
+     `trim_long_audio`, demosu 3-10 sn önerir). Modelin bağlamı (40960 token, ~27 dk) sınır değil; kart belleği çok
+     önce biter: 8 GB'ta 69 sn'lik örnek +4.9 GB alıp gerçek zamandan 2.6 kat yavaş konuştu, 121 sn'lik sistem
+     belleğine taştı ve tek cümle 15 dakikayı geçti. Daha küçük kartta sınır daha aşağıda olur.
+   - Eski uzun klonlar (zephyr2 17 sn) çalışmaya devam eder; denetim yalnızca yeni eklenen sese.
 4. **Yerel mi bulut mu seçimi.** Her kutucukta "Bulut (Router üzerinden)" seçeneği: STT için Gemini
    transcribe var ama canlı sesli yazma hep yerel servise gidiyor (`orion-router/api/transcriptions.py`);
    embedding için `GeminiEmbedProvider` var ama `gemini/models.json`'da embedding modeli listelenmemiş. Seçim

@@ -44,7 +44,8 @@ from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from engines import get_engine, VoiceRegistry, valid_voice_name
+from engines import (CLONE_MAX_SECONDS, CLONE_RECOMMENDED_SECONDS, VoiceRegistry, clone_advice, get_engine,
+                     valid_voice_name)
 from schemas import SpeechRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -285,7 +286,9 @@ async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text:
         saved_path = registry.save_voice_cache(name, cache_obj, engine_name_env)
         if hasattr(engine, "registered_voices") and name in engine.registered_voices:
             engine.registered_voices.remove(name)
-        return {"status": "success", "voice_name": name, "path": saved_path}
+        seconds = cache_obj.get("ref_seconds") if isinstance(cache_obj, dict) else None
+        return {"status": "success", "voice_name": name, "path": saved_path, "seconds": seconds,
+                "warning": clone_advice(seconds) if seconds else ""}
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
@@ -395,7 +398,11 @@ async def get_design_options():
 @app.get("/v1/model_info")
 async def get_model_info():
     dev = "NVIDIA CUDA (RTX 3060 Ti)" if is_cuda_available() else "CPU"
-    return {"engine": engine_name_env, "device": dev, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
+    info = {"engine": engine_name_env, "device": dev, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
+    if is_omnivoice:
+        # What the clone form says before a file is sent (engines.py checks it again).
+        info["clone"] = {"recommended_seconds": CLONE_RECOMMENDED_SECONDS, "max_seconds": CLONE_MAX_SECONDS}
+    return info
 
 if __name__ == "__main__":
     import uvicorn

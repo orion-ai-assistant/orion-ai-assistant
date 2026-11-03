@@ -139,6 +139,10 @@
                 <input type="text" id="cloneName" placeholder="Sese bir isim verin">
                 <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor?">
                 <input type="file" id="cloneFile" accept="audio/*">
+                <p id="cloneHint" style="font-size: 0.8rem; color: var(--muted); margin: 4px 0 0;">Yaklaşık 5 saniyelik temiz
+                    bir kayıt önerilir. Örnek her konuşmada yeni cümleyle birlikte işlenir: daha uzun örnekler her
+                    konuşmanın süresini uzatır (en çok 20 saniye).</p>
+                <p id="cloneDuration" style="font-size: 0.85rem; margin: 4px 0 10px; display: none;"></p>
 
                 <button id="cloneBtn" style="background: #10b981;">Sesi İşle ve Tensör Olarak Kaydet</button>
                 <div id="cloneLoader" class="loader"></div>
