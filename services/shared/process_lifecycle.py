@@ -258,6 +258,15 @@ def living(record):
     if record is None:
         return False
     try:
+        # A record outlives its process (a restart, a crash): when its number now belongs to a process started at
+        # another time, the recorded one is gone. Only the start time is read, which most processes allow.
+        if psutil.Process(record['pid']).create_time() != record['started']:
+            return False
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        pass  # The full check below decides.
+    try:
         with ProcessReference(record) as reference:
             return reference.alive()
     except psutil.NoSuchProcess:
