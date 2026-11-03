@@ -37,7 +37,7 @@ import gc
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.concurrency import run_in_threadpool
+from fastapi.concurrency import iterate_in_threadpool, run_in_threadpool
 from contextlib import asynccontextmanager
 from typing import Optional
 from pydantic import BaseModel
@@ -211,11 +211,13 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event
                 )
-                sr = next(stream_gen)
+                sr = await run_in_threadpool(next, stream_gen)
 
                 async def audio_stream_generator():
                     try:
-                        for chunk in stream_gen:
+                        # The engine's generator blocks while it makes each piece: run it in a thread so the event
+                        # loop sends every piece as it comes (inline, nothing left until ~64 KB had piled up).
+                        async for chunk in iterate_in_threadpool(stream_gen):
                             if abort_event.is_set(): break
                             yield chunk
                     finally:

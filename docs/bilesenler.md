@@ -223,19 +223,23 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
     | Durum | İlk parça | Son parça |
     |---|---|---|
     | `llama-tts-server`'ın kendisi (ham HTTP) | 0.09 | — |
-    | Kart boş, şimdiki kod (48→24 kHz süzgeçli) | 0.54 / 0.58 | 0.93 / 4.40 |
+    | Kart boş, düzeltme öncesi (48→24 kHz süzgeçli) | 0.54 / 0.58 | 0.93 / 4.40 |
     | Kart boş, 52afffb öncesi (48 kHz, süzgeçsiz) | 0.31 / 0.36 | 0.92 / 4.35 |
     | Kart boş, motor sınıfı süreç içinde (api.py'siz), eski ve yeni | 0.09-0.10 | — |
-    | LLM de kartta (gemma-4-E2B Q3_K_S, CUDA), boşta; şimdiki kod | 0.54 / 0.55 | 0.91 / 4.24 |
-    | LLM aynı anda yanıt üretirken; şimdiki kod | 1.34 / 1.51 | 2.32 / 11.76 |
-    | Kart boş; api.py düzeltilmiş (aşağıda) | 0.10 / 0.13 | 0.94 / 4.37 |
+    | LLM de kartta (gemma-4-E2B Q3_K_S, CUDA), boşta; düzeltme öncesi | 0.54 / 0.55 | 0.91 / 4.24 |
+    | LLM aynı anda yanıt üretirken; düzeltme öncesi | 1.34 / 1.51 | 2.32 / 11.76 |
+    | Kart boş; api.py düzeltilmiş (geçici kopya) | 0.10 / 0.13 | 0.94 / 4.37 |
+    | Kart boş; düzeltme depoda | 0.10 / 0.13 | 0.94 / 4.29 |
     | LLM boşta; düzeltilmiş | 0.10 / 0.13 | 0.91 / 4.23 |
     | LLM üretirken; düzeltilmiş | 0.28 / 0.29 | 2.52 / 16.29 (5. cümlede 2.6 sn kesinti) |
 
     Neden: `api.py` motorun senkron üretecini olay döngüsünün içinde döndürüyor, uvicorn da yazılanları ancak
     ~64 KB birikince gönderiyor; ses 24 kHz'e inince 64 KB'ın dolması iki kat sürüyor (0.33 → 0.54 sn). Süzgeç
-    kendisi parça başına 0.1 ms. Üreteci iş parçacığında döndürmek (`iterate_in_threadpool`) ilk sesi 0.10 sn'ye
-    indiriyor (geçici kopyada denendi, depoda değil). LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
+    kendisi parça başına 0.1 ms. Düzeltme: `api.py` üreteci iş parçacığında döndürüyor (`run_in_threadpool` ile
+    ilk `next`, `iterate_in_threadpool` ile parçalar); ilk ses 0.10 sn. İstemci akışın ortasında (0.05 / 0.5 /
+    1.5 / 3 sn) kapatınca motor durur (GPU hemen boşa düşer), hemen gelen sonraki istek kilitte beklemez (ilk
+    parça 0.11-0.21 sn, normali 0.10); logda hata yok. Akışsız WAV (0.74 / 3.29 sn) ve OmniVoice'un tam WAV'ı
+    (0.35 / 1.63 sn) öncekiyle aynı. LLM yalnızca yüklüyken etkisiz (VRAM 7.8 / 8 GB, Windows
     paylaşılan GPU belleği 160 → en çok 380 MB; taşma yok denecek kadar); LLM üretirken TTS ~3 kat yavaşlıyor
     (LLM de 100 → 32-94 token/sn), uzun cümlede üretim gerçek zamanın gerisine düşebiliyor. STT ölçülmedi:
     diskte STT modeli yok. Uçtan uca koşudaki 6.3 GB'ı LLM + VoxCPM2 tutuyordu.
