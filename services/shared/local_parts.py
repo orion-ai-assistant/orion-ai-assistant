@@ -744,7 +744,7 @@ def _user_model(part, kind, path, model_id, folder):
     main = file_meta(files[0]) if files and files[0].suffix.lower() == '.gguf' else None
     # An embedding model that does not say how it pools is pooled like ours (the last token).
     args = ['--pooling', 'last'] if part['id'] == 'embedding' and main and main.get('pooling') is None else []
-    entry = {'id': model_id, 'name': path.name, 'description': 'Kendi modelin.', 'folder': folder,
+    entry = {'id': model_id, 'name': path.name, 'description': '', 'folder': folder,
              'files': [file.name for file in files], 'size_mb': round(sum(file.stat().st_size for file in files) / MB),
              'args': args, 'user': True, 'kind': kind['id'], 'kind_label': kind['label'], 'complete': complete,
              'present': [file.name for file in present], 'checklist': checklist, 'copying': copying,
