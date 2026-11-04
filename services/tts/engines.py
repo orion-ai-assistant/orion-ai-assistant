@@ -8,6 +8,7 @@ except ImportError:
     torch = None
     TORCH_AVAILABLE = False
 import gc
+import random
 import io
 import numpy as np
 import logging
@@ -359,7 +360,10 @@ class OmniVoiceGGUFEngine(TTSEngine):
         rvq_bytes = None
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_wav = os.path.join(tmp_dir, "ref.wav")
-            shutil.copy2(audio_path, tmp_wav)
+            with open(audio_path, "rb") as f:
+                sample = f.read()
+            with open(tmp_wav, "wb") as f:
+                f.write(tidy_reference(sample))  # Trimmed and levelled (a sample that is not a WAV goes as it came)
             cmd = [codec_bin, "--model", self.codec_path, "-i", tmp_wav]
             try:
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -622,6 +626,9 @@ class VoxCPM2GGUFEngine(TTSEngine):
     def _start_server(self):
         cmd = [self.server_bin, "--voxcpm2-base-lm", self.model_path, "--voxcpm2-acoustic", self.acoustic_path,
                "--host", self.host, "--port", str(self.port)]
+        layers = os.environ.get("VOXCPM2_GPU_LAYERS", "").strip()
+        if layers.isdigit():  # The memory mode (Bileşenler): only this many of the BaseLM's layers on the card.
+            cmd += ["--voxcpm2-n-gpu-layers", layers]
         logger.info(f"Starting llama-tts-server: {' '.join(cmd)}")
         self.server_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                             encoding="utf-8", errors="replace", cwd=os.path.dirname(self.server_bin) or None)
@@ -656,31 +663,42 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def encode_voice(self, audio_path: str, text: str) -> Any:
         with open(audio_path, "rb") as f:
-            data = f.read()
+            data = tidy_reference(f.read())
         try:
             with wave.open(io.BytesIO(data)) as w:
                 seconds = round(w.getnframes() / float(w.getframerate()), 2)
         except Exception:
             raise ValueError("VoxCPM2 ses örneğini WAV olarak ister; lütfen temiz bir WAV dosyası yükleyin.") from None
         check_clone_seconds(seconds)
-        return {"ref_wav": data, "ref_text": text.strip() if text else "", "ref_seconds": seconds}
+        # Stored softened, once, and sent as it is with every request (soften_reference).
+        return {"ref_wav": soften_reference(data), "ref_text": text.strip() if text else "", "ref_seconds": seconds}
 
-    def _payload(self, text, voice_cache, instruct, guidance_scale, seed):
+    def _payload(self, text, voice_cache, instruct, guidance_scale, seed, steps=None, temperature=None):
         import base64
         text = text.strip()
         generic = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm",
                    "voxcpm2", "voxcpm2-gguf", "default", "none"}
+        cloned = isinstance(voice_cache, dict) and bool(voice_cache.get("ref_wav"))
         if instruct and instruct.strip() and instruct.strip().lower() not in generic:
             text = f"({instruct.strip()}){text}"  # VoxCPM2's voice design: a description in parentheses first.
+        elif not cloned:
+            text = f"({DEFAULT_VOICE_DESIGN}){text}"  # Nothing asked for: the same pleasant voice every time.
         payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
         if isinstance(voice_cache, dict) and voice_cache.get("ref_wav"):
-            payload["reference_audio"] = base64.b64encode(voice_cache["ref_wav"]).decode()
-            if voice_cache.get("ref_text"):
-                payload["prompt_text"] = voice_cache["ref_text"]  # Ultimate cloning: the sample's own words.
-        if seed is not None and seed != -1:
-            payload["seed"] = int(seed)
-        if guidance_scale:
-            payload["cfg_value"] = float(guidance_scale)
+            payload["reference_audio"] = base64.b64encode(voice_cache["ref_wav"]).decode()  # Softened when cloned
+            # Not the sample's words (prompt_text, "ultimate cloning"): with them the server continues the sample and
+            # the voice comes out crackling on s/ş/t; the sample alone (reference_audio) is clean (tested).
+        # No seed asked for: a new one every time (without one the server always uses the same, so every answer to the
+        # same text came out the same).
+        payload["seed"] = int(seed) if seed is not None and seed != -1 else random.randint(0, 2**31 - 1)
+        # Guidance: 2.6 when not given; never above 4, where the voice gets louder and louder and the server's 16-bit
+        # output clips (it shouts and clicks: measured rms 1.5-5 k at 2, 10-13 k at 5).
+        payload["cfg_value"] = (min(MAX_GUIDANCE, max(MIN_GUIDANCE, float(guidance_scale)))
+                                if guidance_scale else DEFAULT_GUIDANCE)
+        # The CFM's steps (15 when not given; the server's own is 10) and the randomness (0.5-0.9, 0.75 when not given).
+        payload["inference_timesteps"] = max(1, int(steps)) if steps else DEFAULT_STEPS
+        payload["temperature"] = (min(MAX_TEMPERATURE, max(MIN_TEMPERATURE, float(temperature)))
+                                  if temperature is not None else DEFAULT_TEMPERATURE)
         return payload
 
     def _request(self, path, payload):
@@ -691,15 +709,17 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0,
                  guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr",
-                 abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
+                 abort_event: Optional[Any] = None, temperature: Optional[float] = None) -> Tuple[int, np.ndarray]:
         if not text or not text.strip():
             return self.SAMPLE_RATE, np.array([], dtype=np.int16)
         try:
-            with self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed)) as res:
+            with self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
                 rate, audio = streamed_wav(res.read())
             if rate == 2 * self.SAMPLE_RATE:
                 half = HalfRate()
                 audio = np.concatenate([half.feed(audio.tobytes()), half.flush()])
+            leveler = Leveler()
+            audio = np.concatenate([leveler.feed(audio), leveler.flush()])
             return self.SAMPLE_RATE, audio
         except Exception as e:
             logger.error(f"llama-tts-server request failed: {e}")
@@ -707,12 +727,13 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "",
                         speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1,
-                        language: str = "tr", abort_event: Optional[Any] = None):
+                        language: str = "tr", abort_event: Optional[Any] = None,
+                        temperature: Optional[float] = None):
         yield self.SAMPLE_RATE
         if not text or not text.strip():
             return
         try:
-            with self._request("/v1/audio/speech/stream", self._payload(text, voice_cache, instruct, guidance_scale, seed)) as res:
+            with self._request("/v1/audio/speech/stream", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
                 head = b""
                 while b"data" not in head[:-4] and len(head) < 4096:  # The WAV header, then PCM as it comes.
                     chunk = res.read(64)
@@ -723,10 +744,18 @@ class VoxCPM2GGUFEngine(TTSEngine):
                 if len(head) < at + 8:
                     head += res.read(at + 8 - len(head))
                 half = HalfRate() if int.from_bytes(head[24:28], "little") == 2 * self.SAMPLE_RATE else None
+                leveler, odd = Leveler(), b""
                 pending = head[at + 8:]
                 while True:
                     if pending:
-                        out = half.feed(pending).tobytes() if half else pending
+                        if half:
+                            samples = half.feed(pending)
+                        else:  # Whole 16-bit samples only: an odd byte goes in front of the next piece.
+                            data, odd = odd + pending, b""
+                            if len(data) % 2:
+                                data, odd = data[:-1], data[-1:]
+                            samples = np.frombuffer(data, dtype=np.int16)
+                        out = leveler.feed(samples).tobytes()
                         if out:
                             yield out
                     if abort_event and abort_event.is_set():
@@ -734,12 +763,69 @@ class VoxCPM2GGUFEngine(TTSEngine):
                     pending = res.read(4096)
                     if not pending:
                         break
-                if half:
-                    tail = half.flush().tobytes()
-                    if tail:
-                        yield tail
+                tail = half.flush() if half else np.zeros(0, dtype=np.int16)
+                tail = np.concatenate([leveler.feed(tail), leveler.flush()]).tobytes()
+                if tail:
+                    yield tail
         except Exception as e:
             logger.error(f"llama-tts-server stream failed: {e}")
+
+
+# What VoxCPM2 speaks with when the request has neither a description nor a cloned voice (without one the voice
+# is a different one with every seed).
+DEFAULT_VOICE_DESIGN = "A clear voice sweet girl."
+# A cloned voice copies the sample's recording too: a mic recording with a lot of s/sh/hiss in it (4-12 kHz energy of
+# -13 dB against the voice's own -21..-26) came out 6-10 dB brighter still, which is the harsh, popping s, p, t of
+# the clones. The sample goes in with everything above this softened (measured: 5 kHz brings the output's 4-12 kHz
+# bands to those of the model's own voice). Done once, when the voice is cloned (a voice cloned before this keeps
+# its sample as it was recorded).
+REF_LOWPASS_HZ = 5000
+DEFAULT_GUIDANCE = 2.6
+MIN_GUIDANCE = 2.0
+MAX_GUIDANCE = 4.0
+DEFAULT_STEPS = 15
+MIN_TEMPERATURE = 0.5
+MAX_TEMPERATURE = 0.9
+DEFAULT_TEMPERATURE = 0.75  # when the request does not say (Router, Hub); the 8810 page starts at 0.8
+
+
+class Leveler:
+    """Keeps VoxCPM2's loudness in check, as the audio arrives (24 kHz, 16-bit mono). A higher guidance (cfg_value)
+    makes the voice louder and louder (measured rms: cfg 2 ~1.5-5 k, 3 ~3-7.7 k, 5 ~10-13 k, 8 ~17-19 k; it shouts),
+    so the level is only ever turned down, towards TARGET: the speech's loudness is followed over 20 ms frames (fast
+    up, slow down, silence ignored) and the gain glides from frame to frame, so there are no steps. Quiet speech
+    stays as it is. The old PyTorch engine scaled each whole answer to its peak instead, which a stream cannot."""
+
+    FRAME = 480          # 20 ms
+    TARGET = 3000.0      # rms
+    SPEECH = 300.0       # frames quieter than this are silence and do not move the level
+
+    def __init__(self):
+        self.level = self.TARGET
+        self.gain = 1.0
+        self.rest = np.zeros(0)
+
+    def _frame(self, x):
+        rms = float(np.sqrt(np.mean(x * x)))
+        if rms > self.SPEECH:
+            self.level += (0.5 if rms > self.level else 0.05) * (rms - self.level)
+        gain = min(1.0, self.TARGET / self.level)
+        out = x * np.linspace(self.gain, gain, len(x), endpoint=False)
+        self.gain = gain
+        return out
+
+    def feed(self, samples: np.ndarray) -> np.ndarray:
+        x = np.concatenate([self.rest, samples.astype(np.float64)])
+        whole = len(x) // self.FRAME * self.FRAME
+        self.rest = x[whole:]
+        if not whole:
+            return np.zeros(0, dtype=np.int16)
+        out = np.concatenate([self._frame(x[i:i + self.FRAME]) for i in range(0, whole, self.FRAME)])
+        return np.clip(np.round(out), -32768, 32767).astype(np.int16)
+
+    def flush(self) -> np.ndarray:
+        x, self.rest = self.rest, np.zeros(0)
+        return np.clip(np.round(x * self.gain), -32768, 32767).astype(np.int16)
 
 
 class HalfRate:
@@ -815,6 +901,70 @@ def clone_advice(seconds: float) -> str:
         return ""
     return (f"Ses örneği {seconds:.1f} saniye. Kaydedildi, ama daha uzun örnekler her konuşmanın süresini uzatır; "
             f"yaklaşık {CLONE_RECOMMENDED_SECONDS} saniyelik temiz bir kayıt önerilir.")
+
+
+REF_TARGET_RMS = 2500.0      # the speech's level after tidying (about -22 dBFS); the clones came out loud
+REF_PEAK = 0.9 * 32767       # and never past this
+REF_MARGIN = 0.15            # seconds of quiet kept before and after the speech
+
+
+def tidy_reference(wav_data: bytes) -> bytes:
+    """A clone sample made even, once, when the voice is cloned (both engines): to mono, the silence before and
+    after the speech cut (it is processed with every sentence, and the model copies it), and the speech brought to
+    one level (a loud sample made a loud clone). Anything that is not a 16-bit PCM WAV is returned as it came."""
+    try:
+        with wave.open(io.BytesIO(wav_data)) as w:
+            rate, channels, width, frames = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.readframes(w.getnframes())
+        if width != 2 or channels < 1:
+            return wav_data
+        x = np.frombuffer(frames, dtype=np.int16).astype(np.float64)
+        x = x[:len(x) // channels * channels].reshape(-1, channels).mean(axis=1)
+        hop = max(1, rate // 100)  # 10 ms
+        n = len(x) // hop
+        if n < 3:
+            return wav_data
+        level = np.sqrt((x[:n * hop].reshape(n, hop) ** 2).mean(axis=1))
+        loud = level > max(100.0, level.max() * 10 ** (-35 / 20))
+        if not loud.any():
+            return wav_data
+        first, last = int(np.argmax(loud)), int(n - 1 - np.argmax(loud[::-1]))
+        margin = int(REF_MARGIN * rate)
+        x = x[max(0, first * hop - margin):min(len(x), (last + 1) * hop + margin)]
+        speech = level[loud].mean()
+        gain = REF_TARGET_RMS / speech if speech > 0 else 1.0
+        if np.abs(x).max() * gain > REF_PEAK:
+            gain = REF_PEAK / np.abs(x).max()
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(np.clip(np.round(x * gain), -32768, 32767).astype(np.int16).tobytes())
+        return out.getvalue()
+    except Exception:
+        return wav_data
+
+
+def soften_reference(wav_data: bytes, cutoff: float = REF_LOWPASS_HZ) -> bytes:
+    """The clone sample (a 16-bit mono WAV) with its highs above `cutoff` rolled off (a gentle 8th-order low-pass);
+    anything that is not such a WAV is returned as it came."""
+    try:
+        with wave.open(io.BytesIO(wav_data)) as w:
+            rate, channels, width, frames = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.readframes(w.getnframes())
+        if width != 2 or channels != 1 or cutoff >= rate / 2:
+            return wav_data
+        x = np.frombuffer(frames, dtype=np.int16).astype(np.float64)
+        f = np.fft.rfftfreq(len(x), 1 / rate)
+        y = np.fft.irfft(np.fft.rfft(x) / (1 + (f / cutoff) ** 8), len(x))
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(np.clip(np.round(y), -32768, 32767).astype(np.int16).tobytes())
+        return out.getvalue()
+    except Exception:
+        return wav_data
 
 
 def streamed_wav(wav_data: bytes) -> Tuple[int, np.ndarray]:

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -189,6 +190,16 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
 
+        # VoxCPM2's own extra (the other engines do not take it).
+        extra = {"temperature": speech_request.temperature} if engine_name_env == "voxcpm2-gguf" else {}
+        guidance = speech_request.guidance_scale
+        if guidance is None and speech_request.creativity is not None:
+            # The Router's 0-2 "temperature" is the creativity: OmniVoice takes it as its guidance, VoxCPM2 lines it up
+            # with its own 2-4 (0 -> 2, 1 -> 3, 2 -> 4).
+            level = min(2.0, max(0.0, float(speech_request.creativity)))
+            guidance = level + 2.0 if engine_name_env == "voxcpm2-gguf" else level
+        if guidance is None and engine_name_env != "voxcpm2-gguf":
+            guidance = 2.0  # OmniVoice's own default; VoxCPM2 picks its own (engines.py)
         generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
         instruct_val = getattr(speech_request, "instructions", None)
         if not instruct_val:
@@ -207,9 +218,9 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
 
                 stream_gen = tts.generate_stream(
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
-                    speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
+                    speed=speech_request.speed, guidance_scale=guidance,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
-                    abort_event=abort_event
+                    abort_event=abort_event, **extra
                 )
                 sr = await run_in_threadpool(next, stream_gen)
 
@@ -235,9 +246,9 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 sr, audio_data = await run_in_threadpool(
                     tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
-                    speed=speech_request.speed, guidance_scale=speech_request.guidance_scale,
+                    speed=speech_request.speed, guidance_scale=guidance,
                     steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
-                    abort_event=abort_event
+                    abort_event=abort_event, **extra
                 )
             
             header = create_wav_header(sr, len(audio_data) * 2)
@@ -299,9 +310,14 @@ async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text:
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
+_ENGINE_NAMES = {"omnivoice": "omnivoice-gguf", "voxcpm2": "voxcpm2-gguf"}
+
 @app.get("/v1/voices")
-async def list_voices():
-    return {"voices": registry.list_voices(engine_name_env)}
+async def list_voices(engine: Optional[str] = None):
+    """The cloned voices of the running engine, or of the one asked for (the settings pages edit both engines'
+    voices whichever one runs: ?engine=omnivoice or voxcpm2)."""
+    target = _ENGINE_NAMES.get((engine or "").lower().strip(), (engine or "").strip() or engine_name_env)
+    return {"voices": registry.list_voices(target)}
 
 @app.delete("/v1/voices/{name}")
 async def delete_voice(name: str):
@@ -380,6 +396,16 @@ _OMNIVOICE_DESIGN_OPTIONS = {
 
 def _initialize_languages():
     global _OMNIVOICE_LANGS
+    # The full list (647) ships as a file made from OmniVoice's lang_map.py: that package (PyTorch) is not in the
+    # release, and without it the list was only Auto, Turkish and English.
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "omnivoice_languages.json"), encoding="utf-8") as f:
+            names = json.load(f)
+        if names:
+            _OMNIVOICE_LANGS = names
+            return
+    except Exception as e:
+        logger.warning(f"omnivoice_languages.json not read: {e}")
     try:
         omnivoice_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "omnivoice")
         if omnivoice_dir not in sys.path:
@@ -391,12 +417,12 @@ def _initialize_languages():
     except Exception as e:
         logger.warning(f"Languages list fallback to default: {e}")
 
-if is_omnivoice:
-    _initialize_languages()
+_initialize_languages()  # OmniVoice's languages are offered whichever engine runs
 
 @app.get("/v1/languages")
 async def get_languages():
-    return {"languages": _OMNIVOICE_LANGS if is_omnivoice else []}
+    # OmniVoice's list, whichever engine runs: the settings page edits OmniVoice's defaults too.
+    return {"languages": _OMNIVOICE_LANGS}
 
 @app.get("/v1/design_options")
 async def get_design_options():
@@ -404,7 +430,9 @@ async def get_design_options():
 
 @app.get("/v1/model_info")
 async def get_model_info():
-    dev = "NVIDIA CUDA (RTX 3060 Ti)" if is_cuda_available() else "CPU"
+    # The Hub starts every part with the backend the user chose (ORION_HW_ID); torch is not in the GGUF engines.
+    hw = (os.getenv("ORION_HW_ID") or "").lower()
+    dev = {"cuda": "NVIDIA CUDA", "vulkan": "Vulkan (GPU)", "cpu": "CPU"}.get(hw) or ("NVIDIA CUDA" if is_cuda_available() else "CPU")
     info = {"engine": engine_name_env, "device": dev, "low_vram": low_vram_enabled, "idle_cleanup_mins": idle_threshold_mins}
     if is_omnivoice or engine_name_env == "voxcpm2-gguf":
         # What the clone form says before a file is sent (engines.py checks it again).

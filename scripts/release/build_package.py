@@ -110,7 +110,8 @@ SOURCE_PREFIXES = {
             # Bileşenler: the STT and TTS services run on this package's Python (services/shared/local_parts.py).
             'services/stt/whisper/api.py', 'services/stt/whisper/model_loading.py', 'services/stt/whisper/prompts.py',
             'services/stt/whisper/stt_languages.json', 'services/tts/api.py', 'services/tts/engines.py',
-            'services/tts/schemas.py', 'services/tts/omnivoice-gguf/bin'],
+            'services/tts/schemas.py', 'services/tts/omnivoice_languages.json', 'services/tts/omnivoice-gguf/bin',
+            'services/tts/dashboard'],
     'router': ['core', 'bin', 'api', 'database', 'providers', 'main.py', 'cli.py',
                'dynamic_router.py', 'pyproject.toml', '.env.example'],
 }

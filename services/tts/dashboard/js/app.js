@@ -6,6 +6,7 @@ let activeEngine = "";
 // A cloned voice's sample is processed again with every sentence: OmniVoice's limits come from /v1/model_info.
 let cloneLimits = null;
 let cloneSeconds = null;
+let stepDefault = 15;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -25,6 +26,30 @@ async function init() {
         const devText = info.device || 'NVIDIA CUDA (GPU)';
         document.getElementById('activeModelDisplay').innerText =
             `Aktif Model: ${activeEngine.toUpperCase()} | Donanım: ${devText} | VRAM Tasarrufu: ${lowVramText}`;
+
+        // Guidance: VoxCPM2 gets louder and louder above 4 (it shouts and clicks), so 1-4 with 3 by default there;
+        // OmniVoice keeps 1-10 with 2.
+        // VoxCPM2's "Yaratıcılık" is the Router's 0-2 scale (0 -> guidance 2, 1 -> 3, 2 -> 4; sent as `creativity`);
+        // OmniVoice keeps its guidance of 1-10 with 2.
+        const cfg = document.getElementById('cfgInput');
+        if (cfg) {
+            const vox = activeEngine.startsWith('voxcpm2');
+            cfg.min = vox ? '0' : '1.0';
+            cfg.max = vox ? '2' : '10.0';
+            cfg.step = '0.1';
+            cfg.value = vox ? '0.6' : '2.0';
+            document.getElementById('cfgVal').innerText = cfg.value;
+            const label = document.getElementById('cfgLabel');
+            if (label) label.firstChild.textContent = vox ? 'Yaratıcılık (0-2): ' : 'Yaratıcılık (Guidance Scale): ';
+        }
+        // Steps: the engine's own default is where the slider starts and says "Varsayılan" (VoxCPM2 10, OmniVoice 15).
+        stepDefault = 15;
+        const step = document.getElementById('stepInput');
+        if (step) step.value = String(stepDefault);
+        // Temperature: VoxCPM2 only (0.5-0.9, 0.9 to start); VoxCPM2 has no speed setting.
+        const isVox = activeEngine.startsWith('voxcpm2');
+        document.getElementById('tempContainer')?.classList.toggle('hidden', !isVox);
+        document.getElementById('speedContainer')?.classList.toggle('hidden', isVox);
 
         if (activeEngine.startsWith('voxcpm2')) {
             document.getElementById('langContainer')?.classList.add('hidden');
@@ -151,14 +176,32 @@ function setupEventListeners() {
     });
 
     // Update display spans for ranges
-    ['speed', 'cfg', 'step'].forEach(id => {
+    ['speed', 'cfg', 'step', 'temp'].forEach(id => {
         const input = document.getElementById(`${id}Input`);
         const display = document.getElementById(`${id}Val`);
         if (input && display) {
             input.oninput = () => {
-                display.innerText = id === 'step' && input.value == 15 ? "Varsayılan" : input.value;
+                display.innerText = id === 'step' && input.value == stepDefault ? "Varsayılan" : input.value;
             };
         }
+    });
+
+    // Every engine keeps its own settings: what was set for one is not carried over to the other (per browser).
+    const store = id => `orionTts:${activeEngine}:${id}`;
+    ['speed', 'cfg', 'step', 'temp', 'seed'].forEach(id => {
+        const input = document.getElementById(`${id}Input`);
+        if (!input) return;
+        try {
+            const saved = localStorage.getItem(store(id));
+            if (saved !== null && saved !== '') {
+                input.value = saved;
+                input.oninput?.();
+            }
+        } catch {}
+        const keep = () => { try { localStorage.setItem(store(id), input.value); } catch {} };
+        const shown = input.oninput;
+        input.oninput = () => { shown?.(); keep(); };
+        input.onchange = keep;
     });
 
     // Manual controls visibility for streaming
@@ -198,7 +241,6 @@ async function startGeneration(isStream) {
                 .map(id => document.getElementById(id).value).filter(Boolean);
             finalInstruct = params.join(", ");
         }
-        if (!finalInstruct && activeEngine.startsWith('voxcpm2')) finalInstruct = "A clear voice";
     }
 
     const langValue = document.getElementById('langInput').value;
@@ -207,8 +249,12 @@ async function startGeneration(isStream) {
         voice: finalVoice,
         model: finalInstruct,
         speed: parseFloat(document.getElementById('speedInput').value),
-        guidance_scale: parseFloat(document.getElementById('cfgInput').value),
+        ...(activeEngine.startsWith('voxcpm2')
+            ? { creativity: parseFloat(document.getElementById('cfgInput').value) }
+            : { guidance_scale: parseFloat(document.getElementById('cfgInput').value) }),
         steps: parseInt(document.getElementById('stepInput').value),
+        ...(activeEngine.startsWith('voxcpm2')
+            ? { temperature: parseFloat(document.getElementById('tempInput').value) } : {}),
         seed: parseInt(document.getElementById('seedInput').value),
         language: langValue === "Auto" ? null : langValue,
         stream: isStream

@@ -424,8 +424,9 @@ def default_settings(part, model, hw):
     """What a part runs with unless the user changes it (Gelişmiş ayarlar)."""
     hardware_id = choices(part, hw)[0]['id']
     if part.get('runner') == 'python':
-        return {'hardware': hardware_id, 'gpu': 'all'}
-    settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1}
+        return {'hardware': hardware_id, 'gpu': 'all', **({'vram_mode': 'full'} if part['id'] == 'tts' else {})}
+    settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1,
+                'vram_mode': 'full'}
     if any(item.get('mmproj') for item in part.get('models', [])):
         settings['vision'] = True
     return settings
@@ -474,7 +475,8 @@ def gguf_meta(stream):
     arch = found.get('general.architecture')
     number = lambda key: found.get(f'{arch}.{key}') if isinstance(found.get(f'{arch}.{key}'), int) else None
     return {'architecture': arch, 'context': number('context_length'), 'dims': number('embedding_length'),
-            'pooling': number('pooling_type'),
+            'layers': number('block_count'), 'heads': number('attention.head_count'),
+            'kv_heads': number('attention.head_count_kv'), 'pooling': number('pooling_type'),
             'vision': bool(found.get('clip.has_vision_encoder')), 'audio': bool(found.get('clip.has_audio_encoder'))}
 
 
@@ -539,6 +541,28 @@ def prefetch_headers(data):
               or (saved[url].get('failed') and time.time() - saved[url].get('at', 0) > HEADER_RETRY)]
     if wanted and not _fetching.locked():
         threading.Thread(target=_fetch_headers, args=(wanted,), daemon=True).start()
+
+
+# Video memory a model needs, as facts for the page to work out with the user's choices (the context, the memory
+# mode): llama.cpp models = their file + the context's cache + about 0.3 GB of working buffers; the speech models'
+# are what was measured on an RTX 3060 Ti (VoxCPM2 by mode; OmniVoice ~1-1.5 GB), speech recognition's is the
+# model file itself, not measured yet (docs/bilesenler.md).
+BUFFERS_MB = 300
+MEASURED_VOXCPM2_MB = {'full': 4900, 'balanced': 3700, 'low': 3200}
+
+
+def memory_facts(part, model, meta):
+    if part.get('runner') != 'python':
+        weights = model.get('size_mb') or 0
+        layers, heads, kv_heads, dims = (meta or {}).get('layers'), (meta or {}).get('heads'),             (meta or {}).get('kv_heads'), (meta or {}).get('dims')
+        # The cache holds a key and a value (2 bytes each) per layer, KV head and head dimension, per token.
+        kv = 2 * layers * kv_heads * (dims // heads) * 2 * 1000 / 1048576 if layers and heads and kv_heads and dims else None
+        return {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB}
+    if part['id'] == 'tts':
+        if model.get('engine') == 'voxcpm2-gguf':
+            return {'by_mode': MEASURED_VOXCPM2_MB, 'measured': True}
+        return {'fixed_mb': 1200, 'measured': False}
+    return {'fixed_mb': model.get('size_mb') or 0, 'measured': False}
 
 
 def model_meta(part, model, name=None):
@@ -937,6 +961,33 @@ def to_front(matches, wait=3.0):
             user.AttachThreadInput(mine, theirs, False)
 
 
+# "Bellek": how much of the model sits on the card. Full is the default (all of it); the other two keep part of it
+# on the processor: less video memory, slower (the layers run one after the other, so the card waits for them).
+VRAM_MODES = ('full', 'balanced', 'low')
+VOXCPM2_LAYERS = {'balanced': 14, 'low': 7}  # of the BaseLM's 28; measured on an RTX 3060 Ti (CUDA and Vulkan alike)
+LLAMA_SHARE = {'balanced': 0.5, 'low': 0.25}  # the share of a llama.cpp model's layers kept on the card
+
+
+def vram_field(part):
+    """The memory mode a card offers (None: speech recognition has no such choice). Facts only, the same for any
+    model of the part (the page shows it before the model is picked); each option says in `detail` what it costs.
+    VoxCPM2's numbers are what was measured (docs/bilesenler.md); OmniVoice ignores the mode."""
+    if part.get('runner') == 'python':
+        if part['id'] != 'tts':
+            return None
+        detail = {'balanced': 'Yaklaşık 1,2 GB daha az bellek, ses biraz geç başlar.',
+                  'low': 'Yaklaşık 1,7 GB daha az bellek, biraz daha yavaş.'}
+        hint = 'Yalnızca VoxCPM2 için.'
+    else:
+        detail = {'balanced': 'Bellek yaklaşık yarıya iner, yanıt biraz geç gelir.',
+                  'low': 'Bellek yaklaşık dörtte birine iner, yanıt daha geç gelir.'}
+        hint = None
+    return {'key': 'vram_mode', 'label': 'Bellek kullanımı', 'type': 'choice', 'slider': True, 'hint': hint,
+            'options': [{'id': 'full', 'label': 'Hızlı', 'detail': 'Hepsi ekran kartında, en hızlı.'},
+                        {'id': 'balanced', 'label': 'Dengeli', 'detail': detail['balanced']},
+                        {'id': 'low', 'label': 'Az bellek', 'detail': detail['low']}]}
+
+
 def advanced(part, hw, model=None):
     """The advanced settings a card shows (all have a default)."""
     fields = [{'key': 'hardware', 'label': 'Nerede çalışsın', 'type': 'choice', 'options': choices(part, hw)}]
@@ -947,8 +998,10 @@ def advanced(part, hw, model=None):
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
                            {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in nvidia]})
     if part.get('runner') == 'python':
-        return fields
-    # No layer count: on a card the whole model goes to it, on the processor none can (command()).
+        extra = vram_field(part)
+        return fields + ([extra] if extra else [])
+    # No layer count to type: on a card the whole model goes to it unless the memory mode keeps part on the
+    # processor (command()); on the processor none can go.
     fields += [
         {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512,
          'max': context_max(part, model),
@@ -957,6 +1010,7 @@ def advanced(part, hw, model=None):
         {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8,
          'hint': 'Kaç isteğe aynı anda yanıt verir. Her biri bellek ister.'},
     ]
+    fields.append(vram_field(part))
     if any(item.get('mmproj') for item in part.get('models', [])):
         # Shown on the model's tile (model panel), kept with the other settings.
         fields.append({'key': 'vision', 'label': 'Görsel desteği (mmproj)', 'type': 'bool'})
@@ -1020,6 +1074,15 @@ def effective(part, hw, config=None):
     return model, settings
 
 
+def _gpu_layers(settings, file):
+    """llama.cpp's -ngl: none on the processor, all on a card, or the memory mode's share of the model's layers."""
+    if settings['hardware'] == 'cpu':
+        return 0
+    share = LLAMA_SHARE.get(settings.get('vram_mode'))
+    layers = (file_meta(file) or {}).get('layers') if share else None
+    return max(1, round(layers * share)) if layers else ALL_LAYERS
+
+
 def command(part, model, settings, data=None):
     """The argv, environment and port for `part` running `model` with `settings`."""
     part = for_model(part, model, data)
@@ -1033,7 +1096,7 @@ def command(part, model, settings, data=None):
     port = str(os.getenv(part['port_key']) or part['port'])
     argv = [str(exe), '-m', str(files[0]), '--port', port, '--host', bind_host(), '--cors-origins', own_origins(port),
             '--no-slots', '-c', str(settings['context_size']), '-np', str(settings['parallel']),
-            '-ngl', str(0 if settings['hardware'] == 'cpu' else ALL_LAYERS)]
+            '-ngl', str(_gpu_layers(settings, files[0]))]
     if model.get('mmproj') and len(files) > len(model['files']):
         argv += ['--mmproj', str(files[-1])]
     argv += list(part.get('args', [])) + list(model.get('args', []))
@@ -1063,6 +1126,8 @@ def _python_command(part, model, settings, data=None):
                TRANSFORMERS_OFFLINE='1')
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
+    if gpu and part.get('engine') == 'voxcpm2-gguf' and settings.get('vram_mode') in VOXCPM2_LAYERS:
+        env['VOXCPM2_GPU_LAYERS'] = str(VOXCPM2_LAYERS[settings['vram_mode']])
     if gpu and settings.get('gpu', 'all') != 'all':
         env['CUDA_VISIBLE_DEVICES' if settings['hardware'] == 'cuda' else 'GGML_VK_VISIBLE_DEVICES'] = settings['gpu']
     return argv, env, int(port)
@@ -1211,6 +1276,7 @@ def part_status(part, hw, config, data):
         # Its engine, every model its own (TTS: OmniVoice's or VoxCPM2's): what the page shows for every hardware
         # the moment this model is picked, not the saved model's.
         row['engines'] = engine_facts(item.get('engine') or part['engine'], part, hw, data)
+        row['memory'] = memory_facts(part, item, meta)
         if item.get('user'):
             row.update(complete=item['complete'], checklist=item['checklist'], copying=item['copying'],
                        problems=item['problems'], path=str(folder))

@@ -60,8 +60,8 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     assert by_id['stt']['model'] == 'whisper-small' and 600 < by_id['stt']['engines']['cuda']['mb'] < 700
     assert by_id['stt']['engines']['vulkan']['mb'] < 20 and by_id['stt']['engines']['cpu']['mb'] < 20
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
-    assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vision']  # Two cards: which one.
-    assert keys('stt') == ['hardware', 'gpu'] and keys('tts') == ['hardware', 'gpu']
+    assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vram_mode', 'vision']  # Two cards: which one.
+    assert keys('stt') == ['hardware', 'gpu'] and keys('tts') == ['hardware', 'gpu', 'vram_mode']
     # Both speech parts run on CUDA, Vulkan or the processor, CUDA first on an NVIDIA card: next to each other on
     # one card, one on CUDA and the other on Vulkan starved both (docs/bilesenler.md).
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
@@ -206,7 +206,7 @@ def test_an_old_driver_without_compute_cap_still_lists_its_cards():
     assert P._nvidia(run) == [{'index': 0, 'name': 'NVIDIA GeForce GTX 1060 6GB', 'vram_mb': 6144, 'vendor': 'nvidia'}]
 
 
-def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(parts):
+def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(parts, monkeypatch):
     fake_engine(parts)
     llm = P.spec('llm')
     gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
@@ -215,6 +215,13 @@ def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(
     fake_engine(parts, 'cpu')
     on_cpu, _, _ = P.command(llm, gemma, {**P.default_settings(llm, gemma, TWO_CARDS), 'hardware': 'cpu'})
     assert on_cpu[on_cpu.index('-ngl') + 1] == '0'
+    # The memory mode keeps a share of the model's layers (from the file's own header) on the card.
+    settings = {**P.default_settings(llm, gemma, TWO_CARDS), 'hardware': 'cuda'}
+    monkeypatch.setattr(P, 'file_meta', lambda path: {'layers': 35})
+    ngl = lambda mode: P.command(llm, gemma, {**settings, 'vram_mode': mode})[0]
+    assert [ngl(m)[ngl(m).index('-ngl') + 1] for m in ('full', 'balanced', 'low')] == [str(P.ALL_LAYERS), '18', '9']
+    monkeypatch.setattr(P, 'file_meta', lambda path: None)  # A file without a readable header: all of it, as before.
+    assert ngl('low')[ngl('low').index('-ngl') + 1] == str(P.ALL_LAYERS)
     # An older saved layer count is gone from the settings.
     P.write_part_config('llm', settings={'gpu_layers': 24})
     assert 'gpu_layers' not in P.effective(llm, TWO_CARDS)[1]
@@ -675,8 +682,8 @@ def test_the_model_file_tells_its_limits_vector_size_and_what_its_extra_understa
             + string('clip.has_vision_encoder') + struct.pack('<I', 7) + b'\x01'
             + string('clip.has_audio_encoder') + struct.pack('<I', 7) + b'\x01')
     path.write_bytes(b'GGUF' + struct.pack('<IQQ', 3, 0, 3) + keys)
-    assert P.file_meta(path) == {'architecture': 'clip', 'context': None, 'dims': None, 'pooling': None,
-                                 'vision': True, 'audio': True}
+    assert P.file_meta(path) == {'architecture': 'clip', 'context': None, 'dims': None, 'layers': None,
+                                 'heads': None, 'kv_heads': None, 'pooling': None, 'vision': True, 'audio': True}
     llm = P.spec('llm')
     gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
     assert P.extra_info(llm, gemma)[0] == 'Görsel anlama'  # Not known yet.
@@ -882,7 +889,14 @@ def test_voxcpm2_runs_on_its_own_engine_next_to_omnivoice(parts):
     assert port == 8810 and argv[4].endswith('api.py') and env['ENGINE_NAME'] == 'voxcpm2-gguf'
     assert env['MODEL_PATH'].endswith('VoxCPM2-BaseLM-Q8_0.gguf') and env['ACOUSTIC_PATH'].endswith('VoxCPM2-Acoustic-F16.gguf')
     assert env['VOXCPM2_BIN_DIR'] == str(vox_engine) and 'OMNIVOICE_BIN_DIR' not in env and 'CODEC_PATH' not in env
-    assert env['GGML_VK_VISIBLE_DEVICES'] == '1'
+    assert env['GGML_VK_VISIBLE_DEVICES'] == '1' and 'VOXCPM2_GPU_LAYERS' not in env
+    # The memory mode keeps only part of the BaseLM's layers on the card (not on the processor, where none go).
+    assert P.command(tts, vox, {**settings, 'vram_mode': 'balanced'})[1]['VOXCPM2_GPU_LAYERS'] == '14'
+    assert P.command(tts, vox, {**settings, 'vram_mode': 'low'})[1]['VOXCPM2_GPU_LAYERS'] == '7'
+    assert P.command(tts, vox, {**settings, 'vram_mode': 'full'})[1].get('VOXCPM2_GPU_LAYERS') is None
+    assert P.clean_settings(tts, {'vram_mode': 'low'}, TWO_CARDS) == {'vram_mode': 'low'}
+    with pytest.raises(P.PartError):
+        P.clean_settings(tts, {'vram_mode': 'half'}, TWO_CARDS)
     # Its row on the page says what its own engine costs on each hardware (CUDA brings CUDA's runtime too).
     row = next(m for m in next(p for p in P.status()['parts'] if p['id'] == 'tts')['models'] if m['id'] == vox['id'])
     assert row['engines']['vulkan']['ready'] and not row['engines']['cuda']['ready']

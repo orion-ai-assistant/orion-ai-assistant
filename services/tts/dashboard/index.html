@@ -112,14 +112,21 @@
                             </select>
                         </div>
 
-                        <label>Konuşma Hızı (Speed): <span id="speedVal">1.0</span></label>
-                        <input type="range" id="speedInput" min="0.5" max="2.0" step="0.1" value="1.0">
+                        <div id="speedContainer">
+                            <label>Konuşma Hızı (Speed): <span id="speedVal">1.0</span></label>
+                            <input type="range" id="speedInput" min="0.5" max="2.0" step="0.1" value="1.0">
+                        </div>
 
-                        <label>Yaratıcılık (Guidance Scale): <span id="cfgVal">2.0</span></label>
-                        <input type="range" id="cfgInput" min="1.0" max="10.0" step="0.5" value="2.0">
+                        <label id="cfgLabel">Yaratıcılık (Guidance Scale): <span id="cfgVal">2.0</span></label>
+                        <input type="range" id="cfgInput" min="1.0" max="10.0" step="0.1" value="2.0">
 
                         <label>Kalite Adımı (Steps): <span id="stepVal">Varsayılan</span></label>
                         <input type="range" id="stepInput" min="5" max="50" step="1" value="15">
+
+                        <div id="tempContainer" class="hidden">
+                            <label>Rastgelelik: <span id="tempVal">0.75</span></label>
+                            <input type="range" id="tempInput" min="0.5" max="0.9" step="0.05" value="0.75">
+                        </div>
 
                         <label>Sabit Seed (Rastgele için -1):</label>
                         <input type="number" id="seedInput" value="-1">

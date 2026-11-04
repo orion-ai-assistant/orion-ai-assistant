@@ -126,7 +126,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   (`part_engines`) bundan geçer. Sayfadaki model satırında kendi motorunun donanım başına durumu var (`engines`).
 - **Servis:** `services/tts/engines.py` `VoxCPM2GGUFEngine`: `llama-tts-server`'ı alt süreç olarak açar
   (`VOXCPM2_BIN_DIR`, `MODEL_PATH` BaseLM, `ACOUSTIC_PATH`), sesler `*_voxcpm2-gguf.pt` (WAV örneği + metni; sunucu
-  ses tutmaz, her istekte `reference_audio` + `prompt_text` gider). OmniVoice'un klonları VoxCPM2'de geçmez.
+  ses tutmaz, her istekte yalnızca `reference_audio` gider; `prompt_text` gönderilmez, çünkü örneğin devamı olarak üretince s/ş/t sesleri patlıyordu; örnek metni sesten uzunsa model fazlasını da konuşuyordu: 4,6 sn örnek + 255 karakterlik metin → 2 sn yerine 13-15 sn çıktı). OmniVoice'un klonları VoxCPM2'de geçmez.
   Klon kuralı aynı (~5 sn önerilir, en çok 20 sn). Ses tasarımı: tarif metnin başına parantez içinde.
 - **Derleme:** `services/tts/voxcpm2-gguf/build_release.bat` (kendi fork'umuz krstalacam/llama.cpp-omni, `orion`
   dalı: MSVC düzeltmesi ve sunucuda tek seferde tek üretim + kopunca durma), `package_release.py` zipleri (her biri bütün takım) ve SHA-256'ları verir;
@@ -272,6 +272,35 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   ekran kartı varsa Vulkan (NVIDIA'da CUDA da seçilebilir; TTS ve STT NVIDIA'da önce CUDA,
   AMD/Intel kartta Vulkan: parçanın `hardware` sırası, `choices()`), yoksa CPU; model kart belleğine sığıyorsa tüm katmanlar kartta.
   Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
+  **Bellek kullanımı** (`vram_mode`: tam / dengeli / düşük): dengeli ve düşükte modelin bir kısmı işlemcide kalır
+  (llama.cpp: katmanların 1/2'si ve 1/4'ü, `-ngl`; VoxCPM2: BaseLM'in 28 katmanından 14 ve 7'si,
+  `--voxcpm2-n-gpu-layers`). Ölçüm (RTX 3060 Ti, Ryzen 5 5600X, VoxCPM2): tam +4,9 GB, 14 katman +3,7 GB, 7 katman
+  +3,2 GB; hız oranı 0,35 → 0,56 → 0,66 (1'in altı = gerçek zamandan hızlı), akış kesilmedi. Katmanlar sırayla
+  çalıştığı için işlemcideki her katman süreyi uzatır; yavaş işlemcide sonuç farklı olur. OmniVoice (katman
+  ayarı yok) ve ses tanıma (whisper.cpp'de yalnız `--no-gpu` var) için böyle bir mod yok.
+  **Bellek tahmini** (kartın "Gelişmiş ayarlar" satırı): llama.cpp modelleri = dosya + bağlamın önbelleği (GGUF
+  başlığından) + ~0,3 GB tampon, moda göre payı; VoxCPM2 ölçülen değerler; OmniVoice ~1-1,5 GB (gözlem).
+  Ses tanıma (STT): model dosyası boyutu kadar varsayıldı, **henüz ölçülmedi** (yapılacak). VoxCPM2'de klon sesle
+  üretim yaklaşık 1 GB daha fazla bellek ister (ölçüm: tam hızda zirve +6,0 GB, klonsuz +5,2 GB).
+  VoxCPM2'de istekte ne konuşma tarifi ne klon ses varsa motor "A clear voice sweet girl." ile konuşur
+  (`DEFAULT_VOICE_DESIGN`, engines.py). 48 → 24 kHz indirme (`HalfRate`) parça sınırlarında kesintisiz ve filtresi
+  doğru (FFT'ye göre ~%1,4 hata) olarak doğrulandı.
+  VoxCPM2 ayarları (engines.py): `seed` (-1 ya da verilmezse her istekte rastgele yeni bir tane gönderilir; göndermezsek
+  sunucu hep aynı tohumu kullanıyordu); `guidance_scale` → `cfg_value` (2-4, verilmezse 2,6); `steps` →
+  `inference_timesteps` (verilmezse 15); `temperature` (arayüzde "Rastgelelik", 0,5-0,9; 8810 sayfası 0,75'ten başlar (0,05'lik adım),
+  istek vermezse motor da 0,75 kullanır, PyTorch'ta 1,0'dı). Hız (`speed`) VoxCPM2'de yok: model süre/hız ayarı almıyor, eski PyTorch motoru da `speed`'i hiç kullanmıyordu (OmniVoice'un
+  sunucusu alır); 8810 ve Router Oyun Alanı'nda VoxCPM2 açıkken gizli. Sonradan hızlandırma kullanıcı kararıyla
+  eklenmedi; "speaking fast" gibi stil etiketleri tutarsız çıktı. Router'ın Oyun Alanı "Temperature" alanı
+  "yaratıcılık" (= guidance) olarak kullanılıyor; rastgelelik (`temperature`) Router'dan gitmez, motorun 0,75'i kullanılır; Oyun Alanı'nda bu alan yerel TTS'te 2-4 arası, 0,1'lik adımla.
+  Guidance yükselince ses seviyesi de artar (klonsuz rms: cfg 2 ≈ 1,5 bin, 3 ≈ 3 bin, 5 ≈ 9,7 bin, 8 ≈ 19 bin;
+  klonda cfg 2 ≈ 5 bin, 5 ≈ 13 bin, tepe tam ölçekte): yüksek değerler bağırır gibi duyulur. `Leveler` (engines.py)
+  sesi yalnızca kısar: 20 ms'lik çerçevelerde konuşmanın seviyesini izler (hızlı yükselir, yavaş iner, sessizlik
+  sayılmaz), kazancı çerçeveden çerçeveye kaydırır; hedef rms 3000, sessiz konuşma olduğu gibi kalır, akışta da
+  çalışır. Eski PyTorch motoru bütün cevabı tepe değerine göre ölçekliyordu (akışta yapılamaz). Çok yüksek cfg'de
+  sunucunun kendi 16 bit çıktısı kırpıldığı için o bozulma kalır; seviye yine de iner.
+  Bu yüzden VoxCPM2'de guidance en az 2, en fazla 4 (`MIN_GUIDANCE`, `MAX_GUIDANCE`), verilmezse 2,6; Router ve 8810
+  servisi verilmeyen guidance'ı artık 2.0 diye doldurmuyor, OmniVoice'un varsayılanı 2.0 kaldı. 8810 sayfasında
+  VoxCPM2'de guidance 2-4 (0,1'lik adım, başlangıç 2,6), kalite adımı 15'ten, rastgelelik 0,5-0,9 (0,05'lik adım, 0,75'ten) başlar.
 - **CUDA'nın alt sınırı:** kartın compute capability'si ayrı bir `nvidia-smi --query-gpu=index,compute_cap`
   çağrısıyla okunur (bu alanı bilmeyen eski sürücüde kart listesi kaybolmasın diye ayrı; okunamazsa kart uygun
   sayılır, `hardware.json`'daki eski önbellek de öyle). Her CUDA tarifinde `min_compute` var; hiçbir NVIDIA kart
@@ -543,3 +572,28 @@ Sıra önerisi yukarıdan aşağıya.
       PATH'te CUDA Toolkit yok) TTS hem CUDA'da hem Vulkan'da kuruldu, başladı ve Orion'un TTS API'sinden ses üretti
       (günlükte `CUDA0`, `Vulkan0`). Kullanıcılar bunu bir sonraki Hub yayınıyla alır (katalog Hub paketinde).
     - **Kalan:** gerçek bir AMD/Intel kartta denenmedi.
+
+- **Router Oyun Alanı'nda akış:** ses 0,5 sn birikmeden çalmaya başlamaz (8810 sayfasının kendi oynatıcısı gibi ön
+  yükleme yapar). Parçalar 40-120 ms arayla gelir, ilki ~40 ms'lik sestir; hemen çalınca ikincisi gelmeden ilki
+  biter ve ilk sesten sonra "tık" duyulurdu.
+- **Router → TTS "yaratıcılık":** Router'ın 0-2 aralıklı "temperature" değeri TTS servisine `creativity` olarak gider;
+  servis motora göre hizalar: OmniVoice'ta guidance'ın kendisi, VoxCPM2'de 2-4 (0 → 2, 1 → 3, 2 → 4). 8810 sayfası
+  doğrudan `guidance_scale` yollar.
+- **Motorlardan bağımsız ayarlar:** `/v1/voices?engine=omnivoice|voxcpm2` o motorun klon seslerini verir (çalışan motor
+  ne olursa olsun), `/v1/languages` her zaman OmniVoice listesini; Router `local-tts-info` `voices_by_engine` döner ve
+  Modeller sayfası seçili motorun (Engine View) kendi seslerini/dilini gösterir. Hız alanı VoxCPM2 görünümünde yok.
+- **8810 sayfası ve Router aynı ölçekte:** VoxCPM2'de "Yaratıcılık" 0-2 (0,1 adım, 0,6'dan başlar = guidance 2,6) ve
+  `creativity` olarak gider; OmniVoice'ta guidance 1-10 kalır. Her motorun değerleri (hız, yaratıcılık, adım,
+  rastgelelik, seed) tarayıcıda motor adıyla ayrı saklanır (`orionTts:<motor>:<alan>`).
+- **Router Modeller sayfası:** `default_config.per_engine = {omnivoice: {...}, voxcpm2: {...}}`; Engine View
+  değişince ekrandakiler o motora kaydedilir, öbürününki gelir; Kaydet ikisini birden yazar. Oyun Alanı çalışan
+  motorun `per_engine` değerlerini kullanır (yoksa eski düz alanlar).
+- **Dil listesi:** OmniVoice'un 647 dili `services/tts/omnivoice_languages.json` dosyasından gelir (lang_map.py'den
+  üretildi; PyTorch'lu paket release'te olmadığı için liste yalnız Auto/Turkish/English'e düşüyordu). Dosya Hub
+  paketine girer.
+- **Klon sesin keskin s/p/t'si:** klon, örnek kaydın parlaklığını da kopyalar ve büyütür (mikrofon kaydı: 4-8 kHz
+  -16 dB, klon çıktısı -11 dB; modelin kendi sesi -21 dB). Örnek 5 kHz üstü yumuşatılır
+  (`soften_reference`, `REF_LOWPASS_HZ`): çıktının 4-12 kHz bantları modelin kendi sesininkine iner. Yumuşatma
+  klon kaydedilirken bir kez yapılır, kayıtlı örnek her istekte olduğu gibi gider; daha önce kaydedilmiş klonlar
+  ham kalır (yeniden kaydedilmeli). Bellek/RAM sıkışınca sunucu "LocEnc sequence forward failed" ya da ggml
+  `mem_buffer` hatasıyla düşebilir (sistemin boş taahhüt belleği ~4 GB iken görüldü).
