@@ -48,7 +48,7 @@ import sandbox_prune
 from timing import Timings
 
 DEFAULT_CACHE = ROOT / '.tmp/build-cache'
-DEFAULT_KEEP = 2
+DEFAULT_KEEP = 1  # Only the sandbox of this run: kept for diagnosis if it fails, deleted by the next run.
 
 
 class FixtureFetcher(FetcherInterface):
