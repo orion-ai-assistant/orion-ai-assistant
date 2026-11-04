@@ -209,6 +209,18 @@ Gerisi silinir. O sırada silinen bir paketi indiren istemci "dosya bulunamadı,
 indirilecek" mesajı alır; kurulu sürüm değişmez. Yarıda kalmış bir yayının dosyaları ve son bir saatte
 yüklenenler silinmez.
 
+**Bazen temizlik hiçbir şey silmez (bilinen, zararsız):** Temizlik, canlı sürümü feed'deki `timestamp.json`'dan
+okur. Bu adres GitHub'ın önbelleğinden gelir ve yeni timestamp yüklendikten sonra birkaç saniye ile birkaç dakika
+boyunca eski sürümü gösterebilir. O zaman temizlik bir önceki sürümü canlı sanar ve `kept snapshot versions [41];
+0 to delete` gibi bir satır yazar (yeni sürüm 42 iken). İlk görüldüğü yer: 4 Kasım 2026'daki yayın (router 42,
+hub 52). Bunun sonucu, bir önceki sürümün değişen parçalarının (kod ZIP'i, bootstrap ZIP'leri, eski
+`snapshot`/`targets`) feed'de kalmasıdır; bu feed başına yaklaşık 20 MB eder. Runtime katmanları sürümler arasında
+ortak olduğu için bu fazlalığa girmez. Kalan dosyalar kimseyi etkilemez, bir sonraki yayının temizliği onları da
+siler (temizlik yalnızca en eskiyi değil, canlı sürümün listelemediği her şeyi siler). O an eski sürümü indiren
+biri için bir yayınlık tampon bile sayılır. Şimdilik bilerek dokunulmadı. İleride istenirse iki seçenek var:
+`prune_feed.py`'de `KEEP = 2` (her zaman bir önceki sürüm de kalır, davranış her yayında aynı olur) ya da
+release.py yeni sürüm numarasını temizliğe verir ve temizlik `timestamp.json` onu gösterene kadar bekler.
+
 Elle çalıştırmak için:
 - Neyin silineceğini listelemek (hiçbir şey silmez): `prune_feed.py --feed router`
 - Silmek: `prune_feed.py --feed router --apply`
@@ -340,8 +352,8 @@ Feed sayısı ve sequence şu sebeplerle var:
   reddeder.
 - **Sürüm geri gidebilir:** Bir kez 1.1.0 → 0.2.0 yaşandı ve sorunsuz geçti, çünkü karar `sequence`'a göre veriliyor.
 
-Feed sayısı zamanla 200-300 olur; sorun değil. Temizlik eskileri sildiği için feed'de hep yalnızca güncel dosyalar
-durur.
+Feed sayısı zamanla 200-300 olur; sorun değil. Temizlik eskileri sildiği için feed'de genelde yalnızca güncel dosyalar
+durur (bazen bir önceki sürüm de bir yayın boyunca kalır, bkz. "Feed temizliği").
 
 ### Numaralı dosya adları neden şart?
 
