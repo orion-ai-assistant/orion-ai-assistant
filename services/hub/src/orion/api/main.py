@@ -21,6 +21,16 @@ from services.shared.environment import get_redis_url, get_env
 from services.shared.update_gate import admitted, UpdateAdmission, wait_for_admission
 from orion.kernel.config import get_runtime_settings, seed_database_settings
 
+class RevalidatedFiles(StaticFiles):
+    """Static pages the browser asks about each time (a 304 when unchanged): after an update it never keeps
+    running an old script or showing an old text."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+
 # Management pages are never shown inside another page's frame (clickjacking).
 OWNER_PAGE_HEADERS = {'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY',
                       'Content-Security-Policy': "frame-ancestors 'none'"}
@@ -265,8 +275,8 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
                 target += '?' + request.url.query
             return RedirectResponse(target)
 
-        application.mount('/owner-assets', StaticFiles(directory=owner_dir), name='owner-assets')
-        application.mount('/admin', StaticFiles(directory=os.path.join(os.path.dirname(__file__), 'admin_ui'), html=True), name='admin')
+        application.mount('/owner-assets', RevalidatedFiles(directory=owner_dir), name='owner-assets')
+        application.mount('/admin', RevalidatedFiles(directory=os.path.join(os.path.dirname(__file__), 'admin_ui'), html=True), name='admin')
     elif not mobile:
         # The Flutter app's API on this PC; its pages are served by the launcher (8090).
         application.include_router(browser_router)
