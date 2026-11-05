@@ -332,6 +332,17 @@ ELEVATED = ('ORION-ELEVATED: Orion baska bir yetki duzeyinde (yonetici olarak) c
 ELEVATED_SELF = ('ORION-ELEVATED-SELF: Orion yonetici olarak baslatilamaz. '
                  'Orion\'u normal (yonetici olmayan) bir pencereden acin.')
 PORT_WAIT = 10  # A just-stopped Orion may hold its ports for a moment longer.
+# The entry script waits outside the installation and starts again (see apply_running_elsewhere).
+UPDATE_RUNNING = 'ORION-UPDATE-RUNNING: another start is applying an update'
+
+
+def apply_running_elsewhere(registry):
+    """Another process holds the operation lock while an update is staged or being applied. This launcher
+    runs Python from the installation's own tree, so waiting here (for the lock) is what keeps the
+    installation "in use": the apply gives up after its grace period and this launch then starts the old
+    version. So it leaves and lets the entry script wait outside the tree."""
+    from .update_gate import APPLYING, applier_running, phase
+    return phase(registry.path) in APPLYING | {'staged', 'waiting_for_idle'} and applier_running(registry.path)
 
 
 def ports_taken(record, components, *, wait=PORT_WAIT, sleep=time.sleep):
@@ -624,6 +635,8 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         raise RegistryError(ELEVATED_SELF)
     if not stop:
         wait_for_quit(registry)
+        if not apply_owner and apply_running_elsewhere(registry):
+            raise RegistryError(UPDATE_RUNNING)
         wait_for_update(registry, apply_owner=apply_owner)
         record = registry.read()
         # The watcher's own restart never re-applies: a failed/rolled-back attempt is not retried behind the
@@ -631,6 +644,9 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         if record and not apply_owner and (not startup or record['preferences']['start_with_windows']):
             from .automatic_updates import run_startup
             run_startup(registry)
+            # A second launch at the same moment: the first one is applying the staged update.
+            if apply_running_elsewhere(registry):
+                raise RegistryError(UPDATE_RUNNING)
     with operation_lock(registry.path, timeout=180):
         record = registry.read()
         if record is None:

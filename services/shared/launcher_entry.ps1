@@ -290,6 +290,17 @@ try {
         $output = & $python @arguments 2>&1
         $code = $LASTEXITCODE
     } finally { Pop-Location; $ErrorActionPreference = $previousPreference }
+    if ($code -ne 0 -and (($output -join "`n") -match 'ORION-UPDATE-RUNNING') -and [int]('0' + $env:ORION_UPDATE_RETRIES) -lt 60) {
+        # Another start is applying an update. The launcher left the installation (it runs Python from it,
+        # which would keep that update waiting); wait here, outside it, then start again from the top: the
+        # update may have changed the installed version and its paths.
+        $env:ORION_UPDATE_RETRIES = [string]([int]('0' + $env:ORION_UPDATE_RETRIES) + 1)
+        $deadline = [DateTime]::Now.AddMinutes(30)
+        Start-Sleep -Seconds 3
+        while (((Test-OrionUpdatingWindow) -or ((Test-Path -LiteralPath $pending) -and (Test-OrionUpdating $pending))) -and [DateTime]::Now -lt $deadline) { Start-Sleep -Seconds 2 }
+        & $PSCommandPath @PSBoundParameters
+        exit $LASTEXITCODE
+    }
     # Keep only the most recent launch result; no secrets/DB settings are written.
     $output | Out-File -LiteralPath (Join-Path $PSScriptRoot 'launcher.log') -Encoding UTF8
     if ($code -ne 0) { throw ($output -join "`r`n") }

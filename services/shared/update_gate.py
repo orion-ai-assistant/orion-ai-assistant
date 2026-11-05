@@ -37,6 +37,23 @@ def blocked(registry=None):
         return True
 
 
+def phase(registry=None):
+    """Journal phase of the active update operation, or None (none, or unreadable)."""
+    registry = registry or os.getenv('ORION_INSTALLATION_REGISTRY')
+    if not registry:
+        return None
+    pointer = Path(registry).parent / 'updates/active.json'
+    try:
+        value = json.loads(pointer.read_text(encoding='utf-8'))
+        identity = value['operation_id']
+        journal = json.loads((pointer.parent / identity / 'journal.json').read_text(encoding='utf-8'))
+        if journal.get('schema') != 1 or journal['operation_id'] != identity:
+            return None
+        return journal['phase']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def progress(registry=None):
     """Journal phase of an update that is being applied right now, else None.
 

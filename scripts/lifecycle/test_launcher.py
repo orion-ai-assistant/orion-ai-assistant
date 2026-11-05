@@ -256,6 +256,19 @@ while True: server.handle_request()
         self.assertEqual(2, len(slept))
         self.assertIsNone(progress(self.store.path))
 
+    def test_a_second_start_leaves_the_installation_while_another_applies_the_staged_update(self):
+        # Waiting in this Python (run from the installation) kept the apply "in use" until it gave up.
+        self.journal('staged')
+        with patch('services.shared.update_gate.applier_running', return_value=True):
+            self.assertTrue(launcher.apply_running_elsewhere(self.store))
+        with patch('services.shared.update_gate.applier_running', return_value=False):
+            self.assertFalse(launcher.apply_running_elsewhere(self.store))  # staged, nobody applying
+        self.journal('completed')
+        with patch('services.shared.update_gate.applier_running', return_value=True):
+            self.assertFalse(launcher.apply_running_elsewhere(self.store))
+        self.assertIn('ORION-UPDATE-RUNNING', launcher.UPDATE_RUNNING)
+        self.assertNotIn('busy', launcher.UPDATE_RUNNING.lower())  # not retried as a transient error
+
     def test_repair_and_unreadable_journals_are_not_progress_and_never_wait(self):
         from services.shared.update_gate import progress
         for phase in ('repair_required', 'staged', 'completed', 'rolled_back'):
