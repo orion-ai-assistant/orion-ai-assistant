@@ -266,7 +266,9 @@ def package_key(kind, release, args, root):
         web = root / 'main_app/app/build/web'
         parts += [('web', build_cache.hash_tree(web)),
                   ('serve_web', (build_cache.text_digest if 'main_app/app/tool/serve_web.py' in lf_in_git(root)
-                                 else build_cache.file_digest)(root / 'main_app/app/tool/serve_web.py'))]
+                                 else build_cache.file_digest)(root / 'main_app/app/tool/serve_web.py')),
+                  ('ui_host', build_cache.hash_files({n: root / 'main_app/app' / n for n in UI_HOST_SOURCES},
+                                                     text=UI_HOST_SOURCES[:2]))]
     else:
         names = release_names(root, SOURCE_PREFIXES[kind])
         # The bytes the package gets (see copy_source): an autocrlf (CRLF) and an LF checkout of one commit
@@ -276,6 +278,23 @@ def package_key(kind, release, args, root):
         if kind == 'router':
             parts.append(('dashboard', build_cache.hash_tree(root / 'dashboard/out')))
     return build_cache.combine(*parts), dict(parts)
+
+
+UI_HOST_SOURCES = ('windows_host/OrionUi.cs', 'windows_host/build_ui_host.py', 'windows_host/orion.ico')
+
+
+def build_ui_host(root, stage):
+    """Orion's window (OrionUi.exe, WebView2) next to build/web: the Client's own build script, then the same
+    PE fix-up as Orion.exe so the same sources give the same bytes."""
+    app = root / 'main_app/app'
+    result = subprocess.run([sys.executable, str(app / 'windows_host/build_ui_host.py')], cwd=str(app),
+                            capture_output=True, text=True, timeout=600)
+    if result.returncode:
+        raise ValueError('OrionUi.exe build failed: ' + (result.stdout + result.stderr)[-2000:])
+    shutil.copytree(app / 'build/ui_host', stage / 'ui_host')
+    from build_launcher import make_reproducible
+    sources = b''.join((app / name).read_bytes().replace(b'\r\n', b'\n') for name in UI_HOST_SOURCES)
+    make_reproducible(stage / 'ui_host/OrionUi.exe', b'orion-ui-host' + sources)
 
 
 def build(args, timings=None):
@@ -331,6 +350,7 @@ def build(args, timings=None):
                 (stage / 'tool').mkdir()
                 copy_source(root / 'main_app/app/tool/serve_web.py', stage / 'tool/serve_web.py',
                             'main_app/app/tool/serve_web.py' in lf_in_git(root))
+                build_ui_host(root, stage)
             else:
                 # New sources are intentionally required to be tracked by CI. Local
                 # builds must use a source commit (or explicitly stage task files).

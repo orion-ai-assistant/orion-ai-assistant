@@ -34,6 +34,9 @@ internal static class Orion
     internal const string WindowPrefix = "Orion-Host-";      // + installation id: the host's hidden window.
     internal const string JobPrefix = @"Local\Orion-HostJob-"; // + installation id: its kill-on-close job.
     internal const int Request = 0x4F52494F;                  // WM_COPYDATA tag of a forwarded start/stop.
+    internal const string UiPrefix = "Orion-Ui-";             // + installation id: Orion's window (OrionUi.exe).
+    internal const int UiCommand = 0x4F52554F;                // WM_COPYDATA tag of a command to that window.
+    internal const int UiState = 0x4F525553;                  // WM_COPYDATA tag of its state ("listening=1").
 
     [STAThread]
     private static int Main(string[] args)
@@ -205,6 +208,8 @@ internal sealed class Host : Form
     private DateTime lastOpen = DateTime.MinValue;
     private string routerFavicon;                                 // The file routerBig/routerSmall are from.
     private IntPtr routerBig, routerSmall;
+    private ToolStripMenuItem stopListening;                       // Shown while Orion's window listens.
+    private string iconText = "Orion";
 
     internal Host(string id, string folder, string script, string registry)
     {
@@ -241,7 +246,8 @@ internal sealed class Host : Form
     {
         Ui.Load();
         icon.Icon = Ui.OrionIcon(SystemInformation.SmallIconSize.Width);
-        icon.Text = Orion.Product() == "Orion Router" ? "Orion Router" : "Orion";
+        iconText = Orion.Product() == "Orion Router" ? "Orion Router" : "Orion";
+        icon.Text = iconText;
         var menu = new ContextMenuStrip();
         Ui.Style(menu);
         var title = new ToolStripMenuItem(Orion.Product());
@@ -252,7 +258,13 @@ internal sealed class Host : Form
         title.Click += delegate { Open(new List<string>(), false); };
         menu.Items.Add(title);
         menu.Items.Add(new ToolStripSeparator());
-        // Two entries only: the title opens Orion, Quit stops it (uninstall: Windows Settings > Apps).
+        // The title opens Orion, Quit stops it (uninstall: Windows Settings > Apps). While Orion's window
+        // (OrionUi.exe, also hidden) listens, "Dinlemeyi durdur" ends that listening.
+        stopListening = new ToolStripMenuItem("Dinlemeyi durdur");
+        stopListening.ForeColor = Ui.Foreground; stopListening.Padding = new Padding(0, 3, 0, 3);
+        stopListening.Visible = false;
+        stopListening.Click += delegate { UiCommand("stop-listening", false); };
+        menu.Items.Add(stopListening);
         var quit = new ToolStripMenuItem("\u00c7\u0131k");
         menu.Items.Add(quit);
         quit.ForeColor = Ui.Foreground; quit.Padding = new Padding(0, 3, 0, 3);
@@ -278,6 +290,14 @@ internal sealed class Host : Form
                 });
                 return;
             }
+            if (data.Tag == (IntPtr)Orion.UiState && data.Size >= 2 && data.Size <= 512)
+            {
+                // Orion's window reports whether the assistant listens (it may be hidden).
+                bool value = Marshal.PtrToStringUni(data.Data, data.Size / 2).TrimEnd('\0') == "listening=1";
+                message.Result = (IntPtr)1;
+                BeginInvoke((MethodInvoker)delegate { Listening(value); });
+                return;
+            }
         }
         base.WndProc(ref message);
     }
@@ -292,11 +312,50 @@ internal sealed class Host : Form
             if ((DateTime.Now - lastOpen).TotalSeconds < 3) return;  // Ignore double clicks: one launch at a time.
             lastOpen = DateTime.Now;
         }
+        if (!first && !switches.Contains("-Background") && UiCommand("show", true))
+        {
+            // Orion's window runs (hidden): it is shown at once with its page as it was. The launcher still makes
+            // sure the services run, without a window of its own.
+            IntPtr check = Native.Run(Orion.Entry(script, new List<string> { "-Background" }), folder, false);
+            if (check != IntPtr.Zero) starts.Add(check);
+            return;
+        }
         var allowed = new List<string>();
         foreach (string item in switches) if (item == "-Startup" || item == "-Background") allowed.Add(item);
         IntPtr process = Native.Run(Orion.Entry(script, allowed), folder, false);
         if (process != IntPtr.Zero) starts.Add(process);
         else if (first) Exit();
+    }
+
+    // Orion's window (OrionUi.exe): a message-only window named after this installation takes commands.
+    private bool UiCommand(string command, bool front)
+    {
+        IntPtr window = Native.FindWindowExW(Native.HWND_MESSAGE, IntPtr.Zero, null, Orion.UiPrefix + id);
+        if (window == IntPtr.Zero) return false;
+        if (front)
+        {
+            int pid;
+            Native.GetWindowThreadProcessId(window, out pid);
+            Native.AllowSetForegroundWindow(pid);  // The user's click is ours: hand the foreground on.
+        }
+        byte[] bytes = Encoding.Unicode.GetBytes(command + "\0");
+        IntPtr buffer = Marshal.AllocHGlobal(bytes.Length);
+        try
+        {
+            Marshal.Copy(bytes, 0, buffer, bytes.Length);
+            var data = new Native.CopyData { Tag = (IntPtr)Orion.UiCommand, Size = bytes.Length, Data = buffer };
+            IntPtr result;
+            return Native.SendMessageTimeoutW(window, Native.WM_COPYDATA, IntPtr.Zero, ref data, 0x2, 5000, out result) != IntPtr.Zero
+                && result != IntPtr.Zero;
+        }
+        finally { Marshal.FreeHGlobal(buffer); }
+    }
+
+    private void Listening(bool value)
+    {
+        if (closed) return;
+        stopListening.Visible = value;
+        icon.Text = value ? iconText + " - dinliyor" : iconText;
     }
 
     // "Quit": the launcher's normal stop (one shutdown path); this host ends when it has finished.
@@ -507,6 +566,7 @@ internal static class Ui
 internal static class Native
 {
     internal const int WM_COPYDATA = 0x004A, WM_GETICON = 0x007F, WM_SETICON = 0x0080;
+    internal static readonly IntPtr HWND_MESSAGE = new IntPtr(-3);
     internal static readonly string PowerShell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
         @"System32\WindowsPowerShell\v1.0\powershell.exe");
 
@@ -548,6 +608,8 @@ internal static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint PrivateExtractIconsW(string file, int index, int cx, int cy, IntPtr[] icons, int[] ids, uint count, uint flags);
     [DllImport("user32.dll")] internal static extern bool DestroyIcon(IntPtr icon);
+    [DllImport("user32.dll")] internal static extern int GetWindowThreadProcessId(IntPtr window, out int process);
+    [DllImport("user32.dll")] internal static extern bool AllowSetForegroundWindow(int process);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool ShutdownBlockReasonCreate(IntPtr window, string reason);
     [DllImport("user32.dll")] internal static extern bool ShutdownBlockReasonDestroy(IntPtr window);
     [DllImport("user32.dll")] private static extern bool SetProcessDpiAwarenessContext(IntPtr value);

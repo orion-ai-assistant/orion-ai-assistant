@@ -152,14 +152,43 @@ def show_window(registry, hub, *, timeout=30, abort=None):
         time.sleep(.2)
 
 
+def _ui_window(registry):
+    """(installation id, Client folder, WebView2 data folder) of Orion's own window (OrionUi.exe), or None
+    when this Client has none (an older Client package, no Windows): then the browser window is used."""
+    from .flutter_launcher import ui_host_exe
+    from .orion_host import _installation_id
+    ident = _installation_id(registry)
+    app_dir = os.environ.get('ORION_FLUTTER_APP_DIR')
+    if not ident or not app_dir or ui_host_exe(app_dir) is None:
+        return None
+    return ident, app_dir, registry.path.parent / 'ui-webview2'
+
+
+def start_hidden_window(registry, url):
+    """A start without a window (Windows sign-in with "show the window" off, a background start): Orion's own
+    window starts hidden, so the web client runs (the assistant can listen) and the first open is instant."""
+    ui = _ui_window(registry)
+    if ui is None:
+        return False
+    from .flutter_launcher import open_ui
+    ident, app_dir, data = ui
+    return open_ui(url, app_dir=app_dir, ident=ident, data_dir=data, hidden=True, registry=registry)
+
+
 def _open_one_window(registry, url):
     """Two launches at once (desktop shortcut and Start menu during a slow first start) both waited for the
     Flutter UI and opened a window each: the second looked for an existing window before the browser had
     drawn the first one. One launch at a time opens or focuses the window and waits until it is visible."""
-    from .flutter_launcher import open_window
+    from .flutter_launcher import open_window, open_ui
     from .process_lifecycle import InstanceLock
     profile = registry.path.parent / 'flutter-ui-profile'
     with InstanceLock(registry.path.parent / 'bootstrap', 'window', timeout=30):
+        ui = _ui_window(registry)
+        if ui is not None:
+            # Orion's own window: started once, then only shown (the page is kept, so this is instant).
+            ident, app_dir, data = ui
+            if open_ui(url, app_dir=app_dir, ident=ident, data_dir=data, registry=registry):
+                return
         if not open_window(url, allow_tab_fallback=False, profile=profile, reuse_existing=True):
             raise RuntimeError('Orion window could not open; install Edge/Chrome or use repair')
         if os.name == 'nt':
@@ -173,8 +202,16 @@ def close_window(registry):
     """Close the Orion app window opened by show_window.
 
     Only browser processes started with Orion's own dedicated profile directory are
-    touched, so the user's normal Chrome/Edge windows are never affected."""
+    touched, so the user's normal Chrome/Edge windows are never affected. Orion's own window
+    (OrionUi.exe) is asked to end: it otherwise only hides."""
     import psutil
+    from .flutter_launcher import ui_command, ui_running
+    from .orion_host import _installation_id
+    ident = _installation_id(registry)
+    if ident and ui_command(ident, 'quit'):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and ui_running(ident):
+            time.sleep(.1)
     profile = str(canonical_path(registry.path.parent / 'flutter-ui-profile')).lower().rstrip(chr(92) + '/')
     victims = []
     for process in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -695,6 +732,14 @@ def _start_with_window(registry, components, start_hub, start_router, *, show):
                 pass  # The icon is a convenience; services and window do not depend on it.
         if window is not None:
             window.result()
+        elif hub:
+            try:
+                from .flutter_launcher import flutter_url
+                # The same origin as show_window: the page's saved settings live per origin.
+                url = flutter_url(lambda name, default=None, **kw: os.environ.get(name, default))
+                start_hidden_window(registry, url.replace('localhost', '127.0.0.1') + '/')
+            except Exception:
+                pass  # Opening Orion later starts the window as usual.
     if show and hub is None:
         from .flutter_launcher import open_window
         open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard')
