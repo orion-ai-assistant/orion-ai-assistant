@@ -6,10 +6,11 @@ echo  Needs Visual Studio 2022, git, CUDA Toolkit 12.x (cuda) and the LunarG Vul
 echo ============================================================
 
 rem The source: our fork of tc-mb/llama.cpp-omni (OpenBMB's own on-device path for VoxCPM2), branch orion:
-rem upstream d30f00f plus two commits: it builds with MSVC (ssize_t, struct iovec), and the TTS server runs one
-rem generation at a time and stops a whole-waveform request whose client hung up.
+rem upstream d30f00f plus our commits: it builds with MSVC (ssize_t, struct iovec), and the TTS server runs one
+rem generation at a time and stops a whole-waveform request whose client hung up; it keeps the encoded reference audio
+rem (the same voice with every request is encoded once).
 set REPO=https://github.com/krstalacam/llama.cpp-omni
-set COMMIT=0f0b09497e8aeb3ecc1e7d36d42412776ead317a
+set COMMIT=9b49812768a984852496d1ef07ece328ca35fb74
 
 set WHAT=%~1
 if "%WHAT%"=="" set WHAT=all

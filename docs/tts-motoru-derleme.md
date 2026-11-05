@@ -132,11 +132,15 @@ zip Toolkit'siz bilgisayarda açılmaz.
 ## 7. VoxCPM2 motoru (llama.cpp-omni)
 
 - Kaynak: kendi fork'umuz [krstalacam/llama.cpp-omni](https://github.com/krstalacam/llama.cpp-omni), `orion` dalı
-  `0f0b09497e8aeb3ecc1e7d36d42412776ead317a` (MIT), yalnızca `llama-tts-server` hedefi. Üst depo
-  [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00f` üstüne iki commit: MSVC'de derlenir
+  `9b49812768a984852496d1ef07ece328ca35fb74` (MIT; motor `voxcpm2-v1.0.2`), yalnızca `llama-tts-server` hedefi. Üst depo
+  [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00f` üstüne kendi commit'lerimiz: MSVC'de derlenir
   (`src/llama-moe-slot.cpp` POSIX `ssize_t` / `struct iovec` kullanıyordu) ve TTS sunucusu üretimi tek tek yapar
   (`server-voxcpm2.cpp` `generate_mutex`; önce httplib iki isteği aynı KV önbellekte çalıştırıp çöküyordu), akışsız
   `/v1/audio/speech` istemci kopunca durur (`VoxCPM2GenerateParams::cancelled`, `decode_loop` her adımda sorar).
+  v1.0.2: `encode_reference_audio` aynı ses örneğinin AudioVAE kodlamasını örneklerin hash'iyle saklar (en çok 8);
+  Orion her cümlede aynı hazırlık sesini/klon örneğini gönderdiği için kodlama sesi başına bir kez yapılır
+  (RTX 3060 Ti'de 100-280 ms). Aynı commit `server-voxcpm2.cpp`'deki bir string içindeki gerçek satır sonunu düzeltti:
+  `build_release.bat`'taki eski `COMMIT` (`0f0b094`) fork'ta yoktu ve dalın ucu (`89456ef`) bu yüzden derlenmiyordu.
   Yeni bir düzeltme o dala commit'lenir, `build_release.bat`'taki `COMMIT` güncellenir.
   `services/tts/voxcpm2-gguf/build_release.bat [cuda|vulkan|cpu]` kaynağı `%TEMP%\ovx\src`'ye indirir, o commit'e
   geçer, `%TEMP%\ovx\b-<donanım>`'da derler
@@ -148,7 +152,7 @@ zip Toolkit'siz bilgisayarda açılmaz.
   (CUDA 12.1 bu Visual Studio'yu ancak böyle kabul eder; CMake derleyiciyi tanırken bunu ortam değişkeninden okur).
   Batch argümanında `=` ayırıcıdır: bayrakları argüman olarak değil ortam değişkeniyle geçir.
 - `python package_release.py` her takımı `voxcpm2-gguf-windows-<donanım>.zip` yapar, adres, SHA-256 ve boyutu
-  yazar; ziplerin yeri `voxcpm2-v1.0.0` yayını. CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
+  yazar; ziplerin yeri `voxcpm2-v<sürüm>` yayını (şu an `voxcpm2-v1.0.2`; `RELEASE_TAG`). CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
   llama.cpp'nin `cudart` zipi ikinci arşivdir).
 - Denemek: `llama-tts-server.exe --voxcpm2-base-lm VoxCPM2-BaseLM-Q8_0.gguf --voxcpm2-acoustic
   VoxCPM2-Acoustic-F16.gguf --host 127.0.0.1 --port 18807`; `POST /v1/audio/speech`

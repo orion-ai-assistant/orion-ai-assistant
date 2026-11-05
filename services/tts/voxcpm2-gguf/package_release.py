@@ -15,7 +15,7 @@ import os
 import sys
 import zipfile
 
-RELEASE_TAG = "voxcpm2-v1.0.1"
+RELEASE_TAG = "voxcpm2-v1.0.2"
 BASE_URL = f"https://github.com/orion-ai-assistant/orion-ai-assistant/releases/download/{RELEASE_TAG}/"
 
 
