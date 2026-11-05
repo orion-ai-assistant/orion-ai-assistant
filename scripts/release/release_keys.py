@@ -22,10 +22,15 @@ PASSPHRASE_ENV = 'ORION_RELEASE_KEY_PASSPHRASE'
 
 
 def _passphrase(confirm=False, enforce_length=True):
-    value = os.environ.get(PASSPHRASE_ENV)
-    if value is None:
+    # An empty value (a stray Enter) is not a passphrase: it must neither be passed on to the
+    # publish steps through the environment nor make each of them ask again.
+    value = os.environ.get(PASSPHRASE_ENV) or None
+    while value is None:
         value = getpass.getpass('Release key passphrase (typing is hidden): ')
         print(f'  ({len(value)} characters entered)')
+        if not value:
+            print('  The passphrase cannot be empty; type it again.')
+            value = None
         if confirm and getpass.getpass('Repeat passphrase: ') != value:
             raise ValueError('Passphrases differ')
     if enforce_length and len(value) < 8:
@@ -37,7 +42,8 @@ def load_signer(key_path, passphrase=None):
     """Decrypt the release key. `passphrase` (bytes) avoids prompting again."""
     try:
         private = serialization.load_pem_private_key(
-            Path(key_path).read_bytes(), passphrase or _passphrase(enforce_length=False))
+            Path(key_path).read_bytes(),
+            passphrase if passphrase is not None else _passphrase(enforce_length=False))
     except (ValueError, TypeError) as error:
         raise ValueError('Could not unlock the release key: wrong passphrase?') from error
     return CryptoSigner(private, SSlibKey.from_crypto(private.public_key()))
