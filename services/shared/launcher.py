@@ -656,8 +656,11 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
                 taken = ports_taken(record, components)
                 if taken:
                     raise RegistryError(taken)
-                _start_with_window(registry, components, start_hub, start_router,
-                                   show=not background and (not startup or record['preferences']['show_client']))
+                # At Windows sign-in Orion's own window starts hidden (it runs, the assistant can
+                # listen; opening it is instant). Only the old browser window follows show_client.
+                show = not background and (not startup or (record['preferences']['show_client']
+                                                           and _ui_window(registry) is None))
+                _start_with_window(registry, components, start_hub, start_router, show=show)
                 return {'status': 'ready'}
             if not apply_owner:
                 # Asked first, so the watcher finishes its step while the services stop (it was waited for
