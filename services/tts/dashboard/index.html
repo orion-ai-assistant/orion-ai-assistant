@@ -35,10 +35,20 @@
                         </select>
                         <button id="delVoiceBtn" style="background: #ef4444; width: auto; padding: 0 20px;">SİL</button>
                     </div>
+                    <div id="primeBoxClone" class="hidden" style="margin: -8px 0 20px;">
+                        <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 4px;">Her cümle bu sesin devamı olarak üretilir
+                            (metinli klonda kendi örneğin, metinsiz klonda ondan üretilen hazırlık sesi):</p>
+                        <audio id="primeAudioClone" controls preload="none" style="width: 100%;"></audio>
+                    </div>
                 </div>
 
                 <!-- Tasarım Modu -->
                 <div id="mode-design" class="tab-content">
+                    <div id="primeBoxDefault" class="hidden" style="margin-bottom: 14px;">
+                        <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 4px;">Ses tarifi boşsa her cümle bu
+                            hazırlık sesinin devamı olarak üretilir (tarif yazarsan kullanılmaz):</p>
+                        <audio id="primeAudioDefault" controls preload="none" style="width: 100%;"></audio>
+                    </div>
                     <p class="section-title">Karakter Tasarımı</p>
 
                     <!-- OmniVoice tasarım kontrolleri -->
@@ -124,7 +134,7 @@
                         <input type="range" id="stepInput" min="5" max="50" step="1" value="15">
 
                         <div id="tempContainer" class="hidden">
-                            <label>Rastgelelik: <span id="tempVal">0.75</span></label>
+                            <label>Rastgelelik: <span id="tempVal">Varsayılan</span></label>
                             <input type="range" id="tempInput" min="0.5" max="0.9" step="0.05" value="0.75">
                         </div>
 
@@ -144,7 +154,9 @@
             <div>
                 <p class="section-title">Yeni Ses Klonla</p>
                 <input type="text" id="cloneName" placeholder="Sese bir isim verin">
-                <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor?">
+                <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor? (isteğe bağlı)">
+                <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 6px;">İsteğe bağlı. Yazarsan, kayıtta
+                    söylenenle birebir aynı olmalı; fazladan ya da eksik metin modelin fazladan konuşmasına yol açar.</p>
                 <input type="file" id="cloneFile" accept="audio/*">
                 <p id="cloneHint" style="font-size: 0.8rem; color: var(--muted); margin: 4px 0 0;">Yaklaşık 5 saniyelik temiz
                     bir kayıt önerilir. Örnek her konuşmada yeni cümleyle birlikte işlenir: daha uzun örnekler her

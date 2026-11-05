@@ -35,6 +35,9 @@ def _env_to_bool(value: Any, default: bool = False) -> bool:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
+_SERVER_START_LOCK = threading.Lock()
+
+
 class TTSEngine:
     def __init__(self):
         self.device = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
@@ -51,6 +54,23 @@ class TTSEngine:
                 torch.manual_seed(s)
                 if torch.cuda.is_available():
                     torch.cuda.manual_seed_all(s)
+
+    def server_alive(self) -> bool:
+        """Whether the engine's own server (OmniVoice's tts-server, VoxCPM2's llama-tts-server) still runs; an engine
+        without one is always alive."""
+        if not hasattr(self, "_start_server"):
+            return True
+        proc = getattr(self, "server_proc", None)
+        return proc is not None and proc.poll() is None
+
+    def ensure_server(self):
+        """Starts the engine's server again when it has died (it can, e.g. when the PC runs out of memory: ggml's
+        GGML_ASSERT(ctx->mem_buffer != NULL)); before, the service stayed "healthy" with no model behind it."""
+        with _SERVER_START_LOCK:  # One start at a time (a request and the health check may both ask)
+            if not self.server_alive():
+                proc = getattr(self, "server_proc", None)
+                logger.warning(f"The engine's server is not running (exit code {proc.poll() if proc else None}); starting it again")
+                self._start_server()
 
     def encode_voice(self, audio_path: str, text: str) -> Any:
         raise NotImplementedError
@@ -619,7 +639,13 @@ class VoxCPM2GGUFEngine(TTSEngine):
         self.host = "127.0.0.1"
         self.port = int(os.environ.get("VOXCPM2_SERVER_PORT", "8807"))
         self.server_proc = None
+        self._prime_lock = threading.Lock()
+        self._plain_prime = None  # The default voice's warm-up (PRIME_TEXT spoken), read or made once.
         self._start_server()
+        try:
+            self._plain_prime_wav()
+        except Exception as e:
+            logger.warning(f"VoxCPM2 warm-up sample not ready yet (made at the first request): {e}")
         import atexit
         atexit.register(self._shutdown_server)
 
@@ -647,10 +673,20 @@ class VoxCPM2GGUFEngine(TTSEngine):
                 with urllib.request.urlopen(f"http://{self.host}:{self.port}/health", timeout=1) as response:
                     if response.status == 200:
                         logger.info("llama-tts-server is up and healthy.")
+                        # One short sentence in the background, so the first real one does not pay for the server's
+                        # first run (about 0.5 s more) or for encoding the warm-up voice (kept by the server after).
+                        threading.Thread(target=self._warm_up, daemon=True).start()
                         return
             except Exception:
                 time.sleep(0.5)
         logger.error("llama-tts-server failed to start or did not become healthy in time.")
+
+    def _warm_up(self):
+        started = time.time()
+        # With the defaults a request gets (guidance 3, 10 steps): the server builds its decode graph per guidance and
+        # steps, so a warm-up with other values would leave the first real sentence to build it.
+        rate, audio = self.generate("Merhaba.", guidance_scale=None)
+        logger.info(f"VoxCPM2 warmed up in {time.time() - started:.2f} s ({len(audio)} samples)")
 
     def _shutdown_server(self):
         if self.server_proc:
@@ -671,7 +707,66 @@ class VoxCPM2GGUFEngine(TTSEngine):
             raise ValueError("VoxCPM2 ses örneğini WAV olarak ister; lütfen temiz bir WAV dosyası yükleyin.") from None
         check_clone_seconds(seconds)
         # Stored softened, once, and sent as it is with every request (soften_reference).
-        return {"ref_wav": soften_reference(data), "ref_text": text.strip() if text else "", "ref_seconds": seconds}
+        ref_wav = soften_reference(data)
+        voice = {"ref_wav": ref_wav, "ref_text": text.strip() if text else "", "ref_seconds": seconds}
+        # A clone with its transcript speaks as the continuation of its own (tidied, softened) sample: the sample and
+        # its words go with every request, and the server keeps the sample's encoding. The transcript must match the
+        # recording word for word, or the model speaks the extra words (a 4.6 s sample with a 255-character text came
+        # out 13-15 s instead of 2). Without a transcript there is nothing to continue, so a warm-up is made once:
+        # PRIME_TEXT in this voice, from the sample alone. Runs on the caller's thread (already under the service's
+        # lock) and talks to the server directly, so it takes no lock of its own.
+        if not voice["ref_text"]:
+            try:
+                voice["prime_wav"] = self._make_prime(ref_wav)
+                voice["prime_text"] = PRIME_TEXT
+            except Exception as e:
+                logger.warning(f"VoxCPM2 clone warm-up failed, the clone speaks from its sample only: {e}")
+        return voice
+
+    def _make_prime(self, ref_wav: Optional[bytes] = None, ref_text: str = "") -> bytes:
+        """PRIME_TEXT spoken once, with a fixed seed (the same voice gives the same warm-up), trimmed and levelled:
+        a tidy 16-bit mono WAV at the server's rate. Without ref_wav, in the default voice design."""
+        import base64
+        payload = {"model": "voxcpm", "response_format": "wav", "seed": PRIME_SEED, "cfg_value": PRIME_GUIDANCE,
+                   "temperature": PRIME_TEMPERATURE, "inference_timesteps": PRIME_STEPS}
+        if ref_wav:
+            payload["input"] = PRIME_TEXT
+            payload["reference_audio"] = base64.b64encode(ref_wav).decode()
+            if ref_text:
+                payload["prompt_text"] = ref_text
+        else:
+            payload["input"] = f"({DEFAULT_VOICE_DESIGN}){PRIME_TEXT}"
+        with self._request("/v1/audio/speech", payload) as res:
+            rate, audio = streamed_wav(res.read())
+        if len(audio) < rate // 2:
+            raise RuntimeError("warm-up came back (nearly) empty")
+        out = io.BytesIO()
+        with wave.open(out, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(audio.tobytes())
+        return tidy_reference(out.getvalue())
+
+    def _plain_prime_wav(self) -> bytes:
+        """The default voice's warm-up, kept in voices/ and made when it is not there (or the design changed)."""
+        if self._plain_prime:
+            return self._plain_prime
+        with self._prime_lock:
+            if self._plain_prime:
+                return self._plain_prime
+            import hashlib
+            tag = hashlib.sha1(f"{DEFAULT_VOICE_DESIGN}|{PRIME_TEXT}|{PRIME_SEED}".encode()).hexdigest()[:8]
+            path = Path(os.path.dirname(__file__)) / "voices" / f"_prime_voxcpm2-gguf_{tag}.wav"
+            if path.exists():
+                self._plain_prime = path.read_bytes()
+            else:
+                data = self._make_prime()
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(data)
+                logger.info(f"VoxCPM2 warm-up made: {path}")
+                self._plain_prime = data
+            return self._plain_prime
 
     def _payload(self, text, voice_cache, instruct, guidance_scale, seed, steps=None, temperature=None):
         import base64
@@ -679,15 +774,31 @@ class VoxCPM2GGUFEngine(TTSEngine):
         generic = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm",
                    "voxcpm2", "voxcpm2-gguf", "default", "none"}
         cloned = isinstance(voice_cache, dict) and bool(voice_cache.get("ref_wav"))
-        if instruct and instruct.strip() and instruct.strip().lower() not in generic:
+        designed = bool(instruct and instruct.strip() and instruct.strip().lower() not in generic)
+        ref, prompt = None, None
+        if designed:
             text = f"({instruct.strip()}){text}"  # VoxCPM2's voice design: a description in parentheses first.
-        elif not cloned:
-            text = f"({DEFAULT_VOICE_DESIGN}){text}"  # Nothing asked for: the same pleasant voice every time.
+        elif cloned and (voice_cache.get("ref_text") or "").strip():
+            # The continuation of the clone's own sample, with its words: short sentences ("Selam naber.") come out in
+            # Turkish and the voice stays the same from request to request.
+            ref, prompt = voice_cache["ref_wav"], voice_cache["ref_text"].strip()
+        elif cloned and voice_cache.get("prime_wav"):
+            # No transcript: the continuation of the warm-up made from the sample when the voice was cloned.
+            ref, prompt = voice_cache["prime_wav"], voice_cache.get("prime_text") or PRIME_TEXT
+        elif cloned:
+            # A clone made before any of this, without a transcript: its sample alone.
+            ref = voice_cache["ref_wav"]
+        else:
+            try:  # Nothing asked for: the default voice, as the continuation of its warm-up.
+                ref, prompt = self._plain_prime_wav(), PRIME_TEXT
+            except Exception as e:
+                logger.warning(f"VoxCPM2 warm-up unavailable, plain voice design instead: {e}")
+                text = f"({DEFAULT_VOICE_DESIGN}){text}"
         payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
-        if isinstance(voice_cache, dict) and voice_cache.get("ref_wav"):
-            payload["reference_audio"] = base64.b64encode(voice_cache["ref_wav"]).decode()  # Softened when cloned
-            # Not the sample's words (prompt_text, "ultimate cloning"): with them the server continues the sample and
-            # the voice comes out crackling on s/ş/t; the sample alone (reference_audio) is clean (tested).
+        if ref:
+            payload["reference_audio"] = base64.b64encode(ref).decode()
+        if prompt:
+            payload["prompt_text"] = prompt
         # No seed asked for: a new one every time (without one the server always uses the same, so every answer to the
         # same text came out the same).
         payload["seed"] = int(seed) if seed is not None and seed != -1 else random.randint(0, 2**31 - 1)
@@ -774,19 +885,27 @@ class VoxCPM2GGUFEngine(TTSEngine):
 # What VoxCPM2 speaks with when the request has neither a description nor a cloned voice (without one the voice
 # is a different one with every seed).
 DEFAULT_VOICE_DESIGN = "A clear voice sweet girl."
+# The warm-up every VoxCPM2 sentence continues (default voice and clones; not with a voice description): a short
+# sentence alone ("Selam naber.") was read like by someone who does not speak Turkish; after this it is not.
+PRIME_TEXT = "Merhaba, bugün nasılsınız?"
+PRIME_SEED = 1234
 # A cloned voice copies the sample's recording too: a mic recording with a lot of s/sh/hiss in it (4-12 kHz energy of
 # -13 dB against the voice's own -21..-26) came out 6-10 dB brighter still, which is the harsh, popping s, p, t of
 # the clones. The sample goes in with everything above this softened (measured: 5 kHz brings the output's 4-12 kHz
 # bands to those of the model's own voice). Done once, when the voice is cloned (a voice cloned before this keeps
 # its sample as it was recorded).
 REF_LOWPASS_HZ = 5000
-DEFAULT_GUIDANCE = 2.6
+DEFAULT_GUIDANCE = 3.0  # what pages show as creativity 1 (0-2 -> 2-4)
 MIN_GUIDANCE = 2.0
 MAX_GUIDANCE = 4.0
-DEFAULT_STEPS = 15
+DEFAULT_STEPS = 10  # the model's own default
 MIN_TEMPERATURE = 0.5
 MAX_TEMPERATURE = 0.9
-DEFAULT_TEMPERATURE = 0.75  # when the request does not say (Router, Hub); the 8810 page starts at 0.8
+DEFAULT_TEMPERATURE = 0.75  # when the request does not say (Router, Hub); the 8810 page starts here too
+# The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.
+PRIME_GUIDANCE = 2.6
+PRIME_STEPS = 15
+PRIME_TEMPERATURE = 0.75
 
 
 class Leveler:
@@ -1087,6 +1206,7 @@ class VoiceRegistry:
         return False
 
     def save_voice_cache(self, name: str, cache_obj: Any, engine_name: str):
+        name = str(name).strip()
         if not valid_voice_name(name):
             raise ValueError("Invalid voice name")
         target_dir = self.service_voices_path if self.service_voices_path.exists() else self.storage_path

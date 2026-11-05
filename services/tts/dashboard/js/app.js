@@ -7,6 +7,8 @@ let activeEngine = "";
 let cloneLimits = null;
 let cloneSeconds = null;
 let stepDefault = 15;
+let cfgDefault = 2.0;
+const TEMP_DEFAULT = 0.75;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -37,13 +39,14 @@ async function init() {
             cfg.min = vox ? '0' : '1.0';
             cfg.max = vox ? '2' : '10.0';
             cfg.step = '0.1';
-            cfg.value = vox ? '0.6' : '2.0';
-            document.getElementById('cfgVal').innerText = cfg.value;
+            cfgDefault = vox ? 1.0 : 2.0;  // VoxCPM2: creativity 1 = guidance 3, the engine's default
+            cfg.value = String(cfgDefault);
+            document.getElementById('cfgVal').innerText = "Varsayılan";
             const label = document.getElementById('cfgLabel');
             if (label) label.firstChild.textContent = vox ? 'Yaratıcılık (0-2): ' : 'Yaratıcılık (Guidance Scale): ';
         }
         // Steps: the engine's own default is where the slider starts and says "Varsayılan" (VoxCPM2 10, OmniVoice 15).
-        stepDefault = 15;
+        stepDefault = activeEngine.startsWith('voxcpm2') ? 10 : 15;
         const step = document.getElementById('stepInput');
         if (step) step.value = String(stepDefault);
         // Temperature: VoxCPM2 only (0.5-0.9, 0.9 to start); VoxCPM2 has no speed setting.
@@ -66,6 +69,9 @@ async function init() {
 
     loadVoices();
     setupEventListeners();
+    showPrime('primeBoxDefault', 'primeAudioDefault', '');
+    const sel = document.getElementById('voiceSelect');
+    if (sel) sel.addEventListener('change', () => showPrime('primeBoxClone', 'primeAudioClone', sel.value));
 }
 
 async function loadLanguages() {
@@ -134,6 +140,16 @@ async function loadDesignOptions() {
     }
 }
 
+// VoxCPM2's warm-up voice (what every sentence continues): the audio element loads it from /v1/prime.
+function showPrime(boxId, audioId, voice) {
+    const box = document.getElementById(boxId), audio = document.getElementById(audioId);
+    if (!box || !audio) return;
+    if (!activeEngine.startsWith('voxcpm2')) { box.classList.add('hidden'); return; }
+    box.classList.remove('hidden');
+    audio.pause();
+    audio.src = `/v1/prime?voice=${encodeURIComponent(voice || '')}&t=${Date.now()}`;
+}
+
 async function loadVoices() {
     try {
         const data = await api.getVoices();
@@ -181,13 +197,15 @@ function setupEventListeners() {
         const display = document.getElementById(`${id}Val`);
         if (input && display) {
             input.oninput = () => {
-                display.innerText = id === 'step' && input.value == stepDefault ? "Varsayılan" : input.value;
+                const def = { step: stepDefault, cfg: cfgDefault, temp: TEMP_DEFAULT }[id];
+                display.innerText = def !== undefined && parseFloat(input.value) === def ? "Varsayılan" : input.value;
             };
         }
     });
 
     // Every engine keeps its own settings: what was set for one is not carried over to the other (per browser).
-    const store = id => `orionTts:${activeEngine}:${id}`;
+    // v2: the defaults changed (VoxCPM2 creativity 1, steps 10); values kept from before are not carried over.
+    const store = id => `orionTts:v2:${activeEngine}:${id}`;
     ['speed', 'cfg', 'step', 'temp', 'seed'].forEach(id => {
         const input = document.getElementById(`${id}Input`);
         if (!input) return;
@@ -353,7 +371,7 @@ async function showCloneDuration() {
 async function handleClone() {
     const btn = document.getElementById('cloneBtn');
     const loader = document.getElementById('cloneLoader');
-    const name = document.getElementById('cloneName').value;
+    const name = document.getElementById('cloneName').value.trim();
     const text = document.getElementById('cloneText').value;
     const file = document.getElementById('cloneFile').files[0];
 

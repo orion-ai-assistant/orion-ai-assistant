@@ -137,7 +137,29 @@ _dashboard_dir = os.path.join(_current_dir, "dashboard")
 @app.get("/health")
 async def health():
     # Served only after startup (engine load) completes; the lifecycle supervisor polls this for readiness.
+    # Not healthy while the engine's own server is down (it is started again with the next request).
+    if engine is not None and not engine.server_alive():
+        _restart_engine_soon()
+        return JSONResponse({"status": "engine_down"}, status_code=503)
     return {"status": "ok"}
+
+_engine_restart = {"running": False, "at": 0.0}
+
+def _restart_engine_soon():
+    """The engine's server is down (it died, or did not start: e.g. the card was full): try it again in the
+    background, at most every 30 s, so the service comes back by itself without waiting for a request."""
+    if _engine_restart["running"] or time.time() - _engine_restart["at"] < 30:
+        return
+    _engine_restart.update(running=True, at=time.time())
+
+    def run():
+        try:
+            engine.ensure_server()
+        except Exception as e:
+            logger.error(f"Engine restart failed: {e}")
+        finally:
+            _engine_restart["running"] = False
+    threading.Thread(target=run, daemon=True).start()
 
 @app.get("/")
 async def read_index():
@@ -173,6 +195,11 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
     should_stream = bool(speech_request.stream and not is_omnivoice)
 
     try:
+        if not tts.server_alive():
+            async with async_inference_lock:
+                await run_in_threadpool(tts.ensure_server)
+            if not tts.server_alive():
+                raise HTTPException(status_code=503, detail="Ses motoru başlatılamadı (bilgisayarda yeterli bellek olmayabilir).")
         req_voice = (speech_request.voice or "").strip()
         voice_cache = None
         if req_voice and req_voice.lower() not in ("none", "default", "null", "alloy", ""):
@@ -198,6 +225,8 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             # with its own 2-4 (0 -> 2, 1 -> 3, 2 -> 4).
             level = min(2.0, max(0.0, float(speech_request.creativity)))
             guidance = level + 2.0 if engine_name_env == "voxcpm2-gguf" else level
+        # Steps not given: the engine's own default (VoxCPM2 10, in engines.py); OmniVoice keeps the 15 it always got.
+        steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
             guidance = 2.0  # OmniVoice's own default; VoxCPM2 picks its own (engines.py)
         generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
@@ -219,7 +248,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 stream_gen = tts.generate_stream(
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
+                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
                 sr = await run_in_threadpool(next, stream_gen)
@@ -247,10 +276,12 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=speech_request.steps, seed=speech_request.seed, language=speech_request.language,
+                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
             
+            if sr == 500:  # The engine's failure value (engines.py): not an empty "success"
+                raise HTTPException(status_code=500, detail="Ses motoru bu isteğe yanıt veremedi.")
             header = create_wav_header(sr, len(audio_data) * 2)
             return Response(content=header + audio_data.tobytes(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
@@ -286,6 +317,7 @@ async def reload_engine(reload_req: ReloadRequest):
 
 @app.post("/v1/voices/clone")
 async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text: str = Form("")):
+    name = (name or "").strip()  # "zephyr2  " is "zephyr2": spaces around a name made a second, unreachable file
     if not valid_voice_name(name):
         raise HTTPException(status_code=400, detail="Voice names use letters, digits, space, '.', '_' or '-' (max 64)")
     if registry.voice_exists(name, engine_name_env):
@@ -297,6 +329,7 @@ async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text:
         try:
             # The engine works in a thread now (speech too), so a clone waits its turn instead of sharing it.
             async with async_inference_lock:
+                await run_in_threadpool(engine.ensure_server)
                 cache_obj = await run_in_threadpool(engine.encode_voice, temp_path, text)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -326,6 +359,32 @@ async def delete_voice(name: str):
             engine.registered_voices.remove(name)
         return {"status": "success"}
     raise HTTPException(status_code=404)
+
+@app.get("/v1/prime")
+async def prime_audio(voice: str = ""):
+    """VoxCPM2 only: the audio every sentence continues, to listen to: a clone's own sample (or, without its words,
+    the warm-up made from it) when `voice` names one, the default voice's warm-up otherwise. A WAV."""
+    tts = engine
+    if not tts or not hasattr(tts, "_plain_prime_wav"):
+        raise HTTPException(status_code=404, detail="Bu motorda hazırlık sesi yok.")
+    name = (voice or "").strip()
+    if name:
+        cache = registry.get_voice_cache(name, engine_name_env)
+        if not isinstance(cache, dict):
+            raise HTTPException(status_code=404, detail="Böyle bir klon yok.")
+        # What the engine continues: the clone's own sample when it has its words, else the warm-up made from it.
+        if (cache.get("ref_text") or "").strip() and cache.get("ref_wav"):
+            data = cache["ref_wav"]
+        elif cache.get("prime_wav"):
+            data = cache["prime_wav"]
+        else:
+            raise HTTPException(status_code=404, detail="Bu klon metinsiz ve eski; devam edilecek ses yok.")
+    else:
+        try:
+            data = await run_in_threadpool(tts._plain_prime_wav)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"Hazırlık sesi hazır değil: {e}")
+    return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 _OMNIVOICE_LANGS = ["Auto", "Turkish", "English"]
 
