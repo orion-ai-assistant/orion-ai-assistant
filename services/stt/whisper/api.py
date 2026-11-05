@@ -62,6 +62,22 @@ SILENCE_DURATION_TO_END = 0.4
 MIN_AUDIO_TO_PROCESS = 0.6
 MIN_TRANSCRIBE_INTERVAL = 0.2
 
+# Whisper's well-known inventions on silence and noise (it learnt them from
+# video subtitles). A result that is only one of these is dropped; seen
+# through Orion's assistant on 2026-11-05 ("Altyazı M.K.").
+SUBTITLE_HALLUCINATIONS = re.compile(
+    r"^\W*(?:altyaz[ıi]\W*(?:m\W*k\W*)?|altyaz[ıi] (?:tarafından|by).*|"
+    r"izlediğiniz için teşekkür(?:ler| ederim)\W*|abone ol(?:mayı unutmayın|un)?\W*|"
+    r"bir sonraki videoda görüşmek üzere\W*|thanks? (?:you )?for watching\W*|"
+    r"subtitles by .*)\W*$",
+    re.IGNORECASE,
+)
+
+
+def drop_hallucination(text):
+    """'' when the whole text is a known subtitle-style invention."""
+    return "" if SUBTITLE_HALLUCINATIONS.match(text.strip()) else text
+
 app = FastAPI(title="Orion STT Whisper API")
 
 app.add_middleware(BrowserGuard)
@@ -442,6 +458,9 @@ async def websocket_endpoint(
                 net_speech_duration = max(0.0, audio_duration - silence_duration)
                 if net_speech_duration < 0.4 and len(text) < 20:
                     text = ""
+
+                # 5. Altyazı uydurmaları ("Altyazı M.K.", "İzlediğiniz için teşekkürler")
+                text = drop_hallucination(text)
             
             last_infer_duration = time.perf_counter() - start_infer_time
             detected_lang = lang_param if lang_param else (getattr(info, "language", "unknown") if hasattr(info, "language") else "unknown")
