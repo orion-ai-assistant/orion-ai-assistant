@@ -182,13 +182,27 @@ class PhoneTurnTests(_CancellerCase):
         np.testing.assert_allclose(out[-RATE // 2:], .1, atol=1e-3)  # .2 * .5: the chain
 
 
-    def test_check_uses_localvqe_alone_and_keeps_the_length(self):
-        self.play(2.0)
+    def test_check_uses_localvqe_alone_while_the_pc_is_silent_and_keeps_the_length(self):
+        self.clock.now += 3.0
+        self.ec.ring.write(np.zeros(RATE * 3, np.float32), self.clock.now)
         preroll = to_pcm16(np.full(RATE * 2, .2, np.float32))
         out = to_float(self.ec.check_preroll("phone-1", preroll, self.clock.now))
         self.assertEqual(len(out), RATE * 2)
         np.testing.assert_allclose(out[HOP * 2:], .05, atol=1e-3)
         self.assertEqual(self.chains, [])  # the chain is not touched
+
+    def test_check_uses_the_chain_while_orion_itself_speaks(self):
+        # LocalVQE alone left Orion's own spoken "Orion" in the check (2026-11-06).
+        self.play(2.0)
+        preroll = to_pcm16(np.full(RATE * 2, .2, np.float32))
+        out = to_float(self.ec.check_preroll("phone-1", preroll, self.clock.now, chain=True))
+        self.assertEqual(len(out), RATE * 2)
+        np.testing.assert_allclose(out[-RATE // 2:], .1, atol=1e-3)  # .2 * .5: the chain
+        self.assertEqual(len(self.chains), 1)
+        # Other playback (a video): LocalVQE alone, the quick way.
+        out = to_float(self.ec.check_preroll("phone-1", preroll, self.clock.now))
+        np.testing.assert_allclose(out[HOP * 2:], .05, atol=1e-3)
+        self.assertEqual(len(self.chains), 1)
 
     def test_check_without_models_returns_the_pre_roll(self):
         ec = EchoCanceller(capture_factory=FakeCapture, clock=self.clock)

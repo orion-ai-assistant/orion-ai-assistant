@@ -31,14 +31,21 @@ class _PassThrough:
         return np.zeros(0, np.float32)
 
 
-def _factories(models_dir):
+# The quick "Orion" check runs while the user waits for the "heard" sound: its LocalVQE gets two
+# threads (measured 2026-11-06 on 1.3 s: 383 -> 215 ms alone; DTLN gains nothing from more threads).
+# Turns keep one thread each (they run for minutes).
+CHECK_THREADS = 2
+
+
+def _factories(models_dir, threads=1):
     """(chain factory, LocalVQE-alone factory) over one set of loaded models."""
     from . import assets, engines
     models_dir = assets.ensure_models(models_dir)
     dtln_models = engines.DtlnModels(models_dir)
     engines.LocalVqeLibrary.load()
     model = models_dir / assets.LOCALVQE_MODEL
-    return (lambda: engines.DtlnLocalVqe(dtln_models, model)), (lambda: engines.LocalVqeOnly(model))
+    return ((lambda threads=threads: engines.DtlnLocalVqe(dtln_models, model, threads=threads)),
+            (lambda threads=threads: engines.LocalVqeOnly(model, threads=threads)))
 
 
 def _loopback(ring):
@@ -60,11 +67,13 @@ class EchoCanceller:
         self._capture = None
         self._engine_factory = engine_factory
         self._vqe_factory = vqe_factory
+        self._check_factories = None  # (chain, LocalVQE) with more threads for the quick check
         self._preparing = None
         self.unavailable = None  # why the chain cannot run (None while it can, or is still loading)
         self._streams = OrderedDict()  # device_id -> DeviceStream, least recently used first
         self._turns = {}
         self._checkers = OrderedDict()  # device_id -> LocalVQE-alone stream for quick pre-roll checks
+        self._chain_checkers = OrderedDict()  # device_id -> chain stream for checks while the PC plays
         self._ref_dump = {}  # ORION_PC_MIC_DUMP: the last turn's paired reference per device
         self._device_locks = {}
         self._lock = threading.Lock()
@@ -111,6 +120,7 @@ class EchoCanceller:
         else:
             self._vqe_factory = vqe
             self._engine_factory = chain
+            self._check_factories = (lambda: chain(threads=CHECK_THREADS), lambda: vqe(threads=CHECK_THREADS))
             log.info("Echo cancellation ready")
 
     # --- turns (one phone at a time per device_id; calls for one device must not overlap) ---
@@ -161,15 +171,27 @@ class EchoCanceller:
             return False
         return float(np.max(np.abs(self.ring.read(start, end - start)))) <= REF_THRESHOLD
 
-    def check_preroll(self, device_id, preroll_pcm, start_time=None):
-        """The pre-roll cleaned by LocalVQE alone (same length), for the PC's quick Orion check
-        while the chain is still on its way. Its own warm stream per device; never the chain's."""
+    def check_preroll(self, device_id, preroll_pcm, start_time=None, chain=False):
+        """The pre-roll cleaned for the PC's quick Orion check while the turn's own audio is still
+        on its way. Its own warm stream per device; never the turn's.
+
+        LocalVQE alone is quick, but while the PC plays (Orion's own spoken reply above all) it
+        left enough of the reply's "Orion" for the check to pass: the phone, which has no echo
+        cancellation, heard the reply say its name and the PC took that for the user (2026-11-06).
+        Then (`chain`: the PC says its own voice plays) the chain (DTLN -> LocalVQE) cleans the
+        check too, as it cleans the turn. Other playback keeps LocalVQE alone: the chain's DTLN
+        takes about twice as long, and the user waits for it."""
         preroll = to_float(preroll_pcm)
         start_time = self.clock() if start_time is None else start_time
+        playing = (chain and self._engine_factory is not None
+                   and not self.reference_quiet(start_time, len(preroll)))
+        chain_factory, vqe_factory = self._check_factories or (self._engine_factory, self._vqe_factory)
+        streams, factory, key = ((self._chain_checkers, chain_factory, "#chain-check") if playing
+                                 else (self._checkers, vqe_factory, "#check"))
         with self._lock:
-            lock = self._device_locks.setdefault(device_id + "#check", threading.Lock())
+            lock = self._device_locks.setdefault(device_id + key, threading.Lock())
         with lock:
-            stream = self._keyed_stream(self._checkers, device_id, self._vqe_factory)
+            stream = self._keyed_stream(streams, device_id, factory)
             if stream is None:
                 return preroll_pcm
             turn = Turn(stream, self.ring, self.ring.index_at(start_time) - len(preroll), clock=self.clock)
@@ -217,6 +239,8 @@ class EchoCanceller:
             self.forget_device(device_id)
         while self._checkers:
             self._checkers.popitem()[1].close()
+        while self._chain_checkers:
+            self._chain_checkers.popitem()[1].close()
 
     def status(self):
         capture = self._capture

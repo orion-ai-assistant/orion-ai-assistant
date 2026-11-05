@@ -159,9 +159,9 @@ class DtlnLocalVqe:
     The reference is not aligned to the mic and not scaled. Output lags the mic input by
     CHAIN_LATENCY samples (measured: DTLN's 384 plus LocalVQE's 256)."""
 
-    def __init__(self, dtln_models, localvqe_model, latency=None):
+    def __init__(self, dtln_models, localvqe_model, latency=None, threads=1):
         self.dtln = Dtln(dtln_models)
-        self.vqe = LocalVqe(localvqe_model)
+        self.vqe = LocalVqe(localvqe_model, threads=threads)
         self.latency = CHAIN_LATENCY if latency is None else latency
         # DTLN's output lags by 384 samples; delay LocalVQE's reference by as much so the second stage
         # sees the same mic/reference relation as the first. (The offline experiment fed it
@@ -195,8 +195,8 @@ class LocalVqeOnly:
     """LocalVQE alone: cleans echo and steady noise; about 40% of the chain's CPU. Output lags the
     mic by one hop."""
 
-    def __init__(self, localvqe_model):
-        self.vqe = LocalVqe(localvqe_model)
+    def __init__(self, localvqe_model, threads=1):
+        self.vqe = LocalVqe(localvqe_model, threads=threads)
         self.latency = HOP
 
     def process(self, mic, ref):

@@ -22,6 +22,15 @@ class RawLevelGainTests(unittest.TestCase):
         leftover = pcm(.001, 50)  # what the canceller left of it
         self.assertLess(rms(gain.apply(leftover)), 2 * rms(leftover))
 
+    def test_a_pause_keeps_the_voice_lift_instead_of_raising_the_noise(self):
+        gain = RawLevelGain()
+        voice, pause = pcm(.005, 50), pcm(.0003, 150)  # a quiet phone: voice, then 3 s of room noise
+        gain.observe(voice)
+        gain.observe(pause)
+        voice_lift = gain._gains[49]
+        self.assertAlmostEqual(max(gain._gains[50:]), voice_lift, places=3)
+        self.assertLess(voice_lift, 20)  # not the 64x the noise alone would get
+
     def test_quiet_room_and_voice_are_lifted(self):
         gain = RawLevelGain()
         gain.observe(pcm(.004, 50))

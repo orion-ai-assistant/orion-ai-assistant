@@ -72,6 +72,13 @@ PC_TTL_SECONDS = 15  # The PC sends a heartbeat every 5 s.
 PHONE_TTL_SECONDS = 15  # Phones poll every 5 s.
 TURN_TTL_SECONDS = 30  # Refreshed by phone audio and heartbeats.
 HEARTBEAT_SECONDS = 5
+# The quick "Orion" check cleans only this much before the wake end (the wake word model
+# looks at one second; 0.3 s more lets the warm canceller settle on it). The rest of the
+# pre-roll is sent as silence: about a third less cleaning before the "heard" sound.
+CHECK_SECONDS = 1.2
+# The PC reports while Orion's own voice plays (`speaking`); its echo still reaches the
+# microphone this long after.
+SPEAKING_TAIL = 1.5
 TURN_ID_LIMIT = 64
 
 
@@ -140,12 +147,13 @@ class PhoneAudioCleaner:
             log.warning('Echo canceller failed on the reference check', exc_info=True)
             return False
 
-    async def check_preroll(self, device, preroll, start_time):
-        """The pre-roll cleaned by LocalVQE alone (quick Orion check); raw when unavailable."""
+    async def check_preroll(self, device, preroll, start_time, chain=False):
+        """The pre-roll cleaned for the quick Orion check (`chain`: by the whole chain, while
+        Orion's own voice plays); raw when unavailable."""
         if self.canceller is None:
             return preroll
         try:
-            return await self._call('check_preroll', device, preroll, start_time)
+            return await self._call('check_preroll', device, preroll, start_time, *((True,) if chain else ()))
         except Exception:
             log.warning('Echo canceller failed on the pre-roll check; raw pre-roll', exc_info=True)
             return preroll
@@ -214,6 +222,20 @@ async def save_selected(bus, user, device, name, only_new=False):
 async def announce_selection(bus, user):
     for side in ('phone', 'pc'):
         await bus.publish(_channel(user, side), {'type': 'selection'})
+
+
+def _note_speaking(link, message):
+    """The PC's `speaking {active}`: Orion's own voice starts or stops playing."""
+    link.speaking_until = float('inf') if message.get('active') else time.perf_counter() + SPEAKING_TAIL
+
+
+def _wake_end(start):
+    """The wake end as a sample offset into the pre-roll, or None."""
+    try:
+        offset = int(start['wake_end_sample']) - int(start['start_sample'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return offset if offset >= 0 else None
 
 
 def _valid_turn_id(value):
@@ -320,6 +342,13 @@ class PhoneLink:
             await self._end('pc_gone', notify_phone=True, notify_pc=False)
         selected = await read_selected(self.bus, self.user)
         if selected is None and await save_selected(self.bus, self.user, self.device, self.name, only_new=True):
+            selected = {'id': self.device, 'name': self.name}
+            await announce_selection(self.bus, self.user)
+        elif (selected is not None and selected['id'] != self.device and selected.get('name') == self.name
+              and await self.bus.get(phone_key(self.user, selected['id'])) is None):
+            # The same phone paired again (a new device id, its name kept): the choice follows it instead of
+            # listing the old pairing as "not connected" forever.
+            await save_selected(self.bus, self.user, self.device, self.name)
             selected = {'id': self.device, 'name': self.name}
             await announce_selection(self.bus, self.user)
         chosen = (selected is None or selected['id'] == self.device
@@ -446,6 +475,7 @@ class PcLink:
         self.turn = None  # {'turn_id', 'phone', 'device', 'preroll', 'need', 'started', 'open'}
         self._armed = False
         self.phones = {}  # device -> {'name', 'seen'}: phones in "PC mikrofonu" mode
+        self.speaking_until = 0.0  # Orion's own voice plays (and its echo) until then
         self._sent = None  # the last phones message
 
     async def activate(self):
@@ -475,7 +505,22 @@ class PcLink:
 
     async def send_check(self, turn, preroll):
         try:
-            clean = await self.cleaner.check_preroll(turn['device'], preroll, turn['started'])
+            began = time.perf_counter()
+            # Only the part the check needs; anchored at the pre-roll's end, so the reference
+            # stays aligned. The PC gets the same length back (silence before it).
+            skip = 0
+            if isinstance(turn.get('wake_end'), int):
+                skip = max(0, min(len(preroll) // 2, turn['wake_end'] - round(CHECK_SECONDS * SAMPLE_RATE)))
+            # Orion's own voice playing: the whole chain, which removes it (LocalVQE alone left
+            # the reply's spoken "Orion" for the check to find). Otherwise LocalVQE alone: about
+            # twice as fast, and enough for other playback (videos, music).
+            chain = getattr(self, 'speaking_until', 0.0) > time.perf_counter()
+            clean = await self.cleaner.check_preroll(turn['device'], preroll[skip * 2:], turn['started'], chain)
+            clean = bytes(skip * 2) + clean
+            preroll = preroll[skip * 2:]
+            _diag.info('Wake check pre-roll %s: %.2f s cleaned in %d ms (%s)', turn['device'],
+                       len(preroll) / 2 / SAMPLE_RATE, round((time.perf_counter() - began) * 1000),
+                       'chain: Orion speaking' if chain else 'LocalVQE')
             if self.turn is turn:
                 await self.send_json({'type': 'preroll_check', 'turn_id': turn['turn_id'],
                                       'pcm': base64.b64encode(clean).decode('ascii')})
@@ -521,6 +566,16 @@ class PcLink:
                 await save_selected(self.bus, self.user, device, name)
                 await announce_selection(self.bus, self.user)
             return
+        if kind == 'speaking':
+            _note_speaking(self, message)
+            return
+        if kind == 'wake_check':
+            # The PC's "Orion" check of a phone turn: how long the user waited for the "heard" sound.
+            ms = message.get('ms')
+            _diag.info('Wake check %s: %s, %s ms after the turn reached the PC', message.get('turn_id'),
+                       'heard' if message.get('verified') else 'rejected',
+                       ms if isinstance(ms, int) else '?')
+            return
         if kind in {'turn_end', 'turn_reject'} and self.turn and message.get('turn_id') == self.turn['turn_id']:
             turn = await self._close_turn()
             reply = {'type': kind, 'turn_id': turn['turn_id'], 'phone': turn['phone']}
@@ -556,6 +611,7 @@ class PcLink:
                          'device': message.get('device') or message['phone'],
                          'preroll': bytearray(), 'need': message['preroll_samples'] * 2,
                          'started': self.clock(), 'open': False, 'gain': _turn_gain(),
+                         'wake_end': _wake_end(message),
                          'name': self.phones.get(message.get('device') or message['phone'], {}).get('name')}
             await self.send_json({key: value for key, value in message.items()
                                   if key not in {'pc', 'phone', 'device'}})
@@ -613,8 +669,15 @@ async def clean_turn_audio(link, turn, pcm):
         if gain:
             gain.observe(bytes(turn['preroll']))
         if hasattr(link, 'send_check') and not turn.get('quiet'):
-            # LocalVQE alone is ready first: the PC checks "Orion" on it and starts the turn.
+            # The PC checks "Orion" on this before the turn starts (the "heard" sound waits for
+            # it), so it runs first and alone: running the turn's own cleaning of the whole
+            # pre-roll beside it on the same models made the check ~25% slower (both share DTLN,
+            # whose calls are serialised; measured 2026-11-06). The turn's audio is only needed
+            # after it.
             turn['check'] = asyncio.create_task(link.send_check(turn, bytes(turn['preroll'])))
+            await turn['check']
+            if link.turn is not turn:
+                return
         out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
         if out and link.turn is turn:
             final = gain.apply(out) if gain else out
@@ -710,6 +773,7 @@ class CleanLink:
         # Stable per account, so the canceller stays warm across reconnects.
         self.device = f'pc:{user}'
         self.label = '?'  # the microphone the browser uses (wired headset, built-in, ...)
+        self.speaking_until = 0.0  # as PcLink's
         self.turn = None  # as PcLink's
         self._queue = asyncio.Queue()
         self._worker = None
@@ -724,6 +788,8 @@ class CleanLink:
         if kind == 'source' and isinstance(message.get('label'), str):
             self.label = message['label'][:80] or '?'
             _diag.info('PC microphone %s: %s', self.device, self.label)
+        elif kind == 'speaking':
+            _note_speaking(self, message)
         elif kind == 'turn_start':
             await self._turn_start(message)
         elif kind in {'turn_end', 'turn_reject'} and self.turn and message.get('turn_id') == self.turn['turn_id']:
@@ -741,7 +807,8 @@ class CleanLink:
         # The first live sample follows the pre-roll; it reaches the Hub now.
         turn = self.turn = {'turn_id': start['turn_id'], 'device': self.device, 'preroll': bytearray(),
                             'need': start['preroll_samples'] * 2, 'started': self.clock(), 'open': False,
-                            'gain': _turn_gain(), 'name': self.label, 'dump': 'pcturn'}
+                            'gain': _turn_gain(), 'name': self.label, 'dump': 'pcturn',
+                            'wake_end': _wake_end(start)}
         await self.send_json(start)
         if await self.cleaner.reference_quiet(turn['started'], start['preroll_samples']) and self.turn is turn:
             # The PC was silent: its loudspeaker cannot have said "Orion".

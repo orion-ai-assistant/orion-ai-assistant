@@ -20,6 +20,12 @@ TARGET_RMS = .04  # the PC normalizer's target level
 CEILING = 64.0
 NOISE_FLOOR = .00012  # below this the room is silent: no lift
 RELEASE = .97  # per frame: ~0.7 s, the PC normalizer's envelope release
+# Pauses between words keep the lift of the voice before them. Following the
+# envelope down into a pause lifted a quiet phone microphone's room noise up
+# to 64x (measured 2026-11-05: phone turns averaged 13-23x): Silero and STT then
+# got loud hiss between the words, and STT turned silence into text.
+VOICE_RELEASE = .997  # per frame: the remembered voice level fades ~1.3 dB/s
+PAUSE = .18  # a frame 15 dB below the remembered voice is a pause
 
 
 class RawLevelGain:
@@ -33,6 +39,8 @@ class RawLevelGain:
         self._base = 0
         self._partial = np.zeros(0, np.float32)
         self._envelope = 0.0
+        self._voice = 0.0  # the level of the last voice, fading slowly
+        self._held = None  # the lift of that voice
         self._applied = 0  # cleaned samples already scaled
         self._lift = [0.0, 0, 0.0]  # sum, count, max of the lifts since the last summary
 
@@ -43,8 +51,14 @@ class RawLevelGain:
         for frame in raw[:whole].reshape(-1, FRAME):
             rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
             self._envelope = max(rms, self._envelope * RELEASE)
+            self._voice = max(rms, self._voice * VOICE_RELEASE)
             level = self._envelope
-            lift = 1.0 if level < NOISE_FLOOR else min(max(TARGET_RMS / level, 1.0), self.ceiling)
+            if self._held is not None and rms < self._voice * PAUSE:
+                lift = self._held  # a pause: keep the voice's lift
+            else:
+                lift = 1.0 if level < NOISE_FLOOR else min(max(TARGET_RMS / level, 1.0), self.ceiling)
+                if level >= NOISE_FLOOR:
+                    self._held = lift
             self._gains.append(lift)
             self._lift[0] += lift
             self._lift[1] += 1

@@ -118,6 +118,17 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m['type'] for m in h.phone_out], ['disarm', 'arm', 'disarm'])
         self.assertEqual(h.pc_out, [{'type': 'phone_ready'}])
 
+    async def test_the_same_phone_paired_again_takes_over_its_old_choice(self):
+        h = Harness()
+        await remote_mic.save_selected(h.bus, 'user', 'old-pairing', 'M34')
+        again = PhoneLink(h.bus, 'user', h.phone.send_json, device='new-pairing', name='M34')
+        other = PhoneLink(h.bus, 'user', h.phone.send_json, device='tablet', name='Tablet')
+        await h.pc.activate()
+        await other.sync_arm()
+        self.assertEqual((await remote_mic.read_selected(h.bus, 'user'))['id'], 'old-pairing')
+        await again.sync_arm()
+        self.assertEqual(await remote_mic.read_selected(h.bus, 'user'), {'id': 'new-pairing', 'name': 'M34'})
+
     async def test_quick_pc_restart_still_hears_the_phone(self):
         # The PC stops and restarts listening between two phone polls: the
         # phone never sees itself disarmed, yet the new session must learn
@@ -151,7 +162,9 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await h.phone.on_text(small)
         await h.phone.on_audio(b'\x01\x00' * 4)
         await h.phone.on_audio(b'\x02\x00' * 2)
-        self.assertEqual(h.pc_out[-1], validate_turn_start(small))
+        # The turn, then its "Orion" check (before any of its audio), then the audio in order.
+        self.assertEqual([m['type'] for m in h.pc_out[-2:]], ['turn_start', 'preroll_check'])
+        self.assertEqual(h.pc_out[-2], validate_turn_start(small))
         self.assertEqual(h.pc_audio, [b'\x01\x00' * 4, b'\x02\x00' * 2])
         self.assertEqual(h.bus.keys[turn_key('user')], 'phone:t1')
 
@@ -302,6 +315,60 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await h.phone.on_audio(b'\x01\x00')
         await asyncio.sleep(0)
         self.assertNotIn('check_preroll', [c[0] for c in fake.calls])
+
+    async def test_the_check_uses_the_chain_only_while_orion_speaks(self):
+        h = Harness()
+        chains = []
+
+        class PlayingCanceller(FakeCanceller):
+            def reference_quiet(self, start_time, preroll_samples):
+                return False
+
+            def check_preroll(self, device, preroll, start_time, chain=False):
+                chains.append(chain)
+                return preroll
+        h.pc.cleaner = PhoneAudioCleaner(PlayingCanceller())
+        await h.pc.activate()
+
+        async def turn(turn_id):
+            await h.phone.on_text(start(turn_id=turn_id, preroll_samples=2, start_sample=0, wake_end_sample=1))
+            await h.phone.on_audio(b'\x01\x00' * 2)
+            await h.pc.turn['check']
+            await h.pc.on_text({'type': 'turn_end', 'turn_id': turn_id})
+        await turn('video')
+        await h.pc.on_text({'type': 'speaking', 'active': True})
+        await turn('reply')
+        await h.pc.on_text({'type': 'speaking', 'active': False})
+        await turn('echo-tail')  # its echo still in the room
+        h.pc.speaking_until = 0.0
+        await turn('later')
+        self.assertEqual(chains, [False, True, True, False])
+
+    async def test_the_quick_check_cleans_only_the_end_of_the_pre_roll(self):
+        h = Harness()
+        seen = []
+
+        class PlayingCanceller(FakeCanceller):
+            def reference_quiet(self, start_time, preroll_samples):
+                return False
+
+            def check_preroll(self, device, preroll, start_time):
+                seen.append(len(preroll) // 2)
+                return b'\x07\x00' * (len(preroll) // 2)
+        h.pc.cleaner = PhoneAudioCleaner(PlayingCanceller())
+        await h.pc.activate()
+        # A 2 s pre-roll whose "Orion" ends 1.9 s in: CHECK_SECONDS before it is cleaned, the rest
+        # is silence.
+        skip = 30400 - round(remote_mic.CHECK_SECONDS * 16000)
+        await h.phone.on_text(start(preroll_samples=32000, start_sample=0, wake_end_sample=30400))
+        await h.phone.on_audio(b'\x01\x00' * 32000)
+        await h.pc.turn['check']
+        self.assertEqual(seen, [32000 - skip])
+        check = next(m for m in h.pc_out if m.get('type') == 'preroll_check')
+        pcm = base64.b64decode(check['pcm'])
+        self.assertEqual(len(pcm), 64000)
+        self.assertEqual(pcm[:2 * skip], bytes(2 * skip))
+        self.assertEqual(pcm[-2:], b'\x07\x00')
 
     async def test_canceller_failure_falls_back_to_raw_audio(self):
         h = Harness()
