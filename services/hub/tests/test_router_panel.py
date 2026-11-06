@@ -24,14 +24,25 @@ class RouterPanelTests(unittest.IsolatedAsyncioTestCase):
         local.assert_not_awaited()
 
     async def test_missing_mismatched_and_stale_registration_use_https(self):
+        record = {**RECORD, 'url': 'https://192.168.1.105:9443'}
         for registration in [None, {**LOCAL, 'id': 'other'}, {**LOCAL, 'fp': 'b' * 64}]:
-            with patch.object(router_panel, 'local_router_identity', AsyncMock(return_value=registration)), patch.object(router_panel, 'verify_router', AsyncMock()) as verify:
-                result = await router_panel.navigation(RECORD, DATA, desktop=True)
-            self.assertEqual(result['dashboard_url'], DATA['dashboard_url'])
+            # The registry does not describe this Router and it does not answer on loopback: HTTPS.
+            with patch.object(router_panel, 'local_router_identity', AsyncMock(return_value=registration)), patch.object(router_panel, 'verify_router', AsyncMock(side_effect=OSError('refused'))) as verify:
+                result = await router_panel.navigation(record, DATA, desktop=True)
+            self.assertEqual(result['dashboard_url'], 'https://192.168.1.105:9443/dashboard')
             self.assertEqual(result['dashboard_scope'], 'network')
-            verify.assert_not_awaited()
+            # Only the pinned loopback probe of this very Router, never the registry's other Router.
+            verify.assert_awaited_once_with('https://127.0.0.1:9443', record['id'], record['fp'])
         with patch.object(router_panel, 'local_router_identity', AsyncMock(return_value=LOCAL)), patch.object(router_panel, 'verify_router', AsyncMock(side_effect=ValueError('identity mismatch'))):
             self.assertEqual((await router_panel.navigation(RECORD, DATA, desktop=True))['dashboard_scope'], 'network')
+
+    async def test_unregistered_router_on_this_pc_opens_locally(self):
+        # A development Router from source while the registry names the installed one (broken / stopped).
+        record = {**RECORD, 'url': 'https://192.168.1.105:9443'}
+        with patch.object(router_panel, 'local_router_identity', AsyncMock(side_effect=ValueError('requires repair'))), patch.object(router_panel, 'verify_router', AsyncMock(return_value={'id': record['id'], 'fp': record['fp']})) as verify:
+            result = await router_panel.navigation(record, DATA, desktop=True)
+        self.assertEqual(result, {'dashboard_url': DATA['local_dashboard_url'], 'dashboard_scope': 'local', 'dashboard_open_in_app': True})
+        verify.assert_awaited_once_with('https://127.0.0.1:9443', record['id'], record['fp'])
 
     async def test_current_https_vpn_address_precedes_advertised_lan(self):
         record = {**RECORD, 'url': 'https://router.vpn.example:9555'}

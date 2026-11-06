@@ -58,7 +58,7 @@ def is_local(scope) -> bool:
 
 
 def public_path(path: str) -> bool:
-    if path in {'/', '/favicon.ico'}:
+    if path in {'/', '/favicon.ico'} or path.startswith('/brand/logo-'):
         return True
     if private_path(path):
         return False

@@ -267,7 +267,7 @@ class OwnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await client.get('/api/v1/browser')).status_code, 401)
             favicon = await client.get('/favicon.ico')
             self.assertEqual(favicon.status_code, 200)
-            self.assertIn('image/svg+xml', favicon.headers['content-type'])
+            self.assertIn('image/x-icon', favicon.headers['content-type'])
             self.assertEqual((await client.get('/health')).status_code, 200)
             for path in ['/api/v1/chats?admin_key=owner-password', '/api/v1/chats?%61dmin_key=owner-password']:
                 self.assertEqual((await client.get(path)).status_code, 403)

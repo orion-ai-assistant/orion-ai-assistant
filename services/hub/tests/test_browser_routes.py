@@ -65,20 +65,20 @@ class BrowserRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('message', response.json())
 
     async def test_panel_opens_only_fixed_local_app_window_without_owner_auth(self):
-        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'get_env', return_value='9321'), patch.object(browser_routes, 'open_window', return_value=True) as window:
+        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'get_env', return_value='9321') as env, patch.object(browser_routes, 'open_management_window', return_value=True) as window:
             response = await self.client.post('/api/v1/browser/panel/open', json={'url': 'https://attacker.example', 'admin_key': 'ignored'})
         self.assertEqual(response.status_code, 200)
-        window.assert_called_once_with('http://localhost:9321/panel', allow_tab_fallback=False)
+        window.assert_called_once_with('http://localhost:9321/panel', env)
         self.assertNotIn('set-cookie', response.headers)
 
     async def test_panel_remote_request_never_opens_host_window(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('192.168.1.50', 123)), base_url='http://localhost') as remote:
-            with patch.object(browser_routes, 'open_window') as window:
+            with patch.object(browser_routes, 'open_management_window') as window:
                 self.assertEqual((await remote.post('/api/v1/browser/panel/open')).status_code, 403)
                 window.assert_not_called()
 
     async def test_panel_missing_browser_reports_failure_without_normal_tab(self):
-        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'open_window', return_value=False):
+        with patch.object(browser_routes, 'require_local'), patch.object(browser_routes, 'open_management_window', return_value=False):
             response = await self.client.post('/api/v1/browser/panel/open')
         self.assertEqual(response.status_code, 503)
         self.assertIn('Chrome, Edge veya Brave', response.json()['detail'])
@@ -89,7 +89,18 @@ class BrowserRoutesTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post('/api/v1/browser/router/open', json={'router_id': record['id'], 'url': 'https://attacker.example'})
         self.assertEqual(response.status_code, 200)
         navigation.assert_awaited_once_with(record, {}, desktop=True)
-        window.assert_called_once_with('http://localhost:20555/dashboard', allow_tab_fallback=False)
+        # Its own browser profile: Orion's shortcut must never bring the Router window up instead of the Hub's.
+        window.assert_called_once_with('http://localhost:20555/dashboard', allow_tab_fallback=False,
+                                       profile=browser_routes.window_profile('router-ui-profile'), reuse_existing=True)
+
+    async def test_local_router_opens_in_orions_own_window(self):
+        record = {'id': '00000000-0000-4000-8000-000000000002'}
+        links = {'dashboard_url': 'http://localhost:20128/dashboard', 'dashboard_scope': 'local'}
+        with patch.object(browser_routes, 'require_local'), patch('orion.api.router_providers.account', AsyncMock(return_value=(record, 'account-key'))), patch('orion.kernel.router_accounts.request_router', AsyncMock(return_value={})), patch('orion.kernel.router_panel.navigation', AsyncMock(return_value=links)), patch.object(browser_routes, 'open_router_window', return_value=True) as own, patch.object(browser_routes, 'open_window') as edge:
+            response = await self.client.post('/api/v1/browser/router/open', json={'router_id': record['id']})
+        self.assertEqual(response.status_code, 200)
+        own.assert_called_once_with('http://localhost:20128/dashboard', browser_routes.get_env)
+        edge.assert_not_called()
 
     async def test_remote_router_open_never_launches_hub_window(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, client=('192.168.1.50', 123)), base_url='https://localhost') as client:

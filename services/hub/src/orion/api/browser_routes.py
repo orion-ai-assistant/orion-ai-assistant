@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 from orion.api.access_boundary import is_desktop_peer, host_can_open_windows
 from orion.browser.manager import BrowserManager, BrowserBusy, BrowserUnavailable
-from services.shared.flutter_launcher import open_window
+from services.shared.flutter_launcher import (
+    ROUTER_PROFILE, open_management_window, open_router_window, open_window, window_profile)
 from services.shared.environment import get_env
 
 router = APIRouter(prefix='/api/v1/browser')
@@ -44,7 +45,12 @@ async def open_router_panel(payload: OpenRouterPanel, request: Request, user: st
         links = await navigation(record, data, desktop=True)
         if not links['dashboard_url']:
             raise HTTPException(503, 'Router panelinin güvenli adresi bulunamadı.')
-        opened = await asyncio.to_thread(open_window, links['dashboard_url'], allow_tab_fallback=False)
+        if links.get('dashboard_scope') == 'local':
+            # This PC's Router: Orion's own window (sharp icon, title that does not grey), Edge when unavailable.
+            opened = await asyncio.to_thread(open_router_window, links['dashboard_url'], get_env)
+        else:
+            opened = await asyncio.to_thread(open_window, links['dashboard_url'], allow_tab_fallback=False,
+                                             profile=window_profile(ROUTER_PROFILE), reuse_existing=True)
     except (RouterAccountError, OSError) as error:
         raise HTTPException(503, 'Router panelinin uygulama penceresi açılamadı. Bağlantıyı kontrol edin.') from error
     if not opened:
@@ -58,7 +64,8 @@ async def open_panel(request: Request, user: str = Depends(get_current_user)):
     require_local(request)
     port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
     try:
-        opened = await asyncio.to_thread(open_window, f'http://localhost:{port}/panel', allow_tab_fallback=False)
+        # Orion's own window (inside the assistant's app), Edge in its own profile when unavailable.
+        opened = await asyncio.to_thread(open_management_window, f'http://localhost:{port}/panel', get_env)
     except OSError as error:
         raise HTTPException(503, 'Hub panelinin uygulama penceresi açılamadı. Yeniden deneyin.') from error
     if not opened:

@@ -40,14 +40,30 @@ async def navigation(record, data, *, desktop=False):
     local_url = panel_url(data.get('local_dashboard_url'), local=True)
     if not desktop or not local_url:
         return result
+    local_result = {'dashboard_url': local_url, 'dashboard_scope': 'local', 'dashboard_open_in_app': True}
     try:
         local = await local_router_identity()
-        if not local or local['id'] != record['id'] or local['fp'] != record['fp']:
-            return result
-        verified = await asyncio.wait_for(verify_router(local['url'], local['id'], local['fp']), timeout=2)
-        if verified['id'] == record['id'] and verified['fp'] == record['fp']:
-            return {'dashboard_url': local_url, 'dashboard_scope': 'local', 'dashboard_open_in_app': True}
+        if local and local['id'] == record['id'] and local['fp'] == record['fp']:
+            verified = await asyncio.wait_for(verify_router(local['url'], local['id'], local['fp']), timeout=2)
+            if verified['id'] == record['id'] and verified['fp'] == record['fp']:
+                return local_result
     except Exception:
-        # Missing files, stale registration or failed identity probe: use HTTPS.
+        # Missing files, stale registration or failed identity probe: try the loopback probe below.
         pass
+    if await _same_router_on_loopback(record):
+        return local_result
     return result
+
+
+async def _same_router_on_loopback(record):
+    """This very Router (its identity and pinned TLS key) answers on this PC's loopback at the port the Hub
+    reaches it on. Covers a Router the installation registry does not describe, such as a development Router
+    started from source while the registry names the installed one: its panel was opened over the LAN address
+    in a browser instead of in Orion's own window."""
+    try:
+        port = urlsplit(record['url']).port or 443
+        verified = await asyncio.wait_for(verify_router(f'https://127.0.0.1:{port}', record['id'], record['fp']),
+                                          timeout=2)
+        return verified['id'] == record['id'] and verified['fp'] == record['fp']
+    except Exception:
+        return False

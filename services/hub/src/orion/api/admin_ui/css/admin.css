@@ -28,7 +28,8 @@ input::placeholder { color: #7486a3; }
 
 .app-shell { min-height: 100vh; }
 .topbar { height: 70px; display: flex; align-items: center; gap: 13px; padding: 0 max(28px, calc((100vw - 1280px)/2)); border-bottom: 1px solid rgba(164,187,224,.12); background: rgba(10,16,30,.66); }
-.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; background: linear-gradient(135deg,#5a92fb,#906bf0); color: white; font-size: 21px; box-shadow: 0 7px 22px rgba(68,116,229,.2); }
+.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; }
+.brand-mark .brand-img { width: 34px; height: 34px; }
 .brand-copy { display: flex; align-items: center; gap: 12px; }
 .brand-name { letter-spacing: .18em; font-size: 13px; font-weight: 800; }
 .brand-divider { width: 1px; height: 18px; background: var(--line); }

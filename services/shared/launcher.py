@@ -760,8 +760,9 @@ def _start_with_window(registry, components, start_hub, start_router, *, show):
             except Exception:
                 pass  # Opening Orion later starts the window as usual.
     if show and hub is None:
-        from .flutter_launcher import open_window
-        open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard')
+        from .flutter_launcher import ROUTER_PROFILE, open_window, window_profile
+        open_window('http://127.0.0.1:' + os.environ.get('ORION_ROUTER_LOCAL_HTTP_PORT', '20128') + '/dashboard',
+                    profile=window_profile(ROUTER_PROFILE), reuse_existing=True)
 
 
 def _timed_window(registry, hub, abort):

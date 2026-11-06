@@ -3753,3 +3753,7 @@ pre.attachment-virtual-text { padding: 12px; }
 @media (prefers-reduced-motion: reduce) {
     .media-square-item .attachment-thumbnail { transition: none; }
 }
+
+.brand-img { display: block; flex: none; object-fit: contain; }
+.brand .brand-img { width: 34px; height: 34px; }
+.auth-brand .brand-img { width: 32px; height: 32px; }

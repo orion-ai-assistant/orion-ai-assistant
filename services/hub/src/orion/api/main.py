@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager, suppress
 import logging
 import os
 import re
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from orion.api.cors import configure_cors
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -34,6 +34,28 @@ class RevalidatedFiles(StaticFiles):
 # Management pages are never shown inside another page's frame (clickjacking).
 OWNER_PAGE_HEADERS = {'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY',
                       'Content-Security-Policy': "frame-ancestors 'none'"}
+
+# /owner-assets/favicon.ico and logo-*.png in a page (href, src, srcset).
+ICON_ASSET = re.compile(r'/owner-assets/(favicon\.ico|logo-\d+\.png)(?![?\w.])')
+
+
+def versioned_icons(html, directory):
+    """The page's icon and logo URLs with `?v=<content hash>`, like the Flutter web server (serve_web.py):
+    browsers keep a site icon per URL and do not ask again while it stays the same, so a changed icon only
+    showed after Ctrl+Shift+R. A changed file is a new URL, fetched at once."""
+    import hashlib
+    digests = {}
+
+    def version(match):
+        name = match.group(1)
+        if name not in digests:
+            try:
+                with open(os.path.join(directory, name), 'rb') as asset:
+                    digests[name] = hashlib.sha256(asset.read()).hexdigest()[:12]
+            except OSError:
+                digests[name] = None  # Not there: leave the URL as it is.
+        return match.group(0) if digests[name] is None else f'{match.group(0)}?v={digests[name]}'
+    return ICON_ASSET.sub(version, html)
 
 
 @asynccontextmanager
@@ -201,7 +223,15 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
 
     @application.get('/favicon.ico', include_in_schema=False)
     async def favicon():
-        return FileResponse(os.path.join(ui_dir, 'favicon.svg'), media_type='image/svg+xml')
+        # Asked again each time (a 304 when unchanged): a new icon shows without Ctrl+Shift+R.
+        return FileResponse(os.path.join(ui_dir, 'favicon.ico'), media_type='image/x-icon',
+                            headers={'Cache-Control': 'no-cache'})
+
+    @application.get('/brand/{name}', include_in_schema=False)
+    async def brand_image(name: str):
+        if name not in {'logo-36.png', 'logo-72.png', 'logo-108.png'}:
+            raise HTTPException(status_code=404)
+        return FileResponse(os.path.join(ui_dir, name), media_type='image/png', headers={'Cache-Control': 'no-cache'})
 
     if not public:
         application.include_router(google_ai_router)
@@ -218,7 +248,7 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
 
         def owner_page(filename, request, directory=owner_dir):
             with open(os.path.join(directory, filename), encoding='utf-8') as page:
-                html = page.read()
+                html = versioned_icons(page.read(), owner_dir)  # Every page's icons are owner-assets.
             root = request.scope.get('root_path', '').rstrip('/')
             if local_http:
                 local_port = int(get_env('ORION_LOCAL_SHORTCUT_PORT', default='80', required=False))

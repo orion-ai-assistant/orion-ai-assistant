@@ -1,5 +1,7 @@
 # Orion ikonları: Router düzeltmesi ve ikon değiştirme rehberi (31 Ekim 2026)
 
+> İkon değiştireceksen önce kısa yol rehberi: [ikon-degistirme.md](ikon-degistirme.md).
+
 Bu belge üç şeyi anlatır:
 
 1. Router penceresinin ikonları neden kalitesizdi ve ne yapıldı.
@@ -108,29 +110,85 @@ Router logosunu değiştirmek için:
    - `ORNAMENTS`: küçük boyutta silinecek süsler;
    - `SIMPLE_CONTENT`: süsler silindikten sonraki kare kutu.
 3. `python dashboard/scripts/make_icons.py` çalıştır, çıktıları büyütülmüş hâlde kontrol et.
-4. `npm run build` (dashboard). Edge favicon'u önbellekte tutar; yeni ikon için F5 ya da pencereyi kapatıp aç.
+4. `npm run build` (dashboard). Kaynaktan başlayan Router bunu kendisi yapar (`bin/dashboard_build.py`).
 
-### Hub (`orion-ai-assistant` ve `orion-ai-assistant-flutter`)
+### Hub (`orion-ai-assistant` ve `orion-ai-assistant-flutter`) (6 Kasım 2026'dan beri tek kaynak)
 
-| Nerede görünüyor | Dosya | Nasıl üretiliyor | Durum |
-|---|---|---|---|
-| Orion.exe: masaüstü/Başlat kısayolu, bildirim alanı, Görev Yöneticisi | `scripts/release/launcher/orion.ico` | `scripts/release/launcher/make_icon.py`, `installer/app/ui/favicon.png` (1024 px) logosundan | İyi: 16–256 px ayrı boyutlar |
-| Hub penceresi (Flutter, Edge `--app`) | `orion-ai-assistant-flutter/main_app/app/web/favicon.png` | elle, tek boyut 64 px | **Açık:** tek boyut; görev çubuğu Router'daki gibi bulanık olabilir |
-| Hub web arayüzü sekmesi | `services/hub/src/orion/api/ui/favicon.svg` | elle, gerçek vektör | İyi |
-| Flutter uygulama ikonları (PWA, telefon) | `web/icons/Icon-*.png`, `manifest.json` | elle | Bu işte bakılmadı |
+Hub'ın bütün ikonları tek betikten çıkar: `orion-ai-assistant-flutter/tools/make_hub_icons.py <kaynak.png>`
+(Pillow, numpy ve scipy gerekir; derleme istemez, çıktılar depoya eklenir).
 
-Hub logosunu değiştirmek için:
+- Kaynak: kare PNG, en az 1024 px. Yuvarlak karenin dışındaki saf siyah alan otomatik şeffaf yapılır
+  (köşelerden taşırılarak bulunur), sonra kare kırpılıp 1024 px ana dosya (`assets/brand/orion_logo_master.png`) olur.
+- Her boyut ayrı üretilir (8 kat büyük çizim, tek Lanczos adımı, küçüklerde hafif keskinleştirme); hiçbir yer
+  tek resmi esnetmez.
 
-1. Yeni logoyu `installer/app/ui/favicon.png` olarak koy.
-2. `python scripts/release/launcher/make_icon.py` çalıştır. Betik amblemi (yazısız kısmı) sabit koordinatlarla
-   kırpar: `logo.crop((222, 150, 802, 730))`. Yeni logoda bu koordinatları güncelle.
-3. Bu betik küçük boyutları sadeleştirmez, yalnız küçültür. Logo ince detaylıysa Router betiğindeki
-   yöntemi (çizgi kalınlaştırma, küçük boyutta süs çıkarma) buraya da uygulamak gerekir.
-4. Orion.exe bir sonraki sürümde yeni ikonla derlenir.
+| Nerede görünüyor | Dosya |
+|---|---|
+| Flutter masaüstü penceresi, görev çubuğu, exe | `main_app/app/windows/runner/resources/app_icon.ico` (16–256 px) |
+| Flutter içi logo (giriş, kenar çubuğu, dar ekran başlığı) | `assets/brand/orion_logo.png` + `2.0x/` + `3.0x/`, `lib/core/presentation/orion_logo.dart` |
+| Flutter web sekmesi / PWA | `web/favicon.ico`, `web/favicon.png`, `web/icons/*` |
+| Orion.exe | `scripts/release/launcher/orion.ico` |
+| Hub'ın kendi penceresi (OrionUi.exe): başlık çubuğu, görev çubuğu | `main_app/app/windows_host/orion.ico` (exe'ye gömülür) |
+| Hub web arayüzü | `services/hub/src/orion/api/ui/favicon.ico`, `logo-{36,72,108}.png` (`/favicon.ico`, `/brand/...`) |
+| Hub yönetim/sahip panelleri | `owner_ui/` ve `admin_ui` aynı dosyaları `/owner-assets/` altından kullanır |
 
-**Hub penceresinin görev çubuğu için yapılacaklar:** Flutter `web/` içine çok boyutlu bir `favicon.ico`
-koy ve `index.html`'de onu göster. Ardından Orion.cs'deki `RouterWindowIcon` adımını Hub penceresini de
-kapsayacak şekilde genişlet (pencere başlığı "Orion", ikon dosyası kurulu Client'ın `build/web/favicon.ico`'su).
+Logoyu değiştirmek için betiği yeni PNG ile çalıştır, büyütülmüş hâlde bak, sonra commit et. Kod değişmez.
+Geliştirici başlangıcı (`start_hub`) Flutter web'i ve OrionUi.exe'yi kendisi yeniden derler (aşağıda).
+
+## İkon değişince yenisi nasıl gelir (Ctrl+Shift+R gerekmez)
+
+Kural: **bir ikon ya da logo değişince hiçbir yerde Ctrl+Shift+R, önbellek temizleme ya da dosya adı
+değiştirme gerekmez.** Güncelleme gelince (ya da geliştirici olarak Hub yeniden başlayınca) yeni ikon kendiliğinden
+görünür. Bunu sağlayan parçalar aşağıda; bir yeri değiştirirken bunları bozma.
+
+| Nerede | Nasıl tazeleniyor | Kod |
+|---|---|---|
+| Flutter web (8090) sekme/pencere ikonu | `index.html` sunulurken her ikon linkine dosyanın içerik hash'i eklenir (`favicon.ico?v=<hash>`). Dosya değişince URL değişir, tarayıcı yenisini hemen ister. | `orion-ai-assistant-flutter/main_app/app/tool/serve_web.py` (`versioned_index`) |
+| Flutter web uygulama içi logo ve kod | Her dosya `Cache-Control: no-cache` ile sunulur (değişmediyse 304). Eski Flutter service worker'ı her yüklemede kendini siler. Uygulama service worker kaydetmez (`web/flutter_bootstrap.js`); kaydetseydi Flutter her açılış ve yenilemede onu 4 s bekliyordu. | aynı dosya (`end_headers`, `KILL_WORKER`) |
+| Hub yönetim panelleri (`/panel`, `/admin` ...) | Sayfa sunulurken `/owner-assets/favicon.ico` ve `logo-*.png` adreslerine içerik hash'i eklenir; dosyalar `no-cache`. | `services/hub/src/orion/api/main.py` (`versioned_icons`, `RevalidatedFiles`) |
+| Hub web arayüzü `/favicon.ico`, `/brand/...` | `no-cache` ile sunulur. | `main.py` |
+| Hub'ın kendi penceresi (OrionUi.exe) | İkon exe'ye gömülüdür. Pencere açık kaldıkça eski exe çalışır; bu yüzden Hub başlarken çalışan pencerenin exe'si yeni derlemeden eskiyse pencere kapatılıp yeni exe ile açılır. | `services/shared/flutter_launcher.py` (`ui_outdated`, `open_ui`) |
+| Router paneli | Router'ın kendi `favicon.ico`'su her açılışta Router'dan alınır (`/dashboard/favicon.ico`). | `flutter_launcher.py` (`open_router_window`) |
+
+### Geliştirici olarak: kaynak değişince otomatik derleme
+
+Router'ın paneli (`orion-router/bin/dashboard_build.py`) gibi: `start_hub` ile başlayan Hub, Flutter deposunun
+kaynaklarını (`lib`, `web`, `assets`, `pubspec.*`, yerel paketler, `windows_host`) son derlemeyle karşılaştırır.
+Değişen bir şey varsa önce `OrionUi.exe`'yi, sonra `flutter build web`'i çalıştırır; pencere derleme bitince
+açılır. Değişiklik yoksa derlemez. Kayıtlar: `main_app/app/build/.orion-web-build.json`,
+`.orion-ui-host-build.json`. Kod: `services/shared/flutter_dev_build.py`. Kurulu sürümde kaynak olmadığı için
+bu adım hiç çalışmaz.
+
+- Hub logunda `[*] Flutter web: sources changed, rebuilding` / `rebuilt` satırları görünür. Derleme başarısız
+  olursa `[!] ... the previous build stays` yazar ve eski derleme sunulur.
+- Kaynak değişince Hub'ın açılışı derleme yüzünden 1-2 dakika uzar.
+- `flutter run -d chrome` (8095) bundan bağımsızdır; kaynaktan çalışır, hot reload ile hemen yansır.
+
+## Pencereler (6 Kasım 2026)
+
+- **Hub'ın penceresi** `OrionUi.exe`'dir (WebView2; kaynak `main_app/app/windows_host/OrionUi.cs`, derleme
+  `windows_host/build_ui_host.py`). Ekran ölçeğini bilir (bulanık büyütme yok), ikonu Windows'un istediği tam
+  boyutta alır. Başlık çubuğu eski Edge Router penceresindeki koyu gridir (seçiliyken `#202020`, değilken
+  `#2B2B2B`), "başlık çubuklarında vurgu rengi" açık olsa da çubuk boyanmaz; yalnız kenarlık Windows'a
+  bırakılır (vurgu / duvar kağıdı rengi). Başlık yazısı pencere seçili değilken de grileşmez. Flutter masaüstü
+  penceresi (`windows/runner/win32_window.cpp`) aynıdır.
+- **Router panel logosu** 36–288 px (1x–8x) dosyalarından seçilir (`orion-router/dashboard/scripts/make_icons.py`,
+  `components/OrionLogo.tsx`). Tarayıcı `srcSet` dosyasını yalnız yüklenirken seçer; sonradan büyütülünce
+  (Ctrl + tekerlek) küçük dosyayı gerer. `OrionLogo` ölçek (`devicePixelRatio`) değişince resmi yeniden kurar,
+  tarayıcı da o ölçeğe uygun dosyayı yeniden seçer.
+- **Router paneli ve Hub yönetim paneli** (`/panel`) Hub penceresinin süreci içinde, ayrı bir pencere olarak
+  açılır (`panel` komutu): tarayıcı motoru zaten çalıştığı için anında gelir ve aynı Orion uygulamasıdır. Her
+  panelin çerezleri ayrı WebView2 profilindedir (`panel-router`, `panel-panel`). Hub penceresi çalışmıyorsa
+  ya da eski bir exe ise ayrı bir `OrionUi.exe --panel` süreci açılır (birkaç saniye).
+- **Router paneli** (bu bilgisayardaki Router) kendi ikonuyla, aynı başlıkla açılır.
+  Kapatınca gerçekten kapanır, mikrofon izni almaz, Hub'ın dinleme durumuna karışmaz. Açıkken yeniden açılırsa
+  ikinci pencere açılmaz, açık olan öne gelir. Uzak bir Router'ın paneli (HTTPS) ya da exe'si olmayan bir Client'ta
+  Edge `--app` penceresi kullanılır. "Bu bilgisayarda mı" kararı önce kurulum kaydından, kayıt bu Router'ı
+  tanımıyorsa (örneğin kaynaktan çalışan geliştirici Router'ı) aynı Router'ın `127.0.0.1` üzerinden sabitlenmiş
+  TLS kimliğiyle verilir (`services/hub/src/orion/kernel/router_panel.py`).
+- **Edge pencereleri ayrı profillerde:** Hub penceresi `flutter-ui-profile`, Router `router-ui-profile`, Hub
+  yönetim paneli `panel-ui-profile`. Kısayol (masaüstü, Başlat) her zaman Hub arayüzünü açar; önceden Router ya da
+  panel penceresi aynı profilde olduğu için kısayol onu öne getiriyordu.
 
 ## Orion.exe nedir
 
@@ -167,4 +225,8 @@ yeterince kişi indirip çalıştırana kadar sürebilir (SmartScreen itibarı).
 - Görev çubuğu düzeltmesi kurulu sürüme bir sonraki yayınla gelecek. O zaman kontrol et:
   - görev çubuğu ikonu net mi;
   - panelde sayfa değiştirip yenileyince de net kalıyor mu.
-- Hub (Flutter) penceresinin görev çubuğu ikonu aynı sebeple bulanık olabilir; henüz düzeltilmedi (yukarıda).
+- Hub penceresi (OrionUi.exe) ve Router paneli penceresi 6 Kasım 2026'da düzeltildi (yukarıda "Pencereler").
+  Kurulu sürüme Client paketinin bir sonraki yayınıyla gelir; o zaman görev çubuğu ikonlarını ve kısayolun
+  Router açıkken Hub'ı açtığını kontrol et.
+- DPI farkındalığından sonra Hub penceresi bir kerelik biraz küçük açılabilir (kayıtlı boyut eski ölçekle
+  saklanmıştı); büyütülünce yeni boyut hatırlanır.
