@@ -9,6 +9,36 @@ from services.shared.flutter_launcher import start_flutter, open_window
 
 
 class FlutterLauncherTests(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').name == 'nt', 'Windows message windows')
+    def test_finding_orions_window_never_waits_on_a_window_of_this_process(self):
+        # The Hub API owns hidden windows on threads that do not pump messages: reading their title with
+        # GetWindowText waited forever and the Router/management panel never opened.
+        import ctypes
+        import time
+        from ctypes import wintypes as W
+        from services.shared import flutter_launcher
+        user = ctypes.WinDLL('user32')
+        user.CreateWindowExW.argtypes = [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD, ctypes.c_int, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, W.HWND, W.HMENU, W.HINSTANCE, W.LPVOID]
+        user.CreateWindowExW.restype = W.HWND
+        ready, release = threading.Event(), threading.Event()
+
+        def silent_thread():
+            user.CreateWindowExW(0, 'STATIC', 'silent', 0, 0, 0, 0, 0, W.HWND(-3), None, None, None)
+            ready.set()
+            release.wait(10)  # Never pumps messages.
+        threading.Thread(target=silent_thread, daemon=True).start()
+        ready.wait(5)
+        result = {}
+        lookup = threading.Thread(target=lambda: result.setdefault('ident', flutter_launcher._assistant_window()),
+                                  daemon=True)
+        started = time.monotonic()
+        lookup.start()
+        lookup.join(5)
+        release.set()
+        self.assertIn('ident', result)
+        self.assertLess(time.monotonic() - started, 2)
+
     @unittest.skipUnless(__import__('os').name == 'nt', 'Windows focus adapter')
     def test_repeat_open_focuses_dedicated_profile_without_new_browser(self):
         profile = Path(tempfile.gettempdir()) / 'isolated-orion-ui'

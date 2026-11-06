@@ -128,14 +128,17 @@ def _assistant_window():
     user = ctypes.WinDLL('user32')
     user.FindWindowExW.argtypes = [W.HWND, W.HWND, W.LPCWSTR, W.LPCWSTR]
     user.FindWindowExW.restype = W.HWND
-    user.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
+    # InternalGetWindowText, never GetWindowText: for a window of this very process (the Hub API has hidden
+    # windows of its own, on threads that do not pump messages) GetWindowText sends WM_GETTEXT and waited forever:
+    # the Router and management panels did not open, or only after a long while.
+    user.InternalGetWindowText.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
     window = None
     for _ in range(4096):
         window = user.FindWindowExW(W.HWND(-3), window, None, None)  # HWND_MESSAGE windows
         if not window:
             return None
         title = ctypes.create_unicode_buffer(128)
-        user.GetWindowTextW(window, title, 128)
+        user.InternalGetWindowText(window, title, 128)
         ident = title.value[len(UI_PREFIX):] if title.value.startswith(UI_PREFIX) else ''
         if ident and not ident.startswith(PANEL_IDENTS):
             return ident
