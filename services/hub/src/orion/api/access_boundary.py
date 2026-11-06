@@ -69,6 +69,9 @@ def public_path(path: str) -> bool:
                    ('/api/v1/chats', '/api/v1/chat', '/api/v1/tools', '/api/v1/models', '/api/v1/audio', '/api/v1/router/providers', '/api/v1/router/access', '/api/v1/updates', '/api/v1/parts')))
 
 
+LOOPBACK_HOSTS = frozenset({'localhost', '127.0.0.1', '::1'})
+
+
 def is_desktop_peer(scope) -> bool:
     """Only this computer's actual socket peer, including its LAN self-connection."""
     headers = dict(scope.get('headers', []))
@@ -77,9 +80,13 @@ def is_desktop_peer(scope) -> bool:
     try:
         peer = ipaddress.ip_address(scope['client'][0])
         host = urlsplit('http://' + headers.get(b'host', b'').decode('latin1')).hostname
+        if peer.is_loopback and host in LOOPBACK_HOSTS:
+            # Orion's own windows: decided without listing the network adapters, which takes tens of
+            # milliseconds on Windows, ran for every request and held up all the others meanwhile.
+            return True
         from orion.api.discovery import lan_addresses
         addresses = lan_addresses()
-        allowed_hosts = {'localhost', '127.0.0.1', '::1', *addresses}
+        allowed_hosts = {*LOOPBACK_HOSTS, *addresses}
         if peer.is_loopback:
             return host in allowed_hosts
         server = ipaddress.ip_address(scope['server'][0]) if scope.get('server') else None

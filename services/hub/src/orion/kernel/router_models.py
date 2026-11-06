@@ -157,20 +157,26 @@ async def get_account_catalog(user_id, include_voices=True):
     key = await ensure_account(user_id, record)
     async def fetch(section):
         return await request_router(record, 'GET', '/api/v1/hubs/account-catalog/' + section, account_key=key)
-    model_data, groups = await asyncio.gather(fetch('models'), fetch('model-groups'))
+    # Voices asked together with the models, not after them: the page waited for both one after the other.
+    async def voice_section():
+        try:
+            return await fetch('voices')
+        except RuntimeError:
+            return None
+    model_data, groups, voice_catalog = await asyncio.gather(
+        fetch('models'), fetch('model-groups'), voice_section() if include_voices else asyncio.sleep(0))
     models = [{'name': m['name'], 'provider': m.get('provider'), 'capability': m.get('capability')}
               for m in model_data['models']]
     models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat')}
                   for g in groups['groups'])
     voices, groups_by_provider, languages, unavailable = {}, {}, {}, []
     if include_voices:
-        try:
-            voice_catalog = await fetch('voices')
+        if voice_catalog is None:
+            unavailable.append('voices')
+        else:
             voices = voice_catalog['voices']
             groups_by_provider = voice_catalog.get('model_voice_groups', {})
             languages = voice_catalog.get('languages', {})
-        except RuntimeError:
-            unavailable.append('voices')
     return {'models': models, 'voices': voices, 'model_voice_groups': groups_by_provider, 'languages': languages, 'unavailable': unavailable}
 
 
