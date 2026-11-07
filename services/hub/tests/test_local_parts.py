@@ -583,6 +583,11 @@ def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
     assert card()['state'] == 'stopped' and 'belleği yetmedi' in card()['error']
     assert P.read_config()['embedding']['paused']  # Nothing starts it again by itself; Başlat does.
 
+    # Once the service starts answering (running), any stale error is cleared and transition.json is unlinked
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: True)
+    assert card()['state'] == 'running' and card()['error'] is None
+    assert not (P.run_dir('embedding') / 'transition.json').exists()
+
 
 def tiny_gguf(path, context):
     """A GGUF header with a few keys (one array before the context, as real files have)."""

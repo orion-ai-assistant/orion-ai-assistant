@@ -1245,6 +1245,9 @@ def part_status(part, hw, config, data):
         state = 'starting'
     elif running:
         state = 'running'
+        if change and change.get('error'):
+            (run_dir(part['id']) / 'transition.json').unlink(missing_ok=True)
+            change = None
     elif entry.get('enabled') and _supervised(part['id']):
         state = 'starting'
     elif entry.get('enabled'):
@@ -1546,10 +1549,19 @@ TRANSITION_TTL = READY_TIMEOUT + 60
 
 
 def transition(part_id):
-    value = _read_json(run_dir(part_id) / 'transition.json', None)
+    path = run_dir(part_id) / 'transition.json'
+    value = _read_json(path, None)
     if not value:
         return None
     if value.get('error'):
+        try:
+            part = spec(part_id)
+            port = int(os.getenv(part['port_key']) or part['port'])
+            if answers(port):
+                path.unlink(missing_ok=True)
+                return None
+        except Exception:
+            pass
         return value
     if time.time() - value.get('at', 0) > TRANSITION_TTL or not _alive(value.get('pid')):
         return None  # Done long ago, or its process is gone: the state alone tells.
