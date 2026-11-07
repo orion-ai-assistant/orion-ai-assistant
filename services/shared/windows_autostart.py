@@ -60,6 +60,13 @@ def known_folder(name):
     ids = {'desktop': 'B4BFCC3A-DB2C-424C-B029-7FE99A87C641',
            'startup': 'B97D20BB-F46A-4C97-BA10-5E3608430854',
            'programs': 'A77F5D77-2E2B-44C3-A6A2-ABA601054A51'}  # Start menu > All apps (per user)
+    test_root = os.environ.get('ORION_TEST_LINK_ROOT')
+    if test_root:
+        if name not in ids:
+            raise KeyError(name)
+        path = Path(test_root) / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     if os.name != 'nt':
         raise RuntimeError('Windows shortcuts require Windows')
     guid = (ctypes.c_byte * 16).from_buffer_copy(uuid.UUID(ids[name]).bytes_le)
