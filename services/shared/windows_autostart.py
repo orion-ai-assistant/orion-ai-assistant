@@ -121,6 +121,26 @@ def clean_startup_approved(keep_names, stale_names, *, hive=None, key=STARTUP_AP
     return removed
 
 
+def update_and_rename_shortcut(old_path, new_path, entry, installation_id, *, startup=False, product=PRODUCT_NAME):
+    """Update an existing shortcut's content and rename it, preserving its desktop location.
+    
+    This is used when migrating from old shortcut names (e.g., "Orion.lnk", "Orion AI Assistant.lnk")
+    to the new name ("Orion AI.lnk"). By updating in-place and then renaming, the user's chosen
+    desktop position is preserved.
+    
+    Raises RuntimeError if the shortcut is not ours (ownership check fails).
+    """
+    # First, update the content of the existing shortcut
+    shortcut(old_path, entry, installation_id, startup=startup, remove=False, product=product)
+    
+    # Then rename it to the new name (Windows will preserve the desktop coordinates)
+    try:
+        Path(old_path).rename(new_path)
+    except OSError as error:
+        # If rename fails, the updated shortcut still exists at the old location - not critical
+        raise RuntimeError(f'Could not rename shortcut from {old_path.name} to {new_path.name}') from error
+
+
 def shortcut(path, entry, installation_id, *, startup=False, remove=False, product=PRODUCT_NAME):
     """Refuse to replace another application's or installation's shortcut.
 

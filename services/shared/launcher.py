@@ -835,27 +835,95 @@ def _remove_own_link(directory, name, entry, installation_id, *, startup):
 
 
 def sync_desktop_link(record, entry, *, create):
-    """The desktop link of the current identity (restyled/created) and no stale link of the other one."""
-    from .windows_autostart import known_folder, shortcut
+    """The desktop link of the current identity (restyled/created) and no stale link of the other one.
+    
+    When migrating from an old shortcut name, we update its content and rename it to preserve
+    the user's chosen desktop location. If the user deliberately removed the desktop shortcut,
+    we respect that choice and don't recreate it unless explicitly requested (create=True).
+    """
+    from .windows_autostart import known_folder, shortcut, update_and_rename_shortcut
     ident, directory = identity(record), known_folder('desktop')
     current = directory / ident['desktop']
-    had_legacy = any((directory / name).exists() for name in ALL_DESKTOP_LINKS if name != ident['desktop'])
-    if create or current.exists() or had_legacy:
+    
+    # Check if the new shortcut already exists
+    if current.exists():
+        # New shortcut exists: just update its content in case icon/target changed
         shortcut(current, entry, record['installation_id'], product=ident['product'])
-    for name in ALL_DESKTOP_LINKS:
-        if name != ident['desktop']:
-            _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+        # Clean up any legacy shortcuts
+        for name in ALL_DESKTOP_LINKS:
+            if name != ident['desktop']:
+                _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+    else:
+        # New shortcut doesn't exist: check for legacy shortcuts
+        legacy_path = None
+        for name in ALL_DESKTOP_LINKS:
+            if name != ident['desktop'] and (directory / name).exists():
+                legacy_path = directory / name
+                break
+        
+        if legacy_path:
+            # Found a legacy shortcut: update its content and rename to preserve location
+            try:
+                update_and_rename_shortcut(legacy_path, current, entry, record['installation_id'], 
+                                          startup=False, product=ident['product'])
+            except RuntimeError:
+                # If update/rename fails (e.g., ownership check failed), fall back to create new
+                if create:
+                    shortcut(current, entry, record['installation_id'], product=ident['product'])
+            
+            # Clean up any remaining legacy shortcuts (in case there were multiple)
+            for name in ALL_DESKTOP_LINKS:
+                if name != ident['desktop'] and (directory / name).exists():
+                    _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+        elif create:
+            # No legacy shortcut and user wants desktop shortcut: create new one
+            shortcut(current, entry, record['installation_id'], product=ident['product'])
+        # else: User deliberately removed desktop shortcut, respect their choice
 
 
 def sync_start_link(record, entry):
     """The Start menu entry of the current identity (always present while Orion is installed), and no stale
-    entry of the other identity."""
-    from .windows_autostart import known_folder, shortcut
+    entry of the other identity.
+    
+    Start menu entries are always created/updated (never respect removal), and when migrating from
+    an old name, we update and rename to preserve any user customization (pinned position, etc.).
+    """
+    from .windows_autostart import known_folder, shortcut, update_and_rename_shortcut
     ident, directory = identity(record), known_folder('programs')
-    shortcut(directory / ident['start'], entry, record['installation_id'], product=ident['product'])
-    for name in ALL_START_LINKS:
-        if name != ident['start']:
-            _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+    current = directory / ident['start']
+    
+    # Check if the new shortcut already exists
+    if current.exists():
+        # Update its content in case icon/target changed
+        shortcut(current, entry, record['installation_id'], product=ident['product'])
+        # Clean up any legacy shortcuts
+        for name in ALL_START_LINKS:
+            if name != ident['start']:
+                _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+    else:
+        # New shortcut doesn't exist: check for legacy shortcuts
+        legacy_path = None
+        for name in ALL_START_LINKS:
+            if name != ident['start'] and (directory / name).exists():
+                legacy_path = directory / name
+                break
+        
+        if legacy_path:
+            # Found a legacy shortcut: update its content and rename
+            try:
+                update_and_rename_shortcut(legacy_path, current, entry, record['installation_id'], 
+                                          startup=False, product=ident['product'])
+            except RuntimeError:
+                # If update/rename fails, create new one (Start menu entry is always needed)
+                shortcut(current, entry, record['installation_id'], product=ident['product'])
+            
+            # Clean up any remaining legacy shortcuts
+            for name in ALL_START_LINKS:
+                if name != ident['start'] and (directory / name).exists():
+                    _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+        else:
+            # No legacy shortcut: create new one
+            shortcut(current, entry, record['installation_id'], product=ident['product'])
 
 
 def install_entry(registry, *, desktop=True):
@@ -907,17 +975,56 @@ def _remove_stale_launchers(destination):
 
 def _startup_links(directory, entry, installation_id, enabled, record=None):
     """Product-named Startup entry; the pre-Orion.exe `Orion.lnk` (and the other identity's link) is
-    replaced if it is ours. Stale Task Manager "Startup apps" state of vanished links is dropped too."""
-    from .windows_autostart import shortcut, clean_startup_approved
+    replaced if it is ours. Stale Task Manager "Startup apps" state of vanished links is dropped too.
+    
+    When migrating from an old shortcut name, we update and rename to preserve any user customization.
+    """
+    from .windows_autostart import shortcut, update_and_rename_shortcut, clean_startup_approved
     ident = identity(record)
     current = ident['startup']
+    current_path = directory / current
+    
     if enabled:
-        shortcut(directory / current, entry, installation_id, startup=True, product=ident['product'])
-    elif (directory / current).exists():
-        shortcut(directory / current, entry, installation_id, startup=True, remove=True)
-    for name in ALL_STARTUP_LINKS:
-        if name != current:
-            _remove_own_link(directory, name, entry, installation_id, startup=True)
+        # Check if the new shortcut already exists
+        if current_path.exists():
+            # Update its content
+            shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
+            # Clean up legacy shortcuts
+            for name in ALL_STARTUP_LINKS:
+                if name != current:
+                    _remove_own_link(directory, name, entry, installation_id, startup=True)
+        else:
+            # Check for legacy shortcuts
+            legacy_path = None
+            for name in ALL_STARTUP_LINKS:
+                if name != current and (directory / name).exists():
+                    legacy_path = directory / name
+                    break
+            
+            if legacy_path:
+                # Found a legacy shortcut: update its content and rename
+                try:
+                    update_and_rename_shortcut(legacy_path, current_path, entry, installation_id, 
+                                              startup=True, product=ident['product'])
+                except RuntimeError:
+                    # If update/rename fails, create new one
+                    shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
+                
+                # Clean up any remaining legacy shortcuts
+                for name in ALL_STARTUP_LINKS:
+                    if name != current and (directory / name).exists():
+                        _remove_own_link(directory, name, entry, installation_id, startup=True)
+            else:
+                # No legacy shortcut: create new one
+                shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
+    elif current_path.exists():
+        # Startup disabled: remove current shortcut
+        shortcut(current_path, entry, installation_id, startup=True, remove=True)
+        # Also clean up any legacy shortcuts
+        for name in ALL_STARTUP_LINKS:
+            if name != current:
+                _remove_own_link(directory, name, entry, installation_id, startup=True)
+    
     clean_startup_approved({n for n in ALL_STARTUP_LINKS if (directory / n).exists()},
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
