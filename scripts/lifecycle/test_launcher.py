@@ -181,7 +181,7 @@ while True: server.handle_request()
             entry = launcher.install_entry(self.store)
         command = '$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut($env:ORION_TEST_LINK); $l.Arguments'
         args = subprocess.check_output(['powershell', '-NoProfile', '-Command', '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' + command],
-                                      env=dict(os.environ, ORION_TEST_LINK=str(desktop / 'Orion.lnk')), encoding='utf-8-sig')
+                                      env=dict(os.environ, ORION_TEST_LINK=str(desktop / 'Orion AI.lnk')), encoding='utf-8-sig')
         self.assertIn(str(entry), args)
         self.assertNotIn('-Startup', args)
         self.assertFalse(self.store.read()['preferences']['start_with_windows'])

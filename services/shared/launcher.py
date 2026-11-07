@@ -676,7 +676,9 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
                 # listen; opening it is instant). Only the old browser window follows show_client.
                 show = not background and (not startup or (record['preferences']['show_client']
                                                            and _ui_window(registry) is None))
-                _start_with_window(registry, components, start_hub, start_router, show=show)
+                _start_with_window(
+                    registry, components, start_hub, start_router, show=show,
+                    startup=startup, apply_owner=apply_owner)
                 return {'status': 'ready'}
             if not apply_owner:
                 # Asked first, so the watcher finishes its step while the services stop (it was waited for
@@ -726,7 +728,7 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         return {'status': 'stopped'}
 
 
-def _start_with_window(registry, components, start_hub, start_router, *, show):
+def _start_with_window(registry, components, start_hub, start_router, *, show, startup, apply_owner):
     """Services start while the Orion window is already being opened: it appears as soon as the Flutter
     server answers (the app shows its own "starting" screen until the Hub is ready), not after the whole Hub,
     worker included, reported ready."""
@@ -742,8 +744,30 @@ def _start_with_window(registry, components, start_hub, start_router, *, show):
             abort.set()  # No window for a start that failed; the entry script shows its dialog.
             raise
         (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
-        from .automatic_updates import spawn_watcher
+        from .automatic_updates import spawn_watcher, runtime_command
         spawn_watcher(registry)
+        # İlk açılışta otomatik güncelleme kontrolü: asenkron, Hub'ı bloklamaz
+        if hub and startup and not apply_owner:
+            try:
+                record = registry.read()
+                if record and record['preferences'].get('automatic_updates', False):
+                    command = runtime_command(registry)
+                    if command:
+                        # Arka planda güncelleme kontrolü ve indirme (Hub startup'ı bloklamaz)
+                        subprocess.Popen(
+                            command + ['check', '--download'],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0,
+                            close_fds=True
+                        )
+                        # NOT: İndirme tamamlanınca UI'da bildirim gösterilir.
+                        # Kullanıcı "Şimdi uygula" derse: update_now.request() çağrılır
+                        # Kullanıcı "Sonra" derse: Bir sonraki restart'ta run_startup() otomatik apply eder
+            except (OSError, ValueError) as error:
+                from . import update_log
+                update_log.log_exception(registry.path.parent / 'updates', 'startup.check', error)
         if hub:
             try:
                 spawn_tray(registry)
@@ -1017,10 +1041,10 @@ def _startup_links(directory, entry, installation_id, enabled, record=None):
             else:
                 # No legacy shortcut: create new one
                 shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
-    elif current_path.exists():
-        # Startup disabled: remove current shortcut
-        shortcut(current_path, entry, installation_id, startup=True, remove=True)
-        # Also clean up any legacy shortcuts
+    else:
+        # Startup disabled: remove the current and any legacy shortcuts we own.
+        if current_path.exists():
+            shortcut(current_path, entry, installation_id, startup=True, remove=True)
         for name in ALL_STARTUP_LINKS:
             if name != current:
                 _remove_own_link(directory, name, entry, installation_id, startup=True)

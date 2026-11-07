@@ -186,9 +186,16 @@ async def watch_browser_reconnect():
 
 
 async def restore_saved_browsers():
-    """At Hub startup, restore selected ordinary browsers without requesting CDP."""
+    """At Hub startup, restore selected ordinary browsers without requesting CDP.
+
+    Bağlantı durumuna göre çalışır:
+    - Kullanıcı tarayıcıya bağlanmışsa (enabled=true): Otomatik bağlan
+    - Kullanıcı bağlantıyı kesmişse (enabled=false): Bağlanma
+    """
+    log = logging.getLogger(__name__)
     if os.name != 'nt' or (browser_root() / '.stopping').exists():
         return
+
     root = browser_root()
     if not root.exists():
         return
@@ -197,8 +204,14 @@ async def restore_saved_browsers():
         if not directory.is_dir() or directory.is_symlink() or not re.fullmatch(r'[a-f0-9]{64}', directory.name):
             continue
         config = BrowserManager._read(directory / 'config.json')
+        # Sadece enabled=true olan bağlantıları restore et (kullanıcı bağlanmış ve kesmemiş)
         if config.get('mode') == 'existing' and config.get('enabled') and config.get('browser') in ('chrome', 'edge', 'brave'):
             selected.add(config['browser'])
+
+    if not selected:
+        log.debug('No enabled browser connections found; skipping auto-restore')
+        return
+
     for choice in selected:
         running = running_browser_choices()
         if running is None or choice in running:
@@ -211,8 +224,9 @@ async def restore_saved_browsers():
             subprocess.Popen([binary, '--no-first-run', '--no-default-browser-check'],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, startupinfo=startup)
+            log.info('Browser auto-restore: launched %s', choice)
         except (BrowserUnavailable, OSError):
-            logging.getLogger(__name__).warning('Could not restore saved %s browser', choice)
+            log.warning('Could not restore saved %s browser', choice)
     # Kick off the reconnect watcher regardless of whether any browser was launched.
     # Keep the watcher owned by the lifespan's restore_task so shutdown cancels it.
     await watch_browser_reconnect()
