@@ -115,7 +115,7 @@ async def health():
 async def read_index():
     index_path = os.path.join(_dashboard_dir, "index.html")
     if not os.path.exists(index_path):
-        return JSONResponse({"error": "Dashboard UI not found"}, status_code=404)
+        return JSONResponse({"status": "running", "service": "Orion STT (Whisper)"})
     return FileResponse(index_path)
 
 if os.path.exists(_dashboard_dir):

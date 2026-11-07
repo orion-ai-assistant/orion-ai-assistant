@@ -1294,7 +1294,7 @@ def part_status(part, hw, config, data):
             'vision_off': _vision_off(entry),
             'engines': engine_facts(run['engine'], part, hw, data),
             'models': models, 'advanced': advanced(part, hw),
-            'job': current, 'error': (change or {}).get('error'),
+            'job': current, 'error': (change or {}).get('error') if state != 'running' else None,
             # What the service runs with (the page compares the choice with it: "not applied yet").
             'applied': applied(part['id']) if state in ('running', 'restarting') else None,
             # The engines the user can bring a model for (one not in Orion yet is shown, not offered).
