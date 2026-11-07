@@ -770,20 +770,20 @@ def _timed_window(registry, hub, abort):
         show_window(registry, hub, timeout=WINDOW_WAIT, abort=abort)
 
 
-DESKTOP_LINK = 'Orion.lnk'
-STARTUP_LINK = 'Orion AI Assistant.lnk'
+DESKTOP_LINK = 'Orion AI.lnk'
+STARTUP_LINK = 'Orion AI.lnk'
 LEGACY_STARTUP_LINK = 'Orion.lnk'  # Installs before Orion.exe named their Startup entry like the desktop one.
 ROUTER_LINK = 'Orion Router.lnk'   # Router-only installations: same file name on the desktop and in Startup.
 ALL_DESKTOP_LINKS = (DESKTOP_LINK, ROUTER_LINK)
 ALL_STARTUP_LINKS = (STARTUP_LINK, ROUTER_LINK, LEGACY_STARTUP_LINK)
 # Start menu > All apps: what makes Orion an app of Windows' own (search result, "Recent" list, pin to Start).
 # Without it search only found the Startup/desktop links, and launches from there were never "recent".
-START_LINK = 'Orion AI Assistant.lnk'
+START_LINK = 'Orion AI.lnk'
 ALL_START_LINKS = (START_LINK, ROUTER_LINK)
 
 
 def identity(record):
-    """Product identity of this installation: a Hub installation is "Orion AI Assistant"; a Router-only one
+    """Product identity of this installation: a Hub installation is "Orion AI"; a Router-only one
     is "Orion Router" (own links, own Orion.exe version resource, so Task Manager shows the right name)."""
     from .windows_autostart import PRODUCT_NAME, ROUTER_PRODUCT_NAME
     hub = record is None or any(c['kind'] == 'hub' for c in record.get('components', []))

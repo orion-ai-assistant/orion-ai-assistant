@@ -20,8 +20,8 @@ def test_launcher_has_product_identity_and_is_reproducible(tmp_path):
     second = build_launcher(tmp_path / 'b/Orion.exe', '0.1.1')
     assert first.read_bytes() == second.read_bytes()
     assert build_launcher(tmp_path / 'c/Orion.exe', '0.1.2').read_bytes() != first.read_bytes()
-    assert info(first, 'FileDescription') == 'Orion AI Assistant'
-    assert info(first, 'ProductName') == 'Orion AI Assistant'
+    assert info(first, 'FileDescription') == 'Orion AI'
+    assert info(first, 'ProductName') == 'Orion AI'
     assert info(first, 'CompanyName') == 'Orion'
     assert info(first, 'FileVersion') == '0.1.1.0'
 

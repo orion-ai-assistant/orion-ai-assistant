@@ -60,11 +60,11 @@ def make_reproducible(path, seed):
     raise ValueError('Orion.exe has no module id')
 
 
-def build_launcher(output, version, product='Orion AI Assistant'):
+def build_launcher(output, version, product='Orion AI'):
     """`version` is the bootstrap version (x.y.z); it becomes the exe's file/product version.
 
     `product` is the exe's file description, which Task Manager > Startup shows ("Orion Router" for a Router-only install)."""
-    if product not in {'Orion AI Assistant', 'Orion Router'}:
+    if product not in {'Orion AI', 'Orion Router'}:
         raise ValueError('Unknown launcher product')
     if not re.fullmatch(r'\d{1,4}\.\d{1,4}\.\d{1,4}', version):
         raise ValueError('Launcher version must be x.y.z')

@@ -78,7 +78,7 @@ def known_folder(name):
         ole.CoTaskMemFree(ctypes.cast(pointer, ctypes.c_void_p))
 
 
-PRODUCT_NAME = 'Orion AI Assistant'
+PRODUCT_NAME = 'Orion AI'
 ROUTER_PRODUCT_NAME = 'Orion Router'
 PRODUCT_NAMES = (PRODUCT_NAME, ROUTER_PRODUCT_NAME)
 LAUNCHER_EXE = 'Orion.exe'
@@ -92,7 +92,7 @@ def clean_startup_approved(keep_names, stale_names, *, hive=None, key=STARTUP_AP
     Explorer keeps one StartupApproved StartupFolder value per Startup link NAME and never deletes it
     when the link goes away. An old `Orion.lnk` value (installs before the product-named link) then
     keeps a ghost entry in Task Manager > Startup, listed by the executable's file name ("Orion.exe")
-    instead of "Orion AI Assistant". A value is removed only when its link is absent or is named in
+    instead of "Orion AI". A value is removed only when its link is absent or is named in
     `stale_names`; names in `keep_names` (the links that exist now) and every foreign value stay.
     Returns the names that were removed. Never raises: this is cosmetic state."""
     if os.name != 'nt':
