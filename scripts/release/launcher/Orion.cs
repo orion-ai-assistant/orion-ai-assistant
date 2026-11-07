@@ -209,7 +209,9 @@ internal sealed class Host : Form
     private string routerFavicon;                                 // The file routerBig/routerSmall are from.
     private IntPtr routerBig, routerSmall;
     private ToolStripMenuItem stopListening;                       // Shown while Orion's window listens.
+    private ToolStripMenuItem menuTitle;                           // Menu title whose icon is refreshed on update.
     private string iconText = "Orion";
+    private DateTime launcherWriteTime = DateTime.MinValue;        // Orion.exe on disk; when it changes the tray icon is refreshed.
 
     internal Host(string id, string folder, string script, string registry)
     {
@@ -250,13 +252,13 @@ internal sealed class Host : Form
         icon.Text = iconText;
         var menu = new ContextMenuStrip();
         Ui.Style(menu);
-        var title = new ToolStripMenuItem(Orion.Product());
+        menuTitle = new ToolStripMenuItem(Orion.Product());
         var image = Ui.OrionIcon(Ui.Scale(20));
-        title.Image = image.ToBitmap();
-        title.Font = Ui.Font(10, FontStyle.Bold);
-        title.ForeColor = Ui.Accent;
-        title.Click += delegate { Open(new List<string>(), false); };
-        menu.Items.Add(title);
+        menuTitle.Image = image.ToBitmap();
+        menuTitle.Font = Ui.Font(10, FontStyle.Bold);
+        menuTitle.ForeColor = Ui.Accent;
+        menuTitle.Click += delegate { Open(new List<string>(), false); };
+        menu.Items.Add(menuTitle);
         menu.Items.Add(new ToolStripSeparator());
         // The title opens Orion, Quit stops it (uninstall: Windows Settings > Apps). While Orion's window
         // (OrionUi.exe, also hidden) listens, "Dinlemeyi durdur" ends that listening.
@@ -272,6 +274,42 @@ internal sealed class Host : Form
         icon.ContextMenuStrip = menu;
         icon.MouseClick += (sender, e) => { if (e.Button == MouseButtons.Left) Open(new List<string>(), false); };
         icon.Visible = true;
+    }
+
+    // An update replaces Orion.exe on disk while this older copy keeps running (renamed aside).
+    // When the new file's timestamp differs from the last one seen, the tray icon is refreshed
+    // from the new file's embedded icon, so the user sees the new icon without restarting Orion.
+    private void RefreshTrayIcon()
+    {
+        try
+        {
+            string exe = Path.Combine(folder, "Orion.exe");
+            if (!File.Exists(exe)) return;
+            DateTime writeTime = File.GetLastWriteTimeUtc(exe);
+            if (writeTime == launcherWriteTime) return;
+            launcherWriteTime = writeTime;
+            int size = SystemInformation.SmallIconSize.Width;
+            IntPtr handle = Native.ExtractIcon(exe, size);
+            if (handle != IntPtr.Zero)
+            {
+                var newIcon = (Icon)System.Drawing.Icon.FromHandle(handle).Clone();
+                Native.DestroyIcon(handle);
+                icon.Icon = newIcon;
+            }
+            if (menuTitle != null)
+            {
+                IntPtr menuHandle = Native.ExtractIcon(exe, Ui.Scale(20));
+                if (menuHandle != IntPtr.Zero)
+                {
+                    using (var menuIcon = System.Drawing.Icon.FromHandle(menuHandle))
+                    {
+                        menuTitle.Image = menuIcon.ToBitmap();
+                    }
+                    Native.DestroyIcon(menuHandle);
+                }
+            }
+        }
+        catch (Exception) { }
     }
 
     protected override void WndProc(ref Message message)
@@ -372,6 +410,7 @@ internal sealed class Host : Form
     {
         if (closed) return;
         RouterWindowIcon();
+        RefreshTrayIcon();
         if (File.Exists(exitMarker))
         {
             // The launcher stopped every service (also one that was not started from here): end.

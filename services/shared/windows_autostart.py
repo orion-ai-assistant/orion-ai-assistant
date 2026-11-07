@@ -161,7 +161,11 @@ if ($p.remove) {
     $link.WorkingDirectory = [IO.Path]::GetDirectoryName($p.path)
     $link.WindowStyle = 7
     $link.Save()
-    # A link rewritten after Orion.exe changed can keep a blank icon until Explorer rebuilds its icon cache.
+    # A link rewritten after Orion.exe changed can keep a stale icon until Explorer rebuilds its cache.
+    # Touch the .lnk so Explorer sees a newer timestamp and drops its cached icon.
+    (Get-Item -LiteralPath $p.path).LastWriteTime = [DateTime]::UtcNow
+    # -ClearIconCache (Windows 10+) drops every cached shell icon; -show refreshes the desktop.
+    try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -ClearIconCache } catch { }
     try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 }
 """
@@ -171,3 +175,10 @@ if ($p.remove) {
                        check=True, capture_output=True, timeout=30, creationflags=0x08000000)
     except subprocess.SubprocessError as error:
         raise RuntimeError('Windows shortcut could not be changed; check shortcut ownership and folder access') from error
+    if not remove:
+        # Tell Explorer the file association changed: it drops its icon cache for the shortcut target.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
+        except Exception:
+            pass

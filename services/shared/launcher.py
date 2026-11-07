@@ -920,7 +920,7 @@ def _startup_links(directory, entry, installation_id, enabled, record=None):
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
 
-LINKS_REVISION = 4  # 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+LINKS_REVISION = 5  # 5: icon cache refresh (SHChangeNotify + ie4uinit -ClearIconCache); 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
 
 
 def register_uninstall_entry(registry):

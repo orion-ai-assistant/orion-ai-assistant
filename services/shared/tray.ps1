@@ -45,11 +45,11 @@ $script:icon.Icon = Get-OrionIcon ([Windows.Forms.SystemInformation]::SmallIconS
 $script:icon.Text = 'Orion'
 $menu = New-Object Windows.Forms.ContextMenuStrip
 Set-OrionMenuStyle $menu
-$title = $menu.Items.Add('Orion AI Assistant')
-$title.Image = (Get-OrionIcon (S 20)).ToBitmap()
-$title.Font = Get-OrionFont 10 ([Drawing.FontStyle]::Bold)
-$title.ForeColor = $script:OrionTheme.Accent
-$title.Add_Click({ Open-Orion })
+$script:titleItem = $menu.Items.Add('Orion AI Assistant')
+$script:titleItem.Image = (Get-OrionIcon (S 20)).ToBitmap()
+$script:titleItem.Font = Get-OrionFont 10 ([Drawing.FontStyle]::Bold)
+$script:titleItem.ForeColor = $script:OrionTheme.Accent
+$script:titleItem.Add_Click({ Open-Orion })
 [void]$menu.Items.Add((New-Object Windows.Forms.ToolStripSeparator))
 $quit = $menu.Items.Add([string][char]0x00C7 + [char]0x0131 + 'k')
 $quit.ForeColor = $script:OrionTheme.Text; $quit.Padding = New-Object Windows.Forms.Padding(0, 3, 0, 3)
@@ -63,12 +63,23 @@ $quit.Add_Click({
 })
 
 # The launcher asks for a clean exit with a marker file; losing the registry also ends the icon.
+$script:lastExeTime = [DateTime]::MinValue
 $script:timer = New-Object Windows.Forms.Timer
 $script:timer.Interval = 1000
 $script:timer.Add_Tick({
     if ((Test-Path -LiteralPath $marker) -or -not (Test-Path -LiteralPath $Registry)) {
         Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
         Close-Tray
+    }
+    # Refresh tray icon when Orion.exe is replaced on disk by an update.
+    $exe = Join-Path $bootstrap 'Orion.exe'
+    if (Test-Path -LiteralPath $exe -PathType Leaf) {
+        $writeTime = (Get-Item -LiteralPath $exe).LastWriteTimeUtc
+        if ($writeTime -ne $script:lastExeTime) {
+            $script:lastExeTime = $writeTime
+            $script:icon.Icon = Get-OrionIcon ([Windows.Forms.SystemInformation]::SmallIconSize.Width)
+            if ($script:titleItem) { $script:titleItem.Image = (Get-OrionIcon (S 20)).ToBitmap() }
+        }
     }
 })
 $script:timer.Start()

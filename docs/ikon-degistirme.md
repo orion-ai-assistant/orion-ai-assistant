@@ -62,7 +62,8 @@ göründüğü: [ikonlar.md](ikonlar.md).
 | Hub yönetim panelleri | Sayfa bir sonraki açılışta (ikon adreslerinde hash, `no-cache`). |
 | Hub penceresi (başlık, görev çubuğu) | Güncelleme Orion'u yeniden başlatınca: eski exe'yle açık kalan pencere kapatılıp yeni exe ile açılır. |
 | Router paneli ve penceresi | Router güncellenince; pencere ikonu her açılışta Router'dan alınır. |
-| Masaüstü / Başlat kısayolları | Kısayol yeniden yazılınca; ardından Windows'un ikon önbelleği yenilenir (`ie4uinit.exe -show`). |
+| Masaüstü / Başlat kısayolları | Kısayol yeniden yazılınca; ardından Windows'un ikon önbelleği yenilenir (`SHChangeNotify` ve `ie4uinit.exe -ClearIconCache`). |
+| Gizli simgeler (bildirim alanı / tepsi ikonu) | Güncelleme yeni Orion.exe'yi yazınca 500 ms içinde; çalışan yerleşik host süreci yeni ikonu dinamik yükler. |
 
 ### Windows tarafı (bizim elimizde olmayan kısım)
 
