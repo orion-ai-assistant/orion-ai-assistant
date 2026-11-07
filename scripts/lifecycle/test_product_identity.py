@@ -1,4 +1,4 @@
-﻿"""Orion.exe product identity: trusted retained launcher, product shortcuts, migration of existing links."""
+"""Orion.exe product identity: trusted retained launcher, product shortcuts, migration of existing links."""
 import hashlib
 import json
 import os
@@ -109,7 +109,8 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertTrue(read_link(self.desktop / 'Orion.lnk')[0].lower().endswith('powershell.exe'))
         self.retained()
         self.assertTrue(launcher.refresh_links(self.store))  # Preference is off by default.
-        self.assertEqual(str(entry.with_name('Orion.exe')).lower(), read_link(self.desktop / 'Orion.lnk')[0].lower())
+        self.assertEqual(str(entry.with_name('Orion.exe')).lower(), read_link(self.desktop / 'Orion AI.lnk')[0].lower())
+        self.assertFalse((self.desktop / 'Orion.lnk').exists())
         self.assertEqual([], list(self.startup.iterdir()))  # Old link removed, none created for a user who turned it off.
         # An existing install gets its Start menu entry (search, "Recent", pin to Start) on the next launch.
         self.assertEqual(['Orion AI.lnk'], [p.name for p in self.programs.iterdir()])
@@ -168,7 +169,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.retained(router_exe=b'MZ router launcher')
         launcher.install_entry(self.store)
         launcher.refresh_links(self.store)
-        self.assertEqual(['Orion.lnk'], [p.name for p in self.desktop.iterdir()])
+        self.assertEqual(['Orion AI.lnk'], [p.name for p in self.desktop.iterdir()])
         self.assertEqual(['Orion AI.lnk'], [p.name for p in self.startup.iterdir()])
         self.assertEqual('Orion AI', read_link(self.startup / 'Orion AI.lnk')[2])
         self.assertEqual(['Orion AI.lnk'], [p.name for p in self.programs.iterdir()])  # Swapped, not added.
@@ -178,7 +179,7 @@ class ProductIdentityTests(unittest.TestCase):
         launcher.refresh_links(self.store)
         keep, stale = self.cleaned.call_args.args
         self.assertEqual(set(), set(keep))
-        self.assertEqual({'Orion.lnk', 'Orion AI.lnk', 'Orion Router.lnk'}, set(stale))
+        self.assertEqual({'Orion.lnk', 'Orion AI.lnk', 'Orion AI Assistant.lnk', 'Orion Router.lnk'}, set(stale))
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows registry')

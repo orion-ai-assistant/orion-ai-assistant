@@ -165,9 +165,6 @@ if ($p.remove) {
     # A link rewritten after Orion.exe changed can keep a stale icon until Explorer rebuilds its cache.
     # Touch the .lnk so Explorer sees a newer timestamp and drops its cached icon.
     (Get-Item -LiteralPath $p.path).LastWriteTime = [DateTime]::UtcNow
-    # -ClearIconCache (Windows 10+) drops every cached shell icon; -show refreshes the desktop.
-    try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -ClearIconCache } catch { }
-    try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch { }
 }
 """
     try:

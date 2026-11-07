@@ -839,7 +839,8 @@ def sync_desktop_link(record, entry, *, create):
     from .windows_autostart import known_folder, shortcut
     ident, directory = identity(record), known_folder('desktop')
     current = directory / ident['desktop']
-    if create or current.exists():
+    had_legacy = any((directory / name).exists() for name in ALL_DESKTOP_LINKS if name != ident['desktop'])
+    if create or current.exists() or had_legacy:
         shortcut(current, entry, record['installation_id'], product=ident['product'])
     for name in ALL_DESKTOP_LINKS:
         if name != ident['desktop']:

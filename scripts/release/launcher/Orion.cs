@@ -1,8 +1,8 @@
-// Orion AI Assistant - product launcher and the one long-lived Orion process of an installation.
+// Orion AI - product launcher and the one long-lived Orion process of an installation.
 //
 // Started by the desktop/Start/Startup entries (and by Orion.ps1 when it is run directly), it stays running as
 // the installation's host ("Orion Router" for a Router-only installation):
-//   - Task Manager shows one "Orion AI Assistant" entry with the Orion icon and every Orion process under it:
+//   - Task Manager shows one "Orion AI" entry with the Orion icon and every Orion process under it:
 //     the services' supervisors and the update watcher are created as this process's children (Python's
 //     services.shared.orion_host, by whoever starts them) and so are their services and databases.
 //   - It runs inside a kill-on-close job whose only handle it holds; the supervisors inherit the job and their
@@ -104,7 +104,7 @@ internal static class Orion
     internal static string Product()
     {
         var attributes = Assembly.GetExecutingAssembly().GetCustomAttributes(typeof(AssemblyProductAttribute), false);
-        return attributes.Length > 0 ? ((AssemblyProductAttribute)attributes[0]).Product : "Orion AI Assistant";
+        return attributes.Length > 0 ? ((AssemblyProductAttribute)attributes[0]).Product : "Orion AI";
     }
 
     internal static string Entry(string script, IEnumerable<string> switches)
@@ -210,7 +210,7 @@ internal sealed class Host : Form
     private IntPtr routerBig, routerSmall;
     private ToolStripMenuItem stopListening;                       // Shown while Orion's window listens.
     private ToolStripMenuItem menuTitle;                           // Menu title whose icon is refreshed on update.
-    private string iconText = "Orion";
+    private string iconText = "Orion AI";
     private DateTime launcherWriteTime = DateTime.MinValue;        // Orion.exe on disk; when it changes the tray icon is refreshed.
 
     internal Host(string id, string folder, string script, string registry)
@@ -248,7 +248,7 @@ internal sealed class Host : Form
     {
         Ui.Load();
         icon.Icon = Ui.OrionIcon(SystemInformation.SmallIconSize.Width);
-        iconText = Orion.Product() == "Orion Router" ? "Orion Router" : "Orion";
+        iconText = Orion.Product() == "Orion Router" ? "Orion Router" : "Orion AI";
         icon.Text = iconText;
         var menu = new ContextMenuStrip();
         Ui.Style(menu);
