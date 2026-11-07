@@ -111,7 +111,7 @@ def finish(registry, args, *, added=False):
     from services.shared.launcher import install_entry, preferences, launch, register_uninstall_entry
     record = registry.read()
     install_entry(registry, desktop=True)
-    register_uninstall_entry(registry)  # Settings > Apps > Orion AI Assistant > Uninstall
+    register_uninstall_entry(registry)  # Settings > Apps > Orion AI > Uninstall
     if added:
         # Hub joined a Router-only install (or a Router a Hub one): the links change identity, the user's
         # Startup / window choices stay exactly as they were.

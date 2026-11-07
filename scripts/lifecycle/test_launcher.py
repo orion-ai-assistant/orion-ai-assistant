@@ -153,7 +153,7 @@ while True: server.handle_request()
         entry = launcher.install_entry(self.store, desktop=False)
         before = self.store.read()['components']
         launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.root)
-        link = self.root / 'Orion AI Assistant.lnk'
+        link = self.root / 'Orion AI.lnk'
         self.assertTrue(link.is_file())
         # Inspect actual COM output, including the Unicode path and startup argument.
         cmd = '$s=New-Object -ComObject WScript.Shell; $l=$s.CreateShortcut($env:ORION_TEST_LINK); @($l.TargetPath,$l.Arguments,$l.Description)|ConvertTo-Json'

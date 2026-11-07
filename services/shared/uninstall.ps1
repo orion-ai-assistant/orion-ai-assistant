@@ -1,4 +1,4 @@
-﻿# Orion uninstall dialog ("Uygulamalar ve ozellikler" -> Orion AI Assistant -> Kaldir, and the tray's "Orion'u kaldir").
+﻿# Orion uninstall dialog ("Uygulamalar ve ozellikler" -> Orion AI -> Kaldir, and the tray's "Orion'u kaldir").
 # Asks what to remove and whether to keep the user data, then runs the safe flow of services.shared.uninstall from
 # the retained bootstrap runtime. Dependency-free (Windows PowerShell + WinForms). Kept ASCII: Windows PowerShell 5.1
 # reads this file as ANSI, so Turkish text is written as \uXXXX escapes and unescaped by T.

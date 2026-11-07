@@ -222,7 +222,7 @@ def test_source_or_development_installations_are_preserved(world):
 def test_settings_apps_entry_names_the_product_and_runs_the_safe_dialog(world, monkeypatch):
     record = world.fresh(['hub', 'client', 'router'])
     values = U.entry_values(world.registry, record)
-    assert values['DisplayName'] == 'Orion AI Assistant'
+    assert values['DisplayName'] == 'Orion AI'
     assert 'Orion-Uninstall.ps1' in values['UninstallString'] and str(world.registry.path) in values['UninstallString']
     assert values['DisplayIcon'].endswith('Orion.exe,0') and values['DisplayVersion'] == '1.0.0'
     router_only = {**record, 'components': [c for c in record['components'] if c['kind'] == 'router']}

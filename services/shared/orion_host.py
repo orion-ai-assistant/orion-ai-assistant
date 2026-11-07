@@ -3,7 +3,7 @@
 Orion.exe (scripts/release/launcher/Orion.cs) stays running per installation, is the notification-area icon
 and holds the only handle of a kill-on-close job it runs in. Supervisors and the update watcher are created
 as ITS children (PROC_THREAD_ATTRIBUTE_PARENT_PROCESS), whoever starts them - the launcher, the watcher's
-"update now" restart, a health probe: Task Manager shows one "Orion AI Assistant" entry with everything under
+"update now" restart, a health probe: Task Manager shows one "Orion AI" entry with everything under
 it, the processes inherit the host's job (their own jobs nest inside it), and "End task" on it ends them all.
 Without a host (development, an Orion.exe that predates it, a non-interactive run) processes start as before.
 """
