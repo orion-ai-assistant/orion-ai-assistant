@@ -773,13 +773,14 @@ def _timed_window(registry, hub, abort):
 DESKTOP_LINK = 'Orion AI.lnk'
 STARTUP_LINK = 'Orion AI.lnk'
 LEGACY_STARTUP_LINK = 'Orion.lnk'  # Installs before Orion.exe named their Startup entry like the desktop one.
+LEGACY_PRODUCT_LINK = 'Orion AI Assistant.lnk'
 ROUTER_LINK = 'Orion Router.lnk'   # Router-only installations: same file name on the desktop and in Startup.
-ALL_DESKTOP_LINKS = (DESKTOP_LINK, ROUTER_LINK)
-ALL_STARTUP_LINKS = (STARTUP_LINK, ROUTER_LINK, LEGACY_STARTUP_LINK)
+ALL_DESKTOP_LINKS = (DESKTOP_LINK, ROUTER_LINK, LEGACY_PRODUCT_LINK, LEGACY_STARTUP_LINK)
+ALL_STARTUP_LINKS = (STARTUP_LINK, ROUTER_LINK, LEGACY_PRODUCT_LINK, LEGACY_STARTUP_LINK)
 # Start menu > All apps: what makes Orion an app of Windows' own (search result, "Recent" list, pin to Start).
 # Without it search only found the Startup/desktop links, and launches from there were never "recent".
 START_LINK = 'Orion AI.lnk'
-ALL_START_LINKS = (START_LINK, ROUTER_LINK)
+ALL_START_LINKS = (START_LINK, ROUTER_LINK, LEGACY_PRODUCT_LINK)
 
 
 def identity(record):
@@ -920,7 +921,7 @@ def _startup_links(directory, entry, installation_id, enabled, record=None):
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
 
-LINKS_REVISION = 5  # 5: icon cache refresh (SHChangeNotify + ie4uinit -ClearIconCache); 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+LINKS_REVISION = 6  # 6: rename product links to Orion AI and migrate legacy names; 5: icon cache refresh (SHChangeNotify + ie4uinit -ClearIconCache); 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
 
 
 def register_uninstall_entry(registry):

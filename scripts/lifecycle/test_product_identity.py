@@ -91,7 +91,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.retained()
         entry = launcher.install_entry(self.store)
         exe = str(entry.with_name('Orion.exe'))
-        target, args, description, icon = read_link(self.desktop / 'Orion.lnk')
+        target, args, description, icon = read_link(self.desktop / 'Orion AI.lnk')
         self.assertEqual((exe.lower(), '', 'Orion AI'), (target.lower(), args, description))
         self.assertTrue(icon.lower().startswith(exe.lower()))
         launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.startup)

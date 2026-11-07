@@ -80,7 +80,8 @@ def known_folder(name):
 
 PRODUCT_NAME = 'Orion AI'
 ROUTER_PRODUCT_NAME = 'Orion Router'
-PRODUCT_NAMES = (PRODUCT_NAME, ROUTER_PRODUCT_NAME)
+LEGACY_PRODUCT_NAME = 'Orion AI Assistant'
+PRODUCT_NAMES = (PRODUCT_NAME, LEGACY_PRODUCT_NAME, ROUTER_PRODUCT_NAME)
 LAUNCHER_EXE = 'Orion.exe'
 
 STARTUP_APPROVED = r'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved StartupFolder'
