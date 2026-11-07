@@ -42,10 +42,10 @@ $script:icon = New-Object Windows.Forms.NotifyIcon
 # Same Orion icon as the desktop/Startup entry (embedded in the retained Orion.exe next to this script), at the
 # size the notification area uses on this screen (ExtractAssociatedIcon only had 32 px, scaled down blurry).
 $script:icon.Icon = Get-OrionIcon ([Windows.Forms.SystemInformation]::SmallIconSize.Width)
-$script:icon.Text = 'Orion'
+$script:icon.Text = 'Orion AI'
 $menu = New-Object Windows.Forms.ContextMenuStrip
 Set-OrionMenuStyle $menu
-$script:titleItem = $menu.Items.Add('Orion AI Assistant')
+$script:titleItem = $menu.Items.Add('Orion AI')
 $script:titleItem.Image = (Get-OrionIcon (S 20)).ToBitmap()
 $script:titleItem.Font = Get-OrionFont 10 ([Drawing.FontStyle]::Bold)
 $script:titleItem.ForeColor = $script:OrionTheme.Accent
