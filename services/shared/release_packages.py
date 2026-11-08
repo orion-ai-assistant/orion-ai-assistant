@@ -66,6 +66,17 @@ def extract_zip(archive, destination, *, max_bytes=8 * 1024**3, max_files=100000
     return extract_zips([archive], destination, max_bytes=max_bytes, max_files=max_files)
 
 
+def _rename_with_retry(source, destination):
+    """Retry short Windows sharing/permission locks, such as a scanner opening a freshly extracted tree."""
+    for attempt in range(5):
+        try:
+            return source.rename(destination)
+        except PermissionError as error:
+            if getattr(error, 'winerror', None) not in {5, 32} or attempt == 4:
+                raise
+            time.sleep(.1 * (2 ** attempt))
+
+
 def extract_zips(archives, destination, *, max_bytes=8 * 1024**3, max_files=100000):
     """extract_zip of several archives into ONE tree (a code package and its runtime layer).
 
@@ -134,7 +145,7 @@ def extract_zips(archives, destination, *, max_bytes=8 * 1024**3, max_files=1000
             # rename (not replace): on Windows a concurrently created target fails.
             if destination.exists():
                 raise PackageError('Package destination appeared during preparation')
-            tree.rename(destination)
+            _rename_with_retry(tree, destination)
     return destination
 
 

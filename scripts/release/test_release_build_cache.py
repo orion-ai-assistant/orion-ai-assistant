@@ -77,6 +77,11 @@ def router_repo(tmp_path):
 RELEASE = {'schema': 1, 'component': 'router', 'package_id': 'orion-router-0.0.1-windows-x86_64-cpu'}
 
 
+def test_release_file_scans_are_limited_to_requested_prefixes(router_repo):
+    assert build_package.release_names(router_repo, ['core']) == ['core/a.py']
+    assert build_package.lf_in_git(router_repo, ['core']) == {'core/a.py'}
+
+
 def key(repo, release=None):
     args = Namespace(requirements=None, inputs=Path('.'), postgres=Path('.'))
     return build_package.package_key('router', release or RELEASE, args, repo)[0]
@@ -115,6 +120,20 @@ def test_package_key_covers_tooling_and_runtime_inputs(router_repo, monkeypatch)
     monkeypatch.setattr(build_cache, 'text_digest', lambda path: 'changed' if Path(path).name == 'router-requirements.txt'
                         else original(path))
     assert key(router_repo) != base  # a changed dependency lock rebuilds the runtime and the package
+
+
+def test_runtime_smoke_cache_ignores_release_version_but_tracks_build_inputs():
+    parts = {'release': {'version': '0.2.1'}, 'tooling': 'tools-a', 'sources': 'source-a',
+             'runtime': 'runtime-a', 'dashboard': 'dashboard-a'}
+    layer = {'path': 'runtime.zip', 'hashes': {'sha256': 'layer-a'}, 'length': 10}
+    original = build_package.runtime_smoke_key('router', parts, layer)
+
+    assert build_package.runtime_smoke_key('router', {**parts, 'release': {'version': '0.2.2'}}, layer) == original
+    assert build_package.runtime_smoke_key('router', {**parts, 'sources': 'source-b'}, layer) != original
+    assert build_package.runtime_smoke_key('router', {**parts, 'runtime': 'runtime-b'}, layer) != original
+    assert build_package.runtime_smoke_key('router', {**parts, 'tooling': 'tools-b'}, layer) != original
+    changed_layer = {**layer, 'hashes': {'sha256': 'layer-b'}}
+    assert build_package.runtime_smoke_key('router', parts, changed_layer) != original
 
 
 def test_runtime_key_ignores_checkout_line_endings(tmp_path):

@@ -187,6 +187,7 @@ def bump_bootstrap(candidates, live, work, build=build_bootstrap, release_path=B
                for feed, value in P.FEEDS.items()}
 
     def build_all():
+        # Keep independent feeds parallel; extract_zips retries transient Windows locks on its final rename.
         with ThreadPoolExecutor(len(sources)) as pool:
             futures = {feed: pool.submit(build, source, Path(work) / feed / P.BOOTSTRAP_ASSET)
                        for feed, source in sources.items()}

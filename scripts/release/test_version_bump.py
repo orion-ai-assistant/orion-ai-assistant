@@ -3,6 +3,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import threading
 
 import pytest
 
@@ -223,6 +224,38 @@ def test_bootstrap_unchanged_is_reused_from_the_check(world, tmp_path):
     change, bundles = B.bump_bootstrap(world['candidates'], live, tmp_path / 'check', build, path, world['hub'])
     assert change.state == 'unchanged' and path.read_bytes() == before and len(built) == 2
     assert set(bundles) == {'hub', 'router'} and all(b.is_file() for b in bundles.values())
+
+
+def test_bootstrap_feeds_build_in_parallel(world, tmp_path):
+    world['build']()
+    path = world['hub'] / 'scripts/release/bootstrap.json'
+    active = 0
+    maximum_active = 0
+    lock = threading.Lock()
+    both_started = threading.Barrier(2)
+
+    def build(source, output):
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            try:
+                both_started.wait(timeout=.2)
+            except threading.BrokenBarrierError:
+                pass
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(json.dumps(source, sort_keys=True).encode())
+            return output
+        finally:
+            with lock:
+                active -= 1
+
+    change, bundles = B.bump_bootstrap(world['candidates'], {'hub': None, 'router': None},
+                                       tmp_path / 'check', build, path, world['hub'])
+    assert change.state == 'new'
+    assert set(bundles) == {'hub', 'router'}
+    assert maximum_active == 2
 
 
 def test_bootstrap_changed_is_bumped_once_for_both_feeds_and_rebuilt(world, tmp_path):

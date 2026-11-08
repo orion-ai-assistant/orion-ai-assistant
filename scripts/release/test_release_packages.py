@@ -20,7 +20,7 @@ from tuf.ngclient.fetcher import FetcherInterface
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from services.shared.release_packages import (PackageError, ReleaseClient, compatible, extract_zip, sha256,
-    validate_release, archive_name, record_prepared_package, verify_registered_package)
+    validate_release, archive_name, record_prepared_package, verify_registered_package, _rename_with_retry)
 from services.shared.runtime_layout import data_root, state_root
 
 spec = importlib.util.spec_from_file_location('publisher', Path(__file__).with_name('publish_metadata.py'))
@@ -267,6 +267,31 @@ def test_archive_collisions_rejected(tmp_path, members):
             archive.writestr(name, data)
     with pytest.raises(PackageError):
         extract_zip(path, tmp_path / 'output')
+
+
+def test_extracted_tree_rename_retries_a_transient_windows_lock(tmp_path, monkeypatch):
+    source = tmp_path / 'tree'
+    destination = tmp_path / 'python'
+    source.mkdir()
+    original_rename = Path.rename
+    calls = 0
+
+    def deny_twice(path, target):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            error = PermissionError(5, 'Access is denied')
+            error.winerror = 5
+            raise error
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, 'rename', deny_twice)
+    monkeypatch.setattr('services.shared.release_packages.time.sleep', lambda _: None)
+    _rename_with_retry(source, destination)
+
+    assert calls == 3
+    assert destination.is_dir()
+    assert not source.exists()
 
 
 def test_symlink_and_bomb_limits(tmp_path):

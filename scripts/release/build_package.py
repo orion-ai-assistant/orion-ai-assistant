@@ -33,7 +33,8 @@ EXCLUDED_PARTS = {'data', 'persistent', 'models', '.venv', 'node_modules', '.git
 
 def release_names(root, prefixes):
     """Tracked files that belong in a package (relative POSIX names), links rejected."""
-    names = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z']).decode('utf-8').split('\0')
+    names = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '--', *prefixes]
+                                    ).decode('utf-8').split('\0')
     selected = []
     for name in filter(None, names):
         if not any(name == prefix or name.startswith(prefix + '/') for prefix in prefixes):
@@ -52,9 +53,12 @@ def release_names(root, prefixes):
     return selected
 
 
-def lf_in_git(root):
-    """Tracked names whose committed form is LF text (`git ls-files --eol`: i/lf)."""
-    listing = subprocess.check_output(['git', '-C', str(root), 'ls-files', '--eol', '-z']).decode('utf-8')
+def lf_in_git(root, prefixes=None):
+    """Tracked LF-text names under the requested package paths."""
+    command = ['git', '-C', str(root), 'ls-files', '--eol', '-z']
+    if prefixes:
+        command += ['--', *prefixes]
+    listing = subprocess.check_output(command).decode('utf-8')
     return {entry.split('\t', 1)[1] for entry in filter(None, listing.split('\0'))
             if entry.split()[0] == 'i/lf'}
 
@@ -67,7 +71,7 @@ def copy_source(source, target, lf):
 
 
 def tracked(root, prefixes, stage):
-    lf = lf_in_git(root)
+    lf = lf_in_git(root, prefixes)
     for name in release_names(root, prefixes):
         target = stage / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +269,8 @@ def package_key(kind, release, args, root):
     if kind == 'client':
         web = root / 'main_app/app/build/web'
         parts += [('web', build_cache.hash_tree(web)),
-                  ('serve_web', (build_cache.text_digest if 'main_app/app/tool/serve_web.py' in lf_in_git(root)
+                  ('serve_web', (build_cache.text_digest if 'main_app/app/tool/serve_web.py'
+                                 in lf_in_git(root, ['main_app/app/tool/serve_web.py'])
                                  else build_cache.file_digest)(root / 'main_app/app/tool/serve_web.py')),
                   ('ui_host', build_cache.hash_files({n: root / 'main_app/app' / n for n in UI_HOST_SOURCES},
                                                      text=UI_HOST_SOURCES[:2]))]
@@ -273,11 +278,18 @@ def package_key(kind, release, args, root):
         names = release_names(root, SOURCE_PREFIXES[kind])
         # The bytes the package gets (see copy_source): an autocrlf (CRLF) and an LF checkout of one commit
         # have the same key, and the after-staging check below compares like with like.
-        parts += [('sources', build_cache.hash_files({n: root / n for n in names}, text=lf_in_git(root))),
+        parts += [('sources', build_cache.hash_files(
+            {n: root / n for n in names}, text=lf_in_git(root, SOURCE_PREFIXES[kind]))),
                   ('runtime', runtime_key(kind, args))]
         if kind == 'router':
             parts.append(('dashboard', build_cache.hash_tree(root / 'dashboard/out')))
     return build_cache.combine(*parts), dict(parts)
+
+
+def runtime_smoke_key(kind, parts, layer):
+    """The import smoke test does not depend on release version metadata."""
+    inputs = {name: value for name, value in parts.items() if name != 'release'}
+    return build_cache.combine(('kind', kind), ('inputs', inputs), ('runtime_layer', reference(layer)))
 
 
 UI_HOST_SOURCES = ('windows_host/OrionUi.cs', 'windows_host/build_ui_host.py', 'windows_host/orion.ico')
@@ -349,7 +361,8 @@ def build(args, timings=None):
                 shutil.copytree(web, stage / 'build/web')
                 (stage / 'tool').mkdir()
                 copy_source(root / 'main_app/app/tool/serve_web.py', stage / 'tool/serve_web.py',
-                            'main_app/app/tool/serve_web.py' in lf_in_git(root))
+                            'main_app/app/tool/serve_web.py'
+                            in lf_in_git(root, ['main_app/app/tool/serve_web.py']))
                 build_ui_host(root, stage)
             else:
                 # New sources are intentionally required to be tracked by CI. Local
@@ -360,7 +373,8 @@ def build(args, timings=None):
         if parts is not None and kind != 'client':
             # Hash what was actually copied: catches an edit that raced the key computation.
             names = release_names(root, SOURCE_PREFIXES[kind])
-            if build_cache.hash_files({n: stage / n for n in names}, text=lf_in_git(root)) != parts['sources']:
+            if build_cache.hash_files(
+                    {n: stage / n for n in names}, text=lf_in_git(root, SOURCE_PREFIXES[kind])) != parts['sources']:
                 raise ValueError('Sources changed while the package was being built; retry')
         (stage / 'orion-release.json').write_text(json.dumps(release, indent=2) + '\n', encoding='utf-8')
         if kind != 'client':
@@ -370,15 +384,23 @@ def build(args, timings=None):
             write_layer(output, base, layer)
             # Inside the code ZIP too: its hash then changes with the runtime (a new Python library alone).
             (stage / RUNTIME_REFERENCE).write_text(json.dumps(reference(layer), indent=2) + '\n', encoding='utf-8')
-            with timings.step('runtime smoke test (bundled Python imports the package)'):
-                package_import = 'services.shared.process_lifecycle' if kind == 'hub' else 'core.process_lifecycle'
-                subprocess.run([str(base / 'tree/runtime/python/python.exe'), '-c',
-                    'import sys; sys.path[:0] = sys.argv[1:]; '
-                    'import struct,fastapi,asyncpg,cryptography,tuf,psutil; '
-                    'assert sys.version_info[:2] == (3,14) and struct.calcsize("P") == 8; '
-                    'assert sys.dont_write_bytecode and sys.stdout.encoding.lower().replace("-", "") == "utf8"; '
-                    'print("Türkçe 中文"); import ' + package_import,
-                    str(stage), str(stage / 'services/hub/src'), str(stage / 'installer')], cwd=stage, check=True)
+            smoke_record = f'runtime-smoke-{kind}.json'
+            smoke_key = runtime_smoke_key(kind, parts, layer) if parts is not None else None
+            record = cache.read_record(smoke_record) if cache is not None else None
+            if smoke_key is not None and record and record.get('key') == smoke_key:
+                timings.skipped('runtime smoke test', 'source, runtime and build tools unchanged')
+            else:
+                with timings.step('runtime smoke test (bundled Python imports the package)'):
+                    package_import = 'services.shared.process_lifecycle' if kind == 'hub' else 'core.process_lifecycle'
+                    subprocess.run([str(base / 'tree/runtime/python/python.exe'), '-c',
+                        'import sys; sys.path[:0] = sys.argv[1:]; '
+                        'import struct,fastapi,asyncpg,cryptography,tuf,psutil; '
+                        'assert sys.version_info[:2] == (3,14) and struct.calcsize("P") == 8; '
+                        'assert sys.dont_write_bytecode and sys.stdout.encoding.lower().replace("-", "") == "utf8"; '
+                        'print("Türkçe 中文"); import ' + package_import,
+                        str(stage), str(stage / 'services/hub/src'), str(stage / 'installer')], cwd=stage, check=True)
+                if smoke_key is not None:
+                    cache.write_record(smoke_record, {'key': smoke_key})
         # TUF signs these final bytes only after UTF-8 preparation and all builds.
         unfinished = Path(temporary) / archive.name
         with timings.step('write package ZIP', 'code only; the runtime layer is a separate target' if kind != 'client' else ''):
