@@ -737,8 +737,14 @@ class AutomaticUpdates:
     def startup(self):
         tx = self.helper.status()
         if tx and tx['phase'] in {'checking', 'downloading', 'verifying'}:
-            # A running download owns the operation lock. Never race it.
-            return self.helper.resume(automatic=True)
+            # A live check/download/verify owns the operation lock. Never race it: while it runs, leave the
+            # transaction alone and start Orion normally. A preparation that was interrupted (no lock holder -
+            # the PC was shut down mid-download, say) is turned into an explicit failure by resume(); that never
+            # touches the active version, so it is safe even while Orion is up.
+            try:
+                return self.helper.resume(automatic=True)
+            except LifecycleError:
+                return tx
         if tx and tx['phase'] in {'staged', 'waiting_for_idle'}:
             return self._apply_at_launch(tx)
         if tx and tx['phase'] in APPLYING:

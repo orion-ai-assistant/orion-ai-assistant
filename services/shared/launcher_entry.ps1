@@ -158,8 +158,21 @@ function Invoke-OrionRecovery {
         try { $null = & $helperPython -B $helperScript --registry $registry startup 2>&1 } finally { $ErrorActionPreference = $previousPreference }
     } catch {}
 }
+function Test-OrionPreparing([string]$pending) {
+    # A background check/download/verify holds the operation lock with nothing stopped yet. Its journal is
+    # rewritten as it goes, so a fresh one is alive: a launcher that left the installation must not come back
+    # before it ends. A stale one is a dead preparation; the next start's "startup" repairs it.
+    try {
+        $phase = Get-OrionUpdatePhase $pending
+        if (@('checking','downloading','verifying') -notcontains $phase) { return $false }
+        $operation = Get-Content -LiteralPath $pending -Raw -Encoding UTF8 | ConvertFrom-Json
+        $operationId = [guid]::ParseExact($operation.operation_id, 'D').ToString('D')
+        $journal = Join-Path (Split-Path -Parent $pending) "$operationId/journal.json"
+        return ([DateTime]::Now - (Get-Item -LiteralPath $journal).LastWriteTime).TotalSeconds -lt 60
+    } catch { return $false }
+}
 function Test-OrionUpdating([string]$pending) {
-    try { return ($applying -contains (Get-OrionUpdatePhase $pending)) -or (Test-OrionApplyNow $pending) } catch { return $true }
+    try { return ($applying -contains (Get-OrionUpdatePhase $pending)) -or (Test-OrionApplyNow $pending) -or (Test-OrionPreparing $pending) } catch { return $true }
 }
 function Test-OrionUpdatingWindow {
     # The updater's own "Orion is updating" window (Orion-Updating.ps1) holds this mutex while it is open.

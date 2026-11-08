@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -114,6 +115,17 @@ else:
     def user_key():
         return str(os.getuid())
 
+    _thread_locks = threading.local()
+
+    def _held_thread_locks():
+        """POSIX: the locks this thread already holds, by (canonical directory, kind). A Windows mutex is
+        re-entrant for its owning thread, a plain flock is not: without this a nested acquisition from one
+        thread (the watcher holds the operation lock right through `resume`) blocks on itself."""
+        held = getattr(_thread_locks, 'held', None)
+        if held is None:
+            held = _thread_locks.held = {}
+        return held
+
 
 class InstanceLock:
     """OS-owned lock, separate names for operation and supervisor lifetime."""
@@ -121,6 +133,8 @@ class InstanceLock:
         self.directory, self.kind, self.timeout = Path(directory), kind, timeout
         self.handle = None
         self.abandoned = False
+        self.nested = False
+        self._key = None
 
     def __enter__(self):
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -146,6 +160,12 @@ class InstanceLock:
                 raise LifecycleError('Lifecycle busy or mutex inaccessible')
         else:
             import fcntl
+            key = (canonical(self.directory), self.kind)
+            held = _held_thread_locks()
+            if held.get(key, 0):
+                held[key] += 1
+                self.nested, self._key = True, key
+                return self
             self.handle = (self.directory / (self.kind + '.lock')).open('a+b')
             deadline = time.monotonic() + self.timeout
             while True:
@@ -155,16 +175,27 @@ class InstanceLock:
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
                         self.handle.close()
+                        self.handle = None
                         raise LifecycleError('Lifecycle busy')
                     time.sleep(.05)
+            held[key] = 1
+            self._key = key
         return self
 
     def __exit__(self, *args):
+        if self.nested:
+            held = _held_thread_locks()
+            held[self._key] -= 1
+            if held[self._key] <= 0:
+                del held[self._key]
+            self.nested = False
+            return
         if self.handle is not None:
             if os.name == 'nt':
                 K.ReleaseMutex(self.handle)
                 K.CloseHandle(self.handle)
             else:
+                _held_thread_locks().pop(self._key, None)
                 self.handle.close()
             self.handle = None
 

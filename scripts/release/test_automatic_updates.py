@@ -313,6 +313,21 @@ def test_launch_loses_the_operation_lock_race_without_failing(automatic):
         assert service.startup()['phase'] == 'staged'
 
 
+def test_launch_leaves_a_live_background_download_alone_instead_of_failing(automatic):
+    from services.shared.process_lifecycle import LifecycleError
+    service, now, data, host = automatic
+    def crash(point):
+        if point == 'after:journal:downloading':
+            raise Crash(point)
+    service.helper.fault = crash
+    with pytest.raises(Crash):
+        service.check()
+    assert service.helper.status()['phase'] == 'downloading'
+    # The download's own process still owns the operation lock: this launch must neither race it nor fail.
+    with patch.object(service.helper, 'resume', side_effect=LifecycleError('busy')):
+        assert service.startup()['phase'] == 'downloading'
+
+
 def test_feed_failure_while_the_bootstrap_replaces_itself_is_retried_once(automatic, monkeypatch):
     from services.shared.release_packages import PackageError
     service, now, data, host = automatic

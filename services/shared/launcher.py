@@ -337,12 +337,13 @@ UPDATE_RUNNING = 'ORION-UPDATE-RUNNING: another start is applying an update'
 
 
 def apply_running_elsewhere(registry):
-    """Another process holds the operation lock while an update is staged or being applied. This launcher
-    runs Python from the installation's own tree, so waiting here (for the lock) is what keeps the
-    installation "in use": the apply gives up after its grace period and this launch then starts the old
-    version. So it leaves and lets the entry script wait outside the tree."""
-    from .update_gate import APPLYING, applier_running, phase
-    return phase(registry.path) in APPLYING | {'staged', 'waiting_for_idle'} and applier_running(registry.path)
+    """Another process holds the operation lock while an update is being prepared, staged or applied. This
+    launcher runs Python from the installation's own tree, so waiting here (for the lock) is what keeps the
+    installation "in use": the operation gives up after its grace period and this launch then starts the old
+    version. So it leaves and lets the entry script wait outside the tree - also for a background download,
+    whose lock would otherwise block this launch on the 180 s operation lock until it failed."""
+    from .update_gate import APPLYING, PREPARING, applier_running, phase
+    return phase(registry.path) in APPLYING | PREPARING and applier_running(registry.path)
 
 
 def ports_taken(record, components, *, wait=PORT_WAIT, sleep=time.sleep):
@@ -744,8 +745,15 @@ def _start_with_window(registry, components, start_hub, start_router, *, show, s
             abort.set()  # No window for a start that failed; the entry script shows its dialog.
             raise
         (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
-        from .automatic_updates import spawn_watcher
-        spawn_watcher(registry)
+        try:
+            from . import update_now
+            # Its own lock shows whether one already runs: a watcher holds it for as long as it lives.
+            alive = update_now.watcher_alive(registry)
+        except Exception:
+            alive = False  # Cannot tell: start one; a duplicate ends itself on the watcher lock.
+        if not alive:
+            from .automatic_updates import spawn_watcher
+            spawn_watcher(registry)
         if hub:
             try:
                 spawn_tray(registry)

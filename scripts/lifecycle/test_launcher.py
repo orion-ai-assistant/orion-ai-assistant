@@ -263,6 +263,11 @@ while True: server.handle_request()
             self.assertTrue(launcher.apply_running_elsewhere(self.store))
         with patch('services.shared.update_gate.applier_running', return_value=False):
             self.assertFalse(launcher.apply_running_elsewhere(self.store))  # staged, nobody applying
+        self.journal('downloading')
+        with patch('services.shared.update_gate.applier_running', return_value=True):
+            self.assertTrue(launcher.apply_running_elsewhere(self.store))  # a live background download too
+        with patch('services.shared.update_gate.applier_running', return_value=False):
+            self.assertFalse(launcher.apply_running_elsewhere(self.store))  # dead download: not progress
         self.journal('completed')
         with patch('services.shared.update_gate.applier_running', return_value=True):
             self.assertFalse(launcher.apply_running_elsewhere(self.store))
