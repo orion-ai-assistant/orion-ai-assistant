@@ -285,18 +285,24 @@ class ProcessReference:
         self.close()
 
 
+def record_ended(record):
+    """A record outlives its process (a restart, a crash): when its number now belongs to a process started at
+    another time, the recorded one is gone. Only the start time is read, which most processes allow without
+    being opened - a protected one included. An unreadable time proves nothing, so False leaves the decision
+    to the caller's own containment check."""
+    try:
+        return psutil.Process(record['pid']).create_time() != record['started']
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.AccessDenied:
+        return False
+
+
 def living(record):
     if record is None:
         return False
-    try:
-        # A record outlives its process (a restart, a crash): when its number now belongs to a process started at
-        # another time, the recorded one is gone. Only the start time is read, which most processes allow.
-        if psutil.Process(record['pid']).create_time() != record['started']:
-            return False
-    except psutil.NoSuchProcess:
+    if record_ended(record):
         return False
-    except psutil.AccessDenied:
-        pass  # The full check below decides.
     try:
         with ProcessReference(record) as reference:
             return reference.alive()

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from unittest.mock import Mock, patch
 
 import psutil
@@ -717,6 +718,28 @@ def test_job_membership_ignores_reused_historical_descendant_pid(lab):
             child.stop(.5)
             assert foreign.poll() is None
         assert foreign.poll() is None
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership adapter')
+def test_a_root_record_whose_number_now_belongs_to_a_protected_process_has_ended(tmp_path):
+    # A restart hands a recorded number to a process this user may not open (System here): the record claims a
+    # start time that number does not have. Reading the start time needs no access, so recovery says the recorded
+    # child ended instead of failing the whole start with "access denied" (Hub/Router would never come up again).
+    job = lifecycle.job_adapter().metadata(str(tmp_path), 'probe', str(uuid.uuid4()), str(uuid.uuid4()))
+    started = psutil.Process(4).create_time() + 60
+    with lifecycle.job_adapter().Job(job) as owned:
+        assert owned.root_alive({'pid': 4, 'started': started, 'native_started': 0}) is False
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership adapter')
+def test_access_denied_for_the_recorded_root_stays_ownership_unknown(tmp_path):
+    # The rule above must not weaken fail-closed: a number that is the recorded process but cannot be opened
+    # stays an error, so a live child is never silently declared stopped.
+    job = lifecycle.job_adapter().metadata(str(tmp_path), 'probe', str(uuid.uuid4()), str(uuid.uuid4()))
+    started = psutil.Process(4).create_time()  # System: process access is denied, the start time is not.
+    with lifecycle.job_adapter().Job(job) as owned:
+        with pytest.raises(lifecycle.LifecycleError, match='access denied'):
+            owned.root_alive({'pid': 4, 'started': started, 'native_started': 0})
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows job ownership adapter')

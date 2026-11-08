@@ -15,7 +15,7 @@ import psutil
 
 from .process_lifecycle import (
     A, K, SecurityAttributes, LifecycleError, ProcessReference,
-    canonical, digest, native_started, user_key,
+    canonical, digest, native_started, record_ended, user_key,
 )
 
 K.CreateJobObjectW.argtypes = [ctypes.c_void_p, W.LPCWSTR]
@@ -121,6 +121,11 @@ class Job:
         handle = K.OpenProcess(0x1000, False, record['pid'])
         if not handle:
             if ctypes.get_last_error() == 87:
+                return False  # Nothing holds the number any more.
+            # Windows gave the number to a process this user may not open (a service after a restart, say). Its
+            # start time is readable anyway: a different one means the recorded child ended, so no start (Hub,
+            # Router) may fail over it. Only a number that really is the recorded process stays ownership unknown.
+            if record_ended(record):
                 return False
             raise LifecycleError('Process access denied; ownership unknown')
         try:
