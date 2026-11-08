@@ -8,6 +8,12 @@ import tempfile
 import numpy as np
 import wave
 import logging
+
+# Ensure local modules can be imported (whisper_server, prompts)
+_service_dir = os.path.dirname(os.path.abspath(__file__))
+if _service_dir not in sys.path:
+    sys.path.insert(0, _service_dir)
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
