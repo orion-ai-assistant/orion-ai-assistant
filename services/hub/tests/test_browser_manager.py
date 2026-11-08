@@ -164,9 +164,11 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
     def test_first_brave_setup_uses_brave_page_and_toggles_only_named_checkbox(self):
         from orion.browser.desktop import enable_remote_debugging
         endpoint = ('', 'ws://127.0.0.1:1234/devtools/browser/brave')
-        with patch('orion.browser.desktop.os.name', 'nt'),                 patch('orion.browser.manager.find_binary', return_value='brave.exe'),                 patch('orion.browser.desktop.browser_windows', side_effect=[[(5, 'brave')], [(5, 'brave'), (876, 'brave')]]),                 patch('orion.browser.desktop.subprocess.Popen') as launch,                 patch('orion.browser.desktop.subprocess.run', return_value=MagicMock(returncode=0)) as invoke,                 patch('orion.browser.desktop.close_window') as close,                 patch('orion.browser.manager.discover_endpoint', return_value=endpoint):
+        with patch('orion.browser.desktop.os.name', 'nt'),                 patch('orion.browser.manager.find_binary', return_value='brave.exe'),                 patch('orion.browser.desktop.browser_windows', side_effect=[[(5, 'brave')], [(5, 'brave'), (876, 'brave')]]),                 patch('orion.browser.manager._launch_detached', return_value=True) as launch,                 patch('orion.browser.desktop.subprocess.run', return_value=MagicMock(returncode=0)) as invoke,                 patch('orion.browser.desktop.close_window') as close,                 patch('orion.browser.manager.discover_endpoint', return_value=endpoint):
             self.assertTrue(enable_remote_debugging('brave'))
-        self.assertEqual(launch.call_args.args[0], ['brave.exe', '--new-window', 'brave://inspect/#remote-debugging'])
+        # Outside Orion's jobs, and visibly (show=1): a plain Popen here died with Orion and left the user's
+        # browser on the "restore tabs" screen.
+        launch.assert_called_once_with('brave.exe', ['--new-window', 'brave://inspect/#remote-debugging'], show=1)
         command = invoke.call_args.args[0]
         script = base64.b64decode(command[-1]).decode('utf-16-le')
         self.assertIn('Allow remote debugging for this browser instance', script)
@@ -216,14 +218,12 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         with patch('orion.browser.manager.os.name', 'nt'), \
                 patch('orion.browser.manager.running_browser_choices', return_value=set()), \
                 patch('orion.browser.manager.find_binary', return_value='brave.exe'), \
-                patch('orion.browser.manager.subprocess.STARTUPINFO') as startup, \
                 patch('orion.browser.manager.watch_browser_reconnect', AsyncMock()), \
-                patch('orion.browser.manager.subprocess.Popen') as launch:
+                patch('orion.browser.manager._launch_detached', return_value=True) as launch:
             await restore_saved_browsers()
         launch.assert_called_once()
-        self.assertEqual(launch.call_args.args[0][0], 'brave.exe')
-        self.assertNotIn('--remote-debugging-port', launch.call_args.args[0])
-        self.assertEqual(startup.return_value.wShowWindow, 7)
+        self.assertEqual(launch.call_args.args[0], 'brave.exe')
+        self.assertNotIn('--remote-debugging-port', launch.call_args.args[1])
 
     async def test_startup_keeps_already_running_browser_untouched(self):
         from orion.browser.manager import restore_saved_browsers
@@ -232,10 +232,22 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         with patch('orion.browser.manager.os.name', 'nt'), \
                 patch('orion.browser.manager.running_browser_choices', return_value={'brave'}), \
                 patch('orion.browser.manager.watch_browser_reconnect', AsyncMock()) as watch, \
-                patch('orion.browser.manager.subprocess.Popen') as launch:
+                patch('orion.browser.manager._launch_detached') as launch:
             await restore_saved_browsers()
         launch.assert_not_called()
         watch.assert_awaited_once()
+
+    async def test_detached_launch_escapes_our_jobs_through_wmi(self):
+        from orion.browser.manager import _launch_detached
+        with patch('orion.browser.manager.os.name', 'nt'), \
+                patch('orion.browser.manager.subprocess.run', return_value=MagicMock(returncode=0)) as run:
+            self.assertTrue(_launch_detached('brave.exe', ['--no-first-run']))
+        command = run.call_args.args[0]
+        # A plain Popen would inherit Orion's kill-on-close jobs and die with it; the browser must be created
+        # by the WMI service (outside every job) instead.
+        self.assertIn('Win32_Process', command[-1])
+        self.assertIn('brave.exe', command[-1])
+        self.assertIn('--no-first-run', command[-1])
 
     async def test_resume_reconnects_and_checks_response_before_clearing_pause(self):
         from orion.browser.cdp import CDPConnectionLost

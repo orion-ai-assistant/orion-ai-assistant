@@ -185,6 +185,37 @@ async def watch_browser_reconnect():
             log.debug('watch_browser_reconnect error: %s', exc)
 
 
+def _powershell():
+    return str(Path(os.environ.get('SYSTEMROOT', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+
+
+def _launch_detached(binary, arguments, show=7):
+    """Start the user's own browser OUTSIDE Orion's jobs, so Orion's exit never closes it.
+
+    The Hub runs inside the host job and the supervisor's own child job, both kill-on-close: a browser
+    started with a plain Popen inherits them, so stopping Orion force-closed the user's browser and the
+    next start showed Chrome/Edge's "restore tabs" screen. `CREATE_BREAKAWAY_FROM_JOB` is refused here
+    (the supervisor's job disables breakaway), so the browser is created through WMI — its parent is the
+    WMI service, in no job of ours — exactly as uninstall's cleanup escapes the job. Returns False when the
+    browser could not be started (then it is simply not restored; opening it reconnects through the watcher).
+
+    show: ShowWindow value of the new process. 7 (SW_SHOWMINNOACTIVE) restores without taking the foreground
+    at sign-in; 1 (SW_SHOWNORMAL) is a visible window the caller drives (the remote-debugging connect flow)."""
+    if os.name != 'nt':
+        return False
+    line = subprocess.list2cmdline([binary, *map(str, arguments)]).replace("'", "''")
+    probe = ("$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]"
+             + str(int(show)) + "}; "
+             "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+             "@{CommandLine='" + line + "'; ProcessStartupInformation=$s}; exit [int]$r.ReturnValue")
+    try:
+        return subprocess.run([_powershell(), '-NoProfile', '-NonInteractive', '-Command', probe],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 async def restore_saved_browsers():
     """At Hub startup, restore selected ordinary browsers without requesting CDP.
 
@@ -218,14 +249,12 @@ async def restore_saved_browsers():
             continue
         try:
             binary = find_binary(choice)
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 7  # SW_SHOWMINNOACTIVE
-            subprocess.Popen([binary, '--no-first-run', '--no-default-browser-check'],
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, startupinfo=startup)
+        except BrowserUnavailable:
+            log.warning('Could not restore saved %s browser', choice)
+            continue
+        if _launch_detached(binary, ['--no-first-run', '--no-default-browser-check']):
             log.info('Browser auto-restore: launched %s', choice)
-        except (BrowserUnavailable, OSError):
+        else:
             log.warning('Could not restore saved %s browser', choice)
     # Kick off the reconnect watcher regardless of whether any browser was launched.
     # Keep the watcher owned by the lifespan's restore_task so shutdown cancels it.

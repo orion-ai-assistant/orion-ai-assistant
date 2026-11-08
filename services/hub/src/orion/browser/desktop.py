@@ -133,7 +133,7 @@ def enable_remote_debugging(choice):
     """
     if os.name != 'nt':
         return False
-    from .manager import find_binary, discover_endpoint
+    from .manager import find_binary, discover_endpoint, _launch_detached
     try:
         binary = find_binary(choice)
     except Exception:
@@ -141,11 +141,10 @@ def enable_remote_debugging(choice):
 
     target_url = f'{choice}://inspect/#remote-debugging'
     previous = {hwnd for hwnd, _ in browser_windows()}
-    try:
-        subprocess.Popen([binary, '--new-window', target_url],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
-    except OSError:
+    # Outside Orion's jobs (manager._launch_detached): a browser opened here must not be force-closed when
+    # Orion stops, or the next start shows the "restore tabs" screen. show=1: the inspect window is driven
+    # visibly by the script below (never a minimized/background one).
+    if not _launch_detached(binary, ['--new-window', target_url], show=1):
         return False
 
     import time
