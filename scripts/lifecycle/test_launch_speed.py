@@ -59,12 +59,20 @@ class LaunchSpeedTests(unittest.TestCase):
 
     def test_window_opens_while_services_start(self):
         window_open = threading.Event()
+        events = []
         def start_hub(_):
             self.assertTrue(window_open.wait(5), 'window waited for the whole start')
-        with patch.object(launcher, 'show_window', side_effect=lambda *a, **k: window_open.set()) as show, \
-                patch('services.shared.automatic_updates.spawn_watcher'), patch.object(launcher, 'spawn_tray'):
-            launcher._start_with_window(self.registry, [HUB], start_hub, MagicMock(), show=True)
+        def show_window(*args, **kwargs):
+            events.append('window')
+            window_open.set()
+        with patch.object(launcher, 'show_window', side_effect=show_window) as show, \
+                patch('services.shared.automatic_updates.spawn_watcher'), patch.object(launcher, 'spawn_tray'), \
+                patch('subprocess.Popen', side_effect=lambda *a, **k: events.append('update')) as popen:
+            launcher._start_with_window(self.registry, [HUB], start_hub, MagicMock(),
+                                        show=True, startup=True, apply_owner=False)
         self.assertEqual(launcher.WINDOW_WAIT, show.call_args.kwargs['timeout'])
+        self.assertEqual(['window'], events)
+        popen.assert_not_called()
 
     def test_a_failed_start_cancels_the_waiting_window(self):
         aborted = []

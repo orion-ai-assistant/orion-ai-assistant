@@ -728,7 +728,7 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         return {'status': 'stopped'}
 
 
-def _start_with_window(registry, components, start_hub, start_router, *, show, startup, apply_owner):
+def _start_with_window(registry, components, start_hub, start_router, *, show, startup=False, apply_owner=False):
     """Services start while the Orion window is already being opened: it appears as soon as the Flutter
     server answers (the app shows its own "starting" screen until the Hub is ready), not after the whole Hub,
     worker included, reported ready."""
@@ -744,30 +744,8 @@ def _start_with_window(registry, components, start_hub, start_router, *, show, s
             abort.set()  # No window for a start that failed; the entry script shows its dialog.
             raise
         (registry.path.parent / WATCHER_EXIT).unlink(missing_ok=True)
-        from .automatic_updates import spawn_watcher, runtime_command
+        from .automatic_updates import spawn_watcher
         spawn_watcher(registry)
-        # İlk açılışta otomatik güncelleme kontrolü: asenkron, Hub'ı bloklamaz
-        if hub and startup and not apply_owner:
-            try:
-                record = registry.read()
-                if record and record['preferences'].get('automatic_updates', False):
-                    command = runtime_command(registry)
-                    if command:
-                        # Arka planda güncelleme kontrolü ve indirme (Hub startup'ı bloklamaz)
-                        subprocess.Popen(
-                            command + ['check', '--download'],
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0,
-                            close_fds=True
-                        )
-                        # NOT: İndirme tamamlanınca UI'da bildirim gösterilir.
-                        # Kullanıcı "Şimdi uygula" derse: update_now.request() çağrılır
-                        # Kullanıcı "Sonra" derse: Bir sonraki restart'ta run_startup() otomatik apply eder
-            except (OSError, ValueError) as error:
-                from . import update_log
-                update_log.log_exception(registry.path.parent / 'updates', 'startup.check', error)
         if hub:
             try:
                 spawn_tray(registry)
