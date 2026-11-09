@@ -409,6 +409,7 @@ class AudioSettingsUpdate(BaseModel):
 
 
 class PrimeSaveRequest(BaseModel):
+    text: str
     design: str = ""
     seed: int = -1
     creativity: float = 1.0
@@ -437,6 +438,8 @@ async def save_prime(request: PrimeSaveRequest):
     tts = engine
     if not tts or not hasattr(tts, "save_plain_prime"):
         raise HTTPException(status_code=404, detail="Bu motorda hazırlık sesi kaydedilemiyor.")
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Söyletmek istediğiniz metin boş olamaz.")
     if not 0 <= request.creativity <= 2:
         raise HTTPException(status_code=400, detail="Yaratıcılık 0-2 arasında olmalı.")
     if not 1 <= request.steps <= 50:
@@ -453,6 +456,7 @@ async def save_prime(request: PrimeSaveRequest):
             await run_in_threadpool(tts.ensure_server)
             data = await run_in_threadpool(
                 tts.save_plain_prime,
+                text=request.text,
                 design=request.design.strip(),
                 seed=request.seed,
                 guidance=request.creativity + 2.0,

@@ -265,6 +265,11 @@ function setupEventListeners() {
 async function saveDefaultPrime() {
     const button = document.getElementById('savePrimeBtn');
     const status = document.getElementById('primeSaveStatus');
+    const text = document.getElementById('textInput').value;
+    if (!text.trim()) {
+        status.innerText = 'Önce söyletmek istediğiniz metni yazın.';
+        return;
+    }
     button.disabled = true;
     status.innerText = 'Ses hazırlanıyor…';
     try {
@@ -277,6 +282,7 @@ async function saveDefaultPrime() {
             seedInput.dispatchEvent(new Event('input', { bubbles: true }));
         }
         const response = await api.savePrime({
+            text,
             design: document.getElementById('voxDescInput')?.value || '',
             seed,
             creativity: parseFloat(document.getElementById('cfgInput').value),

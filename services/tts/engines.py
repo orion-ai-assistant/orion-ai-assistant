@@ -721,13 +721,14 @@ class VoxCPM2GGUFEngine(TTSEngine):
         # do not synthesize and cache an extra, model-generated clone warm-up.
         return {"ref_wav": ref_wav, "ref_seconds": seconds}
 
-    def _make_prime(self, *, design: Optional[str] = None,
+    def _make_prime(self, *, text: Optional[str] = None, design: Optional[str] = None,
                     seed: Optional[int] = None, guidance: Optional[float] = None,
                     steps: Optional[int] = None, temperature: Optional[float] = None,
                     leading_trim_ms: float = 50.0) -> bytes:
         """Generate the default warm-up through the same PCM post-processing path as full speech output."""
         rate, audio = self.generate(
-            text=PRIME_TEXT, instruct=design or DEFAULT_VOICE_DESIGN,
+            text=PRIME_TEXT if text is None else text,
+            instruct=design or DEFAULT_VOICE_DESIGN,
             guidance_scale=PRIME_GUIDANCE if guidance is None else guidance,
             steps=PRIME_STEPS if steps is None else steps,
             seed=PRIME_SEED if seed is None else seed,
@@ -747,11 +748,12 @@ class VoxCPM2GGUFEngine(TTSEngine):
             w.writeframes(audio.tobytes())
         return out.getvalue()
 
-    def save_plain_prime(self, *, design: str = "", seed: int = -1, guidance: Optional[float] = None,
+    def save_plain_prime(self, *, text: Optional[str] = None, design: str = "",
+                         seed: int = -1, guidance: Optional[float] = None,
                          steps: Optional[int] = None, temperature: Optional[float] = None,
                          leading_trim_ms: float = 50.0) -> bytes:
         """Generate and persist the default warm-up with the current VoxCPM2 design/settings."""
-        data = self._make_prime(design=design, seed=seed,
+        data = self._make_prime(text=text, design=design, seed=seed,
                                 guidance=DEFAULT_GUIDANCE if guidance is None else guidance,
                                 steps=DEFAULT_STEPS if steps is None else steps,
                                 temperature=DEFAULT_TEMPERATURE if temperature is None else temperature,
