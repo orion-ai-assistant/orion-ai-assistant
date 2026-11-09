@@ -969,12 +969,14 @@ VOXCPM2_LAYERS = {'balanced': 14, 'low': 7}  # of the BaseLM's 28; measured on a
 LLAMA_SHARE = {'balanced': 0.5, 'low': 0.25}  # the share of a llama.cpp model's layers kept on the card
 
 
-def vram_field(part):
+def vram_field(part, model=None):
     """The memory mode a card offers (None: speech recognition has no such choice). Facts only, the same for any
-    model of the part (the page shows it before the model is picked); each option says in `detail` what it costs.
+    model of the part unless that model's engine has no such control; each option says in `detail` what it costs.
     VoxCPM2's numbers are what was measured (docs/bilesenler.md); OmniVoice ignores the mode."""
     if part.get('runner') == 'python':
         if part['id'] != 'tts':
+            return None
+        if model is not None and for_model(part, model).get('engine') != 'voxcpm2-gguf':
             return None
         detail = {'balanced': 'Yaklaşık 1,2 GB daha az bellek, ses biraz geç başlar.',
                   'low': 'Yaklaşık 1,7 GB daha az bellek, biraz daha yavaş.'}
@@ -999,7 +1001,7 @@ def advanced(part, hw, model=None):
                        'options': [{'id': 'all', 'label': 'Hepsi'}] + [
                            {'id': str(gpu['index']), 'label': f"{gpu['index']}: {gpu['name']}"} for gpu in nvidia]})
     if part.get('runner') == 'python':
-        extra = vram_field(part)
+        extra = vram_field(part, model)
         return fields + ([extra] if extra else [])
     # No layer count to type: on a card the whole model goes to it unless the memory mode keeps part on the
     # processor (command()); on the processor none can go.
@@ -1025,6 +1027,11 @@ def clean_settings(part, values, hw, model=None):
     for key, value in (values or {}).items():
         field = fields.get(key)
         if field is None:
+            # Older TTS config can carry VoxCPM2's mode while OmniVoice is selected. Ignore any stale client
+            # value and preserve the saved VoxCPM2 preference; OmniVoice has no corresponding control.
+            if (key == 'vram_mode' and part.get('runner') == 'python' and part['id'] == 'tts' and model is not None
+                    and for_model(part, model).get('engine') != 'voxcpm2-gguf'):
+                continue
             raise PartError(f'Bilinmeyen ayar: {key}')
         if field['type'] == 'bool':
             if not isinstance(value, bool):
@@ -1307,7 +1314,7 @@ def part_status(part, hw, config, data):
             'model': model['id'] if model else None, 'settings': settings,
             'vision_off': _vision_off(entry),
             'engines': engine_facts(run['engine'], part, hw, data),
-            'models': models, 'advanced': advanced(part, hw),
+            'models': models, 'advanced': advanced(part, hw, model),
             'job': current, 'error': (change or {}).get('error') if state != 'running' else None,
             # What the service runs with (the page compares the choice with it: "not applied yet").
             'applied': applied(part['id']) if state in ('running', 'restarting') else None,

@@ -61,7 +61,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     assert by_id['stt']['engines']['vulkan']['mb'] < 20 and by_id['stt']['engines']['cpu']['mb'] < 20
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
     assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vram_mode', 'vision']  # Two cards: which one.
-    assert keys('stt') == ['hardware', 'gpu'] and keys('tts') == ['hardware', 'gpu', 'vram_mode']
+    assert keys('stt') == ['hardware', 'gpu'] and keys('tts') == ['hardware', 'gpu']  # OmniVoice has no layer mode.
     # Both speech parts run on CUDA, Vulkan or the processor, CUDA first on an NVIDIA card: next to each other on
     # one card, one on CUDA and the other on Vulkan starved both (docs/bilesenler.md).
     assert [c['id'] for c in by_id['tts']['advanced'][0]['options']] == ['cuda', 'vulkan', 'cpu']
