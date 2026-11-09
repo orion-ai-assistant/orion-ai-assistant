@@ -237,7 +237,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         # Voice-design requests keep the engine default (VoxCPM2 10); the no-design reference path is set to 15 below.
         steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
-            guidance = 2.0  # OmniVoice's own default; VoxCPM2 picks its own (engines.py)
+            guidance = 3.0  # Default creativity 1.0 mapped to local TTS guidance 3.0.
         generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
         instruct_val = getattr(speech_request, "instructions", None)
         if not instruct_val:
