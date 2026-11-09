@@ -255,7 +255,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         no_voice_design = not (instruct_val and instruct_val.strip())
         if engine_name_env == "voxcpm2-gguf" and no_voice_design:
             if seed_val is None or seed_val == -1:
-                seed_val = 42
+                seed_val = 32
             if steps_val is None:
                 steps_val = 15
             if temperature_val is None:
