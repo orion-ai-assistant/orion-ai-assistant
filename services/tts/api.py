@@ -77,6 +77,17 @@ def create_wav_header(sample_rate: int, data_size: int) -> bytes:
         b'RIFF', 36 + data_size, b'WAVE', b'fmt ', 16, 1, 1, 
         sample_rate, sample_rate * 2, 2, 16, b'data', data_size)
 
+
+VOXCPM2_LEADING_TRIM_MS = 50.0
+
+
+def _leading_trim_samples(sample_rate: int) -> int:
+    """Samples to omit from VoxCPM2 output; all other engines keep their full output."""
+    if engine_name_env.startswith("voxcpm2") and sample_rate > 0:
+        return int(round(sample_rate * VOXCPM2_LEADING_TRIM_MS / 1000.0))
+    return 0
+
+
 # ——————————————————————————————————————————
 # Global State & Engine
 # ——————————————————————————————————————————
@@ -216,7 +227,6 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 else:
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
-
         # VoxCPM2's own extra (the other engines do not take it).
         extra = {"temperature": speech_request.temperature} if engine_name_env == "voxcpm2-gguf" else {}
         guidance = speech_request.guidance_scale
@@ -252,13 +262,20 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     abort_event=abort_event, **extra
                 )
                 sr = await run_in_threadpool(next, stream_gen)
-
                 async def audio_stream_generator():
+                    # Count across the whole utterance, not once per chunk. The stream is mono PCM16.
+                    trim_bytes_remaining = _leading_trim_samples(sr) * 2
                     try:
                         # The engine's generator blocks while it makes each piece: run it in a thread so the event
                         # loop sends every piece as it comes (inline, nothing left until ~64 KB had piled up).
                         async for chunk in iterate_in_threadpool(stream_gen):
                             if abort_event.is_set(): break
+                            if trim_bytes_remaining:
+                                skipped = min(trim_bytes_remaining, len(chunk))
+                                trim_bytes_remaining -= skipped
+                                chunk = chunk[skipped:]
+                                if not chunk:
+                                    continue
                             yield chunk
                     finally:
                         async_inference_lock.release()
@@ -282,6 +299,9 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             
             if sr == 500:  # The engine's failure value (engines.py): not an empty "success"
                 raise HTTPException(status_code=500, detail="Ses motoru bu isteğe yanıt veremedi.")
+            trim_samples = _leading_trim_samples(sr)
+            if trim_samples:
+                audio_data = audio_data[trim_samples:]
             header = create_wav_header(sr, len(audio_data) * 2)
             return Response(content=header + audio_data.tobytes(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
@@ -362,8 +382,7 @@ async def delete_voice(name: str):
 
 @app.get("/v1/prime")
 async def prime_audio(voice: str = ""):
-    """VoxCPM2 only: the audio every sentence continues, to listen to: a clone's own sample (or, without its words,
-    the warm-up made from it) when `voice` names one, the default voice's warm-up otherwise. A WAV."""
+    """VoxCPM2 only: return a clone's stored reference, or the default voice warm-up, as a WAV."""
     tts = engine
     if not tts or not hasattr(tts, "_plain_prime_wav"):
         raise HTTPException(status_code=404, detail="Bu motorda hazırlık sesi yok.")
@@ -372,18 +391,80 @@ async def prime_audio(voice: str = ""):
         cache = registry.get_voice_cache(name, engine_name_env)
         if not isinstance(cache, dict):
             raise HTTPException(status_code=404, detail="Böyle bir klon yok.")
-        # What the engine continues: the clone's own sample when it has its words, else the warm-up made from it.
-        if (cache.get("ref_text") or "").strip() and cache.get("ref_wav"):
+        # Transcript text is not used by VoxCPM2; preview the same audio reference used for generation.
+        if cache.get("ref_wav"):
             data = cache["ref_wav"]
-        elif cache.get("prime_wav"):
-            data = cache["prime_wav"]
         else:
-            raise HTTPException(status_code=404, detail="Bu klon metinsiz ve eski; devam edilecek ses yok.")
+            raise HTTPException(status_code=404, detail="Bu klonda devam edilecek ses yok.")
     else:
         try:
             data = await run_in_threadpool(tts._plain_prime_wav)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Hazırlık sesi hazır değil: {e}")
+    return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+class AudioSettingsUpdate(BaseModel):
+    leading_trim_ms: float
+
+
+class PrimeSaveRequest(BaseModel):
+    design: str = ""
+    seed: int = -1
+    creativity: float = 1.0
+    steps: int = 10
+    temperature: float = 0.9
+
+
+@app.get("/v1/settings/audio")
+async def get_audio_settings():
+    return {"leading_trim_ms": VOXCPM2_LEADING_TRIM_MS}
+
+
+@app.post("/v1/settings/audio")
+async def update_audio_settings(settings: AudioSettingsUpdate):
+    global VOXCPM2_LEADING_TRIM_MS
+    if not 0 <= settings.leading_trim_ms <= 300:
+        raise HTTPException(status_code=400, detail="Başlangıç kırpması 0-300 ms arasında olmalı.")
+    VOXCPM2_LEADING_TRIM_MS = float(settings.leading_trim_ms)
+    return {"leading_trim_ms": VOXCPM2_LEADING_TRIM_MS}
+
+
+@app.post("/v1/prime")
+async def save_prime(request: PrimeSaveRequest):
+    """Generate and persist the default VoxCPM2 warm-up with the current design and settings."""
+    global last_request_time
+    tts = engine
+    if not tts or not hasattr(tts, "save_plain_prime"):
+        raise HTTPException(status_code=404, detail="Bu motorda hazırlık sesi kaydedilemiyor.")
+    if not 0 <= request.creativity <= 2:
+        raise HTTPException(status_code=400, detail="Yaratıcılık 0-2 arasında olmalı.")
+    if not 1 <= request.steps <= 50:
+        raise HTTPException(status_code=400, detail="Kalite adımı 1-50 arasında olmalı.")
+    if not 0.5 <= request.temperature <= 0.9:
+        raise HTTPException(status_code=400, detail="Rastgelelik 0.5-0.9 arasında olmalı.")
+    if not -1 <= request.seed <= 2**31 - 1:
+        raise HTTPException(status_code=400, detail="Seed -1 ile 2147483647 arasında olmalı.")
+    if len(request.design) > 1000:
+        raise HTTPException(status_code=400, detail="Ses tarifi en fazla 1000 karakter olabilir.")
+    last_request_time = time.time()
+    try:
+        async with async_inference_lock:
+            await run_in_threadpool(tts.ensure_server)
+            data = await run_in_threadpool(
+                tts.save_plain_prime,
+                design=request.design.strip(),
+                seed=request.seed,
+                guidance=request.creativity + 2.0,
+                steps=request.steps,
+                temperature=request.temperature,
+                leading_trim_ms=VOXCPM2_LEADING_TRIM_MS,
+            )
+    except Exception as e:
+        logger.error(f"Prime generation failed: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Hazırlık sesi üretilemedi: {e}")
+    finally:
+        last_request_time = time.time()
     return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 _OMNIVOICE_LANGS = ["Auto", "Turkish", "English"]

@@ -286,13 +286,25 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   (`DEFAULT_VOICE_DESIGN`, engines.py). 48 → 24 kHz indirme (`HalfRate`) parça sınırlarında kesintisiz ve filtresi
   doğru (FFT'ye göre ~%1,4 hata) olarak doğrulandı.
   **Hazırlık sesi (2026-11-05):** VoxCPM2 kısa cümleleri ("Selam naber.") tek başına Türkçe bilmeyen biri gibi
-  okuyordu. Artık her cümle Türkçe bir sesin devamı olarak istenir (`reference_audio` = o ses, `prompt_text` = sözleri):
-  - Klonsuz: önceden üretilmiş "Merhaba, bugün nasılsınız?" (`PRIME_TEXT`, sabit `PRIME_SEED`, cfg 2,6 / 0,75 / 15
-    adım, `tidy_reference` ile kırpılır), `services/tts/voices/_prime_voxcpm2-gguf_<hash>.wav` (açılışta yoksa üretilir).
-  - Metinli klon: kendi örneği (`tidy_reference` + `soften_reference`) ve metni. Metin kayıttakiyle birebir aynı olmalı.
-  - Metinsiz klon: kaydederken örnekten (metinsiz) bir kez `PRIME_TEXT` üretilir, kayda `prime_wav`/`prime_text` girer.
-    Kullanıcı dinledi: metinsiz klonların hazırlığı kötü, metin yazmak belirgin şekilde iyi.
-  - Ses tarifi (`instructions`) verilince hazırlık kullanılmaz. 8810'da gönderilen ses dinlenebilir (`GET /v1/prime`).
+  okuyordu. Artık her cümle bir ses örneğinin devamı olarak istenir (`reference_audio`); VoxCPM2 isteğinde `prompt_text`
+  kullanılmaz. Klon ekranındaki referans metin VoxCPM2'de gizlidir ve API'ye gönderilse bile yok sayılır:
+  - **Çıkış başı kırpma:** Yalnızca VoxCPM2 WAV ve PCM akışında uygulanır; arayüzdeki 0-300 ms kaydırıcısı çalışma anında
+    ayarlanır ve varsayılanı 50 ms'dir. Akışta süre tüm parçalar üzerinden toplam olarak atlanır; her parçadan ayrı ayrı
+    kırpılmaz. OmniVoice etkilenmez. Router'ın yerel TTS'si aynı servisi kullandığında aynı değeri alır.
+  - Klon kaydında `tidy_reference` sessizliği kırpar, stereo örneği mono yapar ve seviyeyi ayarlar; ardından yalnızca
+    referans kayda klon kaydedilirken 5 kHz yumuşak low-pass (`soften_reference`) bir kez uygulanır. Klon ve tasarım
+    üretimlerinin son WAV/stream çıktısına filtre uygulanmaz. Yalnızca ayrıca kaydedilen hazırlık WAV'ı 5 kHz yumuşatma
+    alır. Ekstra seviye normalizasyonu yapılmaz. Noise Gate kullanılmaz.
+    Var olan klon cache'leri geriye dönük değişmez; filtre için klonu kaynak kayıttan yeniden kaydetmek gerekir.
+  - Klonsuz hazırlık: Metin `"Merhaba bugün nasılsınız?"`. 8810 arayüzündeki buton, VoxCPM2 ses tarifi ve o anki
+    seed/yaratıcılık/kalite adımı/rastgelelik değerleriyle normal tam üretimin PCM işleme yolunu kullanır; ek ses seviyesi
+    veya sessizlik normalizasyonu yapmadan normal üretimle aynı başlangıç kırpmasını uygular ve
+    `voices/_prime_voxcpm2-gguf_custom.wav` olarak saklar. Seed `-1` ise bir seed seçip arayüz alanına yazar; sonraki
+    tam üretim aynı seed'i kullanabilir. Ses tarifi boş üretimler ve `GET /v1/prime` bu WAV'ı kullanır.
+  - Klon: Kaydedilen örneğe yalnızca `tidy_reference` uygulanır ve VoxCPM2'ye her istekte doğrudan bu `ref_wav`
+    gönderilir; klon için ayrıca modelden hazırlık sesi üretilmez. Eski klon cache'lerinde `prime_wav` bulunsa bile
+    yok sayılır; arayüzdeki klon oynatıcısı da doğrudan kayıtlı referansı çalar. Referans metin VoxCPM2'de kullanılmaz.
+  - Ses tarifi (`instructions`) verilince hazırlık kullanılmaz. 8810'da kullanılan hazırlık sesi dinlenebilir (`GET /v1/prime`).
   Motor (llama.cpp-omni yaması, `encode_reference_audio`): aynı ses örneğinin AudioVAE kodlaması saklanır (en çok 8);
   ilk istekte ~100-280 ms, sonra önbellekten. Akışta ilk ses ("Selam naber.", CUDA, 7 katman, sıcak): hazırlıksız
   0,28 sn; hazırlıklı önbelleksiz 0,55; önbellekli 0,43-0,49 (klonsuz ~0,46, 4,4 sn örnekli klon ~0,54). Kalan fark, dil
@@ -305,11 +317,11 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   VoxCPM2 ayarları (engines.py): `seed` (-1 ya da verilmezse her istekte rastgele yeni bir tane gönderilir; göndermezsek
   sunucu hep aynı tohumu kullanıyordu); `guidance_scale` → `cfg_value` (2-4, verilmezse 3: sayfalarda "yaratıcılık 1";
   2026-11-05'e kadar 2,6); `steps` → `inference_timesteps` (verilmezse 10, modelin kendi varsayılanı; önce 15; Router artık
-  adım göndermiyor, OmniVoice'a TTS servisi yine 15 verir); hazırlık sesleri sabit 2,6 / 0,75 / 15 ile üretilir; `temperature` (arayüzde "Rastgelelik", 0,5-0,9; 8810 sayfası 0,75'ten başlar (0,05'lik adım; varsayılanlar "Varsayılan" yazar),
-  istek vermezse motor da 0,75 kullanır, PyTorch'ta 1,0'dı). Hız (`speed`) VoxCPM2'de yok: model süre/hız ayarı almıyor, eski PyTorch motoru da `speed`'i hiç kullanmıyordu (OmniVoice'un
+  adım göndermiyor, OmniVoice'a TTS servisi yine 15 verir); kaydedilmiş özel hazırlık sesi yoksa klonsuz hazırlık 2,6 / 0,75 / 15 ile üretilir; özel hazırlık arayüzden geçerli ayarlarla kaydedilebilir. `temperature` (arayüzde "Rastgelelik", 0,5-0,9; 8810 sayfası 0,9'dan başlar (0,05'lik adım; varsayılanlar "Varsayılan" yazar),
+  istek vermezse motor da 0,9 kullanır, PyTorch'ta 1,0'dı). Hız (`speed`) VoxCPM2'de yok: model süre/hız ayarı almıyor, eski PyTorch motoru da `speed`'i hiç kullanmıyordu (OmniVoice'un
   sunucusu alır); 8810 ve Router Oyun Alanı'nda VoxCPM2 açıkken gizli. Sonradan hızlandırma kullanıcı kararıyla
   eklenmedi; "speaking fast" gibi stil etiketleri tutarsız çıktı. Router'ın Oyun Alanı "Temperature" alanı
-  "yaratıcılık" (= guidance) olarak kullanılıyor; rastgelelik (`temperature`) Router'dan gitmez, motorun 0,75'i kullanılır; Oyun Alanı'nda bu alan yerel TTS'te 2-4 arası, 0,1'lik adımla.
+  "yaratıcılık" (= guidance) olarak kullanılıyor; rastgelelik (`temperature`) Router'dan gitmez, motorun 0,9'u kullanılır; Oyun Alanı'nda bu alan yerel TTS'te 2-4 arası, 0,1'lik adımla.
   Guidance yükselince ses seviyesi de artar (klonsuz rms: cfg 2 ≈ 1,5 bin, 3 ≈ 3 bin, 5 ≈ 9,7 bin, 8 ≈ 19 bin;
   klonda cfg 2 ≈ 5 bin, 5 ≈ 13 bin, tepe tam ölçekte): yüksek değerler bağırır gibi duyulur. `Leveler` (engines.py)
   sesi yalnızca kısar: 20 ms'lik çerçevelerde konuşmanın seviyesini izler (hızlı yükselir, yavaş iner, sessizlik
@@ -318,7 +330,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   sunucunun kendi 16 bit çıktısı kırpıldığı için o bozulma kalır; seviye yine de iner.
   Bu yüzden VoxCPM2'de guidance en az 2, en fazla 4 (`MIN_GUIDANCE`, `MAX_GUIDANCE`), verilmezse 2,6; Router ve 8810
   servisi verilmeyen guidance'ı artık 2.0 diye doldurmuyor, OmniVoice'un varsayılanı 2.0 kaldı. 8810 sayfasında
-  VoxCPM2'de guidance 2-4 (0,1'lik adım, başlangıç 2,6), kalite adımı 15'ten, rastgelelik 0,5-0,9 (0,05'lik adım, 0,75'ten) başlar.
+  VoxCPM2'de guidance 2-4 (0,1'lik adım, başlangıç 2,6), kalite adımı 15'ten, rastgelelik 0,5-0,9 (0,05'lik adım, 0,9'dan) başlar.
 - **CUDA'nın alt sınırı:** kartın compute capability'si ayrı bir `nvidia-smi --query-gpu=index,compute_cap`
   çağrısıyla okunur (bu alanı bilmeyen eski sürücüde kart listesi kaybolmasın diye ayrı; okunamazsa kart uygun
   sayılır, `hardware.json`'daki eski önbellek de öyle). Her CUDA tarifinde `min_compute` var; hiçbir NVIDIA kart
@@ -609,9 +621,8 @@ Sıra önerisi yukarıdan aşağıya.
 - **Dil listesi:** OmniVoice'un 647 dili `services/tts/omnivoice_languages.json` dosyasından gelir (lang_map.py'den
   üretildi; PyTorch'lu paket release'te olmadığı için liste yalnız Auto/Turkish/English'e düşüyordu). Dosya Hub
   paketine girer.
-- **Klon sesin keskin s/p/t'si:** klon, örnek kaydın parlaklığını da kopyalar ve büyütür (mikrofon kaydı: 4-8 kHz
-  -16 dB, klon çıktısı -11 dB; modelin kendi sesi -21 dB). Örnek 5 kHz üstü yumuşatılır
-  (`soften_reference`, `REF_LOWPASS_HZ`): çıktının 4-12 kHz bantları modelin kendi sesininkine iner. Yumuşatma
-  klon kaydedilirken bir kez yapılır, kayıtlı örnek her istekte olduğu gibi gider; daha önce kaydedilmiş klonlar
-  ham kalır (yeniden kaydedilmeli). Bellek/RAM sıkışınca sunucu "LocEnc sequence forward failed" ya da ggml
+- **Klon sibilansını yumuşatma (2026-11-09):** Kayıttaki keskin s/ş/t sesleri klonla büyüyebildiğinden, klon örneğine
+  kaydetme anında bir kez 5 kHz yumuşak low-pass uygulanır (`soften_reference`, 8. derece eğri). Klonsuz karakter
+  tasarımına ve üretilen klon sesine uygulanmaz; Noise Gate kullanılmaz. Var olan cache'ler yeniden klonlanmadan
+  değişmez. Bellek/RAM sıkışınca sunucu "LocEnc sequence forward failed" ya da ggml
   `mem_buffer` hatasıyla düşebilir (sistemin boş taahhüt belleği ~4 GB iken görüldü).

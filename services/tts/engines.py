@@ -101,15 +101,23 @@ class VoxCPMEngine(TTSEngine):
         )
 
     def encode_voice(self, audio_path: str, text: str) -> Any:
-        text_clean = text.strip() if text else None
+        # VoxCPM2 cloning uses the audio reference only; never condition on a reference transcript.
         return self.model.tts_model.build_prompt_cache(
-            prompt_text=text_clean,
-            prompt_wav_path=audio_path if text_clean else None,
+            prompt_text=None,
+            prompt_wav_path=None,
             reference_wav_path=audio_path
         )
 
+    @staticmethod
+    def _audio_only_voice_cache(voice_cache: Any) -> Any:
+        """Drop transcript continuation features from older VoxCPM2 clone caches."""
+        if isinstance(voice_cache, dict) and "ref_audio_feat" in voice_cache:
+            return {"ref_audio_feat": voice_cache["ref_audio_feat"], "mode": "reference"}
+        return voice_cache
+
     def generate(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None) -> Tuple[int, np.ndarray]:
         self.set_seed(seed)
+        voice_cache = self._audio_only_voice_cache(voice_cache)
         final_text = f"({instruct}){text}" if instruct else text
         inference_timesteps = steps if steps else (10 if self.low_vram else 15)
         
@@ -147,6 +155,7 @@ class VoxCPMEngine(TTSEngine):
 
     def generate_stream(self, text: str, voice_cache: Any = None, voice_name: str = "", instruct: str = "", speed: float = 1.0, guidance_scale: float = 2.0, steps: Optional[int] = None, seed: int = -1, language: str = "tr", abort_event: Optional[Any] = None):
         self.set_seed(seed)
+        voice_cache = self._audio_only_voice_cache(voice_cache)
         final_text = f"({instruct}){text}" if instruct else text
         inference_timesteps = steps if steps else (10 if self.low_vram else 15)
         
@@ -706,50 +715,62 @@ class VoxCPM2GGUFEngine(TTSEngine):
         except Exception:
             raise ValueError("VoxCPM2 ses örneğini WAV olarak ister; lütfen temiz bir WAV dosyası yükleyin.") from None
         check_clone_seconds(seconds)
-        # Stored softened, once, and sent as it is with every request (soften_reference).
+        # Soften excessive sibilance in clone recordings once, when the clone is saved. Do not filter generated output.
         ref_wav = soften_reference(data)
-        voice = {"ref_wav": ref_wav, "ref_text": text.strip() if text else "", "ref_seconds": seconds}
-        # A clone with its transcript speaks as the continuation of its own (tidied, softened) sample: the sample and
-        # its words go with every request, and the server keeps the sample's encoding. The transcript must match the
-        # recording word for word, or the model speaks the extra words (a 4.6 s sample with a 255-character text came
-        # out 13-15 s instead of 2). Without a transcript there is nothing to continue, so a warm-up is made once:
-        # PRIME_TEXT in this voice, from the sample alone. Runs on the caller's thread (already under the service's
-        # lock) and talks to the server directly, so it takes no lock of its own.
-        if not voice["ref_text"]:
-            try:
-                voice["prime_wav"] = self._make_prime(ref_wav)
-                voice["prime_text"] = PRIME_TEXT
-            except Exception as e:
-                logger.warning(f"VoxCPM2 clone warm-up failed, the clone speaks from its sample only: {e}")
-        return voice
+        # Ignore the optional transcript. The saved sample itself is the reference for every clone request;
+        # do not synthesize and cache an extra, model-generated clone warm-up.
+        return {"ref_wav": ref_wav, "ref_seconds": seconds}
 
-    def _make_prime(self, ref_wav: Optional[bytes] = None, ref_text: str = "") -> bytes:
-        """PRIME_TEXT spoken once, with a fixed seed (the same voice gives the same warm-up), trimmed and levelled:
-        a tidy 16-bit mono WAV at the server's rate. Without ref_wav, in the default voice design."""
-        import base64
-        payload = {"model": "voxcpm", "response_format": "wav", "seed": PRIME_SEED, "cfg_value": PRIME_GUIDANCE,
-                   "temperature": PRIME_TEMPERATURE, "inference_timesteps": PRIME_STEPS}
-        if ref_wav:
-            payload["input"] = PRIME_TEXT
-            payload["reference_audio"] = base64.b64encode(ref_wav).decode()
-            if ref_text:
-                payload["prompt_text"] = ref_text
-        else:
-            payload["input"] = f"({DEFAULT_VOICE_DESIGN}){PRIME_TEXT}"
-        with self._request("/v1/audio/speech", payload) as res:
-            rate, audio = streamed_wav(res.read())
-        if len(audio) < rate // 2:
+    def _make_prime(self, *, design: Optional[str] = None,
+                    seed: Optional[int] = None, guidance: Optional[float] = None,
+                    steps: Optional[int] = None, temperature: Optional[float] = None,
+                    leading_trim_ms: float = 50.0) -> bytes:
+        """Generate the default warm-up through the same PCM post-processing path as full speech output."""
+        rate, audio = self.generate(
+            text=PRIME_TEXT, instruct=design or DEFAULT_VOICE_DESIGN,
+            guidance_scale=PRIME_GUIDANCE if guidance is None else guidance,
+            steps=PRIME_STEPS if steps is None else steps,
+            seed=PRIME_SEED if seed is None else seed,
+            temperature=PRIME_TEMPERATURE if temperature is None else temperature,
+        )
+        if rate == 500 or len(audio) < self.SAMPLE_RATE // 2:
             raise RuntimeError("warm-up came back (nearly) empty")
+        trim_samples = int(round(rate * max(0.0, leading_trim_ms) / 1000.0))
+        if trim_samples:
+            audio = audio[trim_samples:]
+        audio = soften_pcm16(audio, rate)
         out = io.BytesIO()
         with wave.open(out, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(rate)
             w.writeframes(audio.tobytes())
-        return tidy_reference(out.getvalue())
+        return out.getvalue()
+
+    def save_plain_prime(self, *, design: str = "", seed: int = -1, guidance: Optional[float] = None,
+                         steps: Optional[int] = None, temperature: Optional[float] = None,
+                         leading_trim_ms: float = 50.0) -> bytes:
+        """Generate and persist the default warm-up with the current VoxCPM2 design/settings."""
+        data = self._make_prime(design=design, seed=seed,
+                                guidance=DEFAULT_GUIDANCE if guidance is None else guidance,
+                                steps=DEFAULT_STEPS if steps is None else steps,
+                                temperature=DEFAULT_TEMPERATURE if temperature is None else temperature,
+                                leading_trim_ms=leading_trim_ms)
+        path = Path.cwd() / "voices" / "_prime_voxcpm2-gguf_custom.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+        with self._prime_lock:
+            self._plain_prime = data
+        return data
 
     def _plain_prime_wav(self) -> bytes:
         """The default voice's warm-up, kept in voices/ and made when it is not there (or the design changed)."""
+        custom_path = Path.cwd() / "voices" / "_prime_voxcpm2-gguf_custom.wav"
+        if custom_path.is_file():
+            self._plain_prime = custom_path.read_bytes()
+            return self._plain_prime
         if self._plain_prime:
             return self._plain_prime
         with self._prime_lock:
@@ -775,30 +796,21 @@ class VoxCPM2GGUFEngine(TTSEngine):
                    "voxcpm2", "voxcpm2-gguf", "default", "none"}
         cloned = isinstance(voice_cache, dict) and bool(voice_cache.get("ref_wav"))
         designed = bool(instruct and instruct.strip() and instruct.strip().lower() not in generic)
-        ref, prompt = None, None
+        ref = None
         if designed:
             text = f"({instruct.strip()}){text}"  # VoxCPM2's voice design: a description in parentheses first.
-        elif cloned and (voice_cache.get("ref_text") or "").strip():
-            # The continuation of the clone's own sample, with its words: short sentences ("Selam naber.") come out in
-            # Turkish and the voice stays the same from request to request.
-            ref, prompt = voice_cache["ref_wav"], voice_cache["ref_text"].strip()
-        elif cloned and voice_cache.get("prime_wav"):
-            # No transcript: the continuation of the warm-up made from the sample when the voice was cloned.
-            ref, prompt = voice_cache["prime_wav"], voice_cache.get("prime_text") or PRIME_TEXT
-        elif cloned:
-            # A clone made before any of this, without a transcript: its sample alone.
+        if cloned:
+            # Always use the saved clone reference, including for old caches that still contain prime_wav.
             ref = voice_cache["ref_wav"]
-        else:
-            try:  # Nothing asked for: the default voice, as the continuation of its warm-up.
-                ref, prompt = self._plain_prime_wav(), PRIME_TEXT
+        elif not designed:
+            try:  # Nothing asked for: the default voice, from its warm-up audio alone.
+                ref = self._plain_prime_wav()
             except Exception as e:
                 logger.warning(f"VoxCPM2 warm-up unavailable, plain voice design instead: {e}")
                 text = f"({DEFAULT_VOICE_DESIGN}){text}"
         payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
         if ref:
             payload["reference_audio"] = base64.b64encode(ref).decode()
-        if prompt:
-            payload["prompt_text"] = prompt
         # No seed asked for: a new one every time (without one the server always uses the same, so every answer to the
         # same text came out the same).
         payload["seed"] = int(seed) if seed is not None and seed != -1 else random.randint(0, 2**31 - 1)
@@ -806,7 +818,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
         # output clips (it shouts and clicks: measured rms 1.5-5 k at 2, 10-13 k at 5).
         payload["cfg_value"] = (min(MAX_GUIDANCE, max(MIN_GUIDANCE, float(guidance_scale)))
                                 if guidance_scale else DEFAULT_GUIDANCE)
-        # The CFM's steps (15 when not given; the server's own is 10) and the randomness (0.5-0.9, 0.75 when not given).
+        # The CFM's steps (15 when not given; the server's own is 10) and randomness (0.5-0.9, 0.9 when not given).
         payload["inference_timesteps"] = max(1, int(steps)) if steps else DEFAULT_STEPS
         payload["temperature"] = (min(MAX_TEMPERATURE, max(MIN_TEMPERATURE, float(temperature)))
                                   if temperature is not None else DEFAULT_TEMPERATURE)
@@ -885,23 +897,17 @@ class VoxCPM2GGUFEngine(TTSEngine):
 # What VoxCPM2 speaks with when the request has neither a description nor a cloned voice (without one the voice
 # is a different one with every seed).
 DEFAULT_VOICE_DESIGN = "A clear voice sweet girl."
-# The warm-up every VoxCPM2 sentence continues (default voice and clones; not with a voice description): a short
-# sentence alone ("Selam naber.") was read like by someone who does not speak Turkish; after this it is not.
-PRIME_TEXT = "Merhaba, bugün nasılsınız?"
-PRIME_SEED = 1234
-# A cloned voice copies the sample's recording too: a mic recording with a lot of s/sh/hiss in it (4-12 kHz energy of
-# -13 dB against the voice's own -21..-26) came out 6-10 dB brighter still, which is the harsh, popping s, p, t of
-# the clones. The sample goes in with everything above this softened (measured: 5 kHz brings the output's 4-12 kHz
-# bands to those of the model's own voice). Done once, when the voice is cloned (a voice cloned before this keeps
-# its sample as it was recorded).
-REF_LOWPASS_HZ = 5000
+# The default-voice warm-up used when no clone reference or voice description is supplied: a short sentence alone
+# ("Selam naber.") was read like by someone who does not speak Turkish; after this it is not.
+PRIME_TEXT = "Merhaba bugün nasılsınız?"
+PRIME_SEED = 42424
 DEFAULT_GUIDANCE = 3.0  # what pages show as creativity 1 (0-2 -> 2-4)
 MIN_GUIDANCE = 2.0
 MAX_GUIDANCE = 4.0
 DEFAULT_STEPS = 10  # the model's own default
 MIN_TEMPERATURE = 0.5
 MAX_TEMPERATURE = 0.9
-DEFAULT_TEMPERATURE = 0.75  # when the request does not say (Router, Hub); the 8810 page starts here too
+DEFAULT_TEMPERATURE = 0.9  # when the request does not say (Router, Hub); the 8810 page starts here too
 # The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.
 PRIME_GUIDANCE = 2.6
 PRIME_STEPS = 15
@@ -1025,8 +1031,7 @@ def clone_advice(seconds: float) -> str:
 REF_TARGET_RMS = 2500.0      # the speech's level after tidying (about -22 dBFS); the clones came out loud
 REF_PEAK = 0.9 * 32767       # and never past this
 REF_MARGIN = 0.15            # seconds of quiet kept before and after the speech
-
-
+REF_LOWPASS_HZ = 5000        # reduce unusually sharp sibilants copied from clone recordings
 def tidy_reference(wav_data: bytes) -> bytes:
     """A clone sample made even, once, when the voice is cloned (both engines): to mono, the silence before and
     after the speech cut (it is processed with every sentence, and the model copies it), and the speech brought to
@@ -1064,23 +1069,31 @@ def tidy_reference(wav_data: bytes) -> bytes:
         return wav_data
 
 
+def soften_pcm16(samples: np.ndarray, sample_rate: int, cutoff: float = REF_LOWPASS_HZ) -> np.ndarray:
+    """Gently roll off sibilant highs above 5 kHz without changing overall gain."""
+    x = np.asarray(samples, dtype=np.int16)
+    if not x.size or cutoff >= sample_rate / 2:
+        return x
+    spectrum = np.fft.rfft(x.astype(np.float64))
+    frequencies = np.fft.rfftfreq(len(x), 1 / sample_rate)
+    softened = np.fft.irfft(spectrum / (1 + (frequencies / cutoff) ** 8), len(x))
+    return np.clip(np.round(softened), -32768, 32767).astype(np.int16)
+
+
 def soften_reference(wav_data: bytes, cutoff: float = REF_LOWPASS_HZ) -> bytes:
-    """The clone sample (a 16-bit mono WAV) with its highs above `cutoff` rolled off (a gentle 8th-order low-pass);
-    anything that is not such a WAV is returned as it came."""
+    """Gently roll off clone-recording highs above 5 kHz, once at clone save time."""
     try:
         with wave.open(io.BytesIO(wav_data)) as w:
             rate, channels, width, frames = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.readframes(w.getnframes())
         if width != 2 or channels != 1 or cutoff >= rate / 2:
             return wav_data
-        x = np.frombuffer(frames, dtype=np.int16).astype(np.float64)
-        f = np.fft.rfftfreq(len(x), 1 / rate)
-        y = np.fft.irfft(np.fft.rfft(x) / (1 + (f / cutoff) ** 8), len(x))
+        samples = soften_pcm16(np.frombuffer(frames, dtype=np.int16), rate, cutoff)
         out = io.BytesIO()
         with wave.open(out, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(rate)
-            w.writeframes(np.clip(np.round(y), -32768, 32767).astype(np.int16).tobytes())
+            w.writeframes(samples.tobytes())
         return out.getvalue()
     except Exception:
         return wav_data

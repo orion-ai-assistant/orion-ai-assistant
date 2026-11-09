@@ -36,8 +36,7 @@
                         <button id="delVoiceBtn" style="background: #ef4444; width: auto; padding: 0 20px;">SİL</button>
                     </div>
                     <div id="primeBoxClone" class="hidden" style="margin: -8px 0 20px;">
-                        <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 4px;">Her cümle bu sesin devamı olarak üretilir
-                            (metinli klonda kendi örneğin, metinsiz klonda ondan üretilen hazırlık sesi):</p>
+                        <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 4px;">Klon üretiminde modele doğrudan bu kayıtlı ses örneği verilir:</p>
                         <audio id="primeAudioClone" controls preload="none" style="width: 100%;"></audio>
                     </div>
                 </div>
@@ -48,6 +47,10 @@
                         <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 4px;">Ses tarifi boşsa her cümle bu
                             hazırlık sesinin devamı olarak üretilir (tarif yazarsan kullanılmaz):</p>
                         <audio id="primeAudioDefault" controls preload="none" style="width: 100%;"></audio>
+                        <div style="display:flex; align-items:center; gap:10px; margin-top:8px;">
+                            <button id="savePrimeBtn" type="button" style="width:auto;">Bu tasarım ve ayarlarla hazırlık sesini üret ve kaydet</button>
+                            <span id="primeSaveStatus" style="font-size:0.8rem; color:var(--muted);"></span>
+                        </div>
                     </div>
                     <p class="section-title">Karakter Tasarımı</p>
 
@@ -135,11 +138,17 @@
 
                         <div id="tempContainer" class="hidden">
                             <label>Rastgelelik: <span id="tempVal">Varsayılan</span></label>
-                            <input type="range" id="tempInput" min="0.5" max="0.9" step="0.05" value="0.75">
+                            <input type="range" id="tempInput" min="0.5" max="0.9" step="0.05" value="0.9">
                         </div>
 
                         <label>Sabit Seed (Rastgele için -1):</label>
                         <input type="number" id="seedInput" value="-1">
+
+                        <div id="leadingTrimContainer" class="hidden" style="margin-top:14px;">
+                            <label>VoxCPM2 başlangıç kırpması: <span id="leadingTrimVal">50</span> ms</label>
+                            <input type="range" id="leadingTrimInput" min="0" max="300" step="10" value="50">
+                            <div id="leadingTrimStatus" style="font-size:0.75rem; color:var(--muted);">Konuşmanın başından bu süre atılır.</div>
+                        </div>
                     </div>
                 </div>
 
@@ -154,9 +163,14 @@
             <div>
                 <p class="section-title">Yeni Ses Klonla</p>
                 <input type="text" id="cloneName" placeholder="Sese bir isim verin">
-                <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor? (isteğe bağlı)">
-                <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 6px;">İsteğe bağlı. Yazarsan, kayıtta
-                    söylenenle birebir aynı olmalı; fazladan ya da eksik metin modelin fazladan konuşmasına yol açar.</p>
+                <div id="cloneTextGroup">
+                    <input type="text" id="cloneText" placeholder="Referans seste tam olarak ne söyleniyor? (isteğe bağlı)">
+                    <p style="font-size: 0.8rem; color: var(--muted); margin: 0 0 6px;">İsteğe bağlı. Yazarsan, kayıtta
+                        söylenenle birebir aynı olmalı; fazladan ya da eksik metin modelin fazladan konuşmasına yol açar.</p>
+                </div>
+                <p id="cloneTextNotice" class="hidden" style="font-size: 0.8rem; color: var(--muted); margin: 0 0 6px;">
+                    VoxCPM2 klonlarında referans metin kullanılmaz; klon yalnızca ses örneğinden hazırlanır.
+                </p>
                 <input type="file" id="cloneFile" accept="audio/*">
                 <p id="cloneHint" style="font-size: 0.8rem; color: var(--muted); margin: 4px 0 0;">Yaklaşık 5 saniyelik temiz
                     bir kayıt önerilir. Örnek her konuşmada yeni cümleyle birlikte işlenir: daha uzun örnekler her

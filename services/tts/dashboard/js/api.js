@@ -15,6 +15,33 @@ export async function getDesignOptions() {
     return await res.json();
 }
 
+export async function getAudioSettings() {
+    const res = await fetch(`${API_BASE}/v1/settings/audio`);
+    if (!res.ok) throw new Error('Ses ayarları okunamadı');
+    return await res.json();
+}
+
+export async function setAudioSettings(settings) {
+    const res = await fetch(`${API_BASE}/v1/settings/audio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Ses ayarı uygulanamadı');
+    }
+    return await res.json();
+}
+
+export async function savePrime(settings) {
+    return await fetch(`${API_BASE}/v1/prime`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+    });
+}
+
 export async function getVoices() {
     const res = await fetch(`${API_BASE}/v1/voices`);
     return await res.json();

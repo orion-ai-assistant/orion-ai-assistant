@@ -8,7 +8,8 @@ let cloneLimits = null;
 let cloneSeconds = null;
 let stepDefault = 15;
 let cfgDefault = 2.0;
-const TEMP_DEFAULT = 0.75;
+let trimSaveTimer = null;
+const TEMP_DEFAULT = 0.9;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -17,6 +18,9 @@ async function init() {
     try {
         const info = await api.getModelInfo();
         activeEngine = info.engine;
+        const usesVoxCPM2 = activeEngine.startsWith('voxcpm2');
+        document.getElementById('cloneTextGroup')?.classList.toggle('hidden', usesVoxCPM2);
+        document.getElementById('cloneTextNotice')?.classList.toggle('hidden', !usesVoxCPM2);
         cloneLimits = info.clone || null;
         const hint = document.getElementById('cloneHint');
         if (!cloneLimits) hint?.classList.add('hidden');
@@ -49,10 +53,19 @@ async function init() {
         stepDefault = activeEngine.startsWith('voxcpm2') ? 10 : 15;
         const step = document.getElementById('stepInput');
         if (step) step.value = String(stepDefault);
-        // Temperature: VoxCPM2 only (0.5-0.9, 0.9 to start); VoxCPM2 has no speed setting.
+        // Temperature: VoxCPM2 only (0.5-0.9, 0.9 default); VoxCPM2 has no speed setting.
         const isVox = activeEngine.startsWith('voxcpm2');
         document.getElementById('tempContainer')?.classList.toggle('hidden', !isVox);
         document.getElementById('speedContainer')?.classList.toggle('hidden', isVox);
+        document.getElementById('leadingTrimContainer')?.classList.toggle('hidden', !isVox);
+        if (isVox) {
+            try {
+                const settings = await api.getAudioSettings();
+                const input = document.getElementById('leadingTrimInput');
+                input.value = String(settings.leading_trim_ms);
+                document.getElementById('leadingTrimVal').innerText = String(settings.leading_trim_ms);
+            } catch (e) { console.warn('Başlangıç kırpma ayarı okunamadı:', e); }
+        }
 
         if (activeEngine.startsWith('voxcpm2')) {
             document.getElementById('langContainer')?.classList.add('hidden');
@@ -140,7 +153,7 @@ async function loadDesignOptions() {
     }
 }
 
-// VoxCPM2's warm-up voice (what every sentence continues): the audio element loads it from /v1/prime.
+// The clone tab previews the exact stored reference; the design tab previews the default warm-up.
 function showPrime(boxId, audioId, voice) {
     const box = document.getElementById(boxId), audio = document.getElementById(audioId);
     if (!box || !audio) return;
@@ -180,6 +193,7 @@ function setupEventListeners() {
     safeSetClick('generateStreamBtn', () => startGeneration(true));
     safeSetClick('cloneBtn', handleClone);
     safeSetClick('delVoiceBtn', handleDeleteVoice);
+    safeSetClick('savePrimeBtn', saveDefaultPrime);
     const cloneFile = document.getElementById('cloneFile');
     if (cloneFile) cloneFile.onchange = showCloneDuration;
     
@@ -202,6 +216,23 @@ function setupEventListeners() {
             };
         }
     });
+
+    const trimInput = document.getElementById('leadingTrimInput');
+    if (trimInput) {
+        trimInput.oninput = () => {
+            const value = Number(trimInput.value);
+            document.getElementById('leadingTrimVal').innerText = String(value);
+            const status = document.getElementById('leadingTrimStatus');
+            status.innerText = 'Uygulanıyor…';
+            clearTimeout(trimSaveTimer);
+            trimSaveTimer = setTimeout(async () => {
+                try {
+                    await api.setAudioSettings({ leading_trim_ms: value });
+                    status.innerText = `Uygulandı: ${value} ms`;
+                } catch (e) { status.innerText = e.message; }
+            }, 180);
+        };
+    }
 
     // Every engine keeps its own settings: what was set for one is not carried over to the other (per browser).
     // v2: the defaults changed (VoxCPM2 creativity 1, steps 10); values kept from before are not carried over.
@@ -229,6 +260,43 @@ function setupEventListeners() {
             document.getElementById('streamManualControls')?.classList.toggle('hidden', e.target.checked);
         };
     }
+}
+
+async function saveDefaultPrime() {
+    const button = document.getElementById('savePrimeBtn');
+    const status = document.getElementById('primeSaveStatus');
+    button.disabled = true;
+    status.innerText = 'Ses hazırlanıyor…';
+    try {
+        const seedInput = document.getElementById('seedInput');
+        let seed = parseInt(seedInput.value, 10);
+        // Resolve "random" once, so full speech generation can use the identical seed afterwards.
+        if (!Number.isFinite(seed) || seed === -1) {
+            seed = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
+            seedInput.value = String(seed);
+            seedInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        const response = await api.savePrime({
+            design: document.getElementById('voxDescInput')?.value || '',
+            seed,
+            creativity: parseFloat(document.getElementById('cfgInput').value),
+            steps: parseInt(document.getElementById('stepInput').value, 10),
+            temperature: parseFloat(document.getElementById('tempInput').value)
+        });
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || 'Hazırlık sesi kaydedilemedi.');
+        }
+        const audio = document.getElementById('primeAudioDefault');
+        const oldUrl = audio.dataset.objectUrl;
+        if (oldUrl) URL.revokeObjectURL(oldUrl);
+        const url = URL.createObjectURL(await response.blob());
+        audio.dataset.objectUrl = url;
+        audio.src = url;
+        audio.load();
+        status.innerText = `Kaydedildi; aynı seed ile tam üretimde de kullanılabilir (${seed}).`;
+    } catch (e) { status.innerText = e.message; }
+    finally { button.disabled = false; }
 }
 
 function switchMode(mode, btn) {
@@ -303,7 +371,12 @@ async function startGeneration(isStream) {
 
         if (treatAsStream) {
             document.getElementById('audioPlayer').style.display = "none";
-            document.getElementById('downloadLink').style.display = "none";
+            const downloadLink = document.getElementById('downloadLink');
+            downloadLink.style.display = "none";
+            if (downloadLink.dataset.objectUrl) {
+                URL.revokeObjectURL(downloadLink.dataset.objectUrl);
+                delete downloadLink.dataset.objectUrl;
+            }
 
             const isAuto = document.getElementById('streamAutoMode').checked;
             let PROBE, MULT, MIN, MAX;
@@ -322,7 +395,12 @@ async function startGeneration(isStream) {
                 MAX = parseFloat(document.getElementById('streamMaxBuffer').value) || 6.0;
             }
 
-            await audioPlayer.playStream(res, text, startTime, PROBE, MULT, MIN, MAX, 0.15);
+            const streamBlob = await audioPlayer.playStream(res, text, startTime, PROBE, MULT, MIN, MAX, 0.15);
+            const streamUrl = URL.createObjectURL(streamBlob);
+            downloadLink.href = streamUrl;
+            downloadLink.download = 'speech-stream.wav';
+            downloadLink.dataset.objectUrl = streamUrl;
+            downloadLink.style.display = "block";
         } else {
             document.getElementById('audioPlayer').style.display = "block";
             document.getElementById('downloadLink').style.display = "block";
@@ -372,7 +450,7 @@ async function handleClone() {
     const btn = document.getElementById('cloneBtn');
     const loader = document.getElementById('cloneLoader');
     const name = document.getElementById('cloneName').value.trim();
-    const text = document.getElementById('cloneText').value;
+    const text = activeEngine.startsWith('voxcpm2') ? '' : document.getElementById('cloneText').value;
     const file = document.getElementById('cloneFile').files[0];
 
     if (!name || !file) return alert("İsim ve dosya gerekli.");

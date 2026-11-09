@@ -1,5 +1,35 @@
 let audioCtx = null;
 
+function pcm16WavBlob(chunks, sampleRate, byteLength) {
+    let dataLength = byteLength - (byteLength % 2);
+    const pcmParts = chunks.slice();
+    if (dataLength !== byteLength && pcmParts.length) {
+        const last = pcmParts[pcmParts.length - 1];
+        pcmParts[pcmParts.length - 1] = last.subarray(0, Math.max(0, last.length - 1));
+        if (!pcmParts[pcmParts.length - 1].length) pcmParts.pop();
+    }
+
+    const header = new ArrayBuffer(44);
+    const view = new DataView(header);
+    const writeText = (offset, text) => {
+        for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+    };
+    writeText(0, 'RIFF');
+    view.setUint32(4, 36 + dataLength, true);
+    writeText(8, 'WAVE');
+    writeText(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeText(36, 'data');
+    view.setUint32(40, dataLength, true);
+    return new Blob([header, ...pcmParts], { type: 'audio/wav' });
+}
+
 export async function playStream(res, text, startTime, PROBE_REAL_MS, BUFFER_MULTIPLIER, MIN_PREBUFFER, MAX_PREBUFFER, UNDERRUN_THRESHOLD) {
     if (audioCtx) {
         audioCtx.close();
@@ -34,9 +64,14 @@ export async function playStream(res, text, startTime, PROBE_REAL_MS, BUFFER_MUL
     let adaptivePrebuffer = 1.0;
     let measuredRate = null;
     let leftoverByte = null;
+    const recordedChunks = [];
+    let recordedBytes = 0;
 
     function enqueueChunk(value) {
         if (!value || value.byteLength === 0) return;
+        const saved = value.slice();
+        recordedChunks.push(saved);
+        recordedBytes += saved.byteLength;
         let data;
         if (leftoverByte !== null) {
             const combined = new Uint8Array(1 + value.byteLength);
@@ -175,6 +210,7 @@ export async function playStream(res, text, startTime, PROBE_REAL_MS, BUFFER_MUL
     document.getElementById('totalTimeMetric').innerText = `Toplam Üretim: ${totalTime}s`;
     bufferStatusEl.className = 'playing';
     bufferStatusEl.innerText = '▶ Oynatılıyor (tüm ses yüklendi)';
+    return pcm16WavBlob(recordedChunks, sampleRate, recordedBytes);
 }
 
 export function stopAudio() {
