@@ -228,14 +228,13 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
         # VoxCPM2's own extra (the other engines do not take it).
-        extra = {"temperature": speech_request.temperature} if engine_name_env == "voxcpm2-gguf" else {}
         guidance = speech_request.guidance_scale
         if guidance is None and speech_request.creativity is not None:
             # The Router's 0-2 "temperature" is the creativity: OmniVoice takes it as its guidance, VoxCPM2 lines it up
             # with its own 2-4 (0 -> 2, 1 -> 3, 2 -> 4).
             level = min(2.0, max(0.0, float(speech_request.creativity)))
             guidance = level + 2.0 if engine_name_env == "voxcpm2-gguf" else level
-        # Steps not given: the engine's own default (VoxCPM2 10, in engines.py); OmniVoice keeps the 15 it always got.
+        # Voice-design requests keep the engine default (VoxCPM2 10); the no-design reference path is set to 15 below.
         steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
             guidance = 2.0  # OmniVoice's own default; VoxCPM2 picks its own (engines.py)
@@ -248,6 +247,24 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             else:
                 instruct_val = ""
 
+        # The reference/default voice path should sound consistent across requests. For VoxCPM2,
+        # -1 deliberately means a fresh random seed, so replace only the implicit defaults here;
+        # explicit advanced settings and voice-design prompts still take precedence.
+        seed_val = speech_request.seed
+        temperature_val = speech_request.temperature
+        no_voice_design = not (instruct_val and instruct_val.strip())
+        if engine_name_env == "voxcpm2-gguf" and no_voice_design:
+            if seed_val is None or seed_val == -1:
+                seed_val = 42
+            if steps_val is None:
+                steps_val = 15
+            if temperature_val is None:
+                temperature_val = 0.85
+            if speech_request.guidance_scale is None and speech_request.creativity is None:
+                guidance = 3.0  # Router creativity 1.0 mapped to VoxCPM2 guidance.
+
+        extra = {"temperature": temperature_val} if engine_name_env == "voxcpm2-gguf" else {}
+
         if should_stream:
             await async_inference_lock.acquire()
             try:
@@ -258,7 +275,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 stream_gen = tts.generate_stream(
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
+                    steps=steps_val, seed=seed_val, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
                 sr = await run_in_threadpool(next, stream_gen)
@@ -293,7 +310,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
+                    steps=steps_val, seed=seed_val, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
             

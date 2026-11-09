@@ -1526,6 +1526,12 @@ def stop(part_id):
         raise PartError('Bu bileşende bir iş sürüyor; önce iptal et.')
     if not read_config().get(part_id, {}).get('enabled'):
         raise PartError('Bileşen kurulu değil.')
+    # An earlier failed start can leave its transition error visible after the user stops the part.
+    # Dismissing that start error is part of an explicit stop; a failure in this stop gets its own
+    # transition record below and remains visible.
+    old_transition = transition(part_id)
+    if old_transition and old_transition.get('error'):
+        (run_dir(part_id) / 'transition.json').unlink(missing_ok=True)
     write_part_config(part_id, paused=True)
     _move(part_id, 'stopped')
 
