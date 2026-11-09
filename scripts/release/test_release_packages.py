@@ -473,3 +473,49 @@ def test_quick_registered_check_skips_rehash_but_full_check_and_changes_still_ha
     entrypoint.write_bytes(original)
     assert verify_registered_package(tree)['component'] == 'hub'  # no cache: hashes, then re-caches
     assert (state / release_packages.VERIFIED_CACHE).is_file()
+
+
+def test_legacy_tts_caches_move_to_user_model_data_before_package_verification(repo, monkeypatch):
+    from services.shared.installation_registry import Registry, new_registry, component_record
+    tmp, _, name, _, _, _, _, client = repo
+    checker = client()
+    _, targets = checker.check([name])
+    tree = checker.prepare(targets[name], tmp / 'Hub/releases/voice-migration')
+    data, state_dir = tmp / 'Hub/data', tmp / 'Hub/state'
+    data.mkdir()
+    state_dir.mkdir()
+    provenance = record_prepared_package(tree, state_dir, targets[name])
+    registry = Registry(tmp / 'install.json')
+    registry.write(new_registry(tmp, [component_record('hub', tree, distribution='packaged',
+        data_path=data, state_path=state_dir, ownership='owned', management='local', package=provenance)]))
+    monkeypatch.setenv('ORION_INSTALLATION_REGISTRY', str(registry.path))
+    package_voices = tree / 'services' / 'tts' / 'voices'
+    package_voices.mkdir(parents=True, exist_ok=True)
+    clone = package_voices / 'MyVoice_voxcpm2-gguf.pt'
+    prime = package_voices / '_prime_voxcpm2-gguf_custom.wav'
+    clone.write_bytes(b'legacy clone cache')
+    prime.write_bytes(b'legacy generated warm-up')
+    model_voices = tmp / 'Moved Models' / 'parts' / 'tts' / 'voices'
+    run_voices = tmp / 'Parts' / 'run' / 'tts' / 'voices'
+    run_voices.mkdir(parents=True)
+    run_clone = run_voices / 'RunVoice_voxcpm2-gguf.pt'
+    run_clone.write_bytes(b'legacy runtime clone cache')
+
+    from services.shared import release_packages
+    registered = registry.read()['components'][0]
+    assert release_packages.verify_package_record(registered, allow_legacy_tts_caches=True)['component'] == 'hub'
+    assert clone.is_file() and prime.is_file()  # Preflight tolerates these only; it does not move live data.
+    release_packages.copy_legacy_tts_voice_caches(
+        registered, model_voices, legacy_voice_dir=run_voices)
+    assert clone.is_file() and prime.is_file()  # The old tree stays usable for rollback.
+    assert (model_voices / clone.name).read_bytes() == b'legacy clone cache'
+    assert run_clone.is_file()  # The old runtime path stays usable for rollback too.
+    assert (model_voices / run_clone.name).read_bytes() == b'legacy runtime clone cache'
+
+    assert verify_registered_package(tree, voice_cache_dir=model_voices,
+                                    legacy_voice_dir=run_voices)['component'] == 'hub'
+    assert not clone.exists() and not prime.exists()
+    assert not run_clone.exists()
+    assert (model_voices / clone.name).read_bytes() == b'legacy clone cache'
+    assert (model_voices / prime.name).read_bytes() == b'legacy generated warm-up'
+    assert (model_voices / run_clone.name).read_bytes() == b'legacy runtime clone cache'

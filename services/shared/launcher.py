@@ -18,7 +18,17 @@ from .installation_registry import Registry, RegistryError, operation_lock, _ato
 from .installation_paths import canonical_path
 
 
-def managed_components(record):
+def _tts_voice_cache_dir(record, registry_path):
+    from .release_packages import tts_voice_cache_dir
+    return tts_voice_cache_dir(record, registry_path)
+
+
+def _legacy_tts_voice_cache_dir(registry_path):
+    from .release_packages import legacy_tts_voice_cache_dir
+    return legacy_tts_voice_cache_dir(registry_path)
+
+
+def managed_components(record, registry_path=None):
     result = []
     hubs = [c for c in record['components'] if c['kind'] == 'hub']
     routers = [c for c in record['components'] if c['kind'] == 'router']
@@ -34,7 +44,10 @@ def managed_components(record):
         root = canonical_path(item['code_path'], must_exist=True)
         if item['distribution'] == 'packaged':
             from .release_packages import verify_registered_package
-            release = verify_registered_package(root)
+            cache_dir = _tts_voice_cache_dir(record, registry_path or Registry().path) if item['kind'] == 'hub' else None
+            legacy_cache_dir = _legacy_tts_voice_cache_dir(registry_path or Registry().path) if item['kind'] == 'hub' else None
+            release = verify_registered_package(root, voice_cache_dir=cache_dir,
+                                                legacy_voice_dir=legacy_cache_dir)
             if release['component'] != item['kind']:
                 raise RegistryError('Package component mismatch')
             for field in ('data_path', 'state_path'):
@@ -657,7 +670,7 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         from .update_gate import blocked
         if not stop and blocked(registry.path):
             raise RegistryError('Update recovery in progress; resume the local update helper')
-        components = managed_components(record)  # Preflight all paths before any start.
+        components = managed_components(record, registry.path)  # Preflight all paths before any start.
         if not stop and os.name == 'nt':
             try:
                 refresh_links(registry)

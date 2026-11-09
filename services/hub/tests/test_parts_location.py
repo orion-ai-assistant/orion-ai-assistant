@@ -185,7 +185,8 @@ def test_the_location_is_facts_only(parts, monkeypatch):
     """The page words the progress and works out whether the models fit: the Hub says neither."""
     monkeypatch.setattr(P, '_spawn', lambda argv, module=None: SimpleNamespace(pid=os.getpid()))  # Still running.
     location = P.status()['location']
-    assert set(location) == {'path', 'bytes', 'movable', 'move', 'old'}
+    assert set(location) == {'path', 'bytes', 'movable', 'default_path', 'move', 'old'}
+    assert location['default_path'] == str(parts.home / 'models')
     L.start_move(str(parts.home.parent / 'yeni'))
     move = L.facts()['move']
     assert move['phase'] == 'queued' and move['total'] == location['bytes'] and move['done'] == 0

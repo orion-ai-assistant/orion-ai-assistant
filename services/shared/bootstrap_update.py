@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import time
 from urllib.parse import quote
@@ -39,7 +40,7 @@ from .update_gate import TERMINAL, blocked
 from .update_helper import UpdateError
 
 MARKER = '.orion-self-updated'
-MANAGED_NAME = re.compile(r'Bootstrap-Installer-s\d+-[0-9a-f]{8}')  # The folders this mechanism creates.
+MANAGED_NAME = re.compile(r'Bootstrap-Installer-s(?P<sequence>\d+)-[0-9a-f]{8}')  # Folders created by this mechanism.
 STARTUP_WAIT = 60
 REQUIRED_FILES = (
     'bootstrap.json', 'orion-release.json', 'trusted-root.json', 'runtime/python/python.exe',
@@ -394,22 +395,41 @@ def prune(registry, own_root):
     Never one a process still runs from: the new bootstrap's first check confirmed it and deleted the previous
     bundle while the previous watcher was still running from it, so that watcher's handover could not import
     what it needed and no new watcher started (real PC, 2026-10-20). The locked interpreter also kept the folder
-    half deleted, without its marker, for ever. Such a folder is retried later (each watcher round)."""
+    half deleted, without its marker, for ever. Such a folder is retried later (each watcher round). Once the
+    active bootstrap is confirmed, also sweep older generated siblings left behind before discard tracking."""
     record = _read(state_path(registry), {})
     keep, active = [], pointer_root(registry)
-    for name in record.get('discard', []):
+    candidates = list(record.get('discard', []))
+    active_sequence = bundle_sequence(active) if active and active.is_dir() else 0
+    if (active_sequence > 0 and record.get('state') == 'confirmed'
+            and Path(record.get('new_root', '')) == active):
+        try:
+            for path in Path(own_root).parent.iterdir():
+                match = MANAGED_NAME.fullmatch(path.name)
+                if match and int(match.group('sequence')) < active_sequence:
+                    candidates.append(str(path))
+        except OSError:
+            pass
+
+    for name in dict.fromkeys(candidates):
         path = Path(name)
         if not path.is_dir() or path == active or path == Path(own_root):
             continue
         ours = (path / MARKER).is_file() or MANAGED_NAME.fullmatch(path.name)  # A half-deleted one has no marker.
         if not ours or path.parent != Path(own_root).parent:
             continue
+        try:
+            info = path.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            continue
         if _in_use(path):
-            keep.append(name)
+            keep.append(str(path))
             continue
         shutil.rmtree(path, ignore_errors=True)
         if path.exists():
-            keep.append(name)
+            keep.append(str(path))
     if keep != record.get('discard', []):
         _write(state_path(registry), {**record, 'discard': keep})
 

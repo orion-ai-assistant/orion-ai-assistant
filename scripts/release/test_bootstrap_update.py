@@ -245,6 +245,27 @@ def test_managed_previous_bootstrap_is_pruned_only_after_a_successful_check(feed
     assert state(feed)['state'] == 'confirmed' and state(feed)['discard'] == []
 
 
+def test_confirmed_bootstrap_sweeps_orphaned_older_managed_siblings(feed, monkeypatch):
+    active = feed.current(47, 'Bootstrap-Installer-s47-3a551e25', managed=True)
+    old = make_root(feed.base / 'Bootstrap-Installer-s19-e9b91972', 19, feed.root_bytes, managed=True)
+    original = make_root(feed.base / 'Bootstrap-Installer', None, feed.root_bytes)
+    unrelated = feed.base / 'Bootstrap-Installer-not-managed'
+    unrelated.mkdir()
+    bootstrap_update._write(bootstrap_update.state_path(feed.registry), {
+        'schema': 1, 'state': 'confirmed', 'sequence': 47, 'new_root': str(active), 'discard': []})
+
+    running = {old}
+    monkeypatch.setattr(bootstrap_update, '_in_use', lambda path: Path(path) in running)
+    bootstrap_update.prune(feed.registry, active)
+    assert old.is_dir() and state(feed)['discard'] == [str(old)]
+    assert active.is_dir() and original.is_dir() and unrelated.is_dir()
+
+    running.clear()
+    bootstrap_update.prune(feed.registry, active)
+    assert not old.exists() and state(feed)['discard'] == []
+    assert active.is_dir() and original.is_dir() and unrelated.is_dir()
+
+
 def test_a_previous_bootstrap_still_running_is_kept_until_it_ends(feed, monkeypatch):
     # Real PC, 2026-10-20: the new bootstrap's first check deleted the previous bundle while the previous watcher
     # still ran from it; its handover then failed to import and no watcher started. The locked interpreter also

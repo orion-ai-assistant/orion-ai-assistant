@@ -582,7 +582,132 @@ def _cache_matches(state, inventory_sha256, signature):
         return False
 
 
-def verify_registered_package(root):
+_TTS_CLONE_CACHE = re.compile(
+    r'\w[\w .-]{0,63}_(?:omnivoice(?:-gguf)?|voxcpm2(?:-gguf)?)\.pt\Z', re.IGNORECASE)
+_TTS_PRIME_CACHE = re.compile(r'_prime_voxcpm2-gguf_(?:[0-9a-f]{8}|custom)\.wav\Z', re.IGNORECASE)
+
+
+def _migrate_tts_voice_caches(item, voice_cache_dir, *, legacy_voice_dir=None, remove_source=True):
+    """Copy/move legacy generated voices out of a signed Hub release before its inventory check.
+
+    Older TTS code wrote clone tensors and generated warm-up WAVs beside immutable package code.
+    Only files with the exact cache naming patterns are migrated; unknown extras still fail closed.
+    """
+    if item.get('kind') != 'hub' or voice_cache_dir is None:
+        return
+    from .installation_paths import canonical_path
+    root = canonical_path(item['code_path'], must_exist=True)
+    inventory = canonical_path(Path(item['state_path']) / 'installed-package.json', must_exist=True)
+    if sha256(inventory) != item['package']['inventory_sha256']:
+        raise PackageError('Installed package inventory changed')
+    try:
+        value = json.loads(inventory.read_text(encoding='utf-8'))
+        manifest = validate_release(value['manifest'])
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise PackageError('Installed package inventory changed') from error
+    if (value.get('schema') != 1 or manifest['component'] != 'hub'
+            or manifest['package_id'] != item['package']['id']
+            or not isinstance(value.get('files'), dict)):
+        raise PackageError('Installed package provenance mismatch')
+
+    expected = value['files']
+    candidates = []
+    package_voices = root / 'services' / 'tts' / 'voices'
+    if package_voices.is_dir():
+        info = package_voices.stat(follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise PackageError('Link appeared inside installed package')
+        with os.scandir(package_voices) as entries:
+            for entry in entries:
+                relative = f"services/tts/voices/{entry.name}"
+                if relative in expected or not entry.is_file(follow_symlinks=False):
+                    continue
+                if _TTS_CLONE_CACHE.fullmatch(entry.name) or _TTS_PRIME_CACHE.fullmatch(entry.name):
+                    if entry.is_symlink() or getattr(entry.stat(follow_symlinks=False), 'st_file_attributes', 0) & 0x400:
+                        raise PackageError('Link appeared inside installed package')
+                    candidates.append(Path(entry.path))
+    # One older TTS warm-up path was relative to the `Parts/run/tts` working directory.
+    # It is user cache data too, and is outside the signed package inventory.
+    if legacy_voice_dir is not None:
+        legacy_voices = Path(legacy_voice_dir)
+        if legacy_voices.is_dir():
+            info = legacy_voices.stat(follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise PackageError('Legacy TTS voice data folder cannot be a link')
+            with os.scandir(legacy_voices) as entries:
+                for entry in entries:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if _TTS_CLONE_CACHE.fullmatch(entry.name) or _TTS_PRIME_CACHE.fullmatch(entry.name):
+                        if entry.is_symlink() or getattr(entry.stat(follow_symlinks=False), 'st_file_attributes', 0) & 0x400:
+                            raise PackageError('Legacy TTS voice data file cannot be a link')
+                        candidates.append(Path(entry.path))
+    if not candidates:
+        return
+    from .local_parts import _settled
+    if any(not _settled(source) for source in candidates):
+        raise PackageError('TTS voice cache is still being written')
+
+    destination = Path(voice_cache_dir)
+    resolved_destination = destination.resolve()
+    if resolved_destination == root or root in resolved_destination.parents:
+        raise PackageError('TTS voice data must be outside the immutable package')
+    destination.mkdir(parents=True, exist_ok=True)
+    info = destination.stat(follow_symlinks=False)
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+        raise PackageError('TTS voice data folder cannot be a link')
+
+    for source in candidates:
+        target = destination / source.name
+        if source.resolve() == target.resolve():
+            continue
+        if target.exists() or target.is_symlink():
+            target_info = target.stat(follow_symlinks=False)
+            if stat.S_ISLNK(target_info.st_mode) or getattr(target_info, 'st_file_attributes', 0) & 0x400:
+                raise PackageError('TTS voice data file cannot be a link')
+            if not target.is_file() or sha256(source) != sha256(target):
+                raise PackageError('TTS voice cache conflicts with existing model data')
+            if remove_source:
+                source.unlink()
+            continue
+
+        fd, temporary_name = tempfile.mkstemp(prefix='.orion-voice-migration-', suffix='.tmp', dir=destination)
+        os.close(fd)
+        temporary = Path(temporary_name)
+        try:
+            shutil.copy2(source, temporary)
+            if sha256(source) != sha256(temporary):
+                raise PackageError('TTS voice cache copy verification failed')
+            os.replace(temporary, target)
+            if remove_source:
+                source.unlink()
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def tts_voice_cache_dir(record, registry_path):
+    """Use the same selected/default model root as local_parts for user-owned TTS voice data."""
+    models_root = (record.get('locations') or {}).get('models')
+    if models_root:
+        parts_root = Path(models_root) / 'parts'
+    else:
+        # Legacy installs without locations.models already use Parts/models as the parts root.
+        parts_root = Path(registry_path).parent / 'Parts' / 'models'
+    return parts_root / 'tts' / 'voices'
+
+
+def copy_legacy_tts_voice_caches(item, voice_cache_dir, *, legacy_voice_dir=None):
+    """Preserve old generated caches before switching code, leaving them available for rollback."""
+    return _migrate_tts_voice_caches(item, voice_cache_dir, legacy_voice_dir=legacy_voice_dir,
+                                      remove_source=False)
+
+
+def legacy_tts_voice_cache_dir(registry_path):
+    """The pre-model-store TTS cache written under Parts/run/tts/voices."""
+    return Path(registry_path).parent / 'Parts' / 'run' / 'tts' / 'voices'
+
+
+def verify_registered_package(root, *, voice_cache_dir=None, legacy_voice_dir=None):
     from .installation_registry import Registry
     from .installation_paths import canonical_path
     root = canonical_path(root, must_exist=True)
@@ -592,17 +717,20 @@ def verify_registered_package(root):
     if len(selected) != 1:
         raise PackageError('Signed package must be installed through the trusted package installer')
     item = selected[0]
+    _migrate_tts_voice_caches(item, voice_cache_dir, legacy_voice_dir=legacy_voice_dir)
     # Launch, preference and identity checks use the quick path; an update trusts it only
     # right after staging (see UpdateHelper.resume), recovery always hashes everything.
     return verify_package_record(item, quick=True)
 
 
-def verify_package_record(item, *, inventory=None, quick=False):
+def verify_package_record(item, *, inventory=None, quick=False, allow_legacy_tts_caches=False):
     """Verify an explicit registry snapshot, including a pending/previous release.
 
     `quick` trusts unchanged size+mtime recorded in the release's own state folder by
     the last full hash of exactly this inventory (the installer, the launcher or the
-    staging of an update); any mismatch falls back to hashing every file."""
+    staging of an update); any mismatch falls back to hashing every signed file. The
+    update helper may explicitly admit only well-formed legacy TTS cache files so it
+    can copy them to user data after services stop and before replacing the Hub."""
     from .installation_paths import canonical_path
     root = canonical_path(item['code_path'], must_exist=True)
     state = Path(item['state_path'])
@@ -614,8 +742,13 @@ def verify_package_record(item, *, inventory=None, quick=False):
     if value['schema'] != 1 or manifest['component'] != item['kind'] or manifest['package_id'] != item['package']['id']:
         raise PackageError('Installed package provenance mismatch')
     signature = _scan(root)
-    if set(signature) != set(value['files']):
-        raise PackageError('Installed package file set changed')
+    expected = set(value['files'])
+    present = set(signature)
+    if present != expected:
+        extras = present - expected
+        if (not allow_legacy_tts_caches or item['kind'] != 'hub' or expected - present
+                or not _legacy_tts_cache_extras(root, extras)):
+            raise PackageError('Installed package file set changed')
     if quick and _cache_matches(state, item['package']['inventory_sha256'], signature):
         return manifest
     paths = []
@@ -628,3 +761,17 @@ def verify_package_record(item, *, inventory=None, quick=False):
         raise PackageError('Installed package file hash mismatch')
     _write_verified_cache(state, item['package']['inventory_sha256'], signature)
     return manifest
+
+
+def _legacy_tts_cache_extras(root, extras):
+    """True only for settled generated files that the legacy TTS code wrote into the package."""
+    from .local_parts import _settled
+    for name in extras:
+        parts = PurePosixPath(name).parts
+        if (len(parts) != 4 or parts[:3] != ('services', 'tts', 'voices')
+                or not (_TTS_CLONE_CACHE.fullmatch(parts[3]) or _TTS_PRIME_CACHE.fullmatch(parts[3]))):
+            return False
+        path = root.joinpath(*parts)
+        if not path.is_file() or not _settled(path):
+            return False
+    return True

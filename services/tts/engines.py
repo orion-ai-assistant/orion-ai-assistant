@@ -756,7 +756,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
                                 steps=DEFAULT_STEPS if steps is None else steps,
                                 temperature=DEFAULT_TEMPERATURE if temperature is None else temperature,
                                 leading_trim_ms=leading_trim_ms)
-        path = Path.cwd() / "voices" / "_prime_voxcpm2-gguf_custom.wav"
+        path = voice_data_dir() / "_prime_voxcpm2-gguf_custom.wav"
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_bytes(data)
@@ -767,7 +767,8 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def _plain_prime_wav(self) -> bytes:
         """The default voice's warm-up, kept in voices/ and made when it is not there (or the design changed)."""
-        custom_path = Path.cwd() / "voices" / "_prime_voxcpm2-gguf_custom.wav"
+        cache_dir = voice_data_dir()
+        custom_path = cache_dir / "_prime_voxcpm2-gguf_custom.wav"
         if custom_path.is_file():
             self._plain_prime = custom_path.read_bytes()
             return self._plain_prime
@@ -778,12 +779,12 @@ class VoxCPM2GGUFEngine(TTSEngine):
                 return self._plain_prime
             import hashlib
             tag = hashlib.sha1(f"{DEFAULT_VOICE_DESIGN}|{PRIME_TEXT}|{PRIME_SEED}".encode()).hexdigest()[:8]
-            path = Path(os.path.dirname(__file__)) / "voices" / f"_prime_voxcpm2-gguf_{tag}.wav"
+            path = cache_dir / f"_prime_voxcpm2-gguf_{tag}.wav"
             if path.exists():
                 self._plain_prime = path.read_bytes()
             else:
                 data = self._make_prime()
-                path.parent.mkdir(exist_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
                 logger.info(f"VoxCPM2 warm-up made: {path}")
                 self._plain_prime = data
@@ -1145,19 +1146,27 @@ def valid_voice_name(name) -> bool:
     return bool(re.fullmatch(r"\w[\w .-]{0,63}", name)) and ".." not in name
 
 
+def voice_data_dir() -> Path:
+    """Writable TTS user data, colocated with the selected, relocatable TTS model store."""
+    configured = os.environ.get("ORION_TTS_VOICE_DATA_DIR")
+    if configured:
+        return Path(configured)
+    models_dir = os.environ.get("ORION_NATIVE_MODELS_DIR")
+    return (Path(models_dir) if models_dir else Path.cwd()) / "voices"
+
+
 class VoiceRegistry:
-    def __init__(self, storage_path="voices"):
-        self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(exist_ok=True)
+    def __init__(self, storage_path=None):
+        self.storage_path = Path(storage_path) if storage_path is not None else voice_data_dir()
+        self.storage_path.mkdir(parents=True, exist_ok=True)
         self.service_voices_path = Path(os.path.dirname(__file__)) / "voices"
-        self.service_voices_path.mkdir(exist_ok=True)
 
     def _get_search_dirs(self) -> list[Path]:
         dirs = []
-        if self.service_voices_path.exists():
-            dirs.append(self.service_voices_path)
-        if self.storage_path.exists() and self.storage_path.resolve() != self.service_voices_path.resolve():
+        if self.storage_path.exists():
             dirs.append(self.storage_path)
+        if self.service_voices_path.exists() and self.storage_path.resolve() != self.service_voices_path.resolve():
+            dirs.append(self.service_voices_path)
         return dirs
 
     def _find_voice_file(self, name: str, engine_name: str) -> Path | None:
@@ -1212,18 +1221,21 @@ class VoiceRegistry:
         return self._find_voice_file(name, engine_name) is not None
 
     def delete_voice(self, name: str, engine_name: str) -> bool:
-        path = self._find_voice_file(name, engine_name)
-        if path and path.exists():
-            path.unlink()
-            return True
+        if not valid_voice_name(str(name).strip()):
+            return False
+        target = f"{str(name).strip()}_{engine_name.lower().strip()}.pt".lower()
+        for path in self.storage_path.glob("*.pt"):
+            if path.name.lower() == target:
+                path.unlink()
+                return True
         return False
 
     def save_voice_cache(self, name: str, cache_obj: Any, engine_name: str):
         name = str(name).strip()
         if not valid_voice_name(name):
             raise ValueError("Invalid voice name")
-        target_dir = self.service_voices_path if self.service_voices_path.exists() else self.storage_path
-        path = target_dir / f"{name}_{engine_name}.pt"
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        path = self.storage_path / f"{name}_{engine_name}.pt"
         if TORCH_AVAILABLE:
             torch.save(cache_obj, path)
         else:

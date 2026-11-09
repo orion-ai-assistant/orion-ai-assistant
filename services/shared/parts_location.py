@@ -100,7 +100,16 @@ def facts():
     delete."""
     registry, place, _ = P.location()
     value = job()
+    if registry is None:
+        default_path = P.home() / 'models'
+    else:
+        record = registry.read()
+        root = Path(record['root']) if record else P.home()
+        packaged = bool(record and any(item.get('distribution') == 'packaged'
+                                       for item in record.get('components', [])))
+        default_path = root / ('Models' if packaged else 'models')
     return {'path': str(place), 'bytes': _size(place), 'movable': registry is not None,
+            'default_path': str(default_path),
             'move': {key: item for key, item in value.items() if key != 'old'} if value else None,
             'old': [{'path': old, 'bytes': _size(old)} for old in (value or {}).get('old') or [] if Path(old).is_dir()]}
 

@@ -92,7 +92,7 @@ def _leading_trim_samples(sample_rate: int) -> int:
 # Global State & Engine
 # ——————————————————————————————————————————
 engine = None
-registry = VoiceRegistry("voices")
+registry = VoiceRegistry()
 engine_name_env = get_env("ENGINE_NAME", "omnivoice", required=False).lower().strip()
 model_path_env = (get_env("MODEL_PATH", default="", required=False) or "").lower()
 is_omnivoice = "omnivoice" in engine_name_env or "omnivoice" in model_path_env

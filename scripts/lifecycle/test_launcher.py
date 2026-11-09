@@ -33,6 +33,14 @@ class LauncherTests(unittest.TestCase):
         self.enterContext(patch('services.shared.windows_autostart.clean_startup_approved', return_value=[]))
         self.enterContext(patch('services.shared.uninstall.register_entry', return_value=True))
 
+    def test_tts_voice_cache_uses_selected_or_legacy_parts_root(self):
+        selected = self.root / 'Moved Models'
+        registry_path = self.root / 'Orion' / 'install.json'
+        self.assertEqual(selected / 'parts' / 'tts' / 'voices', launcher._tts_voice_cache_dir(
+            {'locations': {'models': str(selected)}}, registry_path))
+        self.assertEqual(self.root / 'Orion' / 'Parts' / 'models' / 'tts' / 'voices',
+                         launcher._tts_voice_cache_dir({}, registry_path))
+
     def test_disabled_stale_startup_link_does_not_start_anything(self):
         self.assertEqual({'status': 'disabled'}, launcher.launch(self.store, startup=True))
         self.start.assert_not_called()

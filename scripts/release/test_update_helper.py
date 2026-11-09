@@ -108,6 +108,32 @@ def test_success_keeps_identity_data_preferences_old_code_and_backup(installed):
     assert helper.resume() == result
 
 
+def test_legacy_tts_caches_are_copied_after_stop_and_stay_available_for_rollback(installed):
+    helper, client, name, old, _data, _host = installed
+    item = old['components'][0]
+    voices = Path(item['code_path']) / 'services' / 'tts' / 'voices'
+    voices.mkdir(parents=True, exist_ok=True)
+    clone = voices / 'MyVoice_voxcpm2-gguf.pt'
+    prime = voices / '_prime_voxcpm2-gguf_custom.wav'
+    clone.write_bytes(b'legacy clone cache')
+    prime.write_bytes(b'legacy generated warm-up')
+    run_voices = helper.registry.path.parent / 'Parts' / 'run' / 'tts' / 'voices'
+    run_voices.mkdir(parents=True)
+    run_clone = run_voices / 'RunVoice_voxcpm2-gguf.pt'
+    run_clone.write_bytes(b'legacy runtime clone cache')
+
+    assert helper.prepare(client, [name])['phase'] == 'staged'
+    result = helper.resume()
+    assert result['phase'] == 'completed', result['reason']
+    destination = helper.registry.path.parent / 'Parts' / 'models' / 'tts' / 'voices'
+    assert (destination / clone.name).read_bytes() == b'legacy clone cache'
+    assert (destination / prime.name).read_bytes() == b'legacy generated warm-up'
+    assert (destination / run_clone.name).read_bytes() == b'legacy runtime clone cache'
+    # Keep the old package copy until health is confirmed and rollback is no longer needed.
+    assert clone.is_file() and prime.is_file()
+    assert run_clone.is_file()
+
+
 def test_running_install_waits_and_cannot_start_second_update(installed):
     helper, client, name, old, data, host = installed
     helper.prepare(client, [name])

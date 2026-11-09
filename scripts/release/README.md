@@ -552,8 +552,10 @@ carries all three files (`bootstrap_parts`); `bootstrap_gate` checks the combine
   not retried; a higher one is. `runtime_command` also falls back automatically when an unconfirmed new
   bootstrap folder is missing or incomplete.
 * Trial: the previous bootstrap stays until the new one completes one successful check (`confirmed`). Then a
-  previous bootstrap that this mechanism created (marked `.orion-self-updated`) is deleted; the original
-  manually extracted folder is never deleted. Adoption is never stacked on an unconfirmed trial.
+  previous bootstrap that this mechanism created (marked `.orion-self-updated`) is deleted; the confirmed
+  bootstrap also sweeps older numbered sibling folders left behind by earlier cleanup state. The active
+  bootstrap, any newer folder, a folder still in use, and the original manually extracted folder are kept.
+  Adoption is never stacked on an unconfirmed trial.
 * `automatic.json` `error`: if the Hub-triggered `check --now` process exits non-zero, the Hub records
   `BootstrapIncompatible` (exit 2: argparse refused the arguments, i.e. the retained bootstrap predates
   them) or `CheckProcessFailed`. `GET /api/v1/updates` also reports `bootstrap: {sequence, state, error}`.

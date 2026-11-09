@@ -19,7 +19,8 @@ import uuid
 from .installation_registry import Registry, RegistryError, operation_lock, _atomic_write, validate_record
 from .installation_paths import canonical_path, ensure_private_directory, validate_private_directory
 from .release_packages import (PackageError, compatible, record_prepared_package,
-                               verify_package_record, sha256)
+                               verify_package_record, sha256, copy_legacy_tts_voice_caches,
+                               tts_voice_cache_dir, legacy_tts_voice_cache_dir)
 from .update_gate import TERMINAL
 from . import update_log
 
@@ -225,7 +226,8 @@ class UpdateHelper:
                         raise UpdateError('Data/state overlaps code')
                 if item['kind'] in manifests:
                     raise UpdateError('Select one installation per component kind')
-                manifests[item['kind']] = verify_package_record(item)
+                manifests[item['kind']] = verify_package_record(
+                    item, allow_legacy_tts_caches=item['kind'] == 'hub')
             identity = str(uuid.uuid4())
             directory = self.base / identity
             directory.mkdir()
@@ -356,11 +358,14 @@ class UpdateHelper:
             if (item['kind'], suffix) in self._verified:
                 continue
             if quick and not changed and not tx.get('conversion'):
-                verify_package_record(item, quick=True)
+                verify_package_record(item, quick=True,
+                                      allow_legacy_tts_caches=item['kind'] == 'hub')
             elif staged and changed and not tx.get('conversion'):
-                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'), quick=True)
+                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'), quick=True,
+                                      allow_legacy_tts_caches=not candidate and item['kind'] == 'hub')
             else:
-                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'))
+                verify_package_record(item, inventory=directory / (item['kind'] + '-' + suffix + '.json'),
+                                      allow_legacy_tts_caches=not candidate and item['kind'] == 'hub')
             self._verified.add((item['kind'], suffix))
 
     def _settle(self, tx, record):
@@ -370,6 +375,16 @@ class UpdateHelper:
         if settle is not None:
             with self._timed(tx, 'settle.databases'):
                 settle(record)
+
+    def _copy_legacy_tts_voice_caches(self, tx):
+        """Copy old package-local clone data only while services are stopped; preserve rollback's source."""
+        if 'hub' not in tx.get('changes', []):
+            return
+        for item in tx['previous']['components']:
+            if item['kind'] == 'hub':
+                destination = tts_voice_cache_dir(tx['previous'], self.registry.path)
+                copy_legacy_tts_voice_caches(
+                    item, destination, legacy_voice_dir=legacy_tts_voice_cache_dir(self.registry.path))
 
     def _guard_entry(self):
         """This helper's own Orion.ps1: the guard (and the recovery of an apply cut off by power loss) also works
@@ -546,6 +561,7 @@ class UpdateHelper:
                         if busy:  # Another program on Orion's ports: switching now could only fail.
                             return self._phase(tx, 'waiting_for_idle', reason='Ports in use: ' + ','.join(map(str, busy)))
                         self._settle(tx, tx['previous'])
+                        self._copy_legacy_tts_voice_caches(tx)
                         self._guard_entry()
                         self._phase(tx, 'draining', progress=self._shape('draining', 0, 1))
                         self._phase(tx, 'backing_up', progress=self._shape('backing_up', 0, 1, unit='files'))
@@ -566,6 +582,7 @@ class UpdateHelper:
                         if not idle:
                             raise UpdateError('Candidate processes could not be reconciled')
                         self._settle(tx, current)
+                        self._copy_legacy_tts_voice_caches(tx)
                         self._verify_backups(tx)  # Recovery after a restart: full proof of the backup.
                         self._publish(tx, tx['proposed'], True)
                 if tx['attempts'] >= 2:

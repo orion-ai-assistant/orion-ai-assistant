@@ -9,6 +9,7 @@ is installed, and the jobs that download and install them.
       models/<part>/<folder>/<files>      (the installation's models location's parts/ when it has one; the user
                                           can move it: `location`, services/shared/parts_location.py)
       models/<part>/custom/<name>/        the user's own models: a folder each, read from its files
+      models/tts/voices/                   cloned voice caches and generated TTS warm-up audio
       jobs/<part>.json                   the running or last job; jobs/<part>.cancel asks it to stop
       run/<part>/                         process lifecycle state of the running part
 
@@ -1124,6 +1125,8 @@ def _python_command(part, model, settings, data=None):
     env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8', ORION_HW_ID=settings['hardware'],
                ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'], HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1')
+    if part['id'] == 'tts':
+        env['ORION_TTS_VOICE_DATA_DIR'] = str(models_dir('tts') / 'voices')
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
     if gpu and part.get('engine') == 'voxcpm2-gguf' and settings.get('vram_mode') in VOXCPM2_LAYERS:
