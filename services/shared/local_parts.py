@@ -1154,6 +1154,14 @@ def job(part_id):
     return value
 
 
+def _clear_failed_install_job(part_id):
+    """A successful start supersedes an older failed install attempt shown on the part card."""
+    path = home() / 'jobs' / f'{part_id}.json'
+    value = _read_json(path, None)
+    if value and value.get('action') == 'install' and value.get('phase') == 'error':
+        path.unlink(missing_ok=True)
+
+
 def busy(part_id):
     value = job(part_id)
     return bool(value and value.get('phase') not in TERMINAL)
@@ -1664,6 +1672,8 @@ def apply(part_id, *, wish=None, restart=False):
             return 1
         if mine():
             path.unlink(missing_ok=True)
+            if wanted == 'running':
+                _clear_failed_install_job(part_id)
         return 0
     finally:
         lock.__exit__(None, None, None)
