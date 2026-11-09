@@ -230,10 +230,10 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
         # VoxCPM2's own extra (the other engines do not take it).
         guidance = speech_request.guidance_scale
         if guidance is None and speech_request.creativity is not None:
-            # The Router's 0-2 "temperature" is the creativity: OmniVoice takes it as its guidance, VoxCPM2 lines it up
-            # with its own 2-4 (0 -> 2, 1 -> 3, 2 -> 4).
+            # The Router's 0-2 "temperature" is creativity. Map it to the local engines' shared 2-4 guidance scale:
+            # 0 -> 2, 1 -> 3, 2 -> 4. Clamp out-of-range callers before mapping.
             level = min(2.0, max(0.0, float(speech_request.creativity)))
-            guidance = level + 2.0 if engine_name_env == "voxcpm2-gguf" else level
+            guidance = level + 2.0
         # Voice-design requests keep the engine default (VoxCPM2 10); the no-design reference path is set to 15 below.
         steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
