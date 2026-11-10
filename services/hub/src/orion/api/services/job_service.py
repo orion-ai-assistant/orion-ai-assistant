@@ -389,6 +389,42 @@ def _append_processing_state(history: list[dict], state: dict[str, str]) -> None
 
 
 
+async def search_chats(user_id: str, query: str) -> list[dict]:
+    """Messages of the user that hold the query, each with its chat, an excerpt and its date.
+
+    The query counts as one phrase; a message holding all its longer words
+    apart also matches, after the phrase matches. Names are not searched
+    here: every client already has the whole chat list.
+    """
+    from orion.kernel.chat_search import excerpt, query_words
+    from orion.kernel.registry import search_chat_messages_db
+    words = query_words(query)
+    if not words or max(map(len, words)) < 2:
+        return []
+    try:
+        rows = await search_chat_messages_db(user_id, words)
+    except Exception as exc:
+        logger.exception("Chat search failed for user %s", user_id)
+        raise HTTPException(status_code=503, detail="Sohbetlerde şu anda aranamıyor.") from exc
+    return [
+        {"chat_id": row["chat_id"], "name": row["title"], "role": row["role"],
+         "snippet": excerpt(row["plain_text"] or "", words),
+         "created_at": row["created_at"].isoformat() if row.get("created_at") else None}
+        for row in rows
+    ]
+
+
+async def index_chat_search() -> None:
+    """Once per start: make messages saved by older versions searchable, a batch at a time."""
+    import asyncio
+    from orion.kernel.registry import index_unsearchable_messages
+    try:
+        while await index_unsearchable_messages():
+            await asyncio.sleep(0.05)
+    except Exception:
+        logger.exception("Older messages could not be prepared for the chat search")
+
+
 async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_audio: bool = True) -> list[dict]:
     """Return the full message history for a chat.
 

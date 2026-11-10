@@ -17,7 +17,7 @@ from orion.kernel.config import RuntimeSettings, settings as factory_settings, g
 from orion.kernel.router_models import validate_model_updates, ModelNotFoundError
 from orion.kernel.config import serialize_setting
 from orion.contracts.constants import SETTINGS_DEFAULT_USER
-from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, get_turn_audio, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin
+from orion.api.services.job_service import create_job, get_job, stop_job, utc_now, get_key, get_user_chats, get_chat_history, get_turn_audio, rename_chat, delete_chat, get_all_chats_admin, get_chat_history_admin, search_chats
 from orion.api.auth_routes import authenticate_token, get_current_user
 from orion.api.security import valid_admin_key, require_admin
 from services.shared.environment import get_router_base_urls
@@ -193,6 +193,11 @@ async def stop_chat_turn_endpoint(
     current_user: str = Depends(get_current_user),
 ) -> JobStopResponse:
     return await stop_job(request.app.state.redis, current_user, chat_id, turn_id)
+
+# Before "/api/v1/chats/{chat_id}", which would otherwise take "search" for a chat id.
+@router.get("/api/v1/chats/search", response_model=list[dict])
+async def search_chats_endpoint(q: str = Query(max_length=200), current_user: str = Depends(get_current_user)) -> list[dict]:
+    return await search_chats(current_user, q)
 
 @router.get("/api/v1/chats/{chat_id}", response_model=JobStatusResponse)
 async def get_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)) -> JobStatusResponse:

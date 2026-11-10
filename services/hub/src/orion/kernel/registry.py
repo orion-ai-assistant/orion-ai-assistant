@@ -178,6 +178,13 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
         await conn.execute(
             "create index if not exists idx_orion_chat_messages_chat_id_id on orion_chat_messages (chat_id, id asc);"
         )
+        # Chat search (see orion.kernel.chat_search): readable and folded text of each message.
+        await conn.execute("alter table orion_chat_messages add column if not exists plain_text text")
+        await conn.execute("alter table orion_chat_messages add column if not exists search_text text")
+        await conn.execute(
+            "create index if not exists idx_orion_chat_messages_unindexed on orion_chat_messages (id) "
+            "where search_text is null"
+        )
     except (asyncpg.exceptions.UniqueViolationError, asyncpg.exceptions.DuplicateTableError):
         # A failure after serialization indicates an actual schema problem.
         raise
@@ -462,16 +469,97 @@ async def insert_messages(chat_id: str, messages: list[dict]) -> None:
     try:
         await _ensure_tables(conn)
         records = [
-            (chat_id, msg.get("role", "user"), json.dumps(msg))
+            (chat_id, msg.get("role", "user"), json.dumps(msg), *_search_columns(msg))
             for msg in messages
         ]
         await conn.executemany(
             """
-            insert into orion_chat_messages (chat_id, role, content_json)
-            values ($1, $2, $3)
+            insert into orion_chat_messages (chat_id, role, content_json, plain_text, search_text)
+            values ($1, $2, $3, $4, $5)
             """,
             records,
         )
+    finally:
+        await conn.close()
+
+
+def _search_columns(message: dict) -> tuple[str, str]:
+    """(plain_text, search_text) of a message; empty, never NULL, once it has been looked at."""
+    from orion.kernel.chat_search import fold, message_text
+    text = message_text(message) or ''
+    return text, fold(text)
+
+
+async def index_unsearchable_messages(batch: int = 100) -> int:
+    """Fill the search columns of messages saved before the chat search existed.
+
+    Returns how many rows were filled; 0 when none are left (or without a database).
+    """
+    conn = await _connect()
+    if conn is None:
+        return 0
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch(
+            "select id, content_json from orion_chat_messages where search_text is null order by id limit $1",
+            batch,
+        )
+        records = []
+        for row in rows:
+            try:
+                message = json.loads(row["content_json"])
+            except json.JSONDecodeError:
+                message = {}
+            records.append((row["id"], *_search_columns(message if isinstance(message, dict) else {})))
+        if records:
+            await conn.executemany(
+                "update orion_chat_messages set plain_text = $2, search_text = $3 where id = $1", records)
+        return len(records)
+    finally:
+        await conn.close()
+
+
+async def search_chat_messages_db(user_id: str, words: list[str], chats: int = 30, per_chat: int = 3) -> list[dict]:
+    """Messages of the user that hold the words as one phrase, or else every longer word somewhere.
+
+    Chats with the phrase come first, then the most recently used; in a chat,
+    its phrase matches first, then the newest (at most `per_chat`). The
+    assistant chat has its own page and is left out, as in the chat list.
+    """
+    from orion.kernel.chat_search import SEARCHED_ROLES, like_pattern, loose_words, phrase_pattern
+    if not words:
+        return []
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch(
+            """
+            select chat_id, title, role, plain_text, created_at from (
+                select found.*,
+                    dense_rank() over (order by chat_phrase desc, updated_at desc, chat_id) as chat_rank
+                from (
+                    select m.chat_id, c.title, c.updated_at, m.role, m.plain_text, m.created_at,
+                        row_number() over (
+                            partition by m.chat_id order by (m.search_text ~ $3) desc, m.id desc) as position,
+                        bool_or(m.search_text ~ $3) over (partition by m.chat_id) as chat_phrase
+                    from orion_chat_messages m
+                    join orion_chats c on c.id = m.chat_id
+                    where c.user_id = $1 and not c.assistant
+                        and m.role = any($2::text[])
+                        and (m.search_text ~ $3
+                            or (cardinality($4::text[]) > 0 and m.search_text like all($4::text[])))
+                ) found
+                where position <= $6
+            ) ranked
+            where chat_rank <= $5
+            order by chat_rank, position
+            """,
+            user_id, list(SEARCHED_ROLES), phrase_pattern(words),
+            [like_pattern(word) for word in loose_words(words)], chats, per_chat,
+        )
+        return [dict(row) for row in rows]
     finally:
         await conn.close()
 

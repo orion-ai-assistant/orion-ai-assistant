@@ -159,6 +159,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             logging.exception("PC audio levels left by a previous run could not be restored")
         watchdog = asyncio.create_task(admitted(queue_watchdog(app.state.redis)))
+        from orion.api.services.job_service import index_chat_search
+        search_index = asyncio.create_task(admitted(index_chat_search()), name='chat-search-index')
         provisioner = None
         if getattr(app.state, 'public', True) is False:
             from orion.kernel.router_accounts import provisioning_loop
@@ -170,6 +172,9 @@ async def lifespan(app: FastAPI):
                 provisioner.cancel()
                 with suppress(asyncio.CancelledError):
                     await provisioner
+            search_index.cancel()
+            with suppress(asyncio.CancelledError):
+                await search_index
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog
