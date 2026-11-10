@@ -191,7 +191,7 @@ if ($p.remove) {
     $link.Save()
     # A link rewritten after Orion.exe changed can keep a stale icon until Explorer rebuilds its cache.
     # Touch the .lnk so Explorer sees a newer timestamp and drops its cached icon.
-    (Get-Item -LiteralPath $p.path).LastWriteTime = [DateTime]::UtcNow
+    (Get-Item -LiteralPath $p.path).LastWriteTimeUtc = [DateTime]::UtcNow
 }
 """
     try:

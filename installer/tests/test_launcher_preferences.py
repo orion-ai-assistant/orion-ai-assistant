@@ -22,8 +22,8 @@ def test_read_preferences_does_not_enable_startup():
 
 def test_preferences_require_strict_booleans_and_surface_failure():
     with patch('services.shared.launcher.preferences', side_effect=RuntimeError('Shortcut ownership mismatch')) as write:
-        assert client().post('/api/installation/launcher', json={'start_with_windows': 'yes', 'show_client': True}).status_code == 422
+        assert client().post('/api/installation/launcher', json={'start_with_windows': 'yes'}).status_code == 422
         write.assert_not_called()
-        response = client().post('/api/installation/launcher', json={'start_with_windows': True, 'show_client': False})
+        response = client().post('/api/installation/launcher', json={'start_with_windows': True})
         assert response.status_code == 409
         assert response.json()['detail'] == 'Shortcut ownership mismatch'

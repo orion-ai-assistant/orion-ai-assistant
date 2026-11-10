@@ -28,7 +28,6 @@ class ContentRecovery(BaseModel):
 
 class LauncherPreferences(BaseModel):
     start_with_windows: StrictBool
-    show_client: StrictBool
 
 
 @router.get('/api/installation/launcher')
@@ -45,8 +44,7 @@ def launcher_preferences():
 def set_launcher_preferences(request: LauncherPreferences):
     from services.shared.launcher import preferences
     try:
-        record = preferences(config.installation_registry(), start_with_windows=request.start_with_windows,
-                             show_client=request.show_client)
+        record = preferences(config.installation_registry(), start_with_windows=request.start_with_windows)
         return {'preferences': record['preferences']}
     except (OSError, ValueError, RuntimeError) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

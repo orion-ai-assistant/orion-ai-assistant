@@ -37,7 +37,7 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200)
             self.assertFalse(response.json()['can_manage'])
             for body in ({'automatic_updates': True}, {'defer_hours': 24}, {'paused': False},
-                         {'start_with_windows': True}, {'show_client': True}, {'router_automatic_updates': True}):
+                         {'start_with_windows': True}, {'router_automatic_updates': True}):
                 self.assertEqual((await client.put('/api/v1/updates', json=body)).status_code, 403)
         self.change.assert_not_called()
 
@@ -82,7 +82,7 @@ class UpdateRoutesTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(api, 'Registry', return_value=registry), \
              patch('services.shared.launcher.preferences') as preferences:
             CHANGE_PREFERENCES(api.Preferences(start_with_windows=True))
-            preferences.assert_called_once_with(registry, start_with_windows=True, show_client=True)
+            preferences.assert_called_once_with(registry, start_with_windows=True)
             self.assertFalse(registry.read()['preferences']['automatic_updates'])
 
     def test_mixed_independent_preference_groups_are_rejected_before_mutation(self):

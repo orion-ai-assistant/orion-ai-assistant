@@ -3,7 +3,6 @@ window.orionLocales.tr = {
     launcher_title: "Windows başlangıcı ve Orion penceresi",
     launcher_note: "Pencereyi kapatmak servisleri açık bırakır. Servisleri kapatmak için Durdur'u kullanın.",
     launcher_startup: "Windows oturumumu açtığımda Orion'u başlat",
-    launcher_window: "Oturum açılışında Orion penceresini göster",
     launcher_save: "Tercihleri kaydet",
     launcher_saved: "Başlangıç tercihleri kaydedildi.",
     launcher_unavailable: "Bu seçenek için kayıtlı bir Windows kurulumu gerekiyor.",

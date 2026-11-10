@@ -114,11 +114,11 @@ def finish(registry, args, *, added=False):
     register_uninstall_entry(registry)  # Settings > Apps > Orion AI > Uninstall
     if added:
         # Hub joined a Router-only install (or a Router a Hub one): the links change identity, the user's
-        # Startup / window choices stay exactly as they were.
+        # Startup choice stays exactly as it was.
         if record['preferences']['start_with_windows']:
-            preferences(registry, start_with_windows=True, show_client=record['preferences']['show_client'])
+            preferences(registry, start_with_windows=True)
     else:
-        preferences(registry, start_with_windows=not args.no_start_with_windows, show_client=not args.no_window)
+        preferences(registry, start_with_windows=not args.no_start_with_windows)
     updates = 'off'
     if not args.no_auto_update:
         from services.shared.automatic_updates import AutomaticUpdates
@@ -169,7 +169,6 @@ def main(argv=None):
     parser.add_argument('--no-auto-update', action='store_true')
     parser.add_argument('--no-firewall', action='store_true',
                         help='Do not ask for the one-time private-network firewall permission')
-    parser.add_argument('--no-window', action='store_true')
     parser.add_argument('targets', nargs='*')
     args = parser.parse_args(argv)
     registry = Registry(args.registry)

@@ -18,7 +18,7 @@ class InstallationStorageUITests(RawBrowserFixture):
     async def exercise(self):
         requests = []
         launcher_requests = []
-        preferences = {'start_with_windows': False, 'show_client': True}
+        preferences = {'start_with_windows': False}
         index = (ROOT / 'installer/app/ui/index.html').read_text(encoding='utf-8')
         start = index.index('<details id="storage-panel"')
         panel = index[start:index.index('</details>', start) + len('</details>')]
@@ -99,16 +99,15 @@ class InstallationStorageUITests(RawBrowserFixture):
                     await asyncio.sleep(.05)
                 self.assertEqual([], launcher_requests)
                 self.assertFalse(await page.evaluate('document.querySelector("#launcher-startup").checked'))
-                self.assertTrue(await page.evaluate('document.querySelector("#launcher-window").checked'))
+                self.assertFalse(await page.evaluate('Boolean(document.querySelector("#launcher-window"))'))
                 await page.click('#launcher-panel summary')
                 await page.click('#launcher-startup')
-                await page.click('#launcher-window')
                 await page.click('#launcher-save')
                 for _ in range(100):
                     if await page.evaluate('!document.querySelector("#launcher-save").disabled && document.querySelector("#launcher-result").textContent.includes("<locked>")'):
                         break
                     await asyncio.sleep(.05)
-                self.assertEqual([{'start_with_windows': True, 'show_client': False}], launcher_requests)
+                self.assertEqual([{'start_with_windows': True}], launcher_requests)
                 self.assertFalse(await page.evaluate('document.querySelector("#launcher-startup").checked'))
                 self.assertFalse(await page.evaluate('Boolean(document.querySelector("#launcher-result locked"))'))
                 await page.click('#launcher-startup')
@@ -117,7 +116,7 @@ class InstallationStorageUITests(RawBrowserFixture):
                     if await page.evaluate('!document.querySelector("#launcher-save").disabled && document.querySelector("#launcher-result").textContent === window.t("launcher_saved")'):
                         break
                     await asyncio.sleep(.05)
-                self.assertEqual({'start_with_windows': True, 'show_client': True}, preferences)
+                self.assertEqual({'start_with_windows': True}, preferences)
                 capture = await page.send('Page.captureScreenshot', {'format': 'png'})
                 (self.root / 'storage-ui.png').write_bytes(base64.b64decode(capture['data']))
         finally:

@@ -94,7 +94,7 @@ class ProductIdentityTests(unittest.TestCase):
         target, args, description, icon = read_link(self.desktop / 'Orion AI.lnk')
         self.assertEqual((exe.lower(), '', 'Orion AI'), (target.lower(), args, description))
         self.assertTrue(icon.lower().startswith(exe.lower()))
-        launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.startup)
+        launcher.preferences(self.store, start_with_windows=True, startup_directory=self.startup)
         target, args, description, icon = read_link(self.startup / 'Orion AI.lnk')
         self.assertEqual((exe.lower(), '-Startup', 'Orion AI'), (target.lower(), args, description))
         self.assertFalse((self.startup / 'Orion.lnk').exists())
@@ -131,7 +131,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertEqual(str(entry.with_name('Orion.exe')).lower(), read_link(self.startup / 'Orion AI.lnk')[0].lower())
         self.assertFalse((self.desktop / 'Orion.lnk').exists())  # A removed desktop link is not recreated.
         (self.startup / 'Orion.lnk').write_bytes(b'foreign')
-        launcher.preferences(self.store, start_with_windows=False, show_client=True, startup_directory=self.startup)
+        launcher.preferences(self.store, start_with_windows=False, startup_directory=self.startup)
         self.assertEqual(b'foreign', (self.startup / 'Orion.lnk').read_bytes())
         self.assertFalse((self.startup / 'Orion AI.lnk').exists())
 
@@ -158,7 +158,7 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertEqual('Orion Router', read_link(self.desktop / 'Orion Router.lnk')[2])
         self.assertEqual(['Orion Router.lnk'], [p.name for p in self.programs.iterdir()])
         self.assertFalse((self.desktop / 'Orion.lnk').exists())
-        launcher.preferences(self.store, start_with_windows=True, show_client=True, startup_directory=self.startup)
+        launcher.preferences(self.store, start_with_windows=True, startup_directory=self.startup)
         self.assertEqual(['Orion Router.lnk'], [p.name for p in self.startup.iterdir()])
         # Hub is added later: the same links become "Orion AI" (no stale Router link, no duplicate).
         hub = self.root / 'Hub'

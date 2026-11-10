@@ -53,8 +53,8 @@ class LauncherTests(unittest.TestCase):
         self.window.assert_called_once()
         self.assertEqual(2, self.start.call_count)
 
-    def test_startup_window_preference_and_explicit_stop(self):
-        self.store.update(lambda r: {**r, 'preferences': {**r['preferences'], 'start_with_windows': True, 'show_client': False}})
+    def test_startup_opens_no_window_and_explicit_stop(self):
+        self.store.update(lambda r: {**r, 'preferences': {**r['preferences'], 'start_with_windows': True}})
         launcher.launch(self.store, startup=True)
         self.window.assert_not_called()
         launcher.launch(self.store)
@@ -62,12 +62,6 @@ class LauncherTests(unittest.TestCase):
         with patch('services.shared.native_services.stop_hub') as stop:
             launcher.launch(self.store, stop=True)
             stop.assert_called_once_with(str(self.code))
-
-    def test_startup_can_show_window_independently_of_enabled_services(self):
-        self.store.update(lambda r: {**r, 'preferences': {**r['preferences'], 'start_with_windows': True, 'show_client': True}})
-        launcher.launch(self.store, startup=True)
-        self.start.assert_called_once()
-        self.window.assert_called_once()
 
     def test_missing_disk_and_wrong_product_fail_before_start(self):
         (self.code / 'services/hub/pyproject.toml').write_text('[project]\nname="other"')
@@ -153,14 +147,14 @@ while True: server.handle_request()
     def test_preference_write_failure_leaves_startup_disabled(self):
         with patch('services.shared.windows_autostart.shortcut'), patch.object(self.store, 'update', side_effect=OSError('disk full')):
             with self.assertRaises(OSError):
-                launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.root)
+                launcher.preferences(self.store, start_with_windows=True, startup_directory=self.root)
         self.assertFalse(self.store.read()['preferences']['start_with_windows'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows COM link')
     def test_real_isolated_startup_toggle_and_foreign_link_preservation(self):
         entry = launcher.install_entry(self.store, desktop=False)
         before = self.store.read()['components']
-        launcher.preferences(self.store, start_with_windows=True, show_client=False, startup_directory=self.root)
+        launcher.preferences(self.store, start_with_windows=True, startup_directory=self.root)
         link = self.root / 'Orion AI.lnk'
         self.assertTrue(link.is_file())
         # Inspect actual COM output, including the Unicode path and startup argument.
@@ -172,12 +166,12 @@ while True: server.handle_request()
         self.assertIn('-Startup', args)
         self.assertTrue(target.lower().endswith('powershell.exe'))  # No retained Orion.exe here: PowerShell fallback
         self.assertIn(self.store.read()['installation_id'], description)
-        launcher.preferences(self.store, start_with_windows=False, show_client=True, startup_directory=self.root)
+        launcher.preferences(self.store, start_with_windows=False, startup_directory=self.root)
         self.assertFalse(link.exists())
         self.assertEqual(before, self.store.read()['components'])
         link.write_bytes(b'foreign shortcut, preserve')
         with self.assertRaisesRegex(RuntimeError, 'shortcut'):
-            launcher.preferences(self.store, start_with_windows=True, show_client=True, startup_directory=self.root)
+            launcher.preferences(self.store, start_with_windows=True, startup_directory=self.root)
         self.assertEqual(b'foreign shortcut, preserve', link.read_bytes())
         self.assertFalse(self.store.read()['preferences']['start_with_windows'])
 

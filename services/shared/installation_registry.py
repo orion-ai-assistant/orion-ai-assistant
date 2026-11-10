@@ -15,6 +15,8 @@ import uuid
 
 SCHEMA_VERSION = 1
 DISTRIBUTIONS = {'legacy-source', 'packaged', 'development', 'docker', 'remote'}
+# show_client is no longer read (Orion's own window always starts hidden at sign-in); the key stays so that a
+# record written here is still valid for an older version (a rollback), which requires exactly these keys.
 PREFERENCES = {'automatic_updates': True, 'start_with_windows': False, 'show_client': True}
 
 

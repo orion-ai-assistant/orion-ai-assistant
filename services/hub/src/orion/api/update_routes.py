@@ -61,7 +61,7 @@ def read_status():
     data = AutomaticUpdates(registry).status()
     data['available'] = runtime_command(registry) is not None
     record = registry.read()
-    data['launcher_preferences'] = {k: record['preferences'][k] for k in ('start_with_windows', 'show_client')}
+    data['launcher_preferences'] = {'start_with_windows': record['preferences']['start_with_windows']}
     try:
         data['router_automatic_updates'] = AutomaticUpdates(registry, scope='router').policy()['enabled']
     except UpdateError:
@@ -158,7 +158,6 @@ class Preferences(BaseModel):
     defer_hours: Literal[0, 24] | None = None
     router_automatic_updates: StrictBool | None = None
     start_with_windows: StrictBool | None = None
-    show_client: StrictBool | None = None
     check_now: StrictBool | None = None
     model_config = {'extra': 'forbid'}
 
@@ -215,7 +214,7 @@ def change_preferences(payload):
         return read_status()
     groups = [any(value is not None for value in (payload.automatic_updates, payload.paused, payload.defer_hours)),
               payload.router_automatic_updates is not None,
-              any(value is not None for value in (payload.start_with_windows, payload.show_client))]
+              payload.start_with_windows is not None]
     if sum(groups) > 1:
         raise ValueError('Save each preference group separately')
     if payload.automatic_updates is True and runtime_command(registry) is None:
@@ -226,9 +225,7 @@ def change_preferences(payload):
         AutomaticUpdates(registry, scope='router').preferences(enabled=payload.router_automatic_updates)
     elif groups[2]:
         from services.shared.launcher import preferences
-        previous = registry.read()['preferences']
-        preferences(registry, start_with_windows=payload.start_with_windows if payload.start_with_windows is not None else previous['start_with_windows'],
-                    show_client=payload.show_client if payload.show_client is not None else previous['show_client'])
+        preferences(registry, start_with_windows=payload.start_with_windows)
     else:
         AutomaticUpdates(registry).preferences(enabled=payload.automatic_updates, paused=payload.paused, defer_hours=payload.defer_hours)
         if payload.automatic_updates is not None and router_managed(registry):

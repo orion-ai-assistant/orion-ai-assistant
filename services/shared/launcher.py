@@ -178,7 +178,7 @@ def _ui_window(registry):
 
 
 def start_hidden_window(registry, url):
-    """A start without a window (Windows sign-in with "show the window" off, a background start): Orion's own
+    """A start without a window (Windows sign-in, a background start): Orion's own
     window starts hidden, so the web client runs (the assistant can listen) and the first open is instant."""
     ui = _ui_window(registry)
     if ui is None:
@@ -686,13 +686,10 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
                 taken = ports_taken(record, components)
                 if taken:
                     raise RegistryError(taken)
-                # At Windows sign-in Orion's own window starts hidden (it runs, the assistant can
-                # listen; opening it is instant). Only the old browser window follows show_client.
-                show = not background and (not startup or (record['preferences']['show_client']
-                                                           and _ui_window(registry) is None))
-                _start_with_window(
-                    registry, components, start_hub, start_router, show=show,
-                    startup=startup, apply_owner=apply_owner)
+                # At Windows sign-in no window is opened: Orion's own window starts hidden (it runs, the
+                # assistant can listen; opening it is instant).
+                show = not background and not startup
+                _start_with_window(registry, components, start_hub, start_router, show=show)
                 return {'status': 'ready'}
             if not apply_owner:
                 # Asked first, so the watcher finishes its step while the services stop (it was waited for
@@ -742,7 +739,7 @@ def _launch(registry, *, startup, background, stop, keep_window, apply_owner):
         return {'status': 'stopped'}
 
 
-def _start_with_window(registry, components, start_hub, start_router, *, show, startup=False, apply_owner=False):
+def _start_with_window(registry, components, start_hub, start_router, *, show):
     """Services start while the Orion window is already being opened: it appears as soon as the Flutter
     server answers (the app shows its own "starting" screen until the Hub is ready), not after the whole Hub,
     worker included, reported ready."""
@@ -857,96 +854,51 @@ def _remove_own_link(directory, name, entry, installation_id, *, startup):
             pass  # Someone else's link of that name: preserved, never ours to touch.
 
 
-def sync_desktop_link(record, entry, *, create):
-    """The desktop link of the current identity (restyled/created) and no stale link of the other one.
-    
-    When migrating from an old shortcut name, we update its content and rename it to preserve
-    the user's chosen desktop location. If the user deliberately removed the desktop shortcut,
-    we respect that choice and don't recreate it unless explicitly requested (create=True).
-    """
-    from .windows_autostart import known_folder, shortcut, update_and_rename_shortcut
-    ident, directory = identity(record), known_folder('desktop')
-    current = directory / ident['desktop']
-    
-    # Check if the new shortcut already exists
+def _sync_link(directory, name, others, entry, installation_id, *, product, create, startup=False):
+    """One link of the current identity in `directory`, and none of ours under another name.
+
+    The link that exists is rewritten (target, icon). When it does not, a link of ours under an older name is
+    rewritten and renamed, so it stays where the user put it (its place on the desktop, a pin). Only when there
+    is neither is a new one made, and only with `create`: a link the user deleted does not come back.
+    Whatever else is ours under `others` (the other identity's link, a second old name) is removed; a link of
+    that name that belongs to someone else is never touched."""
+    from .windows_autostart import shortcut, update_and_rename_shortcut
+    current = directory / name
     if current.exists():
-        # New shortcut exists: just update its content in case icon/target changed
-        shortcut(current, entry, record['installation_id'], product=ident['product'])
-        # Clean up any legacy shortcuts
-        for name in ALL_DESKTOP_LINKS:
-            if name != ident['desktop']:
-                _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
+        shortcut(current, entry, installation_id, startup=startup, product=product)
     else:
-        # New shortcut doesn't exist: check for legacy shortcuts
-        legacy_path = None
-        for name in ALL_DESKTOP_LINKS:
-            if name != ident['desktop'] and (directory / name).exists():
-                legacy_path = directory / name
-                break
-        
-        if legacy_path:
-            # Found a legacy shortcut: update its content and rename to preserve location
+        for old in others:
+            if not (directory / old).exists():
+                continue
             try:
-                update_and_rename_shortcut(legacy_path, current, entry, record['installation_id'], 
-                                          startup=False, product=ident['product'])
+                update_and_rename_shortcut(directory / old, current, entry, installation_id,
+                                           startup=startup, product=product)
+                break
             except RuntimeError:
-                # If update/rename fails (e.g., ownership check failed), fall back to create new
-                if create:
-                    shortcut(current, entry, record['installation_id'], product=ident['product'])
-            
-            # Clean up any remaining legacy shortcuts (in case there were multiple)
-            for name in ALL_DESKTOP_LINKS:
-                if name != ident['desktop'] and (directory / name).exists():
-                    _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
-        elif create:
-            # No legacy shortcut and user wants desktop shortcut: create new one
-            shortcut(current, entry, record['installation_id'], product=ident['product'])
-        # else: User deliberately removed desktop shortcut, respect their choice
+                pass  # Not ours, or it could not be renamed: the next name, else a new link.
+        else:
+            if create:
+                shortcut(current, entry, installation_id, startup=startup, product=product)
+    for old in others:
+        _remove_own_link(directory, old, entry, installation_id, startup=startup)
+
+
+def sync_desktop_link(record, entry, *, create):
+    """The desktop link of the current identity (restyled; made only with `create`, the installer's call: a
+    link the user removed stays removed) and no stale link of the other identity or an older name."""
+    from .windows_autostart import known_folder
+    ident = identity(record)
+    _sync_link(known_folder('desktop'), ident['desktop'], [n for n in ALL_DESKTOP_LINKS if n != ident['desktop']],
+               entry, record['installation_id'], product=ident['product'], create=create)
 
 
 def sync_start_link(record, entry):
     """The Start menu entry of the current identity (always present while Orion is installed), and no stale
-    entry of the other identity.
-    
-    Start menu entries are always created/updated (never respect removal), and when migrating from
-    an old name, we update and rename to preserve any user customization (pinned position, etc.).
-    """
-    from .windows_autostart import known_folder, shortcut, update_and_rename_shortcut
-    ident, directory = identity(record), known_folder('programs')
-    current = directory / ident['start']
-    
-    # Check if the new shortcut already exists
-    if current.exists():
-        # Update its content in case icon/target changed
-        shortcut(current, entry, record['installation_id'], product=ident['product'])
-        # Clean up any legacy shortcuts
-        for name in ALL_START_LINKS:
-            if name != ident['start']:
-                _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
-    else:
-        # New shortcut doesn't exist: check for legacy shortcuts
-        legacy_path = None
-        for name in ALL_START_LINKS:
-            if name != ident['start'] and (directory / name).exists():
-                legacy_path = directory / name
-                break
-        
-        if legacy_path:
-            # Found a legacy shortcut: update its content and rename
-            try:
-                update_and_rename_shortcut(legacy_path, current, entry, record['installation_id'], 
-                                          startup=False, product=ident['product'])
-            except RuntimeError:
-                # If update/rename fails, create new one (Start menu entry is always needed)
-                shortcut(current, entry, record['installation_id'], product=ident['product'])
-            
-            # Clean up any remaining legacy shortcuts
-            for name in ALL_START_LINKS:
-                if name != ident['start'] and (directory / name).exists():
-                    _remove_own_link(directory, name, entry, record['installation_id'], startup=False)
-        else:
-            # No legacy shortcut: create new one
-            shortcut(current, entry, record['installation_id'], product=ident['product'])
+    entry of the other identity or an older name."""
+    from .windows_autostart import known_folder
+    ident = identity(record)
+    _sync_link(known_folder('programs'), ident['start'], [n for n in ALL_START_LINKS if n != ident['start']],
+               entry, record['installation_id'], product=ident['product'], create=True)
 
 
 def install_entry(registry, *, desktop=True):
@@ -998,61 +950,23 @@ def _remove_stale_launchers(destination):
 
 def _startup_links(directory, entry, installation_id, enabled, record=None):
     """Product-named Startup entry; the pre-Orion.exe `Orion.lnk` (and the other identity's link) is
-    replaced if it is ours. Stale Task Manager "Startup apps" state of vanished links is dropped too.
-    
-    When migrating from an old shortcut name, we update and rename to preserve any user customization.
-    """
-    from .windows_autostart import shortcut, update_and_rename_shortcut, clean_startup_approved
+    replaced if it is ours. Stale Task Manager "Startup apps" state of vanished links is dropped too."""
+    from .windows_autostart import shortcut, clean_startup_approved
     ident = identity(record)
-    current = ident['startup']
-    current_path = directory / current
-    
+    others = [n for n in ALL_STARTUP_LINKS if n != ident['startup']]
     if enabled:
-        # Check if the new shortcut already exists
-        if current_path.exists():
-            # Update its content
-            shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
-            # Clean up legacy shortcuts
-            for name in ALL_STARTUP_LINKS:
-                if name != current:
-                    _remove_own_link(directory, name, entry, installation_id, startup=True)
-        else:
-            # Check for legacy shortcuts
-            legacy_path = None
-            for name in ALL_STARTUP_LINKS:
-                if name != current and (directory / name).exists():
-                    legacy_path = directory / name
-                    break
-            
-            if legacy_path:
-                # Found a legacy shortcut: update its content and rename
-                try:
-                    update_and_rename_shortcut(legacy_path, current_path, entry, installation_id, 
-                                              startup=True, product=ident['product'])
-                except RuntimeError:
-                    # If update/rename fails, create new one
-                    shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
-                
-                # Clean up any remaining legacy shortcuts
-                for name in ALL_STARTUP_LINKS:
-                    if name != current and (directory / name).exists():
-                        _remove_own_link(directory, name, entry, installation_id, startup=True)
-            else:
-                # No legacy shortcut: create new one
-                shortcut(current_path, entry, installation_id, startup=True, product=ident['product'])
+        _sync_link(directory, ident['startup'], others, entry, installation_id,
+                   product=ident['product'], create=True, startup=True)
     else:
-        # Startup disabled: remove the current and any legacy shortcuts we own.
-        if current_path.exists():
-            shortcut(current_path, entry, installation_id, startup=True, remove=True)
-        for name in ALL_STARTUP_LINKS:
-            if name != current:
-                _remove_own_link(directory, name, entry, installation_id, startup=True)
-    
+        if (directory / ident['startup']).exists():
+            shortcut(directory / ident['startup'], entry, installation_id, startup=True, remove=True)
+        for name in others:
+            _remove_own_link(directory, name, entry, installation_id, startup=True)
     clean_startup_approved({n for n in ALL_STARTUP_LINKS if (directory / n).exists()},
                            [n for n in ALL_STARTUP_LINKS if not (directory / n).exists()])
 
 
-LINKS_REVISION = 6  # 6: rename product links to Orion AI and migrate legacy names; 5: icon cache refresh (SHChangeNotify + ie4uinit -ClearIconCache); 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
+LINKS_REVISION = 6  # 6: rename product links to Orion AI and migrate legacy names; 5: icon cache refresh (SHChangeNotify + a touched .lnk); 4: + Start menu entry (search, Recent list); 3: + "Apps & features" uninstall entry; 2: identity per installation + StartupApproved cleanup
 
 
 def register_uninstall_entry(registry):
@@ -1092,9 +1006,9 @@ def refresh_links(registry):
     return True
 
 
-def preferences(registry, *, start_with_windows, show_client, startup_directory=None):
+def preferences(registry, *, start_with_windows, startup_directory=None):
     from .windows_autostart import known_folder, shortcut
-    if type(start_with_windows) is not bool or type(show_client) is not bool:
+    if type(start_with_windows) is not bool:
         raise ValueError('Launcher preferences must be booleans')
     with operation_lock(registry.path):
         record = registry.read()
@@ -1107,7 +1021,7 @@ def preferences(registry, *, start_with_windows, show_client, startup_directory=
         def update(current):
             if current != record:
                 raise RegistryError('Installation changed; retry preferences')
-            current['preferences'].update(start_with_windows=start_with_windows, show_client=show_client)
+            current['preferences'].update(start_with_windows=start_with_windows)
             return current
         if start_with_windows:
             _startup_links(directory, entry, record['installation_id'], True, record)
@@ -1125,7 +1039,6 @@ def main(argv=None):
     parser.add_argument('--background', action='store_true')
     parser.add_argument('action', nargs='?', default='launch', choices=['launch', 'stop', 'install', 'preferences'])
     parser.add_argument('--start-with-windows', choices=['on', 'off'])
-    parser.add_argument('--show-client', choices=['on', 'off'])
     args = parser.parse_args(argv)
     registry = Registry(args.registry)
     try:
@@ -1133,9 +1046,9 @@ def main(argv=None):
             with operation_lock(registry.path):
                 result = {'entry': str(install_entry(registry))}
         elif args.action == 'preferences':
-            if args.start_with_windows is None or args.show_client is None:
-                parser.error('preferences requires --start-with-windows and --show-client')
-            result = preferences(registry, start_with_windows=args.start_with_windows == 'on', show_client=args.show_client == 'on')
+            if args.start_with_windows is None:
+                parser.error('preferences requires --start-with-windows')
+            result = preferences(registry, start_with_windows=args.start_with_windows == 'on')
         else:
             result = launch(registry, startup=args.startup, background=args.background, stop=args.action == 'stop')
         print(json.dumps(result, ensure_ascii=True))

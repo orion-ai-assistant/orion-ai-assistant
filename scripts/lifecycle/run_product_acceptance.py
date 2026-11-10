@@ -343,7 +343,7 @@ def main():
             entry = install_entry(store, desktop=False)
             isolated_startup = scratch / 'isolated Startup'
             isolated_startup.mkdir()
-            preferences(store, start_with_windows=True, show_client=False, startup_directory=isolated_startup)
+            preferences(store, start_with_windows=True, startup_directory=isolated_startup)
             # Built web files are copied; no Flutter build/SDK/network operation.
             client = scratch / 'Client'
             copy_source(ROOT.parent / 'orion-ai-assistant-flutter/main_app/app/build/web', client / 'build/web')
@@ -413,7 +413,7 @@ def main():
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
                     'http://127.0.0.1:' + env['ORION_FLUTTER_PORT'] + '/__orion_flutter_health__') as response:
                 assert response.read() == b'orion-flutter-web'
-            preferences(store, start_with_windows=False, show_client=True, startup_directory=isolated_startup)
+            preferences(store, start_with_windows=False, startup_directory=isolated_startup)
             call(start + ['-Startup'], 'disabled-startup')
             assert Runtime(root, component).read()['run_id'] == first['run_id']
             assert not (isolated_startup / 'Orion AI.lnk').exists()
