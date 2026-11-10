@@ -24,12 +24,12 @@ def engine():
     return engines.VoxCPM2GGUFEngine.__new__(engines.VoxCPM2GGUFEngine)  # Its server is not started.
 
 
-def test_a_clone_keeps_its_wav_and_words_and_both_go_with_every_request(tmp_path):
+def test_a_clone_keeps_its_wav_and_it_alone_goes_with_every_request(tmp_path):
     voice = engine().encode_voice(sample(tmp_path, 4.5), ' Merhaba, bu bir deneme. ')
-    assert voice['ref_seconds'] == 4.5 and voice['ref_text'] == 'Merhaba, bu bir deneme.'
+    assert voice['ref_seconds'] == 4.5 and 'ref_text' not in voice  # The transcript is not used.
     payload = engine()._payload('Günaydın.', voice, '', 2.0, 42)
     assert base64.b64decode(payload['reference_audio']) == voice['ref_wav']
-    assert payload['prompt_text'] == 'Merhaba, bu bir deneme.' and payload['input'] == 'Günaydın.'
+    assert 'prompt_text' not in payload and payload['input'] == 'Günaydın.'
     assert payload['seed'] == 42 and payload['cfg_value'] == 2.0 and payload['model'] == 'voxcpm'
     with wave.open(io.BytesIO(voice['ref_wav'])) as w:
         assert w.getframerate() == 16000  # Sent as it was given: the server takes any sample rate.
@@ -38,8 +38,22 @@ def test_a_clone_keeps_its_wav_and_words_and_both_go_with_every_request(tmp_path
 def test_no_clone_no_reference_and_a_description_designs_the_voice(tmp_path):
     payload = engine()._payload(' Günaydın. ', None, 'A calm, deep male voice', None, -1)
     assert payload['input'] == '(A calm, deep male voice)Günaydın.' and 'reference_audio' not in payload
-    assert 'seed' not in payload and 'cfg_value' not in payload
-    assert engine()._payload('Merhaba.', None, 'voxcpm2-gguf', 2.0, -1)['input'] == 'Merhaba.'  # A model name, not a voice.
+    assert 0 <= payload['seed'] < 2**31  # A description without a seed: a new one every time.
+    # A model name is not a voice description (here, without a server, the default voice's own design stands in).
+    assert 'voxcpm2-gguf' not in engine()._payload('Merhaba.', None, 'voxcpm2-gguf', 2.0, -1)['input']
+
+
+def test_what_a_request_leaves_out_comes_from_the_one_place_the_defaults_are_written(tmp_path):
+    voice = engine().encode_voice(sample(tmp_path, 4.5), '')
+    for seed in (None, -1):  # The Router sends -1 when the request has no seed.
+        payload = engine()._payload('Günaydın.', voice, '', None, seed)
+        assert payload['seed'] == engines.DEFAULT_SEED == 32  # The same voice from request to request.
+        assert payload['cfg_value'] == engines.DEFAULT_GUIDANCE == 3.0
+        assert payload['inference_timesteps'] == engines.DEFAULT_STEPS == 15
+        assert payload['temperature'] == engines.DEFAULT_TEMPERATURE == 0.85
+    assert engines.VOXCPM2_DEFAULTS == {'creativity': 1.0, 'steps': 15, 'temperature': 0.85, 'seed': 32}
+    asked = engine()._payload('Günaydın.', voice, '', 2.5, 7, steps=20, temperature=0.6)
+    assert (asked['seed'], asked['cfg_value'], asked['inference_timesteps'], asked['temperature']) == (7, 2.5, 20, 0.6)
 
 
 def test_a_clone_follows_the_same_length_rule_and_wants_a_wav(tmp_path):

@@ -8,8 +8,7 @@ let cloneLimits = null;
 let cloneSeconds = null;
 let stepDefault = 15;
 let cfgDefault = 2.0;
-let trimSaveTimer = null;
-const TEMP_DEFAULT = 0.9;
+let tempDefault = null;
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -19,6 +18,8 @@ async function init() {
         const info = await api.getModelInfo();
         activeEngine = info.engine;
         const usesVoxCPM2 = activeEngine.startsWith('voxcpm2');
+        // VoxCPM2's defaults are written in one place, the service (engines.py): the sliders start where it says.
+        const voxDefaults = (usesVoxCPM2 && info.defaults) || {};
         document.getElementById('cloneTextGroup')?.classList.toggle('hidden', usesVoxCPM2);
         document.getElementById('cloneTextNotice')?.classList.toggle('hidden', !usesVoxCPM2);
         cloneLimits = info.clone || null;
@@ -43,28 +44,28 @@ async function init() {
             cfg.min = vox ? '0' : '1.0';
             cfg.max = vox ? '2' : '10.0';
             cfg.step = '0.1';
-            cfgDefault = vox ? 1.0 : 2.0;  // VoxCPM2: creativity 1 = guidance 3, the engine's default
+            cfgDefault = vox ? (voxDefaults.creativity ?? 1.0) : 2.0;
             cfg.value = String(cfgDefault);
             document.getElementById('cfgVal').innerText = "Varsayılan";
             const label = document.getElementById('cfgLabel');
             if (label) label.firstChild.textContent = vox ? 'Yaratıcılık (0-2): ' : 'Yaratıcılık (Guidance Scale): ';
         }
-        // Steps: the engine's own default is where the slider starts and says "Varsayılan" (VoxCPM2 10, OmniVoice 15).
-        stepDefault = activeEngine.startsWith('voxcpm2') ? 10 : 15;
+        // Steps: the engine's own default is where the slider starts and says "Varsayılan".
+        stepDefault = voxDefaults.steps ?? 15;
         const step = document.getElementById('stepInput');
         if (step) step.value = String(stepDefault);
-        // Temperature: VoxCPM2 only (0.5-0.9, 0.9 default); VoxCPM2 has no speed setting.
+        // Temperature: VoxCPM2 only (0.5-0.9); VoxCPM2 has no speed setting.
         const isVox = activeEngine.startsWith('voxcpm2');
         document.getElementById('tempContainer')?.classList.toggle('hidden', !isVox);
         document.getElementById('speedContainer')?.classList.toggle('hidden', isVox);
-        document.getElementById('leadingTrimContainer')?.classList.toggle('hidden', !isVox);
         if (isVox) {
-            try {
-                const settings = await api.getAudioSettings();
-                const input = document.getElementById('leadingTrimInput');
-                input.value = String(settings.leading_trim_ms);
-                document.getElementById('leadingTrimVal').innerText = String(settings.leading_trim_ms);
-            } catch (e) { console.warn('Başlangıç kırpma ayarı okunamadı:', e); }
+            tempDefault = voxDefaults.temperature ?? null;
+            const temp = document.getElementById('tempInput');
+            if (temp && tempDefault !== null) temp.value = String(tempDefault);
+            const seedLabel = document.getElementById('seedLabel');
+            if (seedLabel && voxDefaults.seed !== undefined) {
+                seedLabel.textContent = `Sabit Seed (-1: varsayılan ${voxDefaults.seed}; ses tarifi varsa rastgele):`;
+            }
         }
 
         if (activeEngine.startsWith('voxcpm2')) {
@@ -211,32 +212,15 @@ function setupEventListeners() {
         const display = document.getElementById(`${id}Val`);
         if (input && display) {
             input.oninput = () => {
-                const def = { step: stepDefault, cfg: cfgDefault, temp: TEMP_DEFAULT }[id];
+                const def = { step: stepDefault, cfg: cfgDefault, temp: tempDefault }[id];
                 display.innerText = def !== undefined && parseFloat(input.value) === def ? "Varsayılan" : input.value;
             };
         }
     });
 
-    const trimInput = document.getElementById('leadingTrimInput');
-    if (trimInput) {
-        trimInput.oninput = () => {
-            const value = Number(trimInput.value);
-            document.getElementById('leadingTrimVal').innerText = String(value);
-            const status = document.getElementById('leadingTrimStatus');
-            status.innerText = 'Uygulanıyor…';
-            clearTimeout(trimSaveTimer);
-            trimSaveTimer = setTimeout(async () => {
-                try {
-                    await api.setAudioSettings({ leading_trim_ms: value });
-                    status.innerText = `Uygulandı: ${value} ms`;
-                } catch (e) { status.innerText = e.message; }
-            }, 180);
-        };
-    }
-
     // Every engine keeps its own settings: what was set for one is not carried over to the other (per browser).
-    // v2: the defaults changed (VoxCPM2 creativity 1, steps 10); values kept from before are not carried over.
-    const store = id => `orionTts:v2:${activeEngine}:${id}`;
+    // v3: the defaults changed (VoxCPM2 steps 15, randomness 0.85); values kept from before are not carried over.
+    const store = id => `orionTts:v3:${activeEngine}:${id}`;
     ['speed', 'cfg', 'step', 'temp', 'seed'].forEach(id => {
         const input = document.getElementById(`${id}Input`);
         if (!input) return;

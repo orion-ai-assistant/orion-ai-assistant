@@ -45,7 +45,7 @@ from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from engines import (CLONE_MAX_SECONDS, CLONE_RECOMMENDED_SECONDS, VoiceRegistry, clone_advice, get_engine,
+from engines import (CLONE_MAX_SECONDS, CLONE_RECOMMENDED_SECONDS, VOXCPM2_DEFAULTS, VoiceRegistry, clone_advice, get_engine,
                      valid_voice_name)
 from schemas import SpeechRequest
 
@@ -76,16 +76,6 @@ def create_wav_header(sample_rate: int, data_size: int) -> bytes:
     return struct.pack('<4sI4s4sIHHIIHH4sI',
         b'RIFF', 36 + data_size, b'WAVE', b'fmt ', 16, 1, 1, 
         sample_rate, sample_rate * 2, 2, 16, b'data', data_size)
-
-
-VOXCPM2_LEADING_TRIM_MS = 50.0
-
-
-def _leading_trim_samples(sample_rate: int) -> int:
-    """Samples to omit from VoxCPM2 output; all other engines keep their full output."""
-    if engine_name_env.startswith("voxcpm2") and sample_rate > 0:
-        return int(round(sample_rate * VOXCPM2_LEADING_TRIM_MS / 1000.0))
-    return 0
 
 
 # ——————————————————————————————————————————
@@ -227,14 +217,14 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 else:
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
-        # VoxCPM2's own extra (the other engines do not take it).
         guidance = speech_request.guidance_scale
         if guidance is None and speech_request.creativity is not None:
             # The Router's 0-2 "temperature" is creativity. Map it to the local engines' shared 2-4 guidance scale:
             # 0 -> 2, 1 -> 3, 2 -> 4. Clamp out-of-range callers before mapping.
             level = min(2.0, max(0.0, float(speech_request.creativity)))
             guidance = level + 2.0
-        # Voice-design requests keep the engine default (VoxCPM2 10); the no-design reference path is set to 15 below.
+        # VoxCPM2: whatever the request leaves out (steps, guidance, temperature, seed) is the engine's own default,
+        # all of them in one place (engines.py, VOXCPM2_DEFAULTS). The other engines keep the 15 steps they always got.
         steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
             guidance = 3.0  # Default creativity 1.0 mapped to local TTS guidance 3.0.
@@ -247,23 +237,8 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             else:
                 instruct_val = ""
 
-        # The reference/default voice path should sound consistent across requests. For VoxCPM2,
-        # -1 deliberately means a fresh random seed, so replace only the implicit defaults here;
-        # explicit advanced settings and voice-design prompts still take precedence.
-        seed_val = speech_request.seed
-        temperature_val = speech_request.temperature
-        no_voice_design = not (instruct_val and instruct_val.strip())
-        if engine_name_env == "voxcpm2-gguf" and no_voice_design:
-            if seed_val is None or seed_val == -1:
-                seed_val = 32
-            if steps_val is None:
-                steps_val = 15
-            if temperature_val is None:
-                temperature_val = 0.85
-            if speech_request.guidance_scale is None and speech_request.creativity is None:
-                guidance = 3.0  # Router creativity 1.0 mapped to VoxCPM2 guidance.
-
-        extra = {"temperature": temperature_val} if engine_name_env == "voxcpm2-gguf" else {}
+        # VoxCPM2's own extra (the other engines do not take it).
+        extra = {"temperature": speech_request.temperature} if engine_name_env == "voxcpm2-gguf" else {}
 
         if should_stream:
             await async_inference_lock.acquire()
@@ -275,24 +250,17 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 stream_gen = tts.generate_stream(
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=steps_val, seed=seed_val, language=speech_request.language,
+                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
                 sr = await run_in_threadpool(next, stream_gen)
+
                 async def audio_stream_generator():
-                    # Count across the whole utterance, not once per chunk. The stream is mono PCM16.
-                    trim_bytes_remaining = _leading_trim_samples(sr) * 2
                     try:
                         # The engine's generator blocks while it makes each piece: run it in a thread so the event
                         # loop sends every piece as it comes (inline, nothing left until ~64 KB had piled up).
                         async for chunk in iterate_in_threadpool(stream_gen):
                             if abort_event.is_set(): break
-                            if trim_bytes_remaining:
-                                skipped = min(trim_bytes_remaining, len(chunk))
-                                trim_bytes_remaining -= skipped
-                                chunk = chunk[skipped:]
-                                if not chunk:
-                                    continue
                             yield chunk
                     finally:
                         async_inference_lock.release()
@@ -310,15 +278,12 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
-                    steps=steps_val, seed=seed_val, language=speech_request.language,
+                    steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
             
             if sr == 500:  # The engine's failure value (engines.py): not an empty "success"
                 raise HTTPException(status_code=500, detail="Ses motoru bu isteğe yanıt veremedi.")
-            trim_samples = _leading_trim_samples(sr)
-            if trim_samples:
-                audio_data = audio_data[trim_samples:]
             header = create_wav_header(sr, len(audio_data) * 2)
             return Response(content=header + audio_data.tobytes(), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
@@ -421,31 +386,14 @@ async def prime_audio(voice: str = ""):
     return Response(content=data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
-class AudioSettingsUpdate(BaseModel):
-    leading_trim_ms: float
-
-
 class PrimeSaveRequest(BaseModel):
+    """Not given: the engine's own defaults (engines.py, VOXCPM2_DEFAULTS)."""
     text: str
     design: str = ""
     seed: int = -1
-    creativity: float = 1.0
-    steps: int = 10
-    temperature: float = 0.9
-
-
-@app.get("/v1/settings/audio")
-async def get_audio_settings():
-    return {"leading_trim_ms": VOXCPM2_LEADING_TRIM_MS}
-
-
-@app.post("/v1/settings/audio")
-async def update_audio_settings(settings: AudioSettingsUpdate):
-    global VOXCPM2_LEADING_TRIM_MS
-    if not 0 <= settings.leading_trim_ms <= 300:
-        raise HTTPException(status_code=400, detail="Başlangıç kırpması 0-300 ms arasında olmalı.")
-    VOXCPM2_LEADING_TRIM_MS = float(settings.leading_trim_ms)
-    return {"leading_trim_ms": VOXCPM2_LEADING_TRIM_MS}
+    creativity: Optional[float] = None
+    steps: Optional[int] = None
+    temperature: Optional[float] = None
 
 
 @app.post("/v1/prime")
@@ -457,11 +405,11 @@ async def save_prime(request: PrimeSaveRequest):
         raise HTTPException(status_code=404, detail="Bu motorda hazırlık sesi kaydedilemiyor.")
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Söyletmek istediğiniz metin boş olamaz.")
-    if not 0 <= request.creativity <= 2:
+    if request.creativity is not None and not 0 <= request.creativity <= 2:
         raise HTTPException(status_code=400, detail="Yaratıcılık 0-2 arasında olmalı.")
-    if not 1 <= request.steps <= 50:
+    if request.steps is not None and not 1 <= request.steps <= 50:
         raise HTTPException(status_code=400, detail="Kalite adımı 1-50 arasında olmalı.")
-    if not 0.5 <= request.temperature <= 0.9:
+    if request.temperature is not None and not 0.5 <= request.temperature <= 0.9:
         raise HTTPException(status_code=400, detail="Rastgelelik 0.5-0.9 arasında olmalı.")
     if not -1 <= request.seed <= 2**31 - 1:
         raise HTTPException(status_code=400, detail="Seed -1 ile 2147483647 arasında olmalı.")
@@ -476,10 +424,9 @@ async def save_prime(request: PrimeSaveRequest):
                 text=request.text,
                 design=request.design.strip(),
                 seed=request.seed,
-                guidance=request.creativity + 2.0,
+                guidance=None if request.creativity is None else request.creativity + 2.0,
                 steps=request.steps,
                 temperature=request.temperature,
-                leading_trim_ms=VOXCPM2_LEADING_TRIM_MS,
             )
     except Exception as e:
         logger.error(f"Prime generation failed: {traceback.format_exc()}")
@@ -598,6 +545,8 @@ async def get_model_info():
     if is_omnivoice or engine_name_env == "voxcpm2-gguf":
         # What the clone form says before a file is sent (engines.py checks it again).
         info["clone"] = {"recommended_seconds": CLONE_RECOMMENDED_SECONDS, "max_seconds": CLONE_MAX_SECONDS}
+    if engine_name_env == "voxcpm2-gguf":
+        info["defaults"] = VOXCPM2_DEFAULTS  # Where the page's sliders start (the one place they are written).
     return info
 
 if __name__ == "__main__":

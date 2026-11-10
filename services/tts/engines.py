@@ -723,8 +723,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def _make_prime(self, *, text: Optional[str] = None, design: Optional[str] = None,
                     seed: Optional[int] = None, guidance: Optional[float] = None,
-                    steps: Optional[int] = None, temperature: Optional[float] = None,
-                    leading_trim_ms: float = 50.0) -> bytes:
+                    steps: Optional[int] = None, temperature: Optional[float] = None) -> bytes:
         """Generate the default warm-up through the same PCM post-processing path as full speech output."""
         rate, audio = self.generate(
             text=PRIME_TEXT if text is None else text,
@@ -736,9 +735,6 @@ class VoxCPM2GGUFEngine(TTSEngine):
         )
         if rate == 500 or len(audio) < self.SAMPLE_RATE // 2:
             raise RuntimeError("warm-up came back (nearly) empty")
-        trim_samples = int(round(rate * max(0.0, leading_trim_ms) / 1000.0))
-        if trim_samples:
-            audio = audio[trim_samples:]
         audio = soften_pcm16(audio, rate)
         out = io.BytesIO()
         with wave.open(out, "wb") as w:
@@ -750,14 +746,12 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
     def save_plain_prime(self, *, text: Optional[str] = None, design: str = "",
                          seed: int = -1, guidance: Optional[float] = None,
-                         steps: Optional[int] = None, temperature: Optional[float] = None,
-                         leading_trim_ms: float = 50.0) -> bytes:
+                         steps: Optional[int] = None, temperature: Optional[float] = None) -> bytes:
         """Generate and persist the default warm-up with the current VoxCPM2 design/settings."""
         data = self._make_prime(text=text, design=design, seed=seed,
                                 guidance=DEFAULT_GUIDANCE if guidance is None else guidance,
                                 steps=DEFAULT_STEPS if steps is None else steps,
-                                temperature=DEFAULT_TEMPERATURE if temperature is None else temperature,
-                                leading_trim_ms=leading_trim_ms)
+                                temperature=DEFAULT_TEMPERATURE if temperature is None else temperature)
         path = voice_data_dir() / "_prime_voxcpm2-gguf_custom.wav"
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -814,14 +808,18 @@ class VoxCPM2GGUFEngine(TTSEngine):
         payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
         if ref:
             payload["reference_audio"] = base64.b64encode(ref).decode()
-        # No seed asked for: a new one every time (without one the server always uses the same, so every answer to the
-        # same text came out the same).
-        payload["seed"] = int(seed) if seed is not None and seed != -1 else random.randint(0, 2**31 - 1)
-        # Guidance: 2.6 when not given; never above 4, where the voice gets louder and louder and the server's 16-bit
-        # output clips (it shouts and clicks: measured rms 1.5-5 k at 2, 10-13 k at 5).
+        # No seed asked for (None or -1): the default and cloned voices get DEFAULT_SEED, so they sound the same from
+        # request to request; a voice description gets a new seed every time (without one the server always uses
+        # the same, so every answer to the same text came out the same).
+        if seed is not None and seed != -1:
+            payload["seed"] = int(seed)
+        else:
+            payload["seed"] = random.randint(0, 2**31 - 1) if designed else DEFAULT_SEED
+        # Guidance: never above 4, where the voice gets louder and louder and the server's 16-bit output clips (it
+        # shouts and clicks: measured rms 1.5-5 k at 2, 10-13 k at 5).
         payload["cfg_value"] = (min(MAX_GUIDANCE, max(MIN_GUIDANCE, float(guidance_scale)))
                                 if guidance_scale else DEFAULT_GUIDANCE)
-        # The CFM's steps (15 when not given; the server's own is 10) and randomness (0.5-0.9, 0.9 when not given).
+        # The CFM's steps and the randomness (0.5-0.9); not given: the defaults below.
         payload["inference_timesteps"] = max(1, int(steps)) if steps else DEFAULT_STEPS
         payload["temperature"] = (min(MAX_TEMPERATURE, max(MIN_TEMPERATURE, float(temperature)))
                                   if temperature is not None else DEFAULT_TEMPERATURE)
@@ -904,13 +902,18 @@ DEFAULT_VOICE_DESIGN = "A clear voice sweet girl."
 # ("Selam naber.") was read like by someone who does not speak Turkish; after this it is not.
 PRIME_TEXT = "Merhaba bugün nasılsınız?"
 PRIME_SEED = 42424
+# VoxCPM2's defaults, written here only: what a request that does not say gets (Router, Hub; _payload), and
+# where the 8810 page's sliders start (/v1/model_info sends VOXCPM2_DEFAULTS).
 DEFAULT_GUIDANCE = 3.0  # what pages show as creativity 1 (0-2 -> 2-4)
 MIN_GUIDANCE = 2.0
 MAX_GUIDANCE = 4.0
-DEFAULT_STEPS = 10  # the model's own default
+DEFAULT_STEPS = 15
 MIN_TEMPERATURE = 0.5
 MAX_TEMPERATURE = 0.9
-DEFAULT_TEMPERATURE = 0.9  # when the request does not say (Router, Hub); the 8810 page starts here too
+DEFAULT_TEMPERATURE = 0.85
+DEFAULT_SEED = 32  # the default and cloned voices; a voice description without a seed gets a random one
+VOXCPM2_DEFAULTS = {"creativity": DEFAULT_GUIDANCE - MIN_GUIDANCE, "steps": DEFAULT_STEPS,
+                    "temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED}
 # The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.
 PRIME_GUIDANCE = 2.6
 PRIME_STEPS = 15
