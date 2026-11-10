@@ -410,17 +410,25 @@ def test_a_release_round_refreshes_the_routers_copies_and_commits_them(tmp_path,
     subprocess.run([*git, 'commit', '-q', '-m', 'before'], check=True)
     monkeypatch.setenv('GIT_AUTHOR_NAME', 't'), monkeypatch.setenv('GIT_AUTHOR_EMAIL', 't@t')
     monkeypatch.setenv('GIT_COMMITTER_NAME', 't'), monkeypatch.setenv('GIT_COMMITTER_EMAIL', 't@t')
-    assert release.sync_router_engine(router) == ['update_gate.py']
+    # The Router's own engine tests decide: when they fail the old copy is put back and nothing is committed.
+    stale = (router / 'core/update_gate.py').read_bytes()
+    with pytest.raises(SystemExit, match="Router's engine tests fail"):
+        release.sync_router_engine(router, failures=lambda folder: ['test_router_start.py:\nFAILED'])
+    assert (router / 'core/update_gate.py').read_bytes() == stale
+    assert subprocess.run([*git, 'log', '--format=%s'], capture_output=True, text=True).stdout.split() == ['before']
+    ran = []
+    assert release.sync_router_engine(router, failures=lambda folder: ran.append(folder) or []) == ['update_gate.py']
+    assert ran == [router]
     assert (router / 'core/update_gate.py').read_bytes() == sync_router_engine.vendored('update_gate.py')
     log = subprocess.run([*git, 'log', '--format=%s'], capture_output=True, text=True, check=True).stdout.split('\n')
     assert log[0] == 'release: sync the vendored engine with the assistant'
     assert not subprocess.run([*git, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip()
-    assert release.sync_router_engine(router) == []  # Nothing to do, nothing committed.
+    assert release.sync_router_engine(router, failures=None) == []  # Nothing to do: no tests, no commit.
     # The Router is ahead: a copy edited there is no version of the canonical file. Never overwritten.
     ahead = sync_router_engine.vendored('update_gate.py') + b'\n# a fix made in the Router\n'
     (router / 'core/update_gate.py').write_bytes(ahead)
     with pytest.raises(SystemExit, match='Router is ahead: update_gate.py'):
-        release.sync_router_engine(router)
+        release.sync_router_engine(router, failures=None)
     assert (router / 'core/update_gate.py').read_bytes() == ahead
 
 

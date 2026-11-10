@@ -51,14 +51,46 @@ def ensure_inputs():
     download_inputs.download(INPUTS)
 
 
-def sync_router_engine(router=None):
+# The Router's own tests of what the engine files do there: starting, stopping, its database, its installation
+# record and its update admission. Run when a round refreshed a copy (about half a minute).
+ROUTER_ENGINE_TESTS = ('test_update_admission.py', 'test_local_installation.py', 'test_postgres_passwords.py',
+                       'test_router_start.py', 'test_updater_source.py', 'test_update_activity.py')
+ROUTER_ENGINE_PYTEST = ('test_native_lifecycle.py',)  # written for pytest, which the Router's own Python lacks
+
+
+def router_engine_failures(router):
+    """What the Router's engine tests say about the copies now in its working tree: [] when they pass, else one
+    line per failed run with the end of its output."""
+    folder, failed = 'dev/test-orion-router/', []
+    runs = [([sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider'], ROUTER_ENGINE_PYTEST)]
+    python = router / '.venv/Scripts/python.exe'
+    if python.is_file():
+        runs.append(([str(python), '-m', 'unittest'], ROUTER_ENGINE_TESTS))
+    else:
+        print("WARNING: the Router has no .venv: its engine tests were not run (the acceptance still installs "
+              "and starts the Router package).", flush=True)
+    for command, names in runs:
+        names = [folder + name for name in names if (router / folder / name).is_file()]
+        if not names:
+            continue
+        result = subprocess.run([*command, *names], cwd=router, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace')
+        if result.returncode:
+            tail = '\n'.join((result.stdout + result.stderr).strip().splitlines()[-15:])
+            failed.append(f"{' '.join(names)}:\n{tail}")
+    return failed
+
+
+def sync_router_engine(router=None, failures=router_engine_failures):
     """The Router ships its own copy of the engine files it shares with the Hub (it is a product of its own and
     runs without the Hub). They are written in this repository only; a copy nobody remembered to refresh shipped
     for weeks without the Hub's fixes. So every round starts by making the copies from the canonical files, and
     commits them in the Router's repository when one changed (pushed with the release commits). The Router package
     built next has them, the bump sees its bytes changed and the acceptance installs and starts it.
     A copy that was edited in the Router's repository (the Router is ahead) is never overwritten: the round stops
-    before anything is built, naming it. Returns the names that were refreshed."""
+    before anything is built, naming it. The Router's own engine tests run on the refreshed copies before they
+    are committed: when one fails the copies are put back as they were and the round stops, so a change that is
+    right for the Hub and wrong for the Router is seen here, not by a user. Returns the names that were refreshed."""
     router = Path(router or ROOT.parent / 'orion-router')
     if not (router / 'core/local_installation.py').is_file():
         return []  # No Router checkout beside this one: the build says so itself.
@@ -73,6 +105,12 @@ def sync_router_engine(router=None):
     dirty = paths and subprocess.run(['git', '-C', str(router), 'status', '--porcelain', '--', *paths],
                                      capture_output=True, text=True, check=True).stdout.strip()
     if dirty:
+        print('Router engine: refreshed ' + ', '.join(changed) + '; running the Router\'s engine tests ...', flush=True)
+        failed = failures(router)
+        if failed:
+            subprocess.run(['git', '-C', str(router), 'checkout', '-q', '--', *paths], check=True)
+            raise SystemExit("The Router's engine tests fail with the assistant's engine files (the Router's copies "
+                             'were put back as they were; nothing was built):\n\n' + '\n\n'.join(failed))
         subprocess.run(['git', '-C', str(router), '-c', 'commit.gpgsign=false', 'commit', '-q', '-m',
                         'release: sync the vendored engine with the assistant', '--', *paths], check=True)
         print('Router engine synced with the assistant and committed: ' + ', '.join(changed), flush=True)

@@ -185,6 +185,9 @@ dosyalarının (`services/shared` altındaki 13 dosya; liste `scripts/lifecycle/
 kopyasını `orion-router/core` altında taşır. Bu dosyalar **yalnızca Hub deposunda düzenlenir**. `release.cmd` her
 turun başında kopyaları Hub'dakilerden yeniden üretir; biri değiştiyse Router deposuna
 `release: sync the vendored engine with the assistant` commit'ini atar (yayın commit'leriyle birlikte push edilir).
+Commit'ten önce Router'ın kendi motor testleri (başlatma, veritabanı, kurulum kaydı, güncelleme kapısı; ~20 sn)
+yenilenen kopyalarla çalışır: biri başarısızsa kopyalar eski hâline döner ve tur hiçbir şey derlemeden durur.
+Kopya değişmediyse bu testler çalışmaz, tura süre eklenmez.
 Router paketi bu kopyalarla derlenir, baytları değiştiği için sürümü yükselir ve kabul testi onu kurup başlatır.
 Router'daki bir kopya **Router deposunda elle değiştirilmişse** (Hub dosyasının hiçbir eski sürümüyle aynı değilse)
 üzerine yazılmaz: tur, hiçbir şey derlenmeden durur ve dosyanın adını söyler. O değişiklik önce `services/shared`
