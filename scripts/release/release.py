@@ -57,12 +57,16 @@ def sync_router_engine(router=None):
     for weeks without the Hub's fixes. So every round starts by making the copies from the canonical files, and
     commits them in the Router's repository when one changed (pushed with the release commits). The Router package
     built next has them, the bump sees its bytes changed and the acceptance installs and starts it.
-    Returns the names that were refreshed."""
+    A copy that was edited in the Router's repository (the Router is ahead) is never overwritten: the round stops
+    before anything is built, naming it. Returns the names that were refreshed."""
     router = Path(router or ROOT.parent / 'orion-router')
     if not (router / 'core/local_installation.py').is_file():
         return []  # No Router checkout beside this one: the build says so itself.
     sys.path.insert(0, str(ROOT / 'scripts/lifecycle'))
     import sync_router_engine as engine
+    edited = [name for name in engine.sync(router / 'core') if engine.edited_in_router(name, router / 'core')]
+    if edited:
+        raise SystemExit(engine.AHEAD.format(', '.join(edited)))
     changed = engine.sync(router / 'core', write=True)
     paths = ['core/' + name for name in changed]
     # Only what git sees as changed: a copy that differed in line endings alone has nothing to commit.

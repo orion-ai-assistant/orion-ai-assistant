@@ -397,7 +397,13 @@ def test_a_release_round_refreshes_the_routers_copies_and_commits_them(tmp_path,
     (router / 'core/local_installation.py').write_text('')
     for name in sync_router_engine.NAMES:
         (router / 'core' / name).write_bytes(sync_router_engine.vendored(name))
-    (router / 'core/update_gate.py').write_bytes(b'# an old copy\n')
+    # An older version of the canonical file (with the other line endings): what a forgotten sync leaves.
+    path = 'services/shared/update_gate.py'
+    oldest = subprocess.run(['git', '-C', str(ROOT), 'log', '--format=%H', '--', path],
+                            capture_output=True, text=True, check=True).stdout.split()[-1]
+    old = subprocess.run(['git', '-C', str(ROOT), 'show', f'{oldest}:{path}'], capture_output=True, check=True).stdout
+    assert old.replace(b'\r\n', b'\n') != sync_router_engine.vendored('update_gate.py').replace(b'\r\n', b'\n')
+    (router / 'core/update_gate.py').write_bytes(old.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
     git = ['git', '-C', str(router), '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false']
     subprocess.run([*git, 'init', '-q'], check=True)
     subprocess.run([*git, 'add', '.'], check=True)
@@ -410,7 +416,12 @@ def test_a_release_round_refreshes_the_routers_copies_and_commits_them(tmp_path,
     assert log[0] == 'release: sync the vendored engine with the assistant'
     assert not subprocess.run([*git, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip()
     assert release.sync_router_engine(router) == []  # Nothing to do, nothing committed.
-    assert len(subprocess.run([*git, 'log', '--format=%s'], capture_output=True, text=True).stdout.split()) > 0
+    # The Router is ahead: a copy edited there is no version of the canonical file. Never overwritten.
+    ahead = sync_router_engine.vendored('update_gate.py') + b'\n# a fix made in the Router\n'
+    (router / 'core/update_gate.py').write_bytes(ahead)
+    with pytest.raises(SystemExit, match='Router is ahead: update_gate.py'):
+        release.sync_router_engine(router)
+    assert (router / 'core/update_gate.py').read_bytes() == ahead
 
 
 def test_postgres_durability_and_foreign_pid_checks(tmp_path):
