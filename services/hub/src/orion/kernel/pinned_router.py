@@ -11,7 +11,7 @@ from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 import aiohttp
-from orion.kernel.local_security import SecurityStore, spki_fingerprint
+from orion.kernel.local_security import SecurityStore, TRUST_POLL, TrustWatch, spki_fingerprint
 
 _request_target = ContextVar('orion_tls_router_target', default=None)
 
@@ -74,9 +74,16 @@ class RouterConnector(aiohttp.TCPConnector):
         return protocol
 
     async def _watch_trust(self):
+        # A forgotten Router's connections close within TRUST_POLL. The database is read only when it changed, and
+        # off the event loop (it was opened, with its schema checked, on the loop four times a second).
+        store = await asyncio.to_thread(SecurityStore)
+        watch = TrustWatch(store.path)
         while not self.closed:
-            await asyncio.sleep(0.25)
-            pins = {(router['id'], bytes.fromhex(router['fp'])) for router in SecurityStore().routers()}
+            await asyncio.sleep(TRUST_POLL)
+            if not watch.due():
+                continue
+            pins = {(router['id'], bytes.fromhex(router['fp'])) for router in await asyncio.to_thread(store.routers)}
+            watch.read()
             remaining = []
             for transport, router_id, pin in self._pinned_transports:
                 if transport is None or transport.is_closing():

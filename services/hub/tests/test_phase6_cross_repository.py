@@ -51,6 +51,10 @@ class CrossRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.directory = Path(self.temporary.name)
         self.env = patch.dict(os.environ, {'ORION_SECURITY_DIR': str(self.directory / 'hub')})
         self.env.start()
+        # A Router session without a route follows this PC's selected Router: the developer's real selection
+        # made every Router here "not trusted". These tests choose their Routers themselves.
+        self.selection = patch('services.shared.router_connection.read_connection', return_value=None)
+        self.selection.start()
         self.store = SecurityStore()
         self.hub = tls_identity()
         self.servers = []
@@ -61,6 +65,7 @@ class CrossRepositoryTests(unittest.IsolatedAsyncioTestCase):
         for server, task in reversed(self.servers):
             server.should_exit = True
             await asyncio.wait_for(task, 10)
+        self.selection.stop()
         self.env.stop()
         self.temporary.cleanup()
 

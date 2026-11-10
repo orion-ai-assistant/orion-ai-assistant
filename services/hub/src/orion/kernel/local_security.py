@@ -140,6 +140,44 @@ def tls_identity(directory=None, renew=False):
 PAIRING_SECONDS = 180
 
 
+# How often a watcher of the trust database (a device revoked, a Router forgotten) looks, and how long it may go on
+# trusting the file's own stamp without reading the database itself.
+TRUST_POLL = 0.25
+TRUST_FULL_CHECK = 5.0
+
+
+def store_stamp(path):
+    """A cheap fingerprint of the trust database's last write (size and modification time of the file and of its
+    write-ahead log): no SQLite, no lock. A watcher reads the database again only when it changed, so an open
+    phone stream or Router connection no longer queries it four times a second while nothing happens."""
+    stamp = []
+    for item in (Path(path), Path(f'{path}-wal')):
+        try:
+            info = item.stat()
+            stamp.append((info.st_mtime_ns, info.st_size))
+        except OSError:
+            stamp.append(None)
+    return tuple(stamp)
+
+
+class TrustWatch:
+    """When a watcher must read the database: when its stamp changed since the last read, and at least every
+    TRUST_FULL_CHECK seconds anyway (a stamp a file system does not update at once cannot keep a revoked device
+    or Router in). The stamp is taken before the read, so a write that lands during the read is seen next time."""
+    def __init__(self, path, clock=time.monotonic):
+        self.path, self.clock = path, clock
+        self.stamp, self.read_at, self.pending = None, None, None
+
+    def due(self):
+        self.pending = store_stamp(self.path)
+        return (self.pending != self.stamp or self.read_at is None
+                or self.clock() - self.read_at >= TRUST_FULL_CHECK)
+
+    def read(self):
+        """The database was read with the state of `due`'s stamp."""
+        self.stamp, self.read_at = self.pending, self.clock()
+
+
 class SecurityStore:
     def __init__(self, path=None):
         self.path = Path(path) if path else security_dir() / 'devices.sqlite3'

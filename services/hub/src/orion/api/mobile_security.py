@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, JSONResponse, HTMLResponse, Stream
 
 from orion.api.owner_routes import require_owner
 from orion.api.auth_routes import get_current_user
-from orion.kernel.local_security import SecurityStore, tls_identity, local_address
+from orion.kernel.local_security import SecurityStore, TRUST_POLL, TrustWatch, tls_identity, local_address
 
 mobile_router = APIRouter()
 pairing_router = APIRouter()
@@ -479,10 +479,15 @@ class MobileBoundary:
             return await deny(401, 'Device is not paired or has been revoked', 'device_pairing_required')
         scope.setdefault('state', {})['device_id'] = device
         async def watch_revoke():
+            # A revoked device loses its open streams within TRUST_POLL; the database is read only when it changed.
+            watch = TrustWatch(store.path)
             while True:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(TRUST_POLL)
+                if not watch.due():
+                    continue
                 if not await asyncio.to_thread(store.active, device):
                     return
+                watch.read()
         serving = asyncio.create_task(self.app(scope, receive, send))
         watching = asyncio.create_task(watch_revoke())
         revoked = False
