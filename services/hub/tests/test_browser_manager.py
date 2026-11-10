@@ -237,6 +237,14 @@ class BrowserManagerTests(unittest.IsolatedAsyncioTestCase):
         launch.assert_not_called()
         watch.assert_awaited_once()
 
+    async def test_startup_without_a_saved_connection_still_watches_for_reconnects(self):
+        # A browser connected later in this Hub's life must reconnect after it is closed and reopened too.
+        from orion.browser.manager import restore_saved_browsers
+        with patch('orion.browser.manager.os.name', 'nt'),                 patch('orion.browser.manager.watch_browser_reconnect', AsyncMock()) as watch,                 patch('orion.browser.manager._launch_detached') as launch:
+            await restore_saved_browsers()
+        launch.assert_not_called()
+        watch.assert_awaited_once()
+
     async def test_detached_launch_escapes_our_jobs_through_wmi(self):
         from orion.browser.manager import _launch_detached
         with patch('orion.browser.manager.os.name', 'nt'), \

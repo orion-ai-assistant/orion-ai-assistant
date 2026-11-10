@@ -246,6 +246,23 @@ def test_removing_can_take_the_models_after_the_service_stopped(parts, monkeypat
     assert not P.models_dir('embedding').exists() and not P.read_config()['embedding']['purge']
 
 
+def test_removing_with_the_models_keeps_cloned_voices_unless_asked(parts, monkeypatch):
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: True)
+    model, voices = P.models_dir('tts') / 'some-model', P.models_dir('tts') / P.VOICES_DIR
+    for folder in (model, voices):
+        folder.mkdir(parents=True)
+    (model / 'model.gguf').write_bytes(b'm')
+    (voices / 'ali_voxcpm2-gguf.pt').write_bytes(b'v')
+    P.write_part_config('tts', enabled=True)
+    P.remove('tts', delete_models=True)
+    # The transition record is cleared too: the purge loop once shadowed its path.
+    assert P.apply('tts') == 0 and not (P.run_dir('tts') / 'transition.json').exists()
+    assert not model.exists() and (voices / 'ali_voxcpm2-gguf.pt').is_file()  # The user's, like custom/.
+    P.write_part_config('tts', enabled=True)
+    P.remove('tts', delete_models=True, delete_user_models=True)
+    assert P.apply('tts') == 0 and not P.models_dir('tts').exists()
+
+
 def test_the_engine_command_follows_the_part_model_and_settings(parts):
     fake_engine(parts)
     embedding = P.spec('embedding')
@@ -583,10 +600,16 @@ def test_start_answers_at_once_and_a_failed_start_says_why(parts, monkeypatch):
     assert card()['state'] == 'stopped' and 'belleği yetmedi' in card()['error']
     assert P.read_config()['embedding']['paused']  # Nothing starts it again by itself; Başlat does.
 
-    # Once the service starts answering (running), any stale error is cleared and transition.json is unlinked
+    # Once the service answers (however it came up), what failed before is dropped: the start error, and an
+    # install that failed earlier (its message once stayed on a running card after an update fixed it).
+    failed = P.home() / 'jobs' / 'embedding.json'
+    failed.parent.mkdir(parents=True, exist_ok=True)
+    P._write_json(failed, {'action': 'install', 'phase': 'error', 'error': 'Başlatılamadı.'})
+    assert card()['job']['phase'] == 'error'  # Shown while the part is not running.
     monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: True)
-    assert card()['state'] == 'running' and card()['error'] is None
-    assert not (P.run_dir('embedding') / 'transition.json').exists()
+    status = card()
+    assert status['state'] == 'running' and status['error'] is None and status['job'] is None
+    assert not (P.run_dir('embedding') / 'transition.json').exists() and not failed.exists()
 
 
 def tiny_gguf(path, context):

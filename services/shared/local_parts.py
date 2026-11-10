@@ -603,6 +603,8 @@ def extra_info(part, model):
 # never from their names, so a folder filled by hand works as well as one made from the page.
 
 USER_DIR = 'custom'
+VOICES_DIR = 'voices'  # models/tts/voices: cloned voices and generated warm-up audio (the user's, like custom/)
+USER_DATA_DIRS = (USER_DIR, VOICES_DIR)
 MB = 1048576
 
 # What each engine needs from a model folder, in the order the service takes the files. `gguf`: a GGUF file
@@ -1133,7 +1135,7 @@ def _python_command(part, model, settings, data=None):
                ORION_NATIVE_MODELS_DIR=str(models_dir(part['id'])), ORION_PART=part['id'], HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1')
     if part['id'] == 'tts':
-        env['ORION_TTS_VOICE_DATA_DIR'] = str(models_dir('tts') / 'voices')
+        env['ORION_TTS_VOICE_DATA_DIR'] = str(models_dir('tts') / VOICES_DIR)
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
     if gpu and part.get('engine') == 'voxcpm2-gguf' and settings.get('vram_mode') in VOXCPM2_LAYERS:
@@ -1159,14 +1161,6 @@ def job(part_id):
         value = {**value, 'phase': 'interrupted', 'error': 'İş yarıda kaldı (Orion kapandı ya da yeniden başladı). '
                  'Yeniden başlatınca tam inen dosyalar kalır, yarım kalan baştan iner.'}
     return value
-
-
-def _clear_failed_install_job(part_id):
-    """A successful start supersedes an older failed install attempt shown on the part card."""
-    path = home() / 'jobs' / f'{part_id}.json'
-    value = _read_json(path, None)
-    if value and value.get('action') == 'install' and value.get('phase') == 'error':
-        path.unlink(missing_ok=True)
 
 
 def busy(part_id):
@@ -1263,9 +1257,14 @@ def part_status(part, hw, config, data):
         state = 'starting'
     elif running:
         state = 'running'
-        if change and change.get('error'):
+        # What failed before no longer holds, however the part came up (Başlat, the Hub's own start after a
+        # restart or an update): dropped here, the one place, so no page has a rule of its own for it.
+        if change and change.get('error'):  # A start that failed (or timed out).
             (run_dir(part['id']) / 'transition.json').unlink(missing_ok=True)
             change = None
+        if current and current.get('action') == 'install' and current.get('phase') == 'error':
+            (home() / 'jobs' / f"{part['id']}.json").unlink(missing_ok=True)
+            current = None
     elif entry.get('enabled') and _supervised(part['id']):
         state = 'starting'
     elif entry.get('enabled'):
@@ -1315,7 +1314,7 @@ def part_status(part, hw, config, data):
             'vision_off': _vision_off(entry),
             'engines': engine_facts(run['engine'], part, hw, data),
             'models': models, 'advanced': advanced(part, hw, model),
-            'job': current, 'error': (change or {}).get('error') if state != 'running' else None,
+            'job': current, 'error': (change or {}).get('error'),
             # What the service runs with (the page compares the choice with it: "not applied yet").
             'applied': applied(part['id']) if state in ('running', 'restarting') else None,
             # The engines the user can bring a model for (one not in Orion yet is shown, not offered).
@@ -1573,20 +1572,11 @@ TRANSITION_TTL = READY_TIMEOUT + 60
 
 
 def transition(part_id):
-    path = run_dir(part_id) / 'transition.json'
-    value = _read_json(path, None)
+    value = _read_json(run_dir(part_id) / 'transition.json', None)
     if not value:
         return None
     if value.get('error'):
-        try:
-            part = spec(part_id)
-            port = int(os.getenv(part['port_key']) or part['port'])
-            if answers(port):
-                path.unlink(missing_ok=True)
-                return None
-        except Exception:
-            pass
-        return value
+        return value  # Shown until the part runs (part_status drops it), is stopped, or its choice changes.
     if time.time() - value.get('at', 0) > TRANSITION_TTL or not _alive(value.get('pid')):
         return None  # Done long ago, or its process is gone: the state alone tells.
     return value
@@ -1642,12 +1632,14 @@ def apply(part_id, *, wish=None, restart=False):
                 if entry.get('drop'):
                     write_part_config(part_id, drop=[])
             if wanted == 'stopped' and entry.get('purge'):
-                folder = models_dir(part_id)
-                for path in (folder.iterdir() if folder.is_dir() else []):
-                    if path.name != USER_DIR or entry.get('purge_user'):
-                        shutil.rmtree(path, ignore_errors=True)
-                if folder.is_dir() and not any(folder.iterdir()):
-                    folder.rmdir()
+                # Own names: `path` (the transition record) is read again by mine() below.
+                models = models_dir(part_id)
+                for item in (models.iterdir() if models.is_dir() else []):
+                    # The user's own models and cloned voices go only when the user asked for that too.
+                    if item.name not in USER_DATA_DIRS or entry.get('purge_user'):
+                        shutil.rmtree(item, ignore_errors=True)
+                if models.is_dir() and not any(models.iterdir()):
+                    models.rmdir()
                 for unused in unused_engines(part):
                     (unused / '.complete').unlink(missing_ok=True)  # Never "ready" if a file is held.
                     shutil.rmtree(unused, ignore_errors=True)
@@ -1679,8 +1671,6 @@ def apply(part_id, *, wish=None, restart=False):
             return 1
         if mine():
             path.unlink(missing_ok=True)
-            if wanted == 'running':
-                _clear_failed_install_job(part_id)
         return 0
     finally:
         lock.__exit__(None, None, None)

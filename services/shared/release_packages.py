@@ -597,6 +597,9 @@ def _migrate_tts_voice_caches(item, voice_cache_dir, *, legacy_voice_dir=None, r
         return
     from .installation_paths import canonical_path
     root = canonical_path(item['code_path'], must_exist=True)
+    package_voices = root / 'services' / 'tts' / 'voices'
+    if not package_voices.is_dir() and not (legacy_voice_dir is not None and Path(legacy_voice_dir).is_dir()):
+        return  # Neither old place exists (every install made after the move): no inventory read per launch.
     inventory = canonical_path(Path(item['state_path']) / 'installed-package.json', must_exist=True)
     if sha256(inventory) != item['package']['inventory_sha256']:
         raise PackageError('Installed package inventory changed')
@@ -612,7 +615,6 @@ def _migrate_tts_voice_caches(item, voice_cache_dir, *, legacy_voice_dir=None, r
 
     expected = value['files']
     candidates = []
-    package_voices = root / 'services' / 'tts' / 'voices'
     if package_voices.is_dir():
         info = package_voices.stat(follow_symlinks=False)
         if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:

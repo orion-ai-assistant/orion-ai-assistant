@@ -217,31 +217,23 @@ def _launch_detached(binary, arguments, show=7):
 
 
 async def restore_saved_browsers():
-    """At Hub startup, restore selected ordinary browsers without requesting CDP.
+    """At Hub startup, restore selected ordinary browsers without requesting CDP, then watch for reconnects.
 
-    Bağlantı durumuna göre çalışır:
-    - Kullanıcı tarayıcıya bağlanmışsa (enabled=true): Otomatik bağlan
-    - Kullanıcı bağlantıyı kesmişse (enabled=false): Bağlanma
-    """
+    Only a connection the user made and did not end (enabled) is restored. The reconnect watcher runs whatever
+    was found here: a browser connected later in this Hub's life must reconnect after it is closed and reopened
+    too (returning early without a saved connection once left that to the next Hub start)."""
     log = logging.getLogger(__name__)
     if os.name != 'nt' or (browser_root() / '.stopping').exists():
         return
 
     root = browser_root()
-    if not root.exists():
-        return
     selected = set()
-    for directory in root.iterdir():
+    for directory in (root.iterdir() if root.exists() else []):
         if not directory.is_dir() or directory.is_symlink() or not re.fullmatch(r'[a-f0-9]{64}', directory.name):
             continue
         config = BrowserManager._read(directory / 'config.json')
-        # Sadece enabled=true olan bağlantıları restore et (kullanıcı bağlanmış ve kesmemiş)
         if config.get('mode') == 'existing' and config.get('enabled') and config.get('browser') in ('chrome', 'edge', 'brave'):
             selected.add(config['browser'])
-
-    if not selected:
-        log.debug('No enabled browser connections found; skipping auto-restore')
-        return
 
     for choice in selected:
         running = running_browser_choices()
