@@ -178,6 +178,16 @@ Kurallar:
 Derleme, commit edilmiş/izlenen dosyalardan yapılır; yeni bir kaynak dosyası en azından `git add` ile
 izlenmeli.
 
+### Router'ın ortak dosya kopyaları
+
+Router ayrı bir ürün (kendi deposu, kendi paketi, Hub olmadan çalışır); bu yüzden Hub'la ortak kullandığı motor
+dosyalarının (`services/shared` altındaki 13 dosya; liste `scripts/lifecycle/sync_router_engine.py` içinde) kendi
+kopyasını `orion-router/core` altında taşır. Bu dosyalar **yalnızca Hub deposunda düzenlenir**. `release.cmd` her
+turun başında kopyaları Hub'dakilerden yeniden üretir; biri değiştiyse Router deposuna
+`release: sync the vendored engine with the assistant` commit'ini atar (yayın commit'leriyle birlikte push edilir).
+Router paketi bu kopyalarla derlenir, baytları değiştiği için sürümü yükselir ve kabul testi onu kurup başlatır.
+Elle: `sync_router_engine.py` (yalnızca kontrol) ya da `--write` (kopyala).
+
 ## 4. Yayın komutları
 
 Hepsi Hub deposunun kökünden:

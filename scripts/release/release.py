@@ -2,6 +2,8 @@
 
     .release\\tools\\Scripts\\python.exe scripts\\release\\release.py [--dry-run] [--no-publish] [--no-bump]
 
+0. The Router's own copies of the engine files it shares with the Hub are made from this repository's
+   (scripts/lifecycle/sync_router_engine.py) and committed in the Router's repository when one changed.
 1. Version bump (bump_versions.py): build without acceptance, compare every package and each feed's bootstrap
    with what the live feeds list (sha256) and, for what changed, raise sequence/version/package_id in its release
    json and commit that in its repository (pushed after the publish, step 4). `--no-bump` uses the release jsons as they are.
@@ -47,6 +49,30 @@ def ensure_inputs():
         old.rename(INPUTS)  # the layout before .release/
     import download_inputs
     download_inputs.download(INPUTS)
+
+
+def sync_router_engine(router=None):
+    """The Router ships its own copy of the engine files it shares with the Hub (it is a product of its own and
+    runs without the Hub). They are written in this repository only; a copy nobody remembered to refresh shipped
+    for weeks without the Hub's fixes. So every round starts by making the copies from the canonical files, and
+    commits them in the Router's repository when one changed (pushed with the release commits). The Router package
+    built next has them, the bump sees its bytes changed and the acceptance installs and starts it.
+    Returns the names that were refreshed."""
+    router = Path(router or ROOT.parent / 'orion-router')
+    if not (router / 'core/local_installation.py').is_file():
+        return []  # No Router checkout beside this one: the build says so itself.
+    sys.path.insert(0, str(ROOT / 'scripts/lifecycle'))
+    import sync_router_engine as engine
+    changed = engine.sync(router / 'core', write=True)
+    paths = ['core/' + name for name in changed]
+    # Only what git sees as changed: a copy that differed in line endings alone has nothing to commit.
+    dirty = paths and subprocess.run(['git', '-C', str(router), 'status', '--porcelain', '--', *paths],
+                                     capture_output=True, text=True, check=True).stdout.strip()
+    if dirty:
+        subprocess.run(['git', '-C', str(router), '-c', 'commit.gpgsign=false', 'commit', '-q', '-m',
+                        'release: sync the vendored engine with the assistant', '--', *paths], check=True)
+        print('Router engine synced with the assistant and committed: ' + ', '.join(changed), flush=True)
+    return changed
 
 
 def push_release_commits():
@@ -154,6 +180,7 @@ def main():
     args = parser.parse_args()
     sys.path.insert(0, str(HERE))
     ensure_inputs()
+    sync_router_engine()
     if args.version is not None and args.no_bump:
         parser.error('--version and --no-bump exclude each other')
     live = renewed = None

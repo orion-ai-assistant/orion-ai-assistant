@@ -381,17 +381,36 @@ def test_service_supervisor_uses_installer_dependencies_and_service_python(tmp_p
 
 
 def test_router_vendored_engine_has_one_canonical_source():
-    router = ROOT.parent / 'orion-router/core'
-    # Every file sync_router_engine.py copies: five of them were left out here and drifted for weeks.
-    for name in ('process_lifecycle.py', 'process_child.py', 'process_child.cjs',
-                 'windows_job.py', 'process_host.py', 'windows_postgres.py', 'runtime_layout.py',
-                 'release_packages.py', 'installation_registry.py', 'installation_paths.py', 'update_gate.py',
-                 'postgres_auth.py'):
-        assert (ROOT / 'services/shared' / name).read_bytes() == (router / name).read_bytes()
-    expected = (ROOT / 'services/shared/native_postgres.py').read_text().replace(
-        'from services.shared.process_lifecycle import', 'from core.process_lifecycle import')
-    expected = expected.replace('from services.shared.windows_postgres import', 'from core.windows_postgres import')
-    assert expected == (router / 'native_postgres.py').read_text()
+    # Every file the Router ships a copy of (the list is the sync's own: a list kept here once named six of the
+    # thirteen, and the other copies drifted for weeks).
+    import sync_router_engine
+    assert sync_router_engine.sync(ROOT.parent / 'orion-router/core') == []
+
+
+def test_a_release_round_refreshes_the_routers_copies_and_commits_them(tmp_path, monkeypatch):
+    import subprocess
+    import sync_router_engine
+    sys.path.insert(0, str(ROOT / 'scripts/release'))
+    import release
+    router = tmp_path / 'orion-router'
+    (router / 'core').mkdir(parents=True)
+    (router / 'core/local_installation.py').write_text('')
+    for name in sync_router_engine.NAMES:
+        (router / 'core' / name).write_bytes(sync_router_engine.vendored(name))
+    (router / 'core/update_gate.py').write_bytes(b'# an old copy\n')
+    git = ['git', '-C', str(router), '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false']
+    subprocess.run([*git, 'init', '-q'], check=True)
+    subprocess.run([*git, 'add', '.'], check=True)
+    subprocess.run([*git, 'commit', '-q', '-m', 'before'], check=True)
+    monkeypatch.setenv('GIT_AUTHOR_NAME', 't'), monkeypatch.setenv('GIT_AUTHOR_EMAIL', 't@t')
+    monkeypatch.setenv('GIT_COMMITTER_NAME', 't'), monkeypatch.setenv('GIT_COMMITTER_EMAIL', 't@t')
+    assert release.sync_router_engine(router) == ['update_gate.py']
+    assert (router / 'core/update_gate.py').read_bytes() == sync_router_engine.vendored('update_gate.py')
+    log = subprocess.run([*git, 'log', '--format=%s'], capture_output=True, text=True, check=True).stdout.split('\n')
+    assert log[0] == 'release: sync the vendored engine with the assistant'
+    assert not subprocess.run([*git, 'status', '--porcelain'], capture_output=True, text=True).stdout.strip()
+    assert release.sync_router_engine(router) == []  # Nothing to do, nothing committed.
+    assert len(subprocess.run([*git, 'log', '--format=%s'], capture_output=True, text=True).stdout.split()) > 0
 
 
 def test_postgres_durability_and_foreign_pid_checks(tmp_path):
