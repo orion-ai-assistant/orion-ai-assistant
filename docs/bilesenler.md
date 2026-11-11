@@ -617,7 +617,16 @@ Sıra önerisi yukarıdan aşağıya.
   rastgelelik, seed) tarayıcıda motor adıyla ayrı saklanır (`orionTts:<motor>:<alan>`).
 - **Router Modeller sayfası:** `default_config.per_engine = {omnivoice: {...}, voxcpm2: {...}}`; Engine View
   değişince ekrandakiler o motora kaydedilir, öbürününki gelir; Kaydet ikisini birden yazar. Oyun Alanı çalışan
-  motorun `per_engine` değerlerini kullanır (yoksa eski düz alanlar).
+  motorun `per_engine` değerlerini kullanır (yoksa eski düz alanlar). Router da 2026-11-11'den beri isteğin boş
+  bıraktığı alanları çalışan motorun `per_engine` kaydından doldurur (bkz. [tts-motoru-derleme.md](tts-motoru-derleme.md) 6. bölüm).
+- **VoxCPM2'nin varsayılan sesi (hazırlık sesi):** Ses seçilmezse VoxCPM2 her cümleyi bir hazırlık sesinin devamı
+  olarak üretir; ses ondan gelir. Herkeste aynı ayarlarla, ilk kullanımda bir kez üretilir ve `voices/` altında saklanır
+  (`engines.py`, `_plain_prime_wav`): cümle **"Merhaba bugün nasılsınız?"** (`PRIME_TEXT`), ses tarifi
+  **"A clear voice sweet girl."** (`DEFAULT_VOICE_DESIGN`), seed 42424, guidance 2,6, 15 adım, rastgelelik 0,75.
+  8810 sayfasındaki "hazırlık sesini üret ve kaydet" bunun yerine `_prime_voxcpm2-gguf_custom.wav` yazar; o dosya
+  varsa o kullanılır (yalnız o bilgisayarda).
+  - **Sonra (2026-11-11 kararı):** hazırlık sesi dile göre üretilsin (her dil kendi cümlesiyle; şu an tek ve Türkçe).
+    OmniVoice için de hazır klon sesler üretmek gerekecek, birlikte yapılacak.
 - **Dil listesi:** OmniVoice'un 647 dili `services/tts/omnivoice_languages.json` dosyasından gelir (lang_map.py'den
   üretildi; PyTorch'lu paket release'te olmadığı için liste yalnız Auto/Turkish/English'e düşüyordu). Dosya Hub
   paketine girer.
