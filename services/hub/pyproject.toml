@@ -23,6 +23,9 @@ dependencies = [
   "ddgs>=9.0,<10",
   "zeroconf>=0.151.0,<1",
   "psutil>=5.9,<8",
+  # Windows' own certificate check for Orion's updates and Bileşenler downloads (services/shared/windows_trust.py);
+  # the packaged runtime has it (scripts/release/hub-requirements.txt), the developer one needs it too.
+  "truststore>=0.10.4",
   # Echo cancellation for the PC microphone mode (Windows loopback reference only).
   "numpy>=1.26",
   "ai-edge-litert>=2.3,<3; sys_platform == 'win32'",

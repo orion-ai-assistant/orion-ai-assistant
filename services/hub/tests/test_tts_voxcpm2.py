@@ -38,7 +38,7 @@ def test_a_clone_keeps_its_wav_and_it_alone_goes_with_every_request(tmp_path):
 def test_no_clone_no_reference_and_a_description_designs_the_voice(tmp_path):
     payload = engine()._payload(' Günaydın. ', None, 'A calm, deep male voice', None, -1)
     assert payload['input'] == '(A calm, deep male voice)Günaydın.' and 'reference_audio' not in payload
-    assert 0 <= payload['seed'] < 2**31  # A description without a seed: a new one every time.
+    assert payload['seed'] == engines.DEFAULT_SEED  # A description without a seed: the default seed, as any voice.
     # A model name is not a voice description (here, without a server, the default voice's own design stands in).
     assert 'voxcpm2-gguf' not in engine()._payload('Merhaba.', None, 'voxcpm2-gguf', 2.0, -1)['input']
 

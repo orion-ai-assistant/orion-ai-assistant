@@ -810,13 +810,9 @@ class VoxCPM2GGUFEngine(TTSEngine):
         payload = {"model": "voxcpm", "input": text, "response_format": "wav"}
         if ref:
             payload["reference_audio"] = base64.b64encode(ref).decode()
-        # No seed asked for (None or -1): the default and cloned voices get DEFAULT_SEED, so they sound the same from
-        # request to request; a voice description gets a new seed every time (without one the server always uses
-        # the same, so every answer to the same text came out the same).
-        if seed is not None and seed != -1:
-            payload["seed"] = int(seed)
-        else:
-            payload["seed"] = random.randint(0, 2**31 - 1) if designed else DEFAULT_SEED
+        # No seed asked for (None or -1): DEFAULT_SEED, with or without a voice description (2026-11-11 decision), so
+        # a voice sounds the same from request to request. A random voice is asked for with a seed of its own.
+        payload["seed"] = int(seed) if seed is not None and seed != -1 else DEFAULT_SEED
         # Guidance: never above 4, where the voice gets louder and louder and the server's 16-bit output clips (it
         # shouts and clicks: measured rms 1.5-5 k at 2, 10-13 k at 5).
         payload["cfg_value"] = (min(MAX_GUIDANCE, max(MIN_GUIDANCE, float(guidance_scale)))
@@ -914,7 +910,7 @@ DEFAULT_STEPS = 15
 MIN_TEMPERATURE = 0.5
 MAX_TEMPERATURE = 0.9
 DEFAULT_TEMPERATURE = 0.85
-DEFAULT_SEED = 32  # the default and cloned voices; a voice description without a seed gets a random one
+DEFAULT_SEED = 32  # every request without a seed (default voice, clone or voice description)
 VOXCPM2_DEFAULTS = {"creativity": DEFAULT_GUIDANCE - MIN_GUIDANCE, "steps": DEFAULT_STEPS,
                     "temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED}
 # The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.

@@ -64,7 +64,7 @@ async function init() {
             if (temp && tempDefault !== null) temp.value = String(tempDefault);
             const seedLabel = document.getElementById('seedLabel');
             if (seedLabel && voxDefaults.seed !== undefined) {
-                seedLabel.textContent = `Sabit Seed (-1: varsayılan ${voxDefaults.seed}; ses tarifi varsa rastgele):`;
+                seedLabel.textContent = `Sabit Seed (-1: varsayılan ${voxDefaults.seed}):`;
             }
         }
 

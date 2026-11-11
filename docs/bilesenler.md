@@ -314,8 +314,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   2 sn'de bir küçük istekle sıcak tutmak yalnızca ~0,1 sn kazandırdı, yapılmadı. Sunucu her açıldığında arkada bir kez
   "Merhaba." üretilir (`_warm_up`, ~2,3 sn): açılıştan sonraki ilk klonsuz cümle ~1,0 → 0,51 sn. Klonun ilk cümlesi
   yine ~0,2 sn geç (o klonun örneği o an kodlanır).
-  VoxCPM2 ayarları (varsayılanların hepsi tek yerde: engines.py, `VOXCPM2_DEFAULTS`; 8810 sayfası da oradan okur): `seed` (-1 ya da verilmezse varsayılan ve klon seste 32, ses tarifi varsa her istekte rastgele; göndermezsek
-  sunucu hep aynı tohumu kullanıyordu); `guidance_scale` → `cfg_value` (2-4, verilmezse 3: sayfalarda "yaratıcılık 1";
+  VoxCPM2 ayarları (varsayılanların hepsi tek yerde: engines.py, `VOXCPM2_DEFAULTS`; 8810 sayfası da oradan okur): `seed` (-1 ya da verilmezse her zaman 32: varsayılan ses, klon ve ses tarifi; 2026-11-11'e kadar ses tarifinde
+  her istekte rastgeleydi); `guidance_scale` → `cfg_value` (2-4, verilmezse 3: sayfalarda "yaratıcılık 1";
   2026-11-05'e kadar 2,6); `steps` → `inference_timesteps` (verilmezse 15; Router artık
   adım göndermiyor, OmniVoice'a TTS servisi yine 15 verir); kaydedilmiş özel hazırlık sesi yoksa klonsuz hazırlık 2,6 / 0,75 / 15 ile üretilir; özel hazırlık arayüzden geçerli ayarlarla kaydedilebilir. `temperature` (arayüzde "Rastgelelik", 0,5-0,9; 8810 sayfası varsayılandan başlar (0,05'lik adım; varsayılanlar "Varsayılan" yazar),
   istek vermezse motor 0,85 kullanır, PyTorch'ta 1,0'dı). Hız (`speed`) VoxCPM2'de yok: model süre/hız ayarı almıyor, eski PyTorch motoru da `speed`'i hiç kullanmıyordu (OmniVoice'un

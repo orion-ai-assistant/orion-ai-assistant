@@ -124,7 +124,10 @@ Hub logunda yankı iptalli turlar için:
 ```bash
 # Hub (depo kökü PYTHONPATH'te olmalı, yoksa auth_routes içe aktarılamaz)
 cd orion-ai-assistant/services/hub
-PYTHONPATH="D:/krstlcm Workspace/DevProjects/orion-ai-assistant" uv run pytest tests/test_remote_mic.py tests/test_remote_mic_endpoints.py tests/test_echo_cancel.py tests/test_level_gain.py tests/test_echo_live.py tests/test_residual_echo.py -q
+PYTHONPATH="D:/krstlcm Workspace/DevProjects/orion-ai-assistant" uv run --extra dev pytest tests/test_remote_mic.py tests/test_remote_mic_endpoints.py tests/test_echo_cancel.py tests/test_level_gain.py tests/test_echo_live.py tests/test_residual_echo.py -q
+# --extra dev: pytest, httpx, scipy "dev" ekinde; onsuz uv run ortamı eşitlerken onları kaldırır. uv run ortamı
+# kilit dosyasına göre değiştirecekse (yeni sürüm) önce stop_hub: çalışan Hub'ın .pyd dosyaları kilitlidir, yarım
+# kalan eşitleme ortamı karıştırır.
 
 # Flutter
 cd orion-ai-assistant-flutter/main_app/app
