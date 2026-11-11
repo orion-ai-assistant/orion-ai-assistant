@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import os
 import unittest
+from unittest import mock
 
 from orion.api import remote_mic
 from orion.api.remote_mic import PcLink, PhoneAudioCleaner, PhoneLink, validate_turn_start, pc_key, turn_key
@@ -316,6 +318,26 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         self.assertNotIn('check_preroll', [c[0] for c in fake.calls])
 
+    async def test_the_check_is_localvqe_alone_by_default(self):
+        h = Harness()
+        chains = []
+
+        class PlayingCanceller(FakeCanceller):
+            def reference_quiet(self, start_time, preroll_samples):
+                return False
+
+            def check_preroll(self, device, preroll, start_time, chain=False):
+                chains.append(chain)
+                return preroll
+        h.pc.cleaner = PhoneAudioCleaner(PlayingCanceller())
+        await h.pc.activate()
+        await h.pc.on_text({'type': 'speaking', 'active': True})
+        await h.phone.on_text(start(turn_id='reply', preroll_samples=2, start_sample=0, wake_end_sample=1))
+        await h.phone.on_audio(b'\x01\x00' * 2)
+        await h.pc.turn['check']
+        self.assertEqual(chains, [False])
+
+    @mock.patch.dict(os.environ, {'ORION_WAKE_CHECK_CHAIN': '1'})
     async def test_the_check_uses_the_chain_only_while_orion_speaks(self):
         h = Harness()
         chains = []

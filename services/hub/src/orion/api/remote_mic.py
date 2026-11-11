@@ -511,10 +511,12 @@ class PcLink:
             skip = 0
             if isinstance(turn.get('wake_end'), int):
                 skip = max(0, min(len(preroll) // 2, turn['wake_end'] - round(CHECK_SECONDS * SAMPLE_RATE)))
-            # Orion's own voice playing: the whole chain, which removes it (LocalVQE alone left
-            # the reply's spoken "Orion" for the check to find). Otherwise LocalVQE alone: about
-            # twice as fast, and enough for other playback (videos, music).
-            chain = getattr(self, 'speaking_until', 0.0) > time.perf_counter()
+            # LocalVQE alone: about twice as fast as the chain, also while Orion's own voice
+            # plays (on trial since 2026-11-12). On 2026-11-06 it seemed to leave the reply's
+            # spoken "Orion"; ORION_WAKE_CHECK_CHAIN=1 brings back the whole chain while Orion
+            # speaks.
+            chain = (os.environ.get('ORION_WAKE_CHECK_CHAIN') == '1'
+                     and getattr(self, 'speaking_until', 0.0) > time.perf_counter())
             clean = await self.cleaner.check_preroll(turn['device'], preroll[skip * 2:], turn['started'], chain)
             clean = bytes(skip * 2) + clean
             preroll = preroll[skip * 2:]
