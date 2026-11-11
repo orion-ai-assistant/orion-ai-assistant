@@ -28,6 +28,27 @@ from orion.contracts.events import StreamEvent
 from orion.kernel.job_safety import job_key, WAITING_KEY, TERMINAL_TTL
 
 
+def _tts_reason(error: object) -> str:
+    """Why speech failed, for the client's notice: the TTS service's own message when the error carries one
+    ("Böyle bir ses klonu bulunamadı: ..."), else the error itself, short."""
+    import json, re
+    text = str(error or "")
+    # The Router may wrap the service's JSON in its own ({"error": "... {\"detail\": ...}"}): unwrap twice.
+    for _ in range(2):
+        match = re.search(r'\{.*\}', text, re.S)
+        if not match:
+            break
+        try:
+            body = json.loads(match.group(0))
+        except ValueError:
+            break
+        inner = body.get("detail") or body.get("error") if isinstance(body, dict) else None
+        if not isinstance(inner, str) or not inner.strip():
+            break
+        text = inner
+    return text.strip()[:300]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -646,7 +667,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     await context._publish(StreamEvent(
                         type="warning", chat_id=context.chat_id,
                         turn_id=context.turn_id, generation_id=context.turn_id,
-                        data={"code": "tts_failed", "message": "Erken seslendirme tamamlanamadı. Yanıtı metin olarak okuyabilirsiniz."},
+                        data={"code": "tts_failed", "message": "Erken seslendirme tamamlanamadı. Yanıtı metin olarak okuyabilirsiniz.",
+                              "reason": _tts_reason(adaptive_tts.error)},
                     ))
             elif should_tts and not stopped:
                 try:
@@ -672,7 +694,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         await context._publish(StreamEvent(
                             type="warning", chat_id=context.chat_id,
                             turn_id=context.turn_id, generation_id=context.turn_id,
-                            data={"code": "tts_quota_exhausted" if getattr(tts_err, "status", None) == 429 else "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz."},
+                            data={"code": "tts_quota_exhausted" if getattr(tts_err, "status", None) == 429 else "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz.",
+                                  "reason": _tts_reason(tts_err)},
                         ))
                     except Exception:
                         logging.warning("Could not publish TTS warning for chat %s", context.chat_id)

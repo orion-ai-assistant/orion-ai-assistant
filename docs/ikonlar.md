@@ -114,18 +114,29 @@ Router logosunu değiştirmek için:
 
 ### Hub (`orion-ai-assistant` ve `orion-ai-assistant-flutter`) (6 Kasım 2026'dan beri tek kaynak)
 
-Hub'ın bütün ikonları tek betikten çıkar: `orion-ai-assistant-flutter/tools/make_hub_icons.py <kaynak.png>`
-(Pillow, numpy ve scipy gerekir; derleme istemez, çıktılar depoya eklenir).
+Hub'ın bütün ikonları tek betikten çıkar: `orion-ai-assistant-flutter/tools/make_hub_icons.py [kaynak.png]`
+(yalnız Pillow gerekir; derleme istemez, çıktılar depoya eklenir):
 
-- Kaynak: kare PNG, en az 1024 px. Yuvarlak karenin dışındaki saf siyah alan otomatik şeffaf yapılır
-  (köşelerden taşırılarak bulunur), sonra kare kırpılıp 1024 px ana dosya (`assets/brand/orion_logo_master.png`) olur.
-- Her boyut ayrı üretilir (8 kat büyük çizim, tek Lanczos adımı, küçüklerde hafif keskinleştirme); hiçbir yer
-  tek resmi esnetmez.
+```
+uv run --no-project --with pillow python tools/make_hub_icons.py
+```
+
+- 11 Kasım 2026'dan beri her yerde Router panelindeki **beyaz yuvarlak kare amblem** kullanılır. Kaynak
+  varsayılan olarak `orion-router/dashboard/brand/orion-router-logo.png`'dir; Router betiğiyle aynı çizim
+  yöntemi uygulanır (8 kat büyük çizim, çizgiler en az 0,85 px'e kalınlaştırılır, 24 px ve altında süsler
+  çıkarılır, tek Lanczos adımı). İki uygulamanın ikonları bu yüzden birebir aynıdır.
+- Her boyut ayrı üretilir; hiçbir yer tek resmi esnetmez. Flutter içi logolar 1x/2x/3x olarak gösterildikleri
+  boyut için çizilir: `orion_logo` (64, giriş), `orion_mark` (36, kenar çubuğu), `orion_mark_large`
+  (96, açılış ekranı).
+- Android başlatıcı ikonları (`android/app/src/main/res/mipmap-*/ic_launcher.png`) ve kurulum sayfasının
+  ikonu (`installer/app/ui/favicon.png`) da bu betikten çıkar.
 
 | Nerede görünüyor | Dosya |
 |---|---|
 | Flutter masaüstü penceresi, görev çubuğu, exe | `main_app/app/windows/runner/resources/app_icon.ico` (16–256 px) |
-| Flutter içi logo (giriş, kenar çubuğu, dar ekran başlığı) | `assets/brand/orion_logo.png` + `2.0x/` + `3.0x/`, `lib/core/presentation/orion_logo.dart` |
+| Flutter içi logo (giriş, kenar çubuğu, dar ekran başlığı, açılış ekranı) | `assets/brand/orion_logo.png`, `orion_mark.png`, `orion_mark_large.png` + `2.0x/` + `3.0x/`, `lib/core/presentation/orion_logo.dart` |
+| Android başlatıcı | `android/app/src/main/res/mipmap-*/ic_launcher.png` |
+| Kurulum sayfası | `installer/app/ui/favicon.png` |
 | Flutter web sekmesi / PWA | `web/favicon.ico`, `web/favicon.png`, `web/icons/*` |
 | Orion.exe | `scripts/release/launcher/orion.ico` |
 | Hub'ın kendi penceresi (OrionUi.exe): başlık çubuğu, görev çubuğu | `main_app/app/windows_host/orion.ico` (exe'ye gömülür) |
@@ -169,7 +180,8 @@ bu adım hiç çalışmaz.
 - **Hub'ın penceresi** `OrionUi.exe`'dir (WebView2; kaynak `main_app/app/windows_host/OrionUi.cs`, derleme
   `windows_host/build_ui_host.py`). Ekran ölçeğini bilir (bulanık büyütme yok), ikonu Windows'un istediği tam
   boyutta alır. Başlık çubuğu eski Edge Router penceresindeki koyu gridir (seçiliyken `#202020`, değilken
-  `#2B2B2B`), "başlık çubuklarında vurgu rengi" açık olsa da çubuk boyanmaz; yalnız kenarlık Windows'a
+  `#2B2B2B`), F11 pencereyi tam ekran yapar (görev çubuğu dahil; tekrar F11 geri alır, sayfadaki bir video
+  tam ekrana geçerse pencere de geçer), "başlık çubuklarında vurgu rengi" açık olsa da çubuk boyanmaz; yalnız kenarlık Windows'a
   bırakılır (vurgu / duvar kağıdı rengi). Başlık yazısı pencere seçili değilken de grileşmez. Flutter masaüstü
   penceresi (`windows/runner/win32_window.cpp`) aynıdır.
 - **Router panel logosu** 36–288 px (1x–8x) dosyalarından seçilir (`orion-router/dashboard/scripts/make_icons.py`,

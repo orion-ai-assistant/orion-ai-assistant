@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
 
@@ -9,7 +9,10 @@ from orion.api.security import (
     valid_admin_key,
     require_admin,
 )
-from orion.kernel.registry import get_user_by_username, create_user, set_user_active, set_user_approval
+from orion.kernel.registry import (
+    get_user_by_username, create_user, set_user_active, set_user_approval,
+    set_user_display_name, set_user_password, set_user_avatar, get_user_avatar,
+)
 from orion.api.login_limits import limit_login, limit_attempts
 from orion.api import invitations, sessions
 from orion.api.access_boundary import is_local
@@ -43,6 +46,17 @@ class InvitationPreview(BaseModel):
 class UserProfile(BaseModel):
     username: str
     is_active: bool
+    # The name the apps show; the login id (username) never changes.
+    display_name: str | None = None
+    # Changes whenever the picture does, so a client knows to fetch it again.
+    avatar_version: str | None = None
+
+
+def profile_of(user: dict) -> UserProfile:
+    updated = user.get("avatar_updated_at")
+    return UserProfile(username=user["id"], is_active=user["is_active"],
+                       display_name=user.get("display_name"),
+                       avatar_version=updated.isoformat() if updated else None)
 
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> str:
     provided_admin_key = request.headers.get("X-Admin-Key") or request.query_params.get("admin_key")
@@ -200,7 +214,112 @@ async def read_users_me(current_user: str = Depends(get_current_user)):
     user = await get_user_by_username(current_user)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserProfile(username=user["id"], is_active=user["is_active"])
+    return profile_of(user)
+
+
+class ProfileUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=60)
+
+
+@router.patch("/profile", response_model=UserProfile)
+async def update_profile(payload: ProfileUpdate, current_user: str = Depends(get_current_user)):
+    name = " ".join((payload.display_name or "").split()) or None
+    try:
+        if not await set_user_display_name(current_user, name):
+            raise HTTPException(404, "User not found")
+    except RuntimeError as exc:
+        raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
+    return profile_of(await get_user_by_username(current_user))
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=1, max_length=72)
+
+    @field_validator("current_password", "new_password")
+    @classmethod
+    def password_fits_bcrypt(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 UTF-8 bytes")
+        return value
+
+
+@router.post("/password", response_model=Token)
+async def change_password(payload: PasswordChange, http_request: Request,
+                          current_user: str = Depends(get_current_user)):
+    """Every other session of the account ends (they carry the old password's
+    credential); this device gets a new token and stays signed in."""
+    await limit_attempts(http_request, 'password-change', current_user, 10)
+    user = await get_user_by_username(current_user)
+    if not user:
+        raise sessions.ended()
+    if not await asyncio.to_thread(verify_password, payload.current_password, user["password_hash"]):
+        raise HTTPException(400, "Mevcut şifre yanlış.")
+    password_hash = await asyncio.to_thread(hash_password, payload.new_password)
+    try:
+        if not await set_user_password(current_user, password_hash):
+            raise sessions.ended()
+    except RuntimeError as exc:
+        raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
+    return {"access_token": await sessions.issue({'id': current_user, 'password_hash': password_hash},
+                                                 bound_device(http_request)),
+            "token_type": "bearer"}
+
+
+AVATAR_LIMIT = 512 * 1024
+AVATAR_TYPES = {
+    "image/png": b"\x89PNG\r\n\x1a\n",
+    "image/jpeg": b"\xff\xd8\xff",
+    "image/webp": b"RIFF",
+}
+
+
+class AvatarUpload(BaseModel):
+    mime_type: str
+    # Base64; the apps send a small square they already scaled down.
+    data: str = Field(max_length=AVATAR_LIMIT * 4 // 3 + 8)
+
+
+@router.put("/avatar", response_model=UserProfile)
+async def upload_avatar(payload: AvatarUpload, current_user: str = Depends(get_current_user)):
+    import base64
+    import binascii
+    try:
+        raw = base64.b64decode(payload.data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(400, "Görsel okunamadı.") from exc
+    magic = AVATAR_TYPES.get(payload.mime_type)
+    if (not magic or not raw or len(raw) > AVATAR_LIMIT or not raw.startswith(magic)
+            or (payload.mime_type == "image/webp" and raw[8:12] != b"WEBP")):
+        raise HTTPException(400, "Profil fotoğrafı PNG, JPEG veya WebP olmalı ve 512 KB'ı geçmemeli.")
+    try:
+        if not await set_user_avatar(current_user, raw, payload.mime_type):
+            raise HTTPException(404, "User not found")
+    except RuntimeError as exc:
+        raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
+    return profile_of(await get_user_by_username(current_user))
+
+
+@router.delete("/avatar", response_model=UserProfile)
+async def delete_avatar(current_user: str = Depends(get_current_user)):
+    try:
+        if not await set_user_avatar(current_user, None, None):
+            raise HTTPException(404, "User not found")
+    except RuntimeError as exc:
+        raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
+    return profile_of(await get_user_by_username(current_user))
+
+
+@router.get("/avatar")
+async def read_avatar(current_user: str = Depends(get_current_user)):
+    try:
+        avatar = await get_user_avatar(current_user)
+    except RuntimeError as exc:
+        raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
+    if avatar is None:
+        raise HTTPException(404, "Profil fotoğrafı yok.")
+    mime, raw = avatar
+    return Response(content=raw, media_type=mime, headers={"X-Content-Type-Options": "nosniff"})
 
 
 async def require_active_user(username: str) -> None:

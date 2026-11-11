@@ -150,6 +150,32 @@ class RouterStreamTests(unittest.IsolatedAsyncioTestCase):
             _, _, payload, _, _, _ = await router._tts_request('merhaba', unset, None, 'pcm')
             self.assertNotIn('language', payload)
 
+    async def test_the_models_own_voice_wins_over_a_global_one_left_by_another_engine(self):
+        from orion.contracts.settings import RuntimeSettings
+        from orion.worker.services import router
+        with patch.object(router, 'get_session', AsyncMock()),                 patch.object(router, 'get_model_provider', AsyncMock(return_value='local')),                 patch.object(router, 'get_router_base_urls', lambda: ['https://router']),                 patch.object(router, '_get_router_api_key', lambda settings: 'key'):
+            # "Varsayılan" saved for local-tts: no voice is sent, the engine speaks with its own.
+            default = RuntimeSettings(tts_model='local-tts', tts_voice='zephyr', tts_model_voices={'local-tts': ''})
+            _, _, payload, _, _, _ = await router._tts_request('merhaba', default, None, 'pcm')
+            self.assertNotIn('voice', payload)
+            chosen = RuntimeSettings(tts_model='local-tts', tts_voice='zephyr', tts_model_voices={'local-tts': 'nika'})
+            _, _, payload, _, _, _ = await router._tts_request('merhaba', chosen, None, 'pcm')
+            self.assertEqual(payload['voice'], 'nika')
+            # A model with nothing saved still takes the global voice.
+            legacy = RuntimeSettings(tts_model='local-tts', tts_voice='nika', tts_model_voices={})
+            _, _, payload, _, _, _ = await router._tts_request('merhaba', legacy, None, 'pcm')
+            self.assertEqual(payload['voice'], 'nika')
+
+    def test_the_speech_warning_carries_the_services_own_reason(self):
+        import json
+        from orion.worker.services.job_processor import _tts_reason
+        inner = json.dumps({'detail': "Böyle bir ses klonu bulunamadı: 'zephyr'."}, ensure_ascii=False)
+        self.assertEqual(_tts_reason(f'Router TTS (500): Local TTS API Error: 400 - {inner}'),
+                         "Böyle bir ses klonu bulunamadı: 'zephyr'.")
+        wrapped = json.dumps({'error': f'Local TTS API Error: 400 - {inner}'}, ensure_ascii=False)
+        self.assertEqual(_tts_reason(f'Router TTS (500): {wrapped}'), "Böyle bir ses klonu bulunamadı: 'zephyr'.")
+        self.assertEqual(_tts_reason(TimeoutError('read timed out')), 'read timed out')
+
     async def test_quota_error_preserves_http_status(self):
         request = await self.request(status=429)
         with patch('orion.worker.services.router._tts_request', AsyncMock(return_value=request)):

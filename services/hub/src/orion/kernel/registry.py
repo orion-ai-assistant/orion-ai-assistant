@@ -118,6 +118,12 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
             """
         )
         await conn.execute("alter table orion_users alter column is_active set default false")
+        # Profile: a name to show (the login id never changes; chats and settings
+        # are keyed by it) and a small square picture.
+        await conn.execute("alter table orion_users add column if not exists display_name text")
+        await conn.execute("alter table orion_users add column if not exists avatar bytea")
+        await conn.execute("alter table orion_users add column if not exists avatar_mime text")
+        await conn.execute("alter table orion_users add column if not exists avatar_updated_at timestamptz")
         await conn.execute("""
             create table if not exists orion_invitations (
                 id text primary key,
@@ -321,10 +327,51 @@ async def get_user_by_username(username: str) -> dict | None:
     try:
         await _ensure_tables(conn)
         row = await conn.fetchrow(
-            "select id, password_hash, created_at, is_active from orion_users where id = $1",
+            "select id, password_hash, created_at, is_active, display_name, avatar_updated_at"
+            " from orion_users where id = $1",
             username,
         )
         return dict(row) if row else None
+    finally:
+        await conn.close()
+
+
+async def _update_user(query: str, *args) -> bool:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("User database unavailable")
+    try:
+        await _ensure_tables(conn)
+        return await conn.execute(query, *args) == "UPDATE 1"
+    finally:
+        await conn.close()
+
+
+async def set_user_display_name(username: str, display_name: str | None) -> bool:
+    return await _update_user("update orion_users set display_name = $2 where id = $1", username, display_name)
+
+
+async def set_user_password(username: str, password_hash: str) -> bool:
+    """Every session of the account ends with it: they carry the old hash's credential."""
+    return await _update_user("update orion_users set password_hash = $2 where id = $1", username, password_hash)
+
+
+async def set_user_avatar(username: str, data: bytes | None, mime: str | None) -> bool:
+    return await _update_user(
+        "update orion_users set avatar = $2, avatar_mime = $3,"
+        " avatar_updated_at = case when $2::bytea is null then null else now() end where id = $1",
+        username, data, mime,
+    )
+
+
+async def get_user_avatar(username: str) -> tuple[str, bytes] | None:
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("User database unavailable")
+    try:
+        await _ensure_tables(conn)
+        row = await conn.fetchrow("select avatar, avatar_mime from orion_users where id = $1", username)
+        return (row["avatar_mime"], bytes(row["avatar"])) if row and row["avatar"] is not None else None
     finally:
         await conn.close()
 

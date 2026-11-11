@@ -169,11 +169,6 @@ Kurallar:
 - **Feed'e ulaşılamazsa** yükseltme adımı durur; tekrar dene ya da `--no-bump` kullan.
 - **Sürüm biçimi:** `0.x.y` kalabilir. Paketli kurulumlarda büyük sürüm (major) kuralı yoktur; uyumluluğu
   manifest'teki `api` ve `requires` alanları belirler.
-- **Test işareti (isteğe bağlı):** Güncellemenin gerçekten geldiğini gözle görmek için harfi değiştir:
-  - Router paneli: `orion-router/dashboard/components/DashboardLayout.tsx` ("Güncelleme test işareti: X").
-  - Flutter: `main_app/app/lib/features/settings/settings_page.dart`.
-
-  Not: Router panelini değiştirmek Next.js derlemesini tetikler (~1,5-2 dk).
 
 Derleme, commit edilmiş/izlenen dosyalardan yapılır; yeni bir kaynak dosyası en azından `git add` ile
 izlenmeli.

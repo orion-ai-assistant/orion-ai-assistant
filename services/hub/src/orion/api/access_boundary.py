@@ -62,7 +62,7 @@ def public_path(path: str) -> bool:
         return True
     if private_path(path):
         return False
-    return (path in {'/health', '/api/v1/pair/request', '/api/v1/pair/create', '/api/v1/pair/capabilities', '/api/v1/pair/requests/stream', '/api/v1/discovery/self', '/api/v1/discovery/hubs', '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/registration', '/api/v1/auth/me', '/api/v1/auth/invitations/preview', '/api/v1/assistant/capabilities', '/api/v1/assistant/chat'}
+    return (path in {'/health', '/api/v1/pair/request', '/api/v1/pair/create', '/api/v1/pair/capabilities', '/api/v1/pair/requests/stream', '/api/v1/discovery/self', '/api/v1/discovery/hubs', '/api/v1/auth/login', '/api/v1/auth/register', '/api/v1/auth/registration', '/api/v1/auth/me', '/api/v1/auth/profile', '/api/v1/auth/password', '/api/v1/auth/avatar', '/api/v1/auth/invitations/preview', '/api/v1/assistant/capabilities', '/api/v1/assistant/chat'}
             or path.startswith('/api/v1/pair/requests/')
             or path.rstrip('/') in USER_SETTINGS
             or any(path == prefix or path.startswith(prefix + '/') for prefix in

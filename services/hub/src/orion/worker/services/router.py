@@ -464,9 +464,15 @@ async def _tts_request(
                 # As for chat: the Router can still resolve the model while the shared catalog is unavailable.
                 provider = None
 
-    raw_voice = voice if voice is not None else getattr(settings, "tts_voice", "")
-    if not raw_voice and hasattr(settings, "tts_model_voices"):
-        raw_voice = (getattr(settings, "tts_model_voices", {}) or {}).get(tts_model, "")
+    # The voice saved for this model wins over the global one: a voice chosen for another engine (a Gemini voice
+    # left in tts_voice) is not sent to this one. A model saved with no voice ("Varsayılan") uses its engine's own.
+    model_voices = getattr(settings, "tts_model_voices", {}) or {}
+    if voice is not None:
+        raw_voice = voice
+    elif tts_model in model_voices:
+        raw_voice = model_voices[tts_model]
+    else:
+        raw_voice = getattr(settings, "tts_voice", "")
     voice_name = (raw_voice or "").strip()
 
     # Normalize voice: if empty, default, or mismatched cross-provider leftover (e.g. alloy on Gemini)
