@@ -622,7 +622,9 @@ Sıra önerisi yukarıdan aşağıya.
 - **VoxCPM2'nin varsayılan sesi (hazırlık sesi):** Ses seçilmezse VoxCPM2 her cümleyi bir hazırlık sesinin devamı
   olarak üretir; ses ondan gelir. Herkeste aynı ayarlarla, ilk kullanımda bir kez üretilir ve `voices/` altında saklanır
   (`engines.py`, `_plain_prime_wav`): cümle **"Merhaba bugün nasılsınız?"** (`PRIME_TEXT`), ses tarifi
-  **"A clear voice sweet girl."** (`DEFAULT_VOICE_DESIGN`), seed 42424, guidance 2,6, 15 adım, rastgelelik 0,75.
+  **"A young woman in her mid-twenties with a clear voice, sexy."** (`DEFAULT_VOICE_DESIGN`), seed 3351313,
+  yaratıcılık 1 (guidance 3), 30 adım, rastgelelik 0,9 (2026-11-11'de 8810 sayfasında seçilen ses; bu ayarlarla
+  üretilen, orada kaydedilenle örnek örnek aynı). Ayarlardan biri değişirse dosya adı da değişir, yeni ses üretilir.
   8810 sayfasındaki "hazırlık sesini üret ve kaydet" bunun yerine `_prime_voxcpm2-gguf_custom.wav` yazar; o dosya
   varsa o kullanılır (yalnız o bilgisayarda).
   - **Sonra (2026-11-11 kararı):** hazırlık sesi dile göre üretilsin (her dil kendi cümlesiyle; şu an tek ve Türkçe).
