@@ -129,6 +129,24 @@ zip Toolkit'siz bilgisayarda açılmaz.
   edilir ve modelin `engine` alanı onu gösterir. Ondan sonra o mimarinin GGUF'ları yeniden derleme olmadan çalışır.
   Depodaki `services/tts/voxcpm2` PyTorch'lu Python sürümüdür, Bileşenler'de kullanılmaz.
 
+### Yeni motorda model ayarları (Router): her motor kendi ayarını kullanır
+
+Router'da `local-tts` modelinin ayarları (ses, seed, adım, dil, ses tarifi, cinsiyet/yaş...) her motor için ayrı
+saklanır (`default_config.per_engine.<motor>`). Router, isteğin boş bıraktığı alanları **o an çalışan motorun**
+kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_defaults`); motoru TTS'in
+`/v1/model_info` adresinden öğrenir (`providers/local/tts.py`, `active_engine`). Yeni bir motor eklenince:
+
+- `active_engine` motorun adını bir aileye çevirir (`voxcpm2-gguf` → `voxcpm2`). Yeni motor bu eşlemeye eklenmezse
+  Router onu tanımaz ve ayarları kaydedildiği gibi, yani başka motorun değerleriyle gönderebilir.
+- Motorun anlamadığı alanlar Router'da düşürülür (VoxCPM2 OmniVoice'un cinsiyet/yaş tasarımını almaz, yalnız yazılı
+  ses tarifini alır: `_OMNIVOICE_DESIGN`). Yeni motorun almadığı alanlar da buraya eklenmeli. Aksi halde bir motorun
+  ayarı diğerine geçer. 2026-11-11'de böyle oldu: OmniVoice'un "female, young adult" ayarı VoxCPM2'ye ses tarifi
+  olarak gitti ve VoxCPM2 hazırlık sesi yerine yeni bir ses tasarladı, Hub'daki ses TTS sayfasındakinden farklı çıktı.
+- Router panelinde Modeller → `local-tts` formunda (`dashboard/app/models/page.tsx`) "Ayarlar Görünümü"ne yeni
+  motor eklenir; form her motorun alanlarını o motorun kendi kaydından gösterir.
+- Router'ın kendisi doldurduğu her değer istek logunda `added_by_router` altında, `supervisor.log`'da
+  `from model settings=` olarak görünür. Ses beklenenden farklıysa önce buna bak.
+
 ## 7. VoxCPM2 motoru (llama.cpp-omni)
 
 - Kaynak: kendi fork'umuz [krstalacam/llama.cpp-omni](https://github.com/krstalacam/llama.cpp-omni), `orion` dalı

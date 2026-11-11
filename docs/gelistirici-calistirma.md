@@ -97,6 +97,7 @@ flutter run -d <cihaz-kimliği> --dart-define=ORION_AUDIO_DIAGNOSTICS=true
 | --- | --- |
 | Kaynak Hub (API + worker + Hub'ın web penceresi) | `orion-ai-assistant/services/hub/hub.log` (`Get-Content ... -Wait -Tail 20`) |
 | Kurulu Hub | `%LOCALAPPDATA%\Orion\Hub\data\services\hub\hub.log` |
+| Kaynak Router (istekler, `Routing TTS ...` satırları) | `orion-router/.orion-lifecycle/router-prod/supervisor.log` (bu satırlar `server.log`'da yok) |
 | Kurulu sürümün güncelleme günlüğü | `%LOCALAPPDATA%\Orion\updates\watcher.log`, `last-result.json` |
 | Web debug | `flutter run` terminali (tarayıcı konsolu) |
 | Telefon | `flutter run` terminali veya `adb logcat` |
