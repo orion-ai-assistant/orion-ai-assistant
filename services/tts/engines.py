@@ -774,7 +774,9 @@ class VoxCPM2GGUFEngine(TTSEngine):
             if self._plain_prime:
                 return self._plain_prime
             import hashlib
-            tag = hashlib.sha1(f"{DEFAULT_VOICE_DESIGN}|{PRIME_TEXT}|{PRIME_SEED}".encode()).hexdigest()[:8]
+            # Every setting of the warm-up is in its name: a change of any makes a new one.
+            tag = hashlib.sha1(f"{DEFAULT_VOICE_DESIGN}|{PRIME_TEXT}|{PRIME_SEED}|{PRIME_GUIDANCE}|{PRIME_STEPS}|"
+                               f"{PRIME_TEMPERATURE}".encode()).hexdigest()[:8]
             path = cache_dir / f"_prime_voxcpm2-gguf_{tag}.wav"
             if path.exists():
                 self._plain_prime = path.read_bytes()
@@ -897,11 +899,12 @@ class VoxCPM2GGUFEngine(TTSEngine):
 
 # What VoxCPM2 speaks with when the request has neither a description nor a cloned voice (without one the voice
 # is a different one with every seed).
-DEFAULT_VOICE_DESIGN = "A clear voice sweet girl."
+# Chosen 2026-11-11 on the 8810 page ("Sıfırdan Tasarla", saved as the warm-up): everyone's first default voice.
+DEFAULT_VOICE_DESIGN = "A young woman in her mid-twenties with a clear voice, sexy."
 # The default-voice warm-up used when no clone reference or voice description is supplied: a short sentence alone
 # ("Selam naber.") was read like by someone who does not speak Turkish; after this it is not.
 PRIME_TEXT = "Merhaba bugün nasılsınız?"
-PRIME_SEED = 42424
+PRIME_SEED = 3351313
 # VoxCPM2's defaults, written here only: what a request that does not say gets (Router, Hub; _payload), and
 # where the 8810 page's sliders start (/v1/model_info sends VOXCPM2_DEFAULTS).
 DEFAULT_GUIDANCE = 3.0  # what pages show as creativity 1 (0-2 -> 2-4)
@@ -915,9 +918,10 @@ DEFAULT_SEED = 32  # the default and cloned voices; a voice description without 
 VOXCPM2_DEFAULTS = {"creativity": DEFAULT_GUIDANCE - MIN_GUIDANCE, "steps": DEFAULT_STEPS,
                     "temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED}
 # The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.
-PRIME_GUIDANCE = 2.6
-PRIME_STEPS = 15
-PRIME_TEMPERATURE = 0.75
+# 8810 page values: creativity 1 ("Varsayılan" = guidance 3), quality steps 30, randomness 0.9.
+PRIME_GUIDANCE = 3.0
+PRIME_STEPS = 30
+PRIME_TEMPERATURE = 0.9
 
 
 class Leveler:
