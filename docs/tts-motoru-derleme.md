@@ -145,8 +145,10 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
   olarak gitti ve VoxCPM2 hazırlık sesi yerine yeni bir ses tasarladı, Hub'daki ses TTS sayfasındakinden farklı çıktı.
 - Router panelinde Modeller → `local-tts` formunda (`dashboard/app/models/page.tsx`) "Ayarlar Görünümü"ne yeni
   motor eklenir; form her motorun alanlarını o motorun kendi kaydından gösterir.
-- Router'ın kendisi doldurduğu her değer istek logunda `added_by_router` altında, `supervisor.log`'da
-  `from model settings=` olarak görünür. Ses beklenenden farklıysa önce buna bak.
+- Router panelindeki istek logu, TTS servisine (ya da OpenAI'ya, Gemini'ye) giden gövdenin kendisidir, gönderildiği
+  gibi (`orion-router/core/outgoing.py`: ortak HTTP istemcisi ve Gemini istemcisi her JSON gövdesini kaydeder; API
+  anahtarı başlıkta gider, logda olmaz). Ses beklenenden farklıysa önce buna bak: modelin ayarlarından gelen bir
+  değer de orada görünür. Router, modelde kayıtlı olmayan hiçbir değeri kendiliğinden eklemez.
 
 ## 7. VoxCPM2 motoru (llama.cpp-omni)
 
