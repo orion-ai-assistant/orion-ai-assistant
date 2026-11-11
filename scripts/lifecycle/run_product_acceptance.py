@@ -120,7 +120,6 @@ def environment(scratch):
                ORION_TEST_EGRESS_LOG=str(scratch / 'blocked-egress.log'),
                ORION_TEST_LINK_ROOT=str(scratch / 'windows-links'),
                ORION_MDNS='0', ORION_ROUTER_MDNS='0', ORION_FLUTTER_AUTOSTART='0',
-               ORION_LOCAL_SHORTCUTS='0',
                ORION_MOBILE_BIND_HOST='127.0.0.1', ORION_ROUTER_TLS_HOST='127.0.0.1',
                LOCAL_IP='127.0.0.1', HOST_IP='127.0.0.1')
     return env

@@ -322,7 +322,7 @@ def test_postgres_failure_prevents_hub_accepting_work():
     fake = Mock()
     fake.ensure.side_effect = lifecycle.LifecycleError('DB unavailable')
     env = {'HUB_PORT': '18080', 'REDIS_PORT': '16379', 'POSTGRES_PORT': '15432',
-           'JWT_SECRET_KEY': 'fixture-key', 'ORION_LOCAL_SHORTCUTS': '0'}
+           'JWT_SECRET_KEY': 'fixture-key'}
     with patch.object(run_local, 'get_env', side_effect=lambda key, default=None, **kw: env.get(key, default)), \
             patch.dict(os.environ, env), patch('orion.kernel.local_installation.register_native_hub'), \
             patch('services.shared.browser_shutdown.allow_hub_browsers'), \

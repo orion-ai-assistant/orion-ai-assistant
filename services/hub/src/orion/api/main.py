@@ -256,8 +256,6 @@ def create_app(public=False, discovery_enabled=True, local_entry=False, mobile=F
                 html = versioned_icons(page.read(), owner_dir)  # Every page's icons are owner-assets.
             root = request.scope.get('root_path', '').rstrip('/')
             if local_http:
-                local_port = int(get_env('ORION_LOCAL_SHORTCUT_PORT', default='80', required=False))
-                suffix = '' if local_port == 80 else f':{local_port}'
                 target = '/hub' if root else f'http://127.0.0.1:{get_env("ORION_LOCAL_PORT", default="8910", required=False)}/hub'
                 html = html.replace('href="/dashboard/"', 'href="' + target + '"')
                 if root:

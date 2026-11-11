@@ -9,7 +9,6 @@ require HTTPS/SPKI. This PC's local UI has a guarded HTTP exception:
 
 | Address | Transport and purpose |
 | --- | --- |
-| `127.0.0.1:80` | HTTP launcher, `/hub`, `/panel`, `/orionrouter` shortcut |
 | `127.0.0.1:8910/manage` | HTTP local owner HTML, local web UI and directory |
 | `127.0.0.1:8909` | Existing direct owner HTTPS listener |
 | `0.0.0.0:8911` | Public browser HTTPS, advertises its actual web port |
@@ -123,9 +122,8 @@ Standalone web listeners use `python -m orion.api.web_server --port 8909` and
 the persistent shared security volume. Load-balanced Nginx uses TLS on its
 published port and verifies the HTTPS upstream against the same identity cert.
 
-Open `http://127.0.0.1:8910/manage` for local management or `http://localhost/`
-for the launcher. `/hub` and `/panel` preserve existing local features;
-`/orionrouter` redirects to `http://127.0.0.1:20128/dashboard`. LAN browser chat
+Open `http://127.0.0.1:8910/panel` for local management. The port-80 launcher
+(`http://localhost/`, `/orionrouter`) was removed on 2026-11-11. LAN browser chat
 uses `https://<LAN-IP>:8911/`; Flutter mobile pairing uses HTTPS 8443. Browsers use their own
 certificate trust stores. Local loopback HTTP needs no certificate import.
 For remote HTTPS, an untrusted self-signed certificate causes a browser warning
@@ -137,8 +135,7 @@ pins remain stable because the private key is unchanged. This work does not
 automatically modify OS certificate stores.
 
 
-The local launcher uses `ORION_LOCAL_SHORTCUT_PORT=80`; its optional disable flag
-is `ORION_LOCAL_SHORTCUTS=0`. Local management uses `ORION_LOCAL_PORT=8910` and
+Local management uses `ORION_LOCAL_PORT=8910` and
 network browser TLS uses `ORION_WEB_PORT=8911`. Run the local UI standalone with
 `python -m orion.api.web_server --local --http-loopback --host 127.0.0.1 --port 8910`.
 This explicit runner refuses public/non-loopback binds. HTTP owner cookies use

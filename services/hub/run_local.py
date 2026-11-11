@@ -174,12 +174,6 @@ def _main(runtime):
     api_cmd = [py_bin, '-m', 'orion.api.web_server', '--host', '127.0.0.1', '--port', str(hub_port)]
     mobile_cmd = [py_bin, '-m', 'orion.api.mobile_server']
     local_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(local_port)]
-    shortcuts_enabled = get_env('ORION_LOCAL_SHORTCUTS', default='1', required=False).lower() not in {'0', 'false', 'off', 'no'}
-    shortcuts_port = int(get_env('ORION_LOCAL_SHORTCUT_PORT', default='80', required=False))
-    if shortcuts_enabled and shortcuts_port in {int(hub_port), int(mobile_port), local_port}:
-        raise RuntimeError('Local shortcut port must differ from other Hub listeners')
-    # Always local, even with legacy LAN/gateway environment settings present.
-    shortcuts_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(shortcuts_port)]
     worker_cmd = [py_bin, "-m", "orion.worker.main"]
     redis_exe = os.path.join(base_dir, ".local_db", "redis", "redis-server.exe")
     
@@ -242,7 +236,7 @@ def _main(runtime):
         if time.monotonic() >= deadline:
             raise LifecycleError('Redis readiness failed')
         time.sleep(.1)
-    for label, port in [('api', hub_port), ('local', local_port), ('mobile', mobile_port)] + ([('shortcuts', shortcuts_port)] if shortcuts_enabled else []):
+    for label, port in [('api', hub_port), ('local', local_port), ('mobile', mobile_port)]:
         if label not in runtime.children:
             assert_port_free(port)
 
@@ -257,16 +251,8 @@ def _main(runtime):
     processes.append(local_proc)
     all_pids.append(local_proc.pid)
     threading.Thread(target=stream_logs, args=(local_proc, '[API]', log_file, log_lock), daemon=True).start()
-    print(f'[*] Local management: http://127.0.0.1:{local_port}/manage')
+    print(f'[*] Local management: http://127.0.0.1:{local_port}/panel')
 
-    if shortcuts_enabled:
-        shortcut_proc = runtime.launch('shortcuts', shortcuts_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
-        processes.append(shortcut_proc)
-        all_pids.append(shortcut_proc.pid)
-        threading.Thread(target=stream_logs, args=(shortcut_proc, '[API]', log_file, log_lock), daemon=True).start()
-        suffix = '' if shortcuts_port == 80 else f':{shortcuts_port}'
-        print(f'[*] Local entry: http://localhost{suffix}/ (opens the Orion app); owner panel: /panel; Router: /orionrouter')
-    
     mobile_proc = runtime.launch('mobile', mobile_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
     processes.append(mobile_proc)
     all_pids.append(mobile_proc.pid)
@@ -300,8 +286,7 @@ def _main(runtime):
     try:
         from services.shared.flutter_launcher import start_flutter
         flutter_proc = start_flutter(repo_root, py_bin, get_env,
-            {int(hub_port), int(mobile_port), local_port,
-             shortcuts_port, int(redis_port), int(pg_port),
+            {int(hub_port), int(mobile_port), local_port, int(redis_port), int(pg_port),
              int(get_env('ORION_ROUTER_TLS_PORT', default='9443', required=False)),
              int(get_env('ORION_ROUTER_LOCAL_PORT', default='20128', required=False)),
              int(get_env('INSTALLER_PORT', default='7171', required=False))},
@@ -317,8 +302,6 @@ def _main(runtime):
     wait_health(api_proc, hub_port, certificate=identity['cert'])
     wait_health(local_proc, local_port)
     wait_health(mobile_proc, mobile_port, certificate=identity['cert'], identity=identity['id'])
-    if shortcuts_enabled:
-        wait_health(shortcut_proc, shortcuts_port)
     worker_deadline = time.monotonic() + 30
     while not worker_ready(supervisor.worker, redis_port):
         supervisor.check()
@@ -360,8 +343,7 @@ def _main(runtime):
             runtime.refresh_children()
             for label, command, port, tls in [
                     ('api', api_cmd, hub_port, True),
-                    ('local', local_cmd, local_port, False), ('mobile', mobile_cmd, mobile_port, True)
-                    ] + ([('shortcuts', shortcuts_cmd, shortcuts_port, False)] if shortcuts_enabled else []):
+                    ('local', local_cmd, local_port, False), ('mobile', mobile_cmd, mobile_port, True)]:
                 from services.shared.process_lifecycle import living
                 if not living(runtime.children[label]['process']):
                     runtime.status = 'starting'

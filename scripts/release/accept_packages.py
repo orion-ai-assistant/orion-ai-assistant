@@ -268,7 +268,7 @@ def run(artifacts, base, inputs, *, after_acceptance=None, mode='full', kinds=No
             'ORION_MOBILE_PORT': port(), 'ORION_FLUTTER_PORT': port(), 'ORION_BROWSER_BRIDGE_PORT': port(),
             'POSTGRES_PORT': port(), 'REDIS_PORT': port(), 'POSTGRES_HOST': '127.0.0.1',
             'REDIS_HOST': '127.0.0.1', 'POSTGRES_DB': 'orion', 'POSTGRES_USER': 'orion',
-            'POSTGRES_PASSWORD': 'orion', 'ORION_LOCAL_SHORTCUTS': '0', **LOOPBACK},
+            'POSTGRES_PASSWORD': 'orion', **LOOPBACK},
             'router': {'POSTGRES_PORT': port(), 'POSTGRES_DEV_PORT': port(), 'ORION_ROUTER_TLS_PORT': port(),
                        'ORION_ROUTER_LOCAL_HTTP_PORT': port(), 'ORION_ROUTER_MDNS': '0', **LOOPBACK}}
         (scratch / 'ports.json').write_text(json.dumps(settings, indent=2))

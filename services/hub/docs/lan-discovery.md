@@ -6,23 +6,22 @@ Hub hiçbir porttan tarayıcıya sohbet sayfası sunmaz.
 
 | Listener | Amaç | TLS koruması |
 | --- | --- | --- |
-| `127.0.0.1:80` | `localhost/` ve `/hub` Flutter'ı açar (307), `/panel` yönetim | TLS şifrelemesi ve sunucu kimliği doğrulaması yok |
 | `127.0.0.1:8910` | Flutter penceresinin API'si, `/manage` ve `/panel` yönetim; `/`, `/hub`, `/dashboard` Flutter'a yönlenir | Yalnızca gerçek loopback HTTP; native token kabul etmez |
 | `127.0.0.1:8909` | Eski doğrudan yönetim girişi; Router bağlantı döngüsü burada çalışır | HTTPS |
 | `0.0.0.0:8443` | Orion uygulaması: pairing, REST/SSE/WS; `/connect` kopyalanan bağlantıyı uygulamaya verir | HTTPS ve SPKI pinning |
 
 Eskiden diğer cihazların tarayıcısı için açılan `0.0.0.0:8911` (eski HTML sohbet)
 2026-11-01'de kaldırıldı; ayrıntı: [Flutter ana arayüz geçişi](../../../docs/flutter-primary-ui-migration.md).
+`127.0.0.1:80` kısa yolu (`http://localhost/`, `/orionrouter`) 2026-11-11'de
+kaldırıldı: Orion penceresi ve yönetim paneli kısayollardan açılır, 80 başka
+uygulamalara bırakılır.
 
 Portlar env ile değiştirilebilir. Yerel giriş her zaman loopback'e bağlanır;
-eski `ORION_HTTP_BIND_HOST`, `ORION_ADDRESS_GATEWAY`, `ORION_HTTP_EXTERNAL_PORT`
-ayarları kullanılmaz. Hub Router için ortak adres veya proxy sunmaz.
-Port 80 başka uygulamadaysa onu durdurma; yerel portu değiştir veya eski adres
-servisinin sahibi olan uygulamada bu servisi kapat.
+eski `ORION_HTTP_BIND_HOST`, `ORION_ADDRESS_GATEWAY`, `ORION_HTTP_EXTERNAL_PORT`,
+`ORION_LOCAL_SHORTCUTS`, `ORION_LOCAL_SHORTCUT_PORT` ayarları kullanılmaz.
+Hub Router için ortak adres veya proxy sunmaz.
 
 ```dotenv
-ORION_LOCAL_SHORTCUTS=1
-ORION_LOCAL_SHORTCUT_PORT=80
 ORION_LOCAL_PORT=8910
 ORION_ROUTER_LOCAL_PORT=20128
 ORION_MDNS=1
@@ -32,9 +31,8 @@ ORION_MDNS=1
 # ORION_ROUTER_CONNECTION_FILE=<kalıcı data>/router-connection.json
 ```
 
-`ORION_LOCAL_SHORTCUTS=0` port 80 başlangıç listener'ını kapatır; 8910 yönetim kalır.
-`http://localhost/orionrouter` Router’ın `http://127.0.0.1:20128/dashboard`
-arayüzüne yönlendirir. HTTP yönetim `/manage` ve `/panel` sayfalarında gerçek
+Yönetim paneli `http://127.0.0.1:8910/panel` adresindedir; Orion penceresindeki
+panel düğmesi (`/api/v1/browser/panel/open`) bunu açar. HTTP yönetim `/manage` ve `/panel` sayfalarında gerçek
 HTML sunar. Peer loopback değilse, Host yerel değilse veya herhangi bir forwarded
 header varsa HTTP reddedilir; Docker private-peer override bunu aşamaz.
 Native device token ve cihaza bağlı JWT, yerel HTTP’de de reddedilir.
@@ -104,12 +102,9 @@ eklemez. UI “Kayıtlı” der. Yerel HTML ortak ağ adına dayanmaz; telefon v
 API HTTP trafiği hâlâ şifrelenmez. Başka PC için ayarlarda güncel IP:8910 URL'si
 gösterilir; IP değişebilir. Flutter web'i sunmak/başlatmak sonraki iştir.
 
-Port 80 için LAN firewall izni veya hosts kaydı gerekmez. Telefon için private
-ağ profilinde gerçek Python sürecinin TCP 8910 ve UDP 5353 erişimi gerekir.
-AP/client isolation, misafir ağı veya firewall multicast'i engelleyebilir.
-`setup_windows_shortcuts.ps1` artık eski TCP-80 firewall kuralını kapatmak için
-isteğe bağlı `-DisableLegacyFirewallRule` seçeneği sunar; varsayılanı yalnızca
-yerel adresleri gösterir, hosts dosyasına dokunmaz.
+Hosts kaydı gerekmez. Telefon için private ağ profilinde gerçek Python sürecinin
+TCP 8443 ve UDP 5353 erişimi gerekir. AP/client isolation, misafir ağı veya
+firewall multicast'i engelleyebilir.
 
 Flutter/Router ajanlarına repo kökündeki
 `files/orion-yerel-giris-kesif-sozlesmesi.md` verilmelidir. Gerçek telefonda keşif,

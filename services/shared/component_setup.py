@@ -134,7 +134,7 @@ def materialize(client, target, root, settings):
         # Generated secrets remain in data; static package defaults are
         # not copied from any development or existing user installation.
         env = data / 'services/.env.global.local'
-        env.write_text('ORION_INSTALL_MODE=local\nORION_LOCAL_SHORTCUTS=0\n'
+        env.write_text('ORION_INSTALL_MODE=local\n'
                        'JWT_SECRET_KEY=' + secrets.token_urlsafe(48) + '\n', encoding='utf-8')
         with env.open('a', encoding='utf-8') as stream:
             stream.write(''.join(f'{k}={v}\n' for k, v in settings.get('hub', {}).items()))

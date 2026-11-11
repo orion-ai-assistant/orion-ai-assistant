@@ -1,4 +1,4 @@
-"""Loopback-only launcher: chat pages open the Flutter app, the owner panel stays mounted."""
+"""Loopback-only local entry (8910): chat pages open the Flutter app, the owner panel is mounted at /panel."""
 from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse, RedirectResponse
@@ -38,10 +38,6 @@ class OwnerShortcut:
             return await RedirectResponse(target, status_code=307, headers={'Cache-Control': 'no-store'})(scope, receive, send)
         if scope['type'] == 'http' and scope['method'] in {'GET', 'HEAD'} and path in {'/manage.', '/manage./'}:
             return await RedirectResponse('/manage', status_code=307)(scope, receive, send)
-        if scope['type'] == 'http' and path.rstrip('/') == '/orionrouter' and scope['method'] in {'GET', 'HEAD'}:
-            from services.shared.environment import get_env
-            port = int(get_env('ORION_ROUTER_LOCAL_PORT', default='20128', required=False))
-            return await RedirectResponse(f'http://127.0.0.1:{port}/dashboard', status_code=307)(scope, receive, send)
         from orion.api.access_boundary import management_api, USER_SETTINGS, OWNER_COOKIE
         headers = dict(scope.get('headers', []))
         account_credentials = headers.get(b'authorization', b'').lower().startswith(b'bearer ')

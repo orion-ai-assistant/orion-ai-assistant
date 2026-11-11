@@ -167,15 +167,16 @@ class LocalEntryTests(unittest.IsolatedAsyncioTestCase):
                     # requires browsers to inherit them when Location has none.
                     self.assertNotIn('#', response.headers['location'])
 
-    async def test_router_shortcut_targets_explicit_local_loopback_http(self):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
+    async def test_router_shortcut_is_gone_and_panel_stays(self):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://127.0.0.1:8910') as client:
             for path in ['/orionrouter', '/orionrouter/']:
-                response = await client.get(path)
-                self.assertEqual(response.status_code, 307)
-                self.assertEqual(response.headers['location'], 'http://127.0.0.1:20128/dashboard')
+                self.assertEqual((await client.get(path)).status_code, 404, path)
             panel = await client.get('/panel/manage/security')
             self.assertEqual(panel.status_code, 200)
             self.assertIn('/panel/owner-assets/base.js', panel.text)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=local_app, client=('127.0.0.1', 1234)), base_url='http://localhost') as client:
-            for path in ['/', '/orionrouter', '/panel', '/hub']:
-                self.assertIn((await client.get(path)).status_code, {200, 307})
+
+    def test_no_port_80_listener(self):
+        from services.hub import run_local
+        from services.shared import component_setup
+        for module in (run_local, component_setup):
+            self.assertNotIn('ORION_LOCAL_SHORTCUT', Path(module.__file__).read_text(encoding='utf-8'))

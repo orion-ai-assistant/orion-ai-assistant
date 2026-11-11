@@ -135,7 +135,7 @@ class WorkerSupervisorTests(unittest.TestCase):
 
         settings = {'ORION_FLUTTER_AUTOSTART': '0', 'HUB_PORT': '8900',
                     'ORION_LOCAL_PORT': '8910', 'ORION_MOBILE_PORT': '8443',
-                    'ORION_LOCAL_SHORTCUTS': '0', 'REDIS_PORT': '6379',
+                    'REDIS_PORT': '6379',
                     'POSTGRES_PORT': '5432'}
         with ExitStack() as stack:
             stack.enter_context(patch.object(run_local, 'get_env', side_effect=lambda name, default=None, **kw: settings.get(name, default)))

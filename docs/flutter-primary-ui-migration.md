@@ -69,7 +69,7 @@ Kullanıcı kararı: Orion yalnızca uygulamadan kullanılır (bu PC'de Flutter 
 | Adres | Önce | Şimdi |
 | --- | --- | --- |
 | `https://<LAN-IP>:8911/` | Eski HTML sohbet, `/connect`, `_orion._tcp` duyurusu | Dinleyici yok; Hub bu portu açmaz, güvenlik duvarı kuralına eklenmez |
-| `localhost:8910/`, `localhost/` | "Bu cihaz" karşılama sayfası | Flutter'a 307 (query korunur) |
+| `localhost:8910/`, `localhost/` | "Bu cihaz" karşılama sayfası | Flutter'a 307 (query korunur); `localhost/` (port 80) 2026-11-11'de tamamen kaldırıldı |
 | `localhost:8910/hub`, `/dashboard[/...]` | `/hub` Flutter'a, `/dashboard/js/...` eski dosyalara | Hepsi Flutter'a 307 |
 | `localhost:8910/api/...`, `/panel` | Flutter API, yönetim | Değişmedi |
 | `https://<LAN-IP>:8443/` | Bilgi sayfası + 8911 linki | Yalnızca bilgi sayfası |
