@@ -138,9 +138,10 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
 
 - `active_engine` motorun adını bir aileye çevirir (`voxcpm2-gguf` → `voxcpm2`). Yeni motor bu eşlemeye eklenmezse
   Router onu tanımaz ve ayarları kaydedildiği gibi, yani başka motorun değerleriyle gönderebilir.
-- Motorun anlamadığı alanlar Router'da düşürülür (VoxCPM2 OmniVoice'un cinsiyet/yaş tasarımını almaz, yalnız yazılı
-  ses tarifini alır: `_OMNIVOICE_DESIGN`). Yeni motorun almadığı alanlar da buraya eklenmeli. Aksi halde bir motorun
-  ayarı diğerine geçer. 2026-11-11'de böyle oldu: OmniVoice'un "female, young adult" ayarı VoxCPM2'ye ses tarifi
+- Motorun almadığı alanlar Router'da düşürülür (`_NOT_TAKEN`; VoxCPM2: OmniVoice'un cinsiyet/yaş tasarımı, hız ve dil;
+  yalnız yazılı ses tarifini alır). Router panelindeki form da aynı alanları o motor için göstermez ve kaydetmez
+  (`TTSDefaultConfig.NOT_TAKEN`); ikisi birlikte güncellenir. Yeni motorun almadığı alanlar da buraya eklenmeli.
+  Aksi halde bir motorun ayarı diğerine geçer ya da görünmeyen bir değer gönderilir. 2026-11-11'de böyle oldu: OmniVoice'un "female, young adult" ayarı VoxCPM2'ye ses tarifi
   olarak gitti ve VoxCPM2 hazırlık sesi yerine yeni bir ses tasarladı, Hub'daki ses TTS sayfasındakinden farklı çıktı.
 - Router panelinde Modeller → `local-tts` formunda (`dashboard/app/models/page.tsx`) "Ayarlar Görünümü"ne yeni
   motor eklenir; form her motorun alanlarını o motorun kendi kaydından gösterir.
