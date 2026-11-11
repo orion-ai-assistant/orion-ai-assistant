@@ -47,18 +47,9 @@ class PartialSpeech(Exception):
         self.audio = audio
 
 
-async def relay_tts(context, settings, text: str, should_stop: Callable[[], Awaitable[bool]], arrival_ms: Callable[[], int]):
-    async def single():
-        yield 0, text
-    return await _relay(context, settings, should_stop, arrival_ms, single(), adaptive=False)
-
-
-async def relay_tts_batches(context, settings, should_stop, arrival_ms, batches):
-    return await _relay(context, settings, should_stop, arrival_ms, batches, adaptive=True)
-
-
-async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
-    """Relay one utterance and retain a playable recording for every session."""
+async def relay_tts_batches(context, settings, should_stop: Callable[[], Awaitable[bool]],
+                            arrival_ms: Callable[[], int], batches):
+    """Relay one reply, part by part as ``batches`` yields them, and retain a playable recording."""
     user_stopped = False
 
     async def synthesize():
@@ -90,23 +81,21 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                     first_audio = first_audio or last_audio
                     pieces += 1
                     size += len(chunk)
-                    if adaptive and chunk_info["format"] != "pcm":
+                    if chunk_info["format"] != "pcm":
                         if chunk_info["format"] != "wav":
-                            raise RuntimeError("Early speech requires PCM or WAV sentence audio")
+                            raise RuntimeError("Speech requires PCM or WAV sentence audio")
                         buffered.extend(chunk)
                         if len(buffered) > 24_000_000:
                             raise RuntimeError("TTS batch exceeds size limit")
-                    elif adaptive:
+                    else:
                         data = carry + chunk
                         even = len(data) & ~1
                         carry = data[even:]
                         if even:
                             yield data[:even], chunk_info, sentence_index
-                    else:
-                        yield chunk, chunk_info, sentence_index
             finally:
                 await stream.aclose()
-            if adaptive and batch_info and batch_info["format"] == "wav":
+            if batch_info and batch_info["format"] == "wav":
                 pcm = await asyncio.to_thread(_batch_wav_pcm, buffered)
                 wav_info = {"format": "pcm", "sample_rate": 24000, "channels": 1,
                             "bits_per_sample": 16, "encoding": "pcm_s16le"}
@@ -126,7 +115,7 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                 spoken = False
                 hopeless = False
                 heard = 0  # pieces of this part that already reached the listener
-                for attempt in range(1, PART_ATTEMPTS + 1 if adaptive else 2):
+                for attempt in range(1, PART_ATTEMPTS + 1):
                     try:
                         async for item in one_batch(batch, sentence_index):
                             heard += 1
@@ -134,8 +123,6 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                         spoken = True
                         break
                     except Exception as error:
-                        if not adaptive:
-                            raise
                         logging.warning("Speech part %s failed (attempt %d of %d, %d pieces already played): %r",
                                         sentence_index, attempt, PART_ATTEMPTS, heard, error)
                         # A quota or access error will not clear within a second; do not ask again.
@@ -151,7 +138,7 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                     failed_in_a_row = 0
                 else:
                     failed_in_a_row += 1
-                if adaptive and pcm_started:
+                if pcm_started:
                     # Lets a playing device flush what it has, also after a part that failed half way.
                     await context.emit_audio_stream("audio_batch_done", {
                         "sentence_index": sentence_index,
@@ -204,7 +191,7 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
                         await context.emit_audio_stream("audio_chunk", {
                             "chunk": base64.b64encode(pending[:aligned]).decode("ascii"),
                             "sequence": sequence,
-                            **({"sentence_index": sentence_index} if adaptive else {}),
+                            "sentence_index": sentence_index,
                         })
                         relayed_chunks.append(pending[:aligned])
                         sequence += 1
@@ -231,7 +218,7 @@ async def _relay(context, settings, should_stop, arrival_ms, batches, adaptive):
         except PartialSpeech:
             raise
         except Exception as error:
-            if adaptive and pcm_started:
+            if pcm_started:
                 # What was already spoken stays playable and is kept in the chat.
                 audio = await recording("failed")
                 if audio:
