@@ -114,4 +114,12 @@ class SentenceSegmenter:
         text = re.sub(r'`[^`]*`', '', text)
         text = re.sub(r'(?m)^\s*(?:#{1,6}\s+|[-*>]\s+)', '', text)
         text = re.sub(r'[*_~]', '', text)
+        text = EMOJI.sub('', text)
         return re.sub(r'\s+', ' ', text).strip()
+
+
+# Emoji are not read aloud ("😄" became a second of noise). Pictographs, dingbats, flags, skin tones and the joiners
+# and variation selectors that glue them; "1️⃣" keeps its digit. Letters, digits, ° and other text marks stay.
+EMOJI = re.compile(
+    "[\U0001F000-\U0001FAFF⌀-⏿☀-➿⬀-⯿‍⃣︎️\U000E0020-\U000E007F]"
+)

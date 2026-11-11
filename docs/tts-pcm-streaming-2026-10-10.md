@@ -1,10 +1,12 @@
 # TTS PCM streaming — Hub, dashboard, Flutter
 
-`speech_mode: whole`: LLM metni tamamlandıktan sonra tek TTS isteği açılır. `adaptive` (düz sohbetin
-varsayılanı): metin geldikçe parçalara bölünür, ilk parça hemen, sonrakiler sırayla en çok 3 cümle / 600 karakter
-olarak istenir (`adaptive_tts.py`, `sentence_segmenter.py`). Yanıtın tamamı ilk parça istenmeden gelmişse ve tek isteğe
-sığıyorsa tek istekte gider. İlk parça yanıtın bitmesini beklemez (2026-10-31'de 250 ms bekleme denendi: kısa
-yanıtların çoğu tek istek oldu ama ilk ses gecikti; istek sayısı yerine hız seçildi). Kesim yerleri, önem sırasıyla:
+Seslendirilen her yanıt (asistan da düz sohbet de) tek yoldan gider; 2026-11-12'den beri `speech_mode` ve
+asistandaki "Yanıtı erken seslendir" anahtarı yok (eski uygulamanın gönderdiği alan yok sayılır). Metin geldikçe
+parçalara bölünür; **ilk 3 istek birer parça** (tek cümle), sonrakiler hazır olanlardan en çok 3 cümle / 600 karakter
+olarak istenir (`adaptive_tts.py` `SINGLE_REQUESTS`, `sentence_segmenter.py`). Kısa yanıt bitmiş olsa da cümle cümle
+gider. İlk parça yanıtın bitmesini beklemez (2026-10-31'de 250 ms bekleme denendi: kısa yanıtların çoğu tek istek oldu
+ama ilk ses gecikti; istek sayısı yerine hız seçildi). Emoji (resim karakterleri, bayraklar, ten rengi, birleştiriciler)
+hiç gönderilmez; `°` gibi metin işaretleri ve `1️⃣`'in rakamı kalır. Kesim yerleri, önem sırasıyla:
 1. Satır sonu: modelin ayrı satıra yazdığı her şey (liste maddesi, `Tavşan: “...”`, başlık) ayrı parçadır.
    Sonraki satır küçük harfle başlıyorsa satır yalnız kaydırılmıştır, cümle sürer.
 2. Cümle sonu: `. ! ? …` (arkasında kapanış tırnağı olabilir). Açık bir tırnağın içinde kesilmez
@@ -12,11 +14,12 @@ yanıtların çoğu tek istek oldu ama ilk ses gecikti; istek sayısı yerine h�
    konuşma etiketi (`“Muuuu!” diye`) cümleye dahildir. Kısaltma, tek harf ve ondalık sayıda kesilmez.
 3. İki nokta cümle sonu değildir: `:` ile biten bir satır (`Hoca şaşkınlıkla sormuş:`) sonraki satırla birlikte
    okunur. Yalnız yanıtın ilk satırı (`Tabii, işte bir tane daha:`) tek başına gider ki ilk ses çabuk gelsin.
-4. 3 kelimeden kısa parça ve harf/rakam içermeyen parça (yalnız emoji, `---`) bir sonrakine eklenir; 600 karakteri
-   aşan cümle kelime sınırından bölünür.
+4. 3 kelimeden kısa parça (`Selam.` → `Selam. Bugün nasılsınız?` tek parça) ve harf/rakam içermeyen parça (`---`)
+   bir sonrakine eklenir; 600 karakteri aşan cümle kelime sınırından bölünür.
 5. Yanıtın sonunda kalan kısa parça, son parça henüz istenmemişse ona eklenir. İstenmişse kelime içeriyorsa tek
-   başına gider (kısa yanıt da seslendirilir), yalnız emojiyse seslendirilmez, yazıda kalır (2026-10-31: sondaki `🙌`
-   tek başına bir istek olup 1,2 sn ses üretmişti). Yanıtta seslendirilecek hiçbir şey yoksa ne istek ne uyarı olur.
+   başına gider (kısa yanıt da seslendirilir). Yalnız emojiden oluşan satır boş kalır, hiç gönderilmez (2026-10-31:
+   sondaki `🙌` tek başına bir istek olup 1,2 sn ses üretmişti). Yanıtta seslendirilecek hiçbir şey yoksa ne istek ne
+   uyarı olur.
 
 Bir istekteki cümleler satır sonuyla birleştirilir (sesin yapıyı görmesi için); sohbete kaydedilen metin düzdür.
 Hub, mevcut güvenilir Router session/TLS ve kullanıcı sağlayıcı ayarlarını kullanır.

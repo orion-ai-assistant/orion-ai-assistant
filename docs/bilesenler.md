@@ -186,8 +186,8 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   - **VoxCPM2'nin akışı gerçek:** 160 ms'lik yamalar üretildikçe gelir; kartta ilk ses cümle boyundan bağımsız
     ~0.33 sn (Vulkan 0.5 sn), kesinti yok. Akışlı toplam akışsızdan ~%30 uzun. CPU'da üretim oynatmadan yavaş:
     akış dinleyiciyi bekletir (kullanılmamalı).
-  - **Orion'da akış (2026-11-03'ten beri, cümle grubunun içinde de):** Hub yanıtı cümlelere böler (ilk cümle
-    hemen, sonra en çok 3 cümle / 600 karakterlik gruplar; `adaptive_tts.py`) ve her grubu Router'dan
+  - **Orion'da akış (2026-11-03'ten beri, cümle grubunun içinde de):** Hub yanıtı cümlelere böler (ilk 3 istek
+    tek cümle, sonra en çok 3 cümle / 600 karakterlik gruplar; `adaptive_tts.py`) ve her grubu Router'dan
     `stream: true` ister; yerel TTS için PCM (`router.py` `stream_tts`). Router'ın yerel sağlayıcısı
     (`orion-router/providers/local/tts.py` `generate_speech_stream`) TTS'e `stream: true` + `pcm` gönderip
     parçaları geldikçe iletir. Akışı olan motor (VoxCPM2) ham 24 kHz PCM gönderir, Hub ilk parçada çalmaya

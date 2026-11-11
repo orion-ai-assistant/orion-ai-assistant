@@ -15,7 +15,7 @@ PCM = {"format": "pcm", "encoding": "pcm_s16le", "sample_rate": 24000, "channels
 
 
 class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
-    async def run_turn(self, mode, fail_audio=False, audio=True):
+    async def run_turn(self, fail_audio=False, audio=True):
         events = []
         heard = asyncio.Event()
         ended = False
@@ -33,18 +33,17 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
             events.append(event)
             if event['type'] == 'audio_chunk':
                 heard.set()
-                if mode == 'adaptive':
-                    self.assertFalse(ended and len(requests) == 1)
+                self.assertFalse(ended and len(requests) == 1)
         redis.publish.side_effect = publish
         record = SimpleNamespace(chat_id='chat', user_id='user', channel='events', turn_id='turn',
                                  created_at=datetime.now(timezone.utc).isoformat(), enabled_tools='[]')
         context = JobContext(record, JobCreateRequest(user_id='user', origin_session_id='session',
-            input=JobInput(text='istek', audio=audio, speech_mode=mode)), redis)
+            input=JobInput(text='istek', audio=audio)), redis)
         async def llm(*args):
             nonlocal ended
             yield 'thinking', 'PRIVATE THINKING'
             yield 'content', 'Merhaba, nasıl yardımcı olabilirim? '
-            if mode == 'adaptive' and not fail_audio:
+            if not fail_audio:
                 await asyncio.wait_for(heard.wait(), 1)
             else:
                 self.assertEqual(requests, [])
@@ -54,8 +53,6 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
         conversation = SimpleNamespace(stream=llm, activity=[], transcript=[], rounds=[])
         async def provider(text, *_):
             requests.append(text)
-            if mode == 'whole':
-                self.assertTrue(ended)
             if fail_audio:
                 raise RuntimeError('TTS unavailable')
             yield b'\x01\x02', PCM
@@ -81,21 +78,23 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all('PRIVATE' not in text for text in requests))
         return events, requests
 
-    async def test_adaptive_is_early_and_whole_waits_for_llm(self):
-        for mode in ('adaptive', 'whole'):
-            events, requests = await self.run_turn(mode)
-            self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim?', 'Sonraki.'] if mode == 'adaptive'
-                             else ['Merhaba, nasıl yardımcı olabilirim? Sonraki.'])
-            self.assertEqual(sum(event['type'] == 'audio_start' for event in events), 1)
-            self.assertEqual(sum(event['type'] == 'audio_done' for event in events), 1)
+    async def test_speech_starts_before_the_reply_ends(self):
+        events, requests = await self.run_turn()
+        self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim?', 'Sonraki.'])
+        self.assertEqual(sum(event['type'] == 'audio_start' for event in events), 1)
+        self.assertEqual(sum(event['type'] == 'audio_done' for event in events), 1)
+
+    async def test_an_older_app_that_still_asks_for_whole_speech_gets_it_early_too(self):
+        request = JobInput.model_validate({'text': 'istek', 'speech_mode': 'whole'})
+        self.assertFalse(hasattr(request, 'speech_mode'))
 
     async def test_plain_chat_without_audio_field_speaks_early_too(self):
-        events, requests = await self.run_turn('adaptive', audio=None)
+        events, requests = await self.run_turn(audio=None)
         self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim?', 'Sonraki.'])
         self.assertEqual(sum(event['type'] == 'audio_done' for event in events), 1)
 
     async def test_tts_failure_does_not_fail_or_duplicate_the_text_response(self):
-        events, requests = await self.run_turn('adaptive', fail_audio=True)
+        events, requests = await self.run_turn(fail_audio=True)
         # The reply ended before the first part was asked for, so its short tail went with it. The part is asked for
         # twice, then the speech ends and the text is untouched.
         self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim? Sonraki.'] * 2)

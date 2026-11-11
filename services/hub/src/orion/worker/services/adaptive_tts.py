@@ -1,9 +1,10 @@
-"""First sentence immediately, then bounded batches of whatever is ready.
+"""The first three sentences one request each, then bounded batches of whatever is ready.
 
-A sentence under MIN_WORDS ("Selam.") or one with nothing to say ("🎉") is not
+Every spoken reply goes this way, in the assistant and in a plain chat. A
+sentence under MIN_WORDS ("Selam.") or one with nothing to say ("—") is not
 spoken alone: it waits for the next one. At the reply's end what is left joins
 the last part if that is not asked for yet; otherwise it goes alone when it has
-words (so a short reply still speaks) and is dropped when it is only emoji.
+words (so a short reply still speaks). Emoji are never sent (the segmenter drops them).
 """
 import asyncio
 import logging
@@ -16,6 +17,7 @@ from orion.worker.services.tts_stream import PartialSpeech, relay_tts_batches
 
 class AdaptiveTts:
     MAX_QUEUED_CHARS = 12_000
+    SINGLE_REQUESTS = 3
     MAX_BATCH_SENTENCES = 3
     MAX_BATCH_CHARS = 600
     MIN_WORDS = 3
@@ -120,7 +122,7 @@ class AdaptiveTts:
                 self.condition.notify_all()
 
     async def groups(self):
-        first = True
+        requests = 0
         index = 0
         while True:
             async with self.condition:
@@ -129,11 +131,9 @@ class AdaptiveTts:
                     return
                 batch = [self.queue.popleft()]
                 length = len(batch[0])
-                # A short reply that has already ended (all of it came before the first part was asked for) goes in
-                # one request. A longer one still starts with its first sentence alone, so its audio starts soon.
-                whole = (first and self.closed and len(self.queue) < self.MAX_BATCH_SENTENCES
-                         and length + sum(1 + len(part) for part in self.queue) <= self.MAX_BATCH_CHARS)
-                while (not first or whole) and self.queue and len(batch) < self.MAX_BATCH_SENTENCES:
+                # The first requests carry one sentence each, so the voice starts soon and never waits for a long
+                # part; after them, whatever is ready goes in bounded batches.
+                while requests >= self.SINGLE_REQUESTS and self.queue and len(batch) < self.MAX_BATCH_SENTENCES:
                     if length + 1 + len(self.queue[0]) > self.MAX_BATCH_CHARS:
                         break
                     part = self.queue.popleft()
@@ -145,7 +145,7 @@ class AdaptiveTts:
             # One sentence or line per row, so the voice keeps the reply's structure (a pause between speakers).
             yield index, "\n".join(batch)
             index += len(batch)
-            first = False
+            requests += 1
 
     async def finish(self):
         if not self.closed:

@@ -105,7 +105,8 @@ from orion.kernel.registry import check_db_health
 
 @router.get("/api/v1/assistant/capabilities")
 async def assistant_capabilities(current_user: str = Depends(get_current_user)):
-    return {"speech_modes": ["whole", "adaptive"], "speech_protocol": 1}
+    # Every spoken reply is adaptive now; an older app that still asks finds it here.
+    return {"speech_modes": ["adaptive"], "speech_protocol": 1}
 
 
 class AssistantChatClaim(BaseModel):

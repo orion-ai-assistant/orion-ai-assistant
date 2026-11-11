@@ -18,7 +18,6 @@ from orion.worker.infra.context import JobContext
 from orion.worker.services.chat_titles import generate_chat_title
 from orion.worker.services.attachments import user_content
 from orion.worker.services.router import llama_stream_chat_typed
-from orion.worker.services.tts_stream import relay_tts
 from orion.worker.services.adaptive_tts import AdaptiveTts
 from orion.worker.services.tool_runner import ToolConversation
 from orion.worker.services.tool_history import HISTORY_SLIDE_TURNS, model_history
@@ -59,26 +58,6 @@ def tokenize(text: str) -> list[str]:
         return []
     tokens = re.split(r'(\s+)', text)
     return [t for t in tokens if t]
-
-
-def _clean_text_for_tts(text: str) -> str:
-    """Clean markdown and code blocks for more natural speech synthesis."""
-    if not text:
-        return ""
-    # Remove code blocks ```...```
-    cleaned = re.sub(r'```[\s\S]*?```', '', text)
-    # Remove inline code `...`
-    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
-    # Remove markdown headers (#, ##, etc.)
-    cleaned = re.sub(r'^\s*#+\s*', '', cleaned, flags=re.MULTILINE)
-    # Remove markdown bold/italic markers (*, _)
-    cleaned = re.sub(r'[*_]{1,3}', '', cleaned)
-    # Remove markdown links [text](url) -> text
-    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cleaned)
-    # Clean excessive whitespace
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned or text.strip()
-
 
 
 def _format_router_fallback_message(error: Exception, settings: RuntimeSettings) -> str:
@@ -456,8 +435,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         requested_at = requested_at.replace(tzinfo=timezone.utc)
                     return max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
 
-                if (getattr(context.request.input, "speech_mode", "whole") == "adaptive"
-                        and settings.tts_enabled and is_audio_requested):
+                # Every spoken reply starts while the model is still writing (assistant and plain chat alike).
+                if settings.tts_enabled and is_audio_requested:
                     adaptive_tts = AdaptiveTts(context, settings, _check_stop, arrival_ms)
 
                 stream = conversation.stream(messages, settings, _check_stop, llama_stream_chat_typed)
@@ -657,7 +636,6 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             # --- Multimodal: Text-to-Speech (TTS) Integration ---
             await context.emit_text_done(metrics)
             audio_entry = None
-            should_tts = settings.tts_enabled and is_audio_requested and bool(final_text.strip())
             if adaptive_tts:
                 if stopped:
                     await adaptive_tts.cancel()
@@ -667,38 +645,10 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     await context._publish(StreamEvent(
                         type="warning", chat_id=context.chat_id,
                         turn_id=context.turn_id, generation_id=context.turn_id,
-                        data={"code": "tts_failed", "message": "Erken seslendirme tamamlanamadı. Yanıtı metin olarak okuyabilirsiniz.",
+                        data={"code": "tts_quota_exhausted" if getattr(adaptive_tts.error, "status", None) == 429
+                              else "tts_failed", "message": "Seslendirme tamamlanamadı. Yanıtı metin olarak okuyabilirsiniz.",
                               "reason": _tts_reason(adaptive_tts.error)},
                     ))
-            elif should_tts and not stopped:
-                try:
-                    tts_text = _clean_text_for_tts(final_text)
-                    if tts_text:
-                        logging.info(
-                            "Worker %s generating TTS for chat %s (%d chars)",
-                            consumer_name, context.chat_id, len(tts_text),
-                        )
-                        requested_at = datetime.fromisoformat(context.record.created_at)
-                        if requested_at.tzinfo is None:
-                            requested_at = requested_at.replace(tzinfo=timezone.utc)
-                        def arrival_ms():
-                            return max(1, round((datetime.now(timezone.utc) - requested_at).total_seconds() * 1000))
-                        audio_entry = await relay_tts(context, settings, tts_text, _check_stop, arrival_ms)
-                except Exception as tts_err:
-                    # Keep synthesis failures out of the assistant response.
-                    logging.warning(
-                        "Worker %s: TTS generation failed for chat %s (%s)",
-                        consumer_name, context.chat_id, tts_err,
-                    )
-                    try:
-                        await context._publish(StreamEvent(
-                            type="warning", chat_id=context.chat_id,
-                            turn_id=context.turn_id, generation_id=context.turn_id,
-                            data={"code": "tts_quota_exhausted" if getattr(tts_err, "status", None) == 429 else "tts_failed", "message": "Ses oluşturulamadı. Yanıtı metin olarak okuyabilirsiniz.",
-                                  "reason": _tts_reason(tts_err)},
-                        ))
-                    except Exception:
-                        logging.warning("Could not publish TTS warning for chat %s", context.chat_id)
 
             thinking_text = "".join(thinking_tokens)
             assistant_entry = {"role": "assistant", "content": final_text, "turn_id": context.turn_id}

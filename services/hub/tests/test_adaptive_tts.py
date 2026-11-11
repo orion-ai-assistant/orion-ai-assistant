@@ -59,7 +59,6 @@ class SegmentTests(unittest.TestCase):
             'Hoca şaşkınlıkla sormuş:',
             'Hoca: “Peki, neden tavuk gibi göründün?”',
             'Tavşan: “Çünkü satıcı ‘Akıllı Çocuk’ demişti, ben de akıllı olmaya çalışıyorum!”',
-            '😄',
             'Umarım güldürmüştür!',
             'Başka bir şey istersen söyle.',
         ]
@@ -81,7 +80,12 @@ class SegmentTests(unittest.TestCase):
     def test_heading_and_list_lines_end_without_punctuation(self):
         segmenter = SentenceSegmenter()
         result = segmenter.feed('## Dilekler\n1️⃣ Süt veren inekler\n2️⃣ Bereketli bahçeler\nBitti.', final=True)
-        self.assertEqual(result, ['Dilekler', '1️⃣ Süt veren inekler', '2️⃣ Bereketli bahçeler', 'Bitti.'])
+        self.assertEqual(result, ['Dilekler', '1 Süt veren inekler', '2 Bereketli bahçeler', 'Bitti.'])
+
+    def test_emoji_are_not_read_but_text_marks_stay(self):
+        segmenter = SentenceSegmenter()
+        result = segmenter.feed('Harika 🎉👍🏽 haber! Hava 25°C, 🇹🇷 bayrağı ✨ asıldı. 👨‍👩‍👧\n', final=True)
+        self.assertEqual(result, ['Harika haber!', 'Hava 25°C, bayrağı asıldı.'])
 
     def test_quoted_exclamation_followed_by_a_dialogue_tag_stays_in_the_sentence(self):
         # The speech used to break after “Muuuu!” and start the next request at "diye bağırmış".
@@ -121,7 +125,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
     def context(self):
         return SimpleNamespace(voice=None, emit_audio_stream=AsyncMock(), emit_audio=AsyncMock(return_value={'saved': True}))
 
-    async def test_first_audio_before_final_then_three_ready_sentences_one_request(self):
+    async def test_first_three_sentences_go_alone_then_ready_ones_in_one_request(self):
         context = self.context()
         first = asyncio.Event()
         release = asyncio.Event()
@@ -138,22 +142,24 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(first.wait(), 1)
             self.assertFalse(speech.closed)
             self.assertEqual(context.emit_audio_stream.call_args_list[0].args[0], 'audio_start')
-            await speech.feed('İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi. Son parça')
+            await speech.feed('İkinci cümle geldi. Üçüncü cümle geldi. Dördüncü cümle geldi. Beşinci cümle geldi. '
+                              'Altıncı cümle geldi. Son parça')
             finishing = asyncio.ensure_future(speech.finish())
             await asyncio.sleep(0.01)  # the reply ends while the first part is still being spoken
             release.set()
             result = await asyncio.wait_for(finishing, 1)
         self.assertEqual(result, {'saved': True})
         # The short tail goes with the last part, which was not asked for yet, instead of in a request of its own.
-        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.\nÜçüncü cümle geldi.\nDördüncü cümle geldi. Son parça'])
+        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.', 'Üçüncü cümle geldi.',
+                                    'Dördüncü cümle geldi.\nBeşinci cümle geldi.\nAltıncı cümle geldi. Son parça'])
         events = context.emit_audio_stream.call_args_list
         self.assertEqual(sum(c.args[0] == 'audio_start' for c in events), 1)
         self.assertEqual(sum(c.args[0] == 'audio_done' for c in events), 1)
         chunks = [c.args[1] for c in events if c.args[0] == 'audio_chunk']
-        self.assertEqual([c['sequence'] for c in chunks], [0, 1])
-        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1])
+        self.assertEqual([c['sequence'] for c in chunks], [0, 1, 2, 3])
+        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 2, 3])
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
-            self.assertEqual(wav.readframes(2), b'\x01\x02' * 2)
+            self.assertEqual(wav.readframes(4), b'\x01\x02' * 4)
 
     async def test_opening_line_goes_alone_and_lead_ins_stay_with_their_line(self):
         context = self.context()
@@ -172,9 +178,9 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('İçinden bir tavşan çıkmış ve: Tavşan: “Baba, ben akıllı bir tavşanım, sorulara hemen cevap veririm.”', rows)
         self.assertIn('Hoca şaşkınlıkla sormuş: Hoca: “Peki, neden tavuk gibi göründün?”', rows)
         self.assertIn('Satıcı, “Bu yumurta çok akıllı! İçinden çıkan çocuk bütün sorulara cevap veriyor” demiş.', rows)
-        self.assertIn('😄 Umarım güldürmüştür!', rows)
-        # Nothing is lost or repeated, and the saved text has no line breaks.
-        self.assertEqual(' '.join(rows).split(), ' '.join(JOKE.split()).split())
+        self.assertIn('Umarım güldürmüştür! Başka bir şey istersen söyle.', rows)  # two words: not alone
+        # Nothing is lost or repeated but the emoji, and the saved text has no line breaks.
+        self.assertEqual(' '.join(rows).split(), JOKE.replace('😄', '').split())
         self.assertNotIn('\n', context.emit_audio.call_args.kwargs['text'])
 
     async def test_short_sentence_waits_for_the_next_one(self):
@@ -205,7 +211,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await speech.finish()
         self.assertEqual(requests, ['Selam, naber?'])
 
-    async def test_short_reply_that_arrived_whole_is_one_request(self):
+    async def test_short_reply_that_arrived_whole_still_goes_sentence_by_sentence(self):
         requests = []
         async def provider(text, *_):
             requests.append(text)
@@ -214,7 +220,8 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
             await speech.feed('Merhaba! Ben iyiyim, teşekkürler. Sen nasılsın? Bugün nasıl geçti?')
             await asyncio.wait_for(speech.finish(), 1)
-        self.assertEqual(requests, ['Merhaba! Ben iyiyim, teşekkürler.\nSen nasılsın? Bugün nasıl geçti?'])
+        # "Merhaba!" and "Sen nasılsın?" are too short to go alone: each goes with the sentence after it.
+        self.assertEqual(requests, ['Merhaba! Ben iyiyim, teşekkürler.', 'Sen nasılsın? Bugün nasıl geçti?'])
 
     async def test_first_sentence_leaves_at_once_while_the_reply_goes_on(self):
         requests = []
@@ -230,7 +237,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await speech.finish()
         self.assertEqual(requests, ['Bugün sana uzun bir fıkra anlatacağım.', 'Bir gün Nasreddin Hoca pazara gitmiş.'])
 
-    async def test_emoji_is_never_asked_for_on_its_own(self):
+    async def test_emoji_are_never_sent(self):
         context = self.context()
         requests = []
         async def provider(text, *_):
@@ -244,9 +251,8 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)  # that part is asked for before the reply ends
             await speech.feed('🙌')
             await speech.finish()
-        # The emoji line waits for the next sentence; the last emoji has nothing left to join and is not spoken.
         self.assertEqual(requests, ['Merhaba! İyiyim, teşekkür ederim.',
-                                    '🎉 🎉 🎉 🎉 Ses dosyanı buraya yükleyebilirsen hemen transkripte ederim.'])
+                                    'Ses dosyanı buraya yükleyebilirsen hemen transkripte ederim.'])
         self.assertIsNone(speech.error)
 
     async def test_reply_with_nothing_to_say_asks_nothing_and_warns_nothing(self):
@@ -344,7 +350,9 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)  # the first part is asked for before the rest of the reply arrives
             await speech.feed('İkinci cümle de burada. Üçüncü cümle geliyor. ')
             kept = await speech.finish()
-        self.assertEqual(len(requests), 3)  # the failed batch was asked for twice, nothing else was resynthesized
+        # The failed part was asked for twice; the next one still played and nothing was resynthesized.
+        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle de burada.', 'İkinci cümle de burada.',
+                                    'Üçüncü cümle geliyor.'])
         self.assertEqual(kept, {'saved': True})
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
         self.assertIn('Birinci cümle burada.', context.emit_audio.call_args.kwargs['text'])

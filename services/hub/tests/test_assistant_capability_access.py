@@ -39,7 +39,7 @@ class AssistantCapabilityAccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, status)
             self.assertEqual(response.headers['access-control-allow-origin'], 'http://localhost:62523')
             if status == 200:
-                self.assertEqual(response.json(), {'speech_modes': ['whole', 'adaptive'], 'speech_protocol': 1})
+                self.assertEqual(response.json(), {'speech_modes': ['adaptive'],'speech_protocol': 1})
 
     async def test_untrusted_origin_is_still_rejected(self):
         response = await self.request('OPTIONS', origin='https://evil.example', **{
