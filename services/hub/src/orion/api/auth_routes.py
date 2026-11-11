@@ -11,7 +11,7 @@ from orion.api.security import (
 )
 from orion.kernel.registry import (
     get_user_by_username, create_user, set_user_active, set_user_approval,
-    set_user_display_name, set_user_password, set_user_avatar, get_user_avatar,
+    set_user_password, set_user_avatar, get_user_avatar,
 )
 from orion.api.login_limits import limit_login, limit_attempts
 from orion.api import invitations, sessions
@@ -46,8 +46,6 @@ class InvitationPreview(BaseModel):
 class UserProfile(BaseModel):
     username: str
     is_active: bool
-    # The name the apps show; the login id (username) never changes.
-    display_name: str | None = None
     # Changes whenever the picture does, so a client knows to fetch it again.
     avatar_version: str | None = None
 
@@ -55,7 +53,6 @@ class UserProfile(BaseModel):
 def profile_of(user: dict) -> UserProfile:
     updated = user.get("avatar_updated_at")
     return UserProfile(username=user["id"], is_active=user["is_active"],
-                       display_name=user.get("display_name"),
                        avatar_version=updated.isoformat() if updated else None)
 
 async def get_current_user(request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(security)) -> str:
@@ -217,19 +214,37 @@ async def read_users_me(current_user: str = Depends(get_current_user)):
     return profile_of(user)
 
 
-class ProfileUpdate(BaseModel):
-    display_name: str | None = Field(default=None, max_length=60)
+class UsernameChange(BaseModel):
+    new_username: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=1, max_length=72)
 
 
-@router.patch("/profile", response_model=UserProfile)
-async def update_profile(payload: ProfileUpdate, current_user: str = Depends(get_current_user)):
-    name = " ".join((payload.display_name or "").split()) or None
+@router.post("/username")
+async def change_username(payload: UsernameChange, http_request: Request,
+                          current_user: str = Depends(get_current_user)):
+    """The login name itself changes (see services/account_rename.py). Other sessions end; this device
+    gets a new token and the new name."""
+    from orion.api.services.account_rename import valid_username, rename_account
+    from orion.kernel.registry import UsernameTaken
+    await limit_attempts(http_request, 'username-change', current_user, 10)
+    new = valid_username(payload.new_username)
+    user = await get_user_by_username(current_user)
+    if not user:
+        raise sessions.ended()
+    if not await asyncio.to_thread(verify_password, payload.password, user["password_hash"]):
+        raise HTTPException(400, "Şifre yanlış.")
+    if new == current_user:
+        raise HTTPException(400, "Bu zaten kullanıcı adın.")
     try:
-        if not await set_user_display_name(current_user, name):
-            raise HTTPException(404, "User not found")
+        await rename_account(http_request.app.state.redis, user, new)
+    except UsernameTaken as exc:
+        raise HTTPException(409, "Bu kullanıcı adı zaten kullanılıyor.") from exc
+    except LookupError as exc:
+        raise sessions.ended() from exc
     except RuntimeError as exc:
         raise HTTPException(503, "Hesap veritabanına erişilemiyor.") from exc
-    return profile_of(await get_user_by_username(current_user))
+    token = await sessions.issue({'id': new, 'password_hash': user["password_hash"]}, bound_device(http_request))
+    return {"access_token": token, "token_type": "bearer", "username": new}
 
 
 class PasswordChange(BaseModel):

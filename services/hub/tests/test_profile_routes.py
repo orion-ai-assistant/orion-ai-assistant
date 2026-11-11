@@ -18,13 +18,17 @@ PNG = b'\x89PNG\r\n\x1a\n' + b'\0' * 32
 class ProfileRouteTests(unittest.TestCase):
     def setUp(self):
         self.user = {'id': 'alice', 'password_hash': security.hash_password('old'), 'is_active': True,
-                     'display_name': None, 'avatar_updated_at': None}
+                     'created_at': datetime(2026, 1, 1, tzinfo=timezone.utc), 'avatar_updated_at': None}
         self.avatar = None
         self.created = []
 
-        async def set_name(username, name):
-            self.user['display_name'] = name
-            return username == 'alice'
+        self.renamed = []
+
+        async def rename(redis, user, new):
+            if new == 'taken':
+                raise registry.UsernameTaken(new)
+            self.renamed.append((user['id'], new))
+            self.user['id'] = new
 
         async def set_password(username, password_hash):
             self.user['password_hash'] = password_hash
@@ -40,7 +44,7 @@ class ProfileRouteTests(unittest.TestCase):
 
         self.patches = [
             patch.object(auth_routes, 'get_user_by_username', AsyncMock(side_effect=lambda name: dict(self.user))),
-            patch.object(auth_routes, 'set_user_display_name', AsyncMock(side_effect=set_name)),
+            patch('orion.api.services.account_rename.rename_account', AsyncMock(side_effect=rename)),
             patch.object(auth_routes, 'set_user_password', AsyncMock(side_effect=set_password)),
             patch.object(auth_routes, 'set_user_avatar', AsyncMock(side_effect=set_avatar)),
             patch.object(auth_routes, 'get_user_avatar', AsyncMock(side_effect=lambda name: self.avatar)),
@@ -52,6 +56,7 @@ class ProfileRouteTests(unittest.TestCase):
             started.start()
         app = FastAPI()
         app.state.mobile = False
+        app.state.redis = object()
         app.include_router(auth_routes.router, prefix='/api/v1')
         app.dependency_overrides[auth_routes.get_current_user] = lambda: 'alice'
         self.client = TestClient(app)
@@ -60,14 +65,22 @@ class ProfileRouteTests(unittest.TestCase):
         for started in reversed(self.patches):
             started.stop()
 
-    def test_display_name_is_trimmed_and_cleared_when_empty(self):
-        response = self.client.patch('/api/v1/auth/profile', json={'display_name': '  Kürşat   A. '})
+    def test_username_change_checks_the_password_and_the_name(self):
+        post = lambda name, pw='old': self.client.post('/api/v1/auth/username',
+                                                       json={'new_username': name, 'password': pw})
+        self.assertEqual(post('bob', 'wrong').status_code, 400)
+        for bad in ('a', 'with space', 'x/y', 'global', 'GLOBAL', 'ü' * 41):
+            self.assertEqual(post(bad).status_code, 400, bad)
+        self.assertEqual(post('alice').status_code, 400)
+        self.assertEqual(post('taken').status_code, 409)
+        self.assertEqual(self.renamed, [])
+
+        response = post('  Kürşat.A_1  ')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['display_name'], 'Kürşat A.')
-        self.assertEqual(response.json()['username'], 'alice')
-        response = self.client.patch('/api/v1/auth/profile', json={'display_name': '   '})
-        self.assertIsNone(response.json()['display_name'])
-        self.assertEqual(self.client.patch('/api/v1/auth/profile', json={'display_name': 'x' * 61}).status_code, 422)
+        self.assertEqual(response.json()['username'], 'Kürşat.A_1')
+        self.assertEqual(self.renamed, [('alice', 'Kürşat.A_1')])
+        claims = jwt.decode(response.json()['access_token'], options={'verify_signature': False})
+        self.assertEqual(claims['sub'], 'Kürşat.A_1')
 
     def test_password_change_needs_the_current_one_and_returns_a_new_token(self):
         wrong = self.client.post('/api/v1/auth/password', json={'current_password': 'nope', 'new_password': 'new'})

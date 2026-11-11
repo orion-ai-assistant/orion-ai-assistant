@@ -118,9 +118,7 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
             """
         )
         await conn.execute("alter table orion_users alter column is_active set default false")
-        # Profile: a name to show (the login id never changes; chats and settings
-        # are keyed by it) and a small square picture.
-        await conn.execute("alter table orion_users add column if not exists display_name text")
+        # Profile picture: a small square image.
         await conn.execute("alter table orion_users add column if not exists avatar bytea")
         await conn.execute("alter table orion_users add column if not exists avatar_mime text")
         await conn.execute("alter table orion_users add column if not exists avatar_updated_at timestamptz")
@@ -327,7 +325,7 @@ async def get_user_by_username(username: str) -> dict | None:
     try:
         await _ensure_tables(conn)
         row = await conn.fetchrow(
-            "select id, password_hash, created_at, is_active, display_name, avatar_updated_at"
+            "select id, password_hash, created_at, is_active, avatar_updated_at"
             " from orion_users where id = $1",
             username,
         )
@@ -347,8 +345,33 @@ async def _update_user(query: str, *args) -> bool:
         await conn.close()
 
 
-async def set_user_display_name(username: str, display_name: str | None) -> bool:
-    return await _update_user("update orion_users set display_name = $2 where id = $1", username, display_name)
+class UsernameTaken(Exception):
+    pass
+
+
+async def rename_user(old: str, new: str) -> None:
+    """Moves the account to a new login name in one transaction (see api/services/account_rename.py).
+    Names differing only in letter case count as taken, except the account's own."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("User database unavailable")
+    try:
+        await _ensure_tables(conn)
+        async with conn.transaction():
+            # Serializes renames and registrations of the same names.
+            await conn.execute("select pg_advisory_xact_lock(51730102)")
+            if await conn.fetchval("select 1 from orion_users where id = $1 for update", old) is None:
+                raise LookupError(old)
+            if await conn.fetchval("select 1 from orion_users where lower(id) = lower($1) and id <> $2", new, old):
+                raise UsernameTaken(new)
+            await conn.execute("update orion_users set id = $2 where id = $1", old, new)
+            await conn.execute("update orion_settings set user_id = $2 where user_id = $1", old, new)
+            await conn.execute("update orion_chats set user_id = $2 where user_id = $1", old, new)
+            await conn.execute("update orion_invitations set used_by = $2 where used_by = $1", old, new)
+            # Their tokens carry the old name; the caller gets a new session.
+            await conn.execute("update orion_sessions set revoked_at = now() where user_id = $1 and revoked_at is null", old)
+    finally:
+        await conn.close()
 
 
 async def set_user_password(username: str, password_hash: str) -> bool:
