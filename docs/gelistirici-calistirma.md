@@ -51,6 +51,12 @@ Notlar:
   o sırada düzenleniyorsa "Dashboard kaynakları derleme sırasında değişti" der; düzenleme bitince yeniden dene.
   Panelde kod değiştirdikten sonra elle derlemek için `python -m bin.dashboard_build` (Router deposunda).
 - `stop_router` Router'ın PostgreSQL'ini de kapatır; veritabanına psql ile bakmadan önce Router'ı başlat.
+- Hub ve Router'ın veritabanları ayrıdır: Hub'ınki `orion-ai-assistant/.local_db/postgres` (port 5445, yanında
+  Redis 6379), Router'ınki `orion-router/.pgdata-prod` (port 5433). `stop_hub` yalnız Hub'ınkini durdurur;
+  Hub'ı yeniden başlatmak Router'a dokunmaz.
+- Kaynaktan çalışan Router ve Hub bilgisayar açılınca kendiliğinden başlamaz. Yeniden başlatmadan sonra önce
+  `start_router`, sonra `start_hub` çalıştır. Router "kapanmış" görünüyorsa önce bilgisayarın kapatılıp
+  açılmadığına bak (`orion-router/server.log` sonunda `0xC000026B` Windows kapanışıdır).
 - Router'ın pytest tarzı testleri için repo `.venv`'inde pytest yok; geçici ortamla çalıştır:
   `PYTHONPATH=<router>/.venv/Lib/site-packages uv run --no-project --python <router>/.venv/Scripts/python.exe --with pytest --with pytest-asyncio python -m pytest dev/test-orion-router/<dosya> -q`
   (`unittest` tarzı dosyalar doğrudan `.venv/Scripts/python.exe -m unittest dev/test-orion-router/<dosya>.py` ile çalışır).
