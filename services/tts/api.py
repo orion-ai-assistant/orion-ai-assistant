@@ -45,8 +45,8 @@ from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from engines import (CLONE_MAX_SECONDS, CLONE_RECOMMENDED_SECONDS, VOXCPM2_DEFAULTS, VoiceRegistry, clone_advice, get_engine,
-                     valid_voice_name)
+from engines import (CLONE_MAX_SECONDS, CLONE_RECOMMENDED_SECONDS, VOXCPM2_DEFAULTS, VoiceRegistry, clean_voice_name,
+                     clone_advice, get_engine, valid_voice_name)
 from schemas import SpeechRequest
 
 logging.basicConfig(level=logging.INFO)
@@ -217,6 +217,8 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 else:
                     detail_msg = f"Böyle bir ses klonu bulunamadı: '{req_voice}'.{avail_str}"
                 raise HTTPException(status_code=400, detail=detail_msg)
+        # The clone's one name (OmniVoice registers it with its server under this): "Nika " and "nika" are one voice.
+        voice_label = clean_voice_name(req_voice) if voice_cache else ""
         guidance = speech_request.guidance_scale
         if guidance is None and speech_request.creativity is not None:
             # The Router's 0-2 "temperature" is creativity. Map it to the local engines' shared 2-4 guidance scale:
@@ -248,7 +250,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                     return JSONResponse({"status": "aborted"}, status_code=499)
 
                 stream_gen = tts.generate_stream(
-                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=voice_label, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
                     steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
@@ -276,7 +278,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 # In a thread, as the stream: the event loop keeps answering (health, a hang-up that aborts this).
                 sr, audio_data = await run_in_threadpool(
                     tts.generate,
-                    text=speech_request.input, voice_cache=voice_cache, voice_name=speech_request.voice, instruct=instruct_val or "",
+                    text=speech_request.input, voice_cache=voice_cache, voice_name=voice_label, instruct=instruct_val or "",
                     speed=speech_request.speed, guidance_scale=guidance,
                     steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
@@ -319,9 +321,12 @@ async def reload_engine(reload_req: ReloadRequest):
 
 @app.post("/v1/voices/clone")
 async def clone_voice(name: str = Form(...), file: UploadFile = File(...), text: str = Form("")):
-    name = (name or "").strip()  # "zephyr2  " is "zephyr2": spaces around a name made a second, unreachable file
+    # Put right first ("Zephyr  2 " is "zephyr 2"), then saved under that: the name it is listed, used and
+    # deleted by. Only a name with nothing usable left is refused.
+    name = clean_voice_name(name)
     if not valid_voice_name(name):
-        raise HTTPException(status_code=400, detail="Voice names use letters, digits, space, '.', '_' or '-' (max 64)")
+        raise HTTPException(status_code=400, detail="Ses adında en az bir harf ya da rakam olmalı (harf, rakam, boşluk, "
+                                                    "'.', '_' ya da '-'; en çok 64 karakter).")
     if registry.voice_exists(name, engine_name_env):
         raise HTTPException(status_code=400, detail="Voice already exists")
     tts = engine
@@ -356,9 +361,10 @@ async def list_voices(engine: Optional[str] = None):
 
 @app.delete("/v1/voices/{name}")
 async def delete_voice(name: str):
-    if registry.delete_voice(name, engine_name_env): 
-        if hasattr(engine, "registered_voices") and name in engine.registered_voices:
-            engine.registered_voices.remove(name)
+    if registry.delete_voice(name, engine_name_env):
+        for registered in (name, clean_voice_name(name)):
+            if hasattr(engine, "registered_voices") and registered in engine.registered_voices:
+                engine.registered_voices.remove(registered)
         return {"status": "success"}
     raise HTTPException(status_code=404)
 

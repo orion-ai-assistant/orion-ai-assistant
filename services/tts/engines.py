@@ -1143,6 +1143,28 @@ def get_engine():
     engine.cleanup()
     return engine
 
+# Engine names a clone file can end in ("<name>_<engine>.pt"): the running engine's ENGINE_NAME, older ones too.
+KNOWN_VOICE_ENGINES = ("omnivoice-gguf", "voxcpm2-gguf", "omnivoice", "voxcpm2", "voxcpm")
+
+
+def clean_voice_name(name) -> str:
+    """The one form of a clone's name: what it is saved, listed, found and deleted as.
+
+    Names came in that could be listed but never used or deleted ("zephyr2 " was saved with its trailing space,
+    every lookup trimmed it). Now a name is put right before it is saved, and old files are matched by this form
+    too: one Unicode form (a phone keyboard's "u" + dot mark is "ü"), lower case ("İ" is "i", not "i" + a dot
+    mark), only letters, digits, space, '.', '_' and '-', one space between words, nothing at either end but a
+    letter or digit, at most 64 characters. Empty when nothing usable is left."""
+    import re
+    import unicodedata
+    text = unicodedata.normalize("NFC", str(name or "")).replace("İ", "i").lower()
+    text = re.sub(r"[^\w .-]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\.{2,}", ".", text)
+    text = text.strip(" ._-")[:64]
+    return text.strip(" ._-")
+
+
 def valid_voice_name(name) -> bool:
     """A voice name becomes a file name: no folders, "..", or glob characters,
     or a request could read, write or delete .pt files elsewhere on the disk."""
@@ -1174,38 +1196,39 @@ class VoiceRegistry:
             dirs.append(self.service_voices_path)
         return dirs
 
-    def _find_voice_file(self, name: str, engine_name: str) -> Path | None:
-        name_clean = str(name).strip().lower()
-        if not valid_voice_name(name_clean):
+    @staticmethod
+    def _split(path: Path, engine_name: str | None = None) -> tuple[str, str] | None:
+        """A clone file's (clean name, engine), or None when it is not a clone of that engine (or of any known one).
+        The name is compared in its clean form, so a file saved under an older, broken name is still found."""
+        stem = path.name[:-3] if path.name.lower().endswith(".pt") else None
+        if stem is None:
             return None
-        
-        target_engine = engine_name.lower().strip()
-        target = f"{name_clean}_{target_engine}.pt"
-
-        for d in self._get_search_dirs():
-            p = d / target
-            if p.exists():
-                return p
-            for f in d.glob("*.pt"):
-                if f.name.lower() == target:
-                    return f
+        engines = [engine_name.lower().strip()] if engine_name else sorted(KNOWN_VOICE_ENGINES, key=len, reverse=True)
+        for engine in engines:
+            if stem.lower().endswith(f"_{engine}"):
+                name = clean_voice_name(stem[:-len(engine) - 1])
+                return (name, engine) if name else None
         return None
+
+    def _voice_files(self, name: str, engine_name: str | None = None) -> list[Path]:
+        wanted = clean_voice_name(name)
+        if not wanted:
+            return []
+        found = []
+        for d in self._get_search_dirs():
+            for f in d.glob("*.pt"):
+                split = self._split(f, engine_name)
+                if split and split[0] == wanted:
+                    found.append(f)
+        return found
+
+    def _find_voice_file(self, name: str, engine_name: str) -> Path | None:
+        files = self._voice_files(name, engine_name)
+        return files[0] if files else None
 
     def find_voice_in_any_engine(self, name: str) -> list[str]:
         """Returns list of other engine names where this voice exists."""
-        name_clean = str(name).strip().lower()
-        if not valid_voice_name(name_clean):
-            return []
-        found_in = set()
-        prefix = f"{name_clean}_"
-        for d in self._get_search_dirs():
-            for f in d.glob(f"{name_clean}_*.pt"):
-                f_lower = f.name.lower()
-                if f_lower.startswith(prefix) and f_lower.endswith(".pt"):
-                    eng = f_lower[len(prefix):-3]
-                    if eng:
-                        found_in.add(eng)
-        return sorted(list(found_in))
+        return sorted({self._split(f)[1] for f in self._voice_files(name)})
 
     def get_voice_cache(self, name: str, engine_name: str) -> Any:
         path = self._find_voice_file(name, engine_name)
@@ -1226,17 +1249,14 @@ class VoiceRegistry:
         return self._find_voice_file(name, engine_name) is not None
 
     def delete_voice(self, name: str, engine_name: str) -> bool:
-        if not valid_voice_name(str(name).strip()):
-            return False
-        target = f"{str(name).strip()}_{engine_name.lower().strip()}.pt".lower()
-        for path in self.storage_path.glob("*.pt"):
-            if path.name.lower() == target:
-                path.unlink()
-                return True
-        return False
+        """Deletes the clone (every file of it, an older broken-name copy too) from the user's own voices folder."""
+        files = [f for f in self._voice_files(name, engine_name) if f.parent.resolve() == self.storage_path.resolve()]
+        for path in files:
+            path.unlink()
+        return bool(files)
 
     def save_voice_cache(self, name: str, cache_obj: Any, engine_name: str):
-        name = str(name).strip()
+        name = clean_voice_name(name)
         if not valid_voice_name(name):
             raise ValueError("Invalid voice name")
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -1250,13 +1270,11 @@ class VoiceRegistry:
         return str(path)
 
     def list_voices(self, engine_name: str) -> list[str]:
-        target_engine = engine_name.lower().strip()
-        suffix = f"_{target_engine}.pt"
-
+        """The engine's clones by their clean names: each listed name is one that works for speaking and deleting."""
         names = set()
         for d in self._get_search_dirs():
             for f in d.glob("*.pt"):
-                f_name_lower = f.name.lower()
-                if f_name_lower.endswith(suffix):
-                    names.add(f_name_lower[:-len(suffix)])
-        return sorted(list(names))
+                split = self._split(f, engine_name)
+                if split:
+                    names.add(split[0])
+        return sorted(names)
