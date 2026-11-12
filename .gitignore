@@ -37,6 +37,9 @@ models/
 data/
 services/*/data/
 dump.rdb
+appendonly.aof
+appendonly.aof.empty
+dump.rdb.before-aof
 
 # Weights & Checkpoints (never commit large model binaries)
 *.pt
