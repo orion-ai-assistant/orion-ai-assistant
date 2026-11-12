@@ -326,6 +326,67 @@ class LiveRedisAofTests(unittest.TestCase):
             self.assertTrue(Path(directory, run_local.AOF_NAME + '.empty').is_file())
 
 
+class RouterWatchTests(unittest.TestCase):
+    def watch(self, record, alive=False, start=None):
+        from services.shared import process_lifecycle
+        runtime = Mock()
+        runtime.read.return_value = record
+        self.patches = [patch.object(process_lifecycle, 'Runtime', return_value=runtime),
+                        patch.object(process_lifecycle, 'living', return_value=alive)]
+        for item in self.patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return run_local.RouterWatch(Path('C:/router'), start or Mock())
+
+    def test_a_router_stopped_on_purpose_is_left_alone(self):
+        for status in ('stopped', 'failed', 'children-stopped', 'stopping'):
+            self.assertTrue(self.watch({'status': status, 'supervisor': {}}).running())
+        self.assertTrue(self.watch(None).running())
+
+    def test_a_running_router_is_left_alone(self):
+        self.assertTrue(self.watch({'status': 'ready', 'supervisor': {}}, alive=True).running())
+
+    def test_a_vanished_supervisor_is_started_again_in_the_background(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def start(script):
+            started.set()
+            release.wait(5)
+        watch = self.watch({'status': 'ready', 'supervisor': {}}, start=start)
+        reports = []
+        supervisor = run_local.ChildSupervisor('Router', watch.running, watch.restart, threading.Event(),
+                                               reports.append, every=30)
+        supervisor.check()
+        self.assertTrue(started.wait(5))
+        self.assertEqual(reports, ['Router is not running; starting it again', 'Router started again'])
+        supervisor.next_try = 0
+        supervisor.check()  # Still starting: not a second start.
+        self.assertEqual(len(reports), 2)
+        release.set()
+        watch.thread.join(5)
+
+    def test_a_failed_start_is_reported_and_retried_later(self):
+        def start(script):
+            raise RuntimeError('Readiness timeout')
+        watch = self.watch({'status': 'ready', 'supervisor': {}}, start=start)
+        watch.restart()
+        watch.thread.join(5)
+        with self.assertRaises(RuntimeError):
+            watch.running()
+
+    def test_a_development_hub_watches_only_its_sibling_router(self):
+        with tempfile.TemporaryDirectory() as parent:
+            hub = Path(parent, 'orion-ai-assistant')
+            hub.mkdir()
+            with patch('services.shared.runtime_layout.component', return_value=None),                     patch('services.shared.router_installation.registered_router_root',
+                          return_value='C:/installed-router'):
+                self.assertIsNone(run_local.watched_router_root(hub))
+                Path(parent, 'orion-router').mkdir()
+                Path(parent, 'orion-router', 'cli.py').write_text('')
+                self.assertEqual(run_local.watched_router_root(hub), Path(parent, 'orion-router').resolve())
+
+
 class RouterAddressTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_address_is_written_only_when_it_changed(self):
         # Runs every 15 s for weeks; each write made every trust watcher read the store again.

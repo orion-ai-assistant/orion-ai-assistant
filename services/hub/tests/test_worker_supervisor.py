@@ -155,6 +155,7 @@ class WorkerSupervisorTests(unittest.TestCase):
             stack.enter_context(patch('services.shared.process_lifecycle.owns_listener', return_value=True))
             stack.enter_context(patch('services.shared.process_lifecycle.wait_health'))
             stack.enter_context(patch.object(run_local, 'worker_ready', return_value=True))
+            stack.enter_context(patch.object(run_local, 'watched_router_root', return_value=None))
             stack.enter_context(patch('services.shared.process_lifecycle.living', return_value=True))
             stack.enter_context(patch('orion.kernel.local_security.tls_identity', return_value={'cert': 'fake', 'id': 'fake'}))
             stack.enter_context(patch.object(run_local.socket, 'create_connection'))

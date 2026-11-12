@@ -250,13 +250,14 @@ class ChildSupervisor:
     tell (access denied) leaves the child alone."""
     MAX_DELAY = 60
 
-    def __init__(self, name, running, restart, stopping, report, clock=time.monotonic):
+    def __init__(self, name, running, restart, stopping, report, clock=time.monotonic, every=0.0):
         self.name = name
         self.running = running
         self.restart = restart
         self.stopping = stopping
         self.report = report
         self.clock = clock
+        self.every = every  # A child that is costly to look at is looked at this often.
         self.failures = 0
         self.next_try = 0.0
 
@@ -265,6 +266,7 @@ class ChildSupervisor:
             return
         try:
             if self.running():
+                self.next_try = self.clock() + self.every
                 return
         except Exception as error:
             self.report(f"{self.name}: state unknown ({error}); left alone")
@@ -281,6 +283,63 @@ class ChildSupervisor:
             return
         self.failures = 0
         self.report(f"{self.name} started again")
+
+
+def watched_router_root(repo_root):
+    """The Router this Hub brings back: an installed Hub its registered Router; a development checkout only the
+    sibling checkout (never the installed Router: both use the same ports)."""
+    from pathlib import Path
+    from services.shared.runtime_layout import component
+    if component(repo_root) is None:
+        sibling = Path(repo_root).resolve().parent / 'orion-router'
+        return sibling if (sibling / 'cli.py').is_file() else None
+    try:
+        from services.shared.router_installation import registered_router_root
+        registered = registered_router_root()
+    except Exception:
+        return None
+    return Path(registered) if registered else None
+
+
+class RouterWatch:
+    """The Router runs under its own supervisor (cli.py prod), which restarts the Router's service. When that
+    supervisor itself is gone while its record still says it runs (it crashed, Windows ended it), the Router
+    stayed down. A Router stopped on purpose (stop_router: record 'stopped') is left alone."""
+
+    def __init__(self, root, start):
+        self.root = root
+        self.start = start
+        self.thread = None
+        self.error = None
+
+    def down(self):
+        from services.shared.process_lifecycle import Runtime, living
+        record = Runtime(self.root, 'router-prod').read()
+        if not record or record.get('status') in ('stopped', 'failed', 'children-stopped', 'stopping'):
+            return False
+        return not living(record['supervisor'])
+
+    def running(self):
+        if self.thread is not None and self.thread.is_alive():
+            return True  # Still starting.
+        if self.thread is not None:
+            self.thread = None
+            if self.error is not None:
+                error, self.error = self.error, None
+                raise RuntimeError(f'start failed: {error}')
+        return not self.down()
+
+    def restart(self):
+        # Its start waits for its database (minutes after a hard stop): in the background, the Hub keeps watching.
+        self.error = None
+
+        def run():
+            try:
+                self.start(str(self.root / 'cli.py'))
+            except Exception as error:
+                self.error = error
+        self.thread = threading.Thread(target=run, name='router-start', daemon=True)
+        self.thread.start()
 
 
 def wait_redis(record, redis_port, timeout=15):
@@ -672,6 +731,13 @@ def _main(runtime):
         current['flutter'] = flutter_proc
         child_supervisors.append(ChildSupervisor('Window web server', lambda: child_running('flutter'),
                                                  restart_flutter, stopping, report_child))
+
+    router_root = watched_router_root(repo_root)
+    if router_root is not None:
+        from services.shared.native_services import start_router
+        router_watch = RouterWatch(router_root, start_router)
+        child_supervisors.append(ChildSupervisor('Router', router_watch.running, router_watch.restart, stopping,
+                                                 report_child, every=30))
 
     # Stop requests are seen within TICK; the children are looked at every CHECK seconds. Looking every 0.2 s
     # (process handles, a Redis connection and an fsync'd state file each time) cost ~15% of a core at idle.
