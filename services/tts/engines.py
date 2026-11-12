@@ -19,6 +19,7 @@ import tempfile
 import wave
 import time
 import threading
+from contextlib import contextmanager
 
 # Alt klasörlerdeki kütüphaneleri yola ekliyoruz ki import edilebilsinler
 current_dir = os.path.dirname(__file__)
@@ -78,12 +79,69 @@ class TTSEngine:
         except Exception:
             return False
 
+    # A server can answer its /health and still never finish a speech request (a stuck GPU call while its HTTP
+    # thread runs on): the request then waited up to 10 minutes. While requests are in flight, STALLED_AFTER
+    # seconds in which none of them received a byte, finished or started is a hung server too. One part is at
+    # most ~25 s of speech, made faster than real time; a request queued behind others counts their progress.
+    STALLED_AFTER = 180.0
+
+    def _calls_state(self):
+        if not hasattr(self, "_calls_lock"):
+            self._calls_lock, self._calls, self._last_activity = threading.Lock(), set(), time.monotonic()
+        return self._calls_lock
+
+    @contextmanager
+    def _engine_call(self):
+        """Wraps one request to the engine's server. The yielded call's progress() marks a received piece; a
+        stream hands each piece on inside `with call.handing_on():`, so a slow reader is not the server's stall."""
+        lock, engine = self._calls_state(), self
+
+        class Call:
+            def _enter(self):
+                with lock:
+                    if not engine._calls:
+                        engine._last_activity = time.monotonic()
+                    engine._calls.add(self)
+
+            def _leave(self):
+                with lock:
+                    engine._calls.discard(self)
+                    engine._last_activity = time.monotonic()
+
+            def progress(self):
+                engine._last_activity = time.monotonic()
+
+            @contextmanager
+            def handing_on(self):
+                self._leave()
+                try:
+                    yield
+                finally:
+                    self._enter()
+
+        call = Call()
+        call._enter()
+        try:
+            yield call
+        finally:
+            call._leave()
+
+    def stalled_seconds(self) -> float:
+        """How long the requests in flight have gone without any progress; 0 when none is in flight."""
+        with self._calls_state():
+            return time.monotonic() - self._last_activity if self._calls else 0.0
+
     def server_state(self) -> str:
-        """'ok', 'down' (its process ended) or 'hung' (running, but HUNG_AFTER probes in a row went unanswered)."""
+        """'ok', 'down' (its process ended) or 'hung' (running, but HUNG_AFTER probes in a row went unanswered,
+        or its requests made no progress for STALLED_AFTER seconds)."""
         if not hasattr(self, "_start_server"):
             return "ok"
         if not self.server_alive():
             return "down"
+        stalled = self.stalled_seconds()
+        if stalled >= self.STALLED_AFTER:
+            logger.warning(f"The engine's server answered nothing to its requests for {stalled:.0f} s")
+            return "hung"
         if self.server_answers():
             self._unanswered = 0
             return "ok"
@@ -93,8 +151,11 @@ class TTSEngine:
     def restart_hung_server(self):
         with _SERVER_START_LOCK:
             logger.warning(f"The engine's server has not answered {getattr(self, '_unanswered', 0)} health checks in a row; restarting it")
-            self._shutdown_server()
+            self._shutdown_server()  # Its sockets close: requests blocked on it fail now instead of waiting.
             self._unanswered = 0
+            with self._calls_state():
+                self._calls.clear()
+                self._last_activity = time.monotonic()
             self._start_server()
 
     def ensure_server(self):
@@ -482,7 +543,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
         req = urllib.request.Request(f"http://{self.host}:{self.port}/v1/audio/voices", data=data, method="POST")
         req.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(req) as res:
+            with self._engine_call(), urllib.request.urlopen(req, timeout=120) as res:
                 if res.status == 200:
                     return voice_name
         except Exception as e:
@@ -495,7 +556,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
         import urllib.request
         req = urllib.request.Request(f"http://{self.host}:{self.port}/v1/audio/voices/{voice_name}", method="DELETE")
         try:
-            with urllib.request.urlopen(req) as res:
+            with urllib.request.urlopen(req, timeout=30) as res:
                 pass
         except Exception as e:
             logger.error(f"Failed to delete temp voice {voice_name}: {e}")
@@ -565,7 +626,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
             req.add_header("Content-Type", "application/json")
             
             try:
-                with urllib.request.urlopen(req, timeout=600) as res:
+                with self._engine_call(), urllib.request.urlopen(req, timeout=600) as res:
                     if res.status == 200:
                         return streamed_wav(res.read())
             except Exception as e:
@@ -646,7 +707,7 @@ class OmniVoiceGGUFEngine(TTSEngine):
         yield 24000 # Send sample rate
         
         try:
-            with urllib.request.urlopen(req, timeout=600) as res:
+            with self._engine_call() as call, urllib.request.urlopen(req, timeout=600) as res:
                 if res.status == 200:
                     while True:
                         if abort_event and abort_event.is_set():
@@ -654,7 +715,9 @@ class OmniVoiceGGUFEngine(TTSEngine):
                         chunk = res.read(4096)
                         if not chunk:
                             break
-                        yield chunk
+                        call.progress()
+                        with call.handing_on():
+                            yield chunk
         except Exception as e:
             logger.error(f"GGUF Server stream request failed: {e}")
         finally:
@@ -869,7 +932,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
         if not text or not text.strip():
             return self.SAMPLE_RATE, np.array([], dtype=np.int16)
         try:
-            with self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
+            with self._engine_call(), self._request("/v1/audio/speech", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
                 rate, audio = streamed_wav(res.read())
             if rate == 2 * self.SAMPLE_RATE:
                 half = HalfRate()
@@ -889,7 +952,7 @@ class VoxCPM2GGUFEngine(TTSEngine):
         if not text or not text.strip():
             return
         try:
-            with self._request("/v1/audio/speech/stream", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
+            with self._engine_call() as call, self._request("/v1/audio/speech/stream", self._payload(text, voice_cache, instruct, guidance_scale, seed, steps, temperature)) as res:
                 head = b""
                 while b"data" not in head[:-4] and len(head) < 4096:  # The WAV header, then PCM as it comes.
                     chunk = res.read(64)
@@ -913,12 +976,14 @@ class VoxCPM2GGUFEngine(TTSEngine):
                             samples = np.frombuffer(data, dtype=np.int16)
                         out = leveler.feed(samples).tobytes()
                         if out:
-                            yield out
+                            with call.handing_on():
+                                yield out
                     if abort_event and abort_event.is_set():
                         return
                     pending = res.read(4096)
                     if not pending:
                         break
+                    call.progress()
                 tail = half.flush() if half else np.zeros(0, dtype=np.int16)
                 tail = np.concatenate([leveler.feed(tail), leveler.flush()]).tobytes()
                 if tail:
