@@ -76,6 +76,9 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         guard = patch.object(registry, '_connect', connection)
         guard.start()
         self.addCleanup(guard.stop)
+        tables = patch.object(registry, '_tables_ready', False)  # This test's own cluster needs its tables.
+        tables.start()
+        self.addCleanup(tables.stop)
         conn = await connection()
         try:
             await registry._ensure_tables(conn)

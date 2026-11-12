@@ -1797,11 +1797,37 @@ def keep_running():
         model, settings = effective(part, hw, config)
         if model is None or not ready(part, model, settings, data):
             continue
-        if not answers(int(os.getenv(part['port_key']) or part['port'])):
-            try:
-                start_part(part['id'])
-            except Exception as error:
-                print(f'local part {part["id"]} did not start: {type(error).__name__}: {error}', flush=True)
+        if answers(int(os.getenv(part['port_key']) or part['port'])):
+            _silent.pop(part['id'], None)
+            continue
+        if _running_ready(part['id']):
+            # Started and ready, yet not answering: hung (a crashed one has no living process). Restarting it
+            # was a no-op before (its records said "running"), so it stayed hung for weeks. One missed answer
+            # can be a busy moment; HUNG_PASSES in a row (minutes apart) is not.
+            silent = _silent[part['id']] = _silent.get(part['id'], 0) + 1
+            if silent < HUNG_PASSES:
+                continue
+            print(f'local part {part["id"]} runs but has not answered {silent} times; restarting it', flush=True)
+            stop_part(part['id'])
+        _silent.pop(part['id'], None)
+        try:
+            start_part(part['id'])
+        except Exception as error:
+            print(f'local part {part["id"]} did not start: {type(error).__name__}: {error}', flush=True)
+
+
+HUNG_PASSES = 3
+_silent = {}  # part id -> passes of keep_running in a row that a ready part did not answer
+
+
+def _running_ready(part_id):
+    """The part's supervisor lives and reported its engine ready (not still loading a model)."""
+    try:
+        from .process_lifecycle import Runtime, living
+        record = Runtime(run_dir(part_id), 'part').read()
+        return bool(record and record['status'] == 'ready' and living(record['supervisor']))
+    except Exception:
+        return False
 
 
 def stop_all():
@@ -1836,9 +1862,11 @@ def serve(part_id):
                                    stdout=log, stderr=subprocess.STDOUT)
         wait_health(child, port, timeout=READY_TIMEOUT)
         runtime.ready()
+        # Once a second: each look opens the job and process handles (several times a second cost a few
+        # percent of a core per part for weeks).
         while not runtime.requested() and child.poll() is None:
             runtime.refresh_children()
-            time.sleep(.2)
+            time.sleep(1)
 
 
 # --- Jobs ----------------------------------------------------------------------------------------------------

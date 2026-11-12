@@ -778,6 +778,8 @@ class CleanLink:
         self.speaking_until = 0.0  # as PcLink's
         self.turn = None  # as PcLink's
         self._queue = asyncio.Queue()
+        self._queued_bytes = 0
+        self.dropped_bytes = 0
         self._worker = None
 
     @property
@@ -827,9 +829,20 @@ class CleanLink:
                 await self.cleaner.end_turn(turn['device'])
             _write_dump(self, turn)
 
+    # A cleaner slower than real time (a busy CPU) must not let the backlog grow for the rest of the turn:
+    # beyond this much waiting audio the oldest packets are dropped (they are stale for a live turn anyway).
+    MAX_QUEUED_BYTES = 30 * 16000 * 2
+
     async def on_audio(self, pcm):
         if not pcm or len(pcm) % 2 or len(pcm) > MAX_FRAME_BYTES or self.turn is None:
             return  # between turns nothing is cleaned
+        self._queued_bytes += len(pcm)
+        while self._queued_bytes > self.MAX_QUEUED_BYTES and not self._queue.empty():
+            dropped, _ = self._queue.get_nowait()
+            self._queued_bytes -= len(dropped)
+            self.dropped_bytes += len(dropped)
+            if self.dropped_bytes == len(dropped):
+                log.warning('PC microphone: cleaning falls behind; oldest audio dropped')
         self._queue.put_nowait((pcm, self.turn))
         if self._worker is None:
             self._worker = asyncio.create_task(self._clean_packets())
@@ -837,6 +850,7 @@ class CleanLink:
     async def _clean_packets(self):
         while True:
             pcm, turn = await self._queue.get()
+            self._queued_bytes -= len(pcm)
             try:
                 if turn is self.turn:
                     await clean_turn_audio(self, turn, pcm)

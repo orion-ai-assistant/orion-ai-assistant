@@ -82,7 +82,16 @@ async def check_db_health(timeout: float = 1.0) -> bool:
         await conn.close()
 
 
+# The schema is created once per process. Every call used to run it again: an advisory lock and ~20
+# CREATE/ALTER ... IF NOT EXISTS statements on each request (every UI poll), and ALTER TABLE takes an
+# exclusive table lock even when the column exists. A database restarted under the Hub keeps its tables.
+_tables_ready = False
+
+
 async def _ensure_tables(conn: asyncpg.Connection) -> None:
+    global _tables_ready
+    if _tables_ready:
+        return
     # Multiple native listeners and the Worker initialize the same fresh DB.
     # IF NOT EXISTS alone does not serialize PostgreSQL catalog creation.
     await conn.execute('SELECT pg_advisory_lock(51730101)')
@@ -90,6 +99,7 @@ async def _ensure_tables(conn: asyncpg.Connection) -> None:
         await _create_tables(conn)
     finally:
         await conn.execute('SELECT pg_advisory_unlock(51730101)')
+    _tables_ready = True
 
 
 async def _create_tables(conn: asyncpg.Connection) -> None:
@@ -854,7 +864,11 @@ async def _session_connection() -> asyncpg.Connection:
     conn = await _connect()
     if conn is None:
         raise RuntimeError("Session database unavailable")
-    await _ensure_tables(conn)
+    try:
+        await _ensure_tables(conn)
+    except BaseException:
+        await conn.close()  # Not left open for the garbage collector.
+        raise
     return conn
 
 

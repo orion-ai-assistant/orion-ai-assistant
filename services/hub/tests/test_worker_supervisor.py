@@ -117,7 +117,7 @@ class WorkerSupervisorTests(unittest.TestCase):
         redis.child = {'process': {}}
         redis.poll.return_value = None
         children = [redis] + apis + [self.worker, self.replacement]
-        runtime = Mock(children={label: {'process': {}} for label in ('api', 'local', 'mobile')})
+        runtime = Mock(children={label: {'process': {}} for label in ('redis', 'api', 'local', 'mobile')})
         runtime.requested.return_value = False
         runtime.launch.side_effect = children
         handlers = {}
@@ -130,7 +130,7 @@ class WorkerSupervisorTests(unittest.TestCase):
             if waits[0] == 3:
                 handlers[signal.SIGTERM](signal.SIGTERM, None)
                 return event.is_set()
-            now[0] = waits[0] - 1
+            now[0] = (waits[0] - 1) * 2  # Children are looked at every 2 s.
             return False
 
         settings = {'ORION_FLUTTER_AUTOSTART': '0', 'HUB_PORT': '8900',

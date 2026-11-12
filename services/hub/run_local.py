@@ -41,6 +41,68 @@ def stream_logs(proc, prefix, log_file, lock):
                 except Exception:
                     pass
 
+class RotatingLog:
+    """hub.log, written by the Hub's children for weeks: at MAX_BYTES it becomes hub.log.1 (older ones shift up to
+    hub.log.<BACKUPS>, the oldest is dropped). A rename refused because another program holds the file open is
+    not an error: writing goes on in the same file and the next limit tries again."""
+    MAX_BYTES = 20 * 1024 * 1024
+    BACKUPS = 3
+
+    def __init__(self, path, max_bytes=None, backups=None):
+        self.path = path
+        self.max_bytes = max_bytes or self.MAX_BYTES
+        self.backups = self.BACKUPS if backups is None else backups
+        self.lock = threading.RLock()
+        self.file = None
+        self.closed = False
+        self._open()
+
+    def _open(self):
+        self.file = open(self.path, 'a', encoding='utf-8')
+        try:
+            self.size = self.file.seek(0, os.SEEK_END)  # Appending starts at the end: its size.
+        except (OSError, ValueError):
+            self.size = 0
+
+    def _rotate(self):
+        self.file.close()
+        try:
+            for index in range(self.backups - 1, 0, -1):
+                older = f'{self.path}.{index}'
+                if os.path.exists(older):
+                    os.replace(older, f'{self.path}.{index + 1}')
+            if self.backups:
+                os.replace(self.path, f'{self.path}.1')
+            else:
+                os.remove(self.path)
+        except OSError:
+            pass  # Held open elsewhere: keep writing to it, try again at the next limit.
+        self._open()
+        if self.size >= self.max_bytes:
+            self.size = 0  # Not rotated: count afresh rather than retrying on every line.
+
+    def write(self, text):
+        with self.lock:
+            if self.closed:
+                return 0
+            if self.size >= self.max_bytes:
+                self._rotate()
+            written = self.file.write(text)
+            self.size += len(text.encode('utf-8', errors='replace'))
+            return written
+
+    def flush(self):
+        with self.lock:
+            if not self.closed:
+                self.file.flush()
+
+    def close(self):
+        with self.lock:
+            if not self.closed:
+                self.closed = True
+                self.file.close()
+
+
 def write_pids(pid_path, pids):
     """Write a list of PIDs to hub.pid for cross-platform stop support."""
     try:
@@ -74,7 +136,13 @@ def worker_ready(worker, redis_port):
 
 
 class WorkerSupervisor:
-    """Restart only an exited Worker, with a finite lifetime restart budget."""
+    """Restart only an exited Worker: five quick restarts (1-16 s apart), then one every PAUSE seconds.
+
+    The Hub runs for weeks: a Worker that has stayed up for STABLE seconds earns its five quick restarts back
+    (a Redis restart or a lost journal ends it once in a while, and that once used up a lifetime budget and left
+    the Hub without a Worker). A Worker that keeps failing is not given up either, only slowed down."""
+    STABLE = 600
+    PAUSE = 600
 
     def __init__(self, worker, start_worker, replace_worker, stopping, report):
         self.worker = worker
@@ -85,34 +153,42 @@ class WorkerSupervisor:
         self.attempts = 0
         self.restart_at = None
         self.exhausted = False
+        self.started_at = time.monotonic()
 
     def check(self):
-        if self.stopping.is_set() or self.exhausted:
+        if self.stopping.is_set():
             return
         exit_code = self.worker.poll()
-        if exit_code is None:
-            return
-        if self.attempts >= 5:
-            self.exhausted = True
-            self.report("Worker restart limit reached (5 attempts); automatic restarts disabled")
-            return
         now = time.monotonic()
+        if exit_code is None:
+            if self.attempts and now - self.started_at >= self.STABLE:
+                self.attempts = 0
+                self.exhausted = False
+            return
         if self.restart_at is None:
-            delay = min(2 ** self.attempts, 30)
+            if self.attempts >= 5:
+                delay = self.PAUSE
+                if not self.exhausted:
+                    self.exhausted = True
+                    self.report(f"Worker restart limit reached (5 attempts); trying again every {delay}s")
+            else:
+                delay = min(2 ** self.attempts, 30)
+                self.report(f"Worker exited with code {exit_code}; restart {self.attempts + 1}/5 in {delay}s")
             self.restart_at = now + delay
-            self.report(f"Worker exited with code {exit_code}; restart {self.attempts + 1}/5 in {delay}s")
             return
         if now < self.restart_at or self.stopping.is_set():
             return
-        self.attempts += 1
+        if self.attempts < 5:
+            self.attempts += 1
         self.restart_at = None
         try:
             replacement = self.start_worker()
-        except OSError as exc:
+        except Exception as exc:  # OSError, or a LifecycleError that must not end the whole Hub.
             self.report(f"Worker restart {self.attempts}/5 failed: {exc}")
             return
         self.replace_worker(self.worker, replacement)
         self.worker = replacement
+        self.started_at = now
         self.report(f"Worker restarted (PID {replacement.pid}, attempt {self.attempts}/5)")
 
 
@@ -163,6 +239,66 @@ class DatabaseSupervisor:
         self.failures = 0
         self.report("PostgreSQL started again")
         self.next_check = self.clock() + self.CHECK
+
+
+class ChildSupervisor:
+    """Start one child (Redis, an API server, the window's web server) again when it ends.
+
+    `running()` says whether it lives; `restart()` starts it and waits until it serves, raising when it could not.
+    A failed start is retried after a growing delay of up to MAX_DELAY and never given up: before this a failed
+    restart (port still held, Redis down while an API started) ended the whole Hub. A `running()` that cannot
+    tell (access denied) leaves the child alone."""
+    MAX_DELAY = 60
+
+    def __init__(self, name, running, restart, stopping, report, clock=time.monotonic):
+        self.name = name
+        self.running = running
+        self.restart = restart
+        self.stopping = stopping
+        self.report = report
+        self.clock = clock
+        self.failures = 0
+        self.next_try = 0.0
+
+    def check(self):
+        if self.stopping.is_set() or self.clock() < self.next_try:
+            return
+        try:
+            if self.running():
+                return
+        except Exception as error:
+            self.report(f"{self.name}: state unknown ({error}); left alone")
+            self.next_try = self.clock() + self.MAX_DELAY
+            return
+        self.report(f"{self.name} is not running; starting it again")
+        try:
+            self.restart()
+        except Exception as error:
+            self.failures += 1
+            delay = min(2 ** self.failures, self.MAX_DELAY)
+            self.report(f"{self.name} restart failed ({error}); next try in {delay}s")
+            self.next_try = self.clock() + delay
+            return
+        self.failures = 0
+        self.report(f"{self.name} started again")
+
+
+def wait_redis(record, redis_port, timeout=15):
+    """Until this Redis process owns the port and answers PING."""
+    from services.shared.process_lifecycle import owns_listener, LifecycleError
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if owns_listener(record, redis_port):
+                with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=1) as redis_check:
+                    redis_check.sendall(b'*1\r\n$4\r\nPING\r\n')
+                    if redis_check.recv(64).startswith(b'+PONG'):
+                        return
+        except OSError:
+            pass  # Still loading its snapshot.
+        if time.monotonic() >= deadline:
+            raise LifecycleError('Redis readiness failed')
+        time.sleep(.1)
 
 
 def _main(runtime):
@@ -228,7 +364,7 @@ def _main(runtime):
     
     hide_flags = 0x08000000 if os.name == 'nt' else 0
     
-    log_file = open(log_path, "a", encoding="utf-8")
+    log_file = RotatingLog(log_path)
     log_lock = threading.Lock()
     
     processes = []
@@ -268,23 +404,18 @@ def _main(runtime):
         assert_port_free(redis_port)
     if not os.path.isfile(redis_exe):
         raise LifecycleError('Portable Redis missing; run setup first')
-    redis_proc = runtime.launch('redis', [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)],
-        cwd=str(mutable_hub), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        creationflags=hide_flags)
-    redis_proc.child['native'] = {'kind': 'redis', 'port': int(redis_port)}
+    def start_redis():
+        proc = runtime.launch('redis', [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)],
+            cwd=str(mutable_hub), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            creationflags=hide_flags)
+        proc.child['native'] = {'kind': 'redis', 'port': int(redis_port)}
+        threading.Thread(target=stream_logs, args=(proc, '[REDIS]', log_file, log_lock), daemon=True).start()
+        wait_redis(proc.child['process'], redis_port)
+        return proc
+
+    redis_proc = start_redis()
     processes.append(redis_proc)
     all_pids.append(redis_proc.pid)
-    threading.Thread(target=stream_logs, args=(redis_proc, '[REDIS]', log_file, log_lock), daemon=True).start()
-    deadline = time.monotonic() + 15
-    while True:
-        if owns_listener(redis_proc.child['process'], redis_port):
-            with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=1) as redis_check:
-                redis_check.sendall(b'*1\r\n$4\r\nPING\r\n')
-                if redis_check.recv(64).startswith(b'+PONG'):
-                    break
-        if time.monotonic() >= deadline:
-            raise LifecycleError('Redis readiness failed')
-        time.sleep(.1)
     for label, port in [('api', hub_port), ('local', local_port), ('mobile', mobile_port)]:
         if label not in runtime.children:
             assert_port_free(port)
@@ -340,6 +471,7 @@ def _main(runtime):
     database_supervisor = DatabaseSupervisor(database, stopping, report_database)
 
     # Installer's Hub button and manager.py both use this entry point.
+    flutter_proc = None
     try:
         from services.shared.flutter_launcher import start_flutter
         flutter_proc = start_flutter(repo_root, py_bin, get_env,
@@ -393,30 +525,98 @@ def _main(runtime):
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, request_shutdown)
     
+    from services.shared.process_lifecycle import living
+
+    def report_child(message):
+        with log_lock:
+            log_file.write(f"[SUPERVISOR] {message}\n")
+            log_file.flush()
+        print(f"[SUPERVISOR] {message}")
+
+    def replace_child(previous, replacement):
+        if previous in processes:
+            processes[processes.index(previous)] = replacement
+        else:
+            processes.append(replacement)
+        if previous is not None and previous.pid in all_pids:
+            all_pids[all_pids.index(previous.pid)] = replacement.pid
+        else:
+            all_pids.append(replacement.pid)
+        write_pids(pid_path, all_pids)
+
+    def mark_starting():
+        if runtime.status != 'starting':
+            runtime.status = 'starting'
+            runtime.save()
+
+    current = {'redis': redis_proc, 'api': api_proc, 'local': local_proc, 'mobile': mobile_proc}
+
+    def child_running(label):
+        child = runtime.children.get(label)
+        return child is not None and living(child['process'])
+
+    def all_running():
+        try:
+            return all(child_running(label) for label in current)
+        except Exception:
+            return False  # Unknown: reported by its supervisor.
+
+    def server_restarter(label, command, port, tls):
+        def restart():
+            mark_starting()
+            assert_port_free(port)
+            replacement = runtime.launch(label, command, python=True, env=env, stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT, creationflags=hide_flags)
+            threading.Thread(target=stream_logs, args=(replacement, '[API]', log_file, log_lock), daemon=True).start()
+            wait_health(replacement, port, certificate=identity['cert'] if tls else None,
+                        identity=identity['id'] if label == 'mobile' else None)
+            replace_child(current.get(label), replacement)
+            current[label] = replacement
+        return restart
+
+    def restart_redis():
+        mark_starting()
+        assert_port_free(redis_port)
+        replacement = start_redis()
+        replace_child(current['redis'], replacement)
+        current['redis'] = replacement
+
+    # Redis first: an API server that starts while Redis is down fails its startup.
+    child_supervisors = [ChildSupervisor('Redis', lambda: child_running('redis'), restart_redis, stopping, report_child)]
+    for label, command, port, tls in [('api', api_cmd, hub_port, True), ('local', local_cmd, local_port, False),
+                                      ('mobile', mobile_cmd, mobile_port, True)]:
+        child_supervisors.append(ChildSupervisor(f'API server {label}', lambda label=label: child_running(label),
+                                                 server_restarter(label, command, port, tls), stopping, report_child))
+    if flutter_proc is not None and getattr(flutter_proc, 'relaunch', None):
+        def restart_flutter():
+            replacement = current['flutter'].relaunch()
+            replace_child(current['flutter'], replacement)
+            current['flutter'] = replacement
+        current['flutter'] = flutter_proc
+        child_supervisors.append(ChildSupervisor('Window web server', lambda: child_running('flutter'),
+                                                 restart_flutter, stopping, report_child))
+
+    # Stop requests are seen within TICK; the children are looked at every CHECK seconds. Looking every 0.2 s
+    # (process handles, a Redis connection and an fsync'd state file each time) cost ~15% of a core at idle.
+    TICK, CHECK = .2, 2.0
+    next_check = 0.0
     try:
-        while not stopping.wait(.2):
+        while not stopping.wait(TICK):
             if runtime.requested():
                 break
-            runtime.refresh_children()
-            for label, command, port, tls in [
-                    ('api', api_cmd, hub_port, True),
-                    ('local', local_cmd, local_port, False), ('mobile', mobile_cmd, mobile_port, True)]:
-                from services.shared.process_lifecycle import living
-                if not living(runtime.children[label]['process']):
-                    runtime.status = 'starting'
-                    runtime.save()
-                    assert_port_free(port)
-                    replacement = runtime.launch(label, command, python=True, env=env, stdout=subprocess.PIPE,
-                                                 stderr=subprocess.STDOUT, creationflags=hide_flags)
-                    threading.Thread(target=stream_logs, args=(replacement, '[API]', log_file, log_lock), daemon=True).start()
-                    wait_health(replacement, port, certificate=identity['cert'] if tls else None,
-                                identity=identity['id'] if label == 'mobile' else None)
-                    runtime.ready()
+            if time.monotonic() < next_check:
+                continue
+            next_check = time.monotonic() + CHECK
+            try:
+                runtime.refresh_children()
+            except Exception as error:  # A job that cannot be read this time must not end the Hub.
+                report_child(f'Child records not refreshed: {error}')
+            for child_supervisor in child_supervisors:
+                child_supervisor.check()
             database_supervisor.check()
             supervisor.check()
-            if not worker_ready(supervisor.worker, redis_port):
-                runtime.status = 'starting'
-                runtime.save()
+            if not worker_ready(supervisor.worker, redis_port) or not all_running():
+                mark_starting()
             elif runtime.status == 'starting':
                 runtime.ready()
     except KeyboardInterrupt:

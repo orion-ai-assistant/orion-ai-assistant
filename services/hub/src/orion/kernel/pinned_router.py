@@ -209,8 +209,9 @@ async def resolve_trusted_routers():
     store = SecurityStore()
     for router in store.routers():
         addresses = await asyncio.to_thread(discover_router, router['id'])
-        if addresses:
-            # Store a candidate address only. Each request still verifies its pin.
+        if addresses and addresses[0] != router.get('url'):
+            # Store a candidate address only. Each request still verifies its pin. Written only when it
+            # changed: this runs every 15 s, and each write made every trust watcher read the store again.
             store.update_router_address(router['id'], router['fp'], addresses[0])
     return [router['url'] for router in store.routers()]
 
@@ -286,7 +287,10 @@ class PinnedWebSocket:
     async def __aenter__(self):
         self.session = router_session()
         try:
-            self.socket = await self.session.ws_connect(self.url, headers=self.headers, max_msg_size=16 * 1024 * 1024)
+            # heartbeat: a Router that vanished without closing (sleep, a dropped network) ends the socket
+            # within ~45 s instead of leaving a speech-to-text proxy waiting forever.
+            self.socket = await self.session.ws_connect(self.url, headers=self.headers, max_msg_size=16 * 1024 * 1024,
+                                                        heartbeat=30)
         except BaseException:
             await self.session.close(); raise
         return self

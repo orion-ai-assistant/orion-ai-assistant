@@ -553,6 +553,9 @@ class Runtime:
         return True
 
     def refresh_children(self):
+        # Supervisors call this several times a second for weeks: the state file is written (with fsync) only
+        # when a child's descendants changed, not on every call.
+        before = json.dumps(self.children, sort_keys=True, default=str)
         for child in self.children.values():
             if child.get('job'):
                 with job_adapter().Job(child['job']) as job:
@@ -566,7 +569,9 @@ class Runtime:
                 with ProcessReference(child['process']) as reference:
                     if not reference.alive():
                         continue
-                    descendants = child.setdefault('descendants', [])
+                    # Ended ones are dropped, or the list grows with every short-lived helper for weeks.
+                    descendants = child['descendants'] = [item for item in child.get('descendants', [])
+                                                          if not record_ended(item)]
                     known = {(item['pid'], item['started']) for item in descendants}
                     for process in reference.process.children(recursive=True):
                         try:
@@ -579,7 +584,8 @@ class Runtime:
                             pass
             except psutil.NoSuchProcess:
                 continue
-        self.save()
+        if json.dumps(self.children, sort_keys=True, default=str) != before:
+            self.save()
 
     def stop_children(self, timeout=10):
         """Stop every child; never give up halfway. Each step is attempted even when an earlier one failed,

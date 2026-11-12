@@ -5,6 +5,7 @@ from typing import Any
 from services.shared.environment import get_env
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, Response
+from starlette.background import BackgroundTask
 from redis.asyncio import Redis
 import websockets
 import urllib.parse
@@ -337,10 +338,24 @@ async def chat_stream(
     channel = get_key(ROOM_USER_PREFIX, user_id) # Artık genel helper kullanıyoruz
     pubsub = redis.pubsub()
     await pubsub.subscribe(channel)
+    closed = False
+
+    async def close_pubsub():
+        # Also run as the response's background task: a client gone before the stream started never runs the
+        # generator's finally, and its Redis connection stayed subscribed until garbage collection.
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        try:
+            await pubsub.unsubscribe(channel)
+        except Exception:
+            pass  # Redis gone: closing below releases the connection.
+        await pubsub.aclose()
 
     async def event_generator():
-        settings = await get_runtime_settings(redis, user_id)
         try:
+            settings = await get_runtime_settings(redis, user_id)
             while not await request.is_disconnected():
                 try:
                     # Redis must wait for data. An outer wait_for does not make
@@ -360,12 +375,12 @@ async def chat_stream(
                     # Heartbeat timeout'u - normal durum
                     yield ": heartbeat\n\n"
         finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.close()
+            await close_pubsub()
 
     return StreamingResponse(
-        event_generator(), 
-        media_type="text/event-stream", 
+        event_generator(),
+        background=BackgroundTask(close_pubsub),
+        media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

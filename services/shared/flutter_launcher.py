@@ -353,6 +353,20 @@ def flutter_url(get_env):
     return f'http://localhost:{port}'
 
 
+def _copy_output(process, log_file):
+    stream = getattr(process, 'stdout', None)
+    if stream is None:
+        return
+    for line in iter(stream.readline, b''):
+        if log_file is None:
+            continue
+        try:
+            log_file.write('[UI] ' + line.decode('utf-8', errors='replace'))
+            log_file.flush()
+        except (OSError, ValueError):
+            pass
+
+
 def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping, runtime=None):
     """Return only our child process, or None. An occupied port is never killed."""
     if not enabled(get_env('ORION_FLUTTER_AUTOSTART', default='1', required=False)):
@@ -371,9 +385,24 @@ def start_flutter(repo_root, python, get_env, occupied_ports, log_file, stopping
     env = os.environ.copy()
     env['ORION_UI_HUB_URL'] = 'http://localhost:' + str(get_env('ORION_LOCAL_PORT', default='8910', required=False))
     launch = (lambda argv, **kw: runtime.launch('flutter', argv, python=True, **kw)) if runtime else subprocess.Popen
-    proc = launch([python, str(script), '--host', '127.0.0.1', '--port', str(port)], env=env,
-                            cwd=str(directory), stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
-                            creationflags=0x08000000 if os.name == 'nt' else 0)
+
+    def launch_server():
+        # Output goes through a pipe into log_file (which may rotate), not to its file handle.
+        server = launch([python, str(script), '--host', '127.0.0.1', '--port', str(port)], env=env,
+                        cwd=str(directory), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, creationflags=0x08000000 if os.name == 'nt' else 0)
+        threading.Thread(target=_copy_output, args=(server, log_file), daemon=True).start()
+        server.relaunch = relaunch
+        return server
+
+    def relaunch():
+        """The web server again after it ended (the window itself keeps running and retries)."""
+        from .process_lifecycle import wait_health
+        server = launch_server()
+        wait_health(server, port, path='/__orion_flutter_health__', json_response=False)
+        return server
+
+    proc = launch_server()
     url = flutter_url(get_env)
 
     def log(message):

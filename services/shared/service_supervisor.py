@@ -23,7 +23,7 @@ def main():
         runtime.ready()
         while not runtime.requested() and child.poll() is None:
             runtime.refresh_children()
-            time.sleep(.1)
+            time.sleep(1)  # Ten looks a second at the job and process handles cost CPU for weeks.
 
 
 if __name__ == '__main__':

@@ -52,6 +52,9 @@ class LiveInvitations(unittest.IsolatedAsyncioTestCase):
         self.patch.start()
         self.invite_patch = patch.object(invitations, '_connect', side_effect=connect)
         self.invite_patch.start()
+        self.tables = patch.object(registry, '_tables_ready', False)  # A fresh schema needs its tables.
+        self.tables.start()
+        self.addCleanup(self.tables.stop)
         conn = await connect()
         try:
             await registry._ensure_tables(conn)

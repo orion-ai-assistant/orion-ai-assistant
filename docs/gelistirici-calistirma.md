@@ -102,6 +102,10 @@ flutter run -d <cihaz-kimliği> --dart-define=ORION_AUDIO_DIAGNOSTICS=true
 | Web debug | `flutter run` terminali (tarayıcı konsolu) |
 | Telefon | `flutter run` terminali veya `adb logcat` |
 
+`hub.log` 20 MB'ı geçince `hub.log.1`'e döner (en çok `hub.log.3`'e kadar üç eski dosya tutulur); eski bir olayı
+arıyorsan onlara da bak. Denetleyicinin kendi satırları `[SUPERVISOR]` (Redis, API sunucuları, pencerenin web
+sunucusu yeniden başlatıldı), `[DATABASE]` (PostgreSQL) ve `[WORKER]` ön ekiyle yazılır.
+
 Hub logunda yankı iptalli turlar için:
 - Telefon mikrofonu: `Echo turn <cihaz>: ... reference X dBFS (<loopback cihazı>), mic Y dBFS -> cleaned Z dBFS, cpu ...,
   canceller removed E dB (...), residual suppression avg S dB on N playing hops (G% gated), delay D ms, leak ...`

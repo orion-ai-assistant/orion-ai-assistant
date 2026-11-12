@@ -396,6 +396,42 @@ def test_a_stopped_part_stays_off_until_started(parts, monkeypatch):
     assert started == ['embedding']
 
 
+def test_a_hung_part_is_restarted_after_three_silent_passes(parts, monkeypatch):
+    # Running and ready by its records, yet its /health does not answer: start_part alone is a no-op then.
+    events = []
+    monkeypatch.setattr(P, 'start_part', lambda part_id: events.append(('start', part_id)))
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: events.append(('stop', part_id)) or True)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    monkeypatch.setattr(P, '_running_ready', lambda part_id: True)
+    monkeypatch.setattr(P, '_silent', {})
+    fake_engine(parts)
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P.keep_running()
+    P.keep_running()
+    assert events == []  # A busy moment or two is not a hang.
+    P.keep_running()
+    assert events == [('stop', 'embedding'), ('start', 'embedding')]
+    events.clear()
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: True)
+    P.keep_running()
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: False)
+    P.keep_running()
+    P.keep_running()
+    assert events == []  # An answer in between starts the count again.
+
+
+def test_a_part_that_is_not_running_is_started_at_once(parts, monkeypatch):
+    events = []
+    monkeypatch.setattr(P, 'start_part', lambda part_id: events.append(('start', part_id)))
+    monkeypatch.setattr(P, 'stop_part', lambda part_id: events.append(('stop', part_id)) or True)
+    monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
+    monkeypatch.setattr(P, '_running_ready', lambda part_id: False)
+    fake_engine(parts)
+    P.write_part_config('embedding', enabled=True, model='jina-v5-omni-nano')
+    P.keep_running()
+    assert events == [('start', 'embedding')]
+
+
 def test_the_hardware_is_read_once_for_every_hub_process(parts, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setenv('ORION_PARTS_HOME', str(parts))

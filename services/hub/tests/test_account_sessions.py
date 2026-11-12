@@ -254,6 +254,9 @@ class LiveSessionStorage(unittest.IsolatedAsyncioTestCase):
             return await asyncpg.connect(self.dsn, server_settings={'search_path': self.schema})
         self.connect = patch.object(registry, '_connect', side_effect=connect)
         self.connect.start()
+        self.tables = patch.object(registry, '_tables_ready', False)  # A fresh schema needs its tables.
+        self.tables.start()
+        self.addCleanup(self.tables.stop)
 
     async def asyncTearDown(self):
         self.connect.stop()

@@ -553,6 +553,19 @@ class CleanLinkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.calls[-1], ('end_turn', 'pc:user'))
         await link.close()
 
+    async def test_a_cleaner_that_falls_behind_drops_the_oldest_audio_not_memory(self):
+        link = await self._local_link(FakeCanceller())
+        await link.on_text(start(preroll_samples=2, start_sample=0, wake_end_sample=2))
+        link.MAX_QUEUED_BYTES = 10
+        for index in range(1, 9):  # on_audio never yields: the cleaning task does not run in between.
+            await link.on_audio(bytes([index, 0]))
+        self.assertLessEqual(link._queued_bytes, 10)
+        self.assertEqual(link._queue.qsize(), 5)
+        self.assertEqual(link.dropped_bytes, 6)
+        self.assertEqual(link._queue.get_nowait()[0], b'\x04\x00')  # The newest five are kept.
+        link._queued_bytes -= 2
+        await link.close()
+
     async def test_a_silent_pc_needs_no_check(self):
         class Quiet(FakeCanceller):
             def reference_quiet(self, start_time, preroll_samples):
