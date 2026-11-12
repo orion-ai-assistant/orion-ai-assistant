@@ -54,6 +54,22 @@ class RawLevelGainTests(unittest.TestCase):
         gain.observe(pcm(.004, 5))
         self.assertGreater(rms(gain.apply(pcm(.004, 10))), rms(pcm(.004, 10)))
 
+    def test_while_the_pc_plays_a_quiet_microphone_lifts_the_leftover_little(self):
+        # The PC mic hears Orion's voice at only ~-62 dBFS: the raw level alone lifted it ~50x.
+        echo, leftover = pcm(.0008, 50), pcm(.0003, 50)
+        playing = RawLevelGain()
+        playing.observe(echo, playing=True)
+        self.assertLessEqual(rms(playing.apply(leftover)), 4.01 * rms(leftover))
+        silent = RawLevelGain()
+        silent.observe(echo)
+        self.assertGreater(rms(silent.apply(leftover)), 20 * rms(leftover))  # a quiet voice still lifted
+
+    def test_a_pause_while_the_pc_plays_keeps_no_more_than_the_playing_lift(self):
+        gain = RawLevelGain()
+        gain.observe(pcm(.002, 50))  # the user's quiet voice: a big lift
+        gain.observe(pcm(.0001, 50), playing=True)  # a pause, then Orion speaks
+        self.assertLessEqual(max(gain._gains[50:]), 4.0)
+
     def test_summary_reports_and_resets_the_gain(self):
         gain = RawLevelGain()
         gain.observe(pcm(.004, 10))

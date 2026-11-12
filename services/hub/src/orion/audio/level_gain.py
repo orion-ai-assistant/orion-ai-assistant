@@ -24,6 +24,12 @@ RELEASE = .97  # per frame: ~0.7 s, the PC normalizer's envelope release
 # envelope down into a pause lifted a quiet phone microphone's room noise up
 # to 64x (measured 2026-11-05: phone turns averaged 13-23x): Silero and STT then
 # got loud hiss between the words, and STT turned silence into text.
+# While the PC plays (and for a moment after), the lift stays small. A PC
+# microphone far from the speaker hears Orion's own voice at only -62 dBFS, so
+# the raw level kept the lift at 50-64x and what the canceller left of the
+# voice (-69 dBFS) came out as loud as speech: the follow-up window took it
+# for the user and sent Orion's own words back to the model (2026-11-12).
+PLAYING_CEILING = 4.0
 VOICE_RELEASE = .997  # per frame: the remembered voice level fades ~1.3 dB/s
 PAUSE = .18  # a frame 15 dB below the remembered voice is a pause
 
@@ -44,7 +50,9 @@ class RawLevelGain:
         self._applied = 0  # cleaned samples already scaled
         self._lift = [0.0, 0, 0.0]  # sum, count, max of the lifts since the last summary
 
-    def observe(self, pcm):
+    def observe(self, pcm, playing=False):
+        """`playing`: the PC played sound during (or just before) these samples."""
+        ceiling = min(self.ceiling, PLAYING_CEILING) if playing else self.ceiling
         pcm = pcm[:len(pcm) // 2 * 2]
         raw = np.concatenate([self._partial, np.frombuffer(pcm, '<i2').astype(np.float32) / 32768])
         whole = len(raw) // FRAME * FRAME
@@ -54,9 +62,9 @@ class RawLevelGain:
             self._voice = max(rms, self._voice * VOICE_RELEASE)
             level = self._envelope
             if self._held is not None and rms < self._voice * PAUSE:
-                lift = self._held  # a pause: keep the voice's lift
+                lift = min(self._held, ceiling)  # a pause: keep the voice's lift
             else:
-                lift = 1.0 if level < NOISE_FLOOR else min(max(TARGET_RMS / level, 1.0), self.ceiling)
+                lift = 1.0 if level < NOISE_FLOOR else min(max(TARGET_RMS / level, 1.0), ceiling)
                 if level >= NOISE_FLOOR:
                     self._held = lift
             self._gains.append(lift)

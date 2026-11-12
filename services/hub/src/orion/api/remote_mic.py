@@ -147,6 +147,15 @@ class PhoneAudioCleaner:
             log.warning('Echo canceller failed on the reference check', exc_info=True)
             return False
 
+    def playing(self):
+        """The PC played sound in the last moment (read from the reference ring; cheap)."""
+        if self.canceller is None or not hasattr(self.canceller, 'playing'):
+            return False
+        try:
+            return bool(self.canceller.playing())
+        except Exception:
+            return False
+
     async def check_preroll(self, device, preroll, start_time, chain=False):
         """The pre-roll cleaned for the quick Orion check (`chain`: by the whole chain, while
         Orion's own voice plays); raw when unavailable."""
@@ -669,7 +678,7 @@ async def clean_turn_audio(link, turn, pcm):
             return
         turn['open'] = True
         if gain:
-            gain.observe(bytes(turn['preroll']))
+            gain.observe(bytes(turn['preroll']), playing=_playing(link))
         if hasattr(link, 'send_check') and not turn.get('quiet'):
             # The PC checks "Orion" on this before the turn starts (the "heard" sound waits for
             # it), so it runs first and alone: running the turn's own cleaning of the whole
@@ -690,7 +699,7 @@ async def clean_turn_audio(link, turn, pcm):
         if not pcm:
             return
     if gain:
-        gain.observe(pcm)
+        gain.observe(pcm, playing=_playing(link))
     out = await link.cleaner.process(turn['device'], pcm)
     if out and link.turn is turn:
         final = gain.apply(out) if gain else out
@@ -749,6 +758,11 @@ def _prune_dumps(folder, keep=DUMP_KEEP):
         for path in turns[name]:
             with suppress(OSError):
                 path.unlink()
+
+
+def _playing(link):
+    playing = getattr(link.cleaner, 'playing', None)
+    return bool(playing()) if callable(playing) else False
 
 
 def _turn_gain():

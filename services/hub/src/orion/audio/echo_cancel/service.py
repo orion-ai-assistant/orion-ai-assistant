@@ -171,6 +171,15 @@ class EchoCanceller:
             return False
         return float(np.max(np.abs(self.ring.read(start, end - start)))) <= REF_THRESHOLD
 
+    def playing(self, seconds=1.2):
+        """Whether the PC played sound within the last `seconds` (its echo may still be in the room)."""
+        if self._capture is None:
+            return False
+        from .engines import REF_THRESHOLD
+        end = self.ring.end
+        n = min(round(seconds * 16000), end)
+        return n > 0 and float(np.max(np.abs(self.ring.read(end - n, n)))) > REF_THRESHOLD
+
     def check_preroll(self, device_id, preroll_pcm, start_time=None, chain=False):
         """The pre-roll cleaned for the PC's quick Orion check while the turn's own audio is still
         on its way. Its own warm stream per device; never the turn's.
