@@ -207,7 +207,7 @@ class Turn:
             if self.used_ref is not None:
                 self.used_ref.append(ref.copy())
             self.counted += n
-            self._mic_history = np.concatenate([self._mic_history, self._pending[:n]])[-DELAY_WINDOW:]
+            self._mic_history = np.concatenate([self._mic_history, self._pending[:n]])[-(DELAY_WINDOW + DELAY_SEARCH):]
             self._pending = self._pending[n:]
             self._consumed += n
             self._since_estimate += n
@@ -257,9 +257,11 @@ class Turn:
         leaves DELAY_OK on two estimates in a row, the pairing moves so the reference leads by
         DELAY_TARGET (the engines themselves handle a lag inside DELAY_OK)."""
         self._since_estimate = 0
-        if len(self._mic_history) < DELAY_WINDOW:
+        if len(self._mic_history) < DELAY_WINDOW + DELAY_SEARCH:
             return
-        b = self.ref_start + self._consumed
+        # The window ends DELAY_SEARCH before the newest mic sample: the reference up to DELAY_SEARCH
+        # after it is already captured (the newest frame's reference just was).
+        b = self.ref_start + self._consumed - DELAY_SEARCH
         a = b - DELAY_WINDOW
         if a - DELAY_SEARCH < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
             return
@@ -268,7 +270,7 @@ class Turn:
         if float(np.mean(middle ** 2)) <= LOUD_REF:
             self._pending_lag = None
             return
-        mic = self._mic_history.astype(np.float64)
+        mic = self._mic_history[:DELAY_WINDOW].astype(np.float64)
         mic = mic - mic.mean()
         size = 1 << int(np.ceil(np.log2(len(ref) + len(mic))))
         corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)), size)[:2 * DELAY_SEARCH + 1]

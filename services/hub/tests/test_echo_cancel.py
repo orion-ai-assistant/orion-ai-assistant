@@ -297,6 +297,23 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(turn.shifts, 1)
         self.assertEqual(turn.ref_start, early + RATE * 30 // 1000)  # the reference now leads by 30 ms
 
+    def test_realignment_works_with_the_reference_captured_only_up_to_now(self):
+        clock = FakeClock()
+        ref = (np.random.default_rng(9).standard_normal(RATE * 12) * .1).astype(np.float32)
+        ring = ReferenceRing(seconds=20, clock=clock)
+        early = RATE // 10
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_rate = lambda n: None
+        mic = .5 * np.concatenate([ref[early:], np.zeros(early, np.float32)])
+        written = 0
+        for i in range(0, RATE * 8, 320):  # live: the ring holds the reference up to this packet only
+            clock.now += .02
+            ring.write(ref[written:i + 320], clock.now)
+            written = i + 320
+            turn.feed(mic[i:i + 320])
+        self.assertEqual(turn.shifts, 1)
+        self.assertEqual(turn.ref_start, early + RATE * 30 // 1000)
+
     def test_a_lag_the_engines_handle_is_left_alone(self):
         clock = FakeClock()
         ring, ref = self.noise_ring(clock, 12)
