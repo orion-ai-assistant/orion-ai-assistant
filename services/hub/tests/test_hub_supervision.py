@@ -261,6 +261,71 @@ class LiveRedisRestartTests(unittest.TestCase):
                     runtime.stop_children(timeout=1)  # This Redis has no stop channel: its job ends it.
 
 
+@unittest.skipUnless(os.name == 'nt' and REDIS_EXE.is_file(), 'portable Redis (Windows) not installed')
+class LiveRedisAofTests(unittest.TestCase):
+    """The switch to the append-only file keeps what the snapshot held, and a crash afterwards loses nothing."""
+
+    def start(self, directory, port, argv=None):
+        import subprocess
+        argv = argv or run_local.redis_argv(str(REDIS_EXE), port, directory)[0]
+        proc = subprocess.Popen(argv, cwd=directory, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=0x08000000)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                if run_local.redis_call(port, 'PING').startswith(b'+PONG'):
+                    return proc
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                raise AssertionError('Redis did not start')
+            time.sleep(.05)
+
+    def test_snapshot_then_aof_then_crash_keeps_every_key(self):
+        import socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
+        with tempfile.TemporaryDirectory() as directory:
+            # An older Hub: snapshots only.
+            old = self.start(directory, port, [str(REDIS_EXE), '--bind', '127.0.0.1', '--port', str(port)])
+            run_local.redis_call(port, 'SET', 'from-snapshot', '1')
+            self.assertTrue(run_local.redis_call(port, 'SAVE').startswith(b'+OK'))
+            old.kill(); old.wait(10)
+            argv, switch = run_local.redis_argv(str(REDIS_EXE), port, directory)
+            self.assertTrue(switch)
+            self.assertTrue(os.path.isfile(os.path.join(directory, 'dump.rdb.before-aof')))
+            first = self.start(directory, port, argv)
+            run_local.switch_on_aof(port)
+            deadline = time.monotonic() + 30
+            while not run_local.aof_written(port):
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.1)
+            run_local.redis_call(port, 'SET', 'after-switch', '2')
+            time.sleep(1.5)  # appendfsync everysec
+            first.kill(); first.wait(10)  # A crash: no snapshot is written at exit.
+            argv, switch = run_local.redis_argv(str(REDIS_EXE), port, directory)
+            self.assertFalse(switch)
+            self.assertIn('--appendonly', argv)
+            last = self.start(directory, port, argv)
+            try:
+                self.assertEqual(run_local.redis_call(port, 'GET', 'from-snapshot'), b'$1')
+                self.assertEqual(run_local.redis_call(port, 'GET', 'after-switch'), b'$1')
+            finally:
+                last.kill()
+                last.wait(10)
+
+    def test_an_empty_aof_left_by_an_interrupted_switch_does_not_hide_the_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, 'dump.rdb').write_bytes(b'REDIS0009 snapshot')
+            Path(directory, run_local.AOF_NAME).write_bytes(b'')
+            argv, switch = run_local.redis_argv('redis-server.exe', 6379, directory)
+            self.assertTrue(switch)
+            self.assertNotIn('--appendonly', argv)
+            self.assertTrue(Path(directory, run_local.AOF_NAME + '.empty').is_file())
+
+
 class RouterAddressTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_address_is_written_only_when_it_changed(self):
         # Runs every 15 s for weeks; each write made every trust watcher read the store again.

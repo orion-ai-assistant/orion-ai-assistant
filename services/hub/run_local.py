@@ -301,6 +301,70 @@ def wait_redis(record, redis_port, timeout=15):
         time.sleep(.1)
 
 
+AOF_NAME = 'appendonly.aof'
+
+
+def _size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return -1
+
+
+def redis_argv(redis_exe, redis_port, directory):
+    """Redis's command line, and whether its append-only file still has to be switched on.
+
+    Snapshots alone (Redis's default rules) lose up to minutes of jobs and chat state in a crash; the append-only
+    file loses at most a second. Starting with --appendonly yes while only dump.rdb exists would load an empty
+    AOF instead of the snapshot, so the first time Redis starts from its snapshot, a copy of the snapshot is kept
+    (dump.rdb.before-aof) and the AOF is switched on while it runs (switch_on_aof). Later starts load the AOF."""
+    argv = [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)]
+    aof = os.path.join(directory, AOF_NAME)
+    snapshot = os.path.join(directory, 'dump.rdb')
+    if _size(aof) == 0 and _size(snapshot) > 0:
+        # Redis creates the file when the switch starts and fills it when its first rewrite ends: one ended
+        # in between (empty file) must not replace the snapshot with nothing.
+        os.replace(aof, aof + '.empty')
+    if os.path.isfile(aof):
+        return argv + ['--appendonly', 'yes', '--appendfilename', AOF_NAME], False
+    backup = snapshot + '.before-aof'
+    if os.path.isfile(snapshot) and not os.path.exists(backup):
+        import shutil
+        shutil.copy2(snapshot, backup)
+    return argv, True
+
+
+def redis_call(redis_port, *words, timeout=5):
+    """One command over RESP; the first reply line."""
+    command = b'*%d\r\n' % len(words) + b''.join(b'$%d\r\n%s\r\n' % (len(w), w) for w in
+                                                    (word.encode() for word in words))
+    with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=timeout) as client:
+        client.sendall(command)
+        return client.recv(256).split(b'\r\n', 1)[0]
+
+
+def switch_on_aof(redis_port):
+    """Redis writes the AOF from what it holds now (the snapshot it loaded), then appends every change."""
+    reply = redis_call(redis_port, 'CONFIG', 'SET', 'appendonly', 'yes')
+    if not reply.startswith(b'+OK'):
+        raise RuntimeError(f'Redis did not switch on its append-only file: {reply[:80]!r}')
+
+
+def aof_written(redis_port):
+    """The first rewrite after the switch has ended and succeeded (until then the file may be empty)."""
+    with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=5) as client:
+        client.sendall(b'*2\r\n$4\r\nINFO\r\n$11\r\npersistence\r\n')
+        data = b''
+        while b'aof_last_write_status' not in data:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    info = dict(line.split(':', 1) for line in data.decode(errors='replace').splitlines() if ':' in line)
+    return (info.get('aof_enabled') == '1' and info.get('aof_rewrite_in_progress') == '0'
+            and info.get('aof_rewrite_scheduled') == '0' and info.get('aof_last_bgrewrite_status') == 'ok')
+
+
 def _main(runtime):
     if os.name == 'nt':
         os.system("")  # Enable ANSI colors in Windows cmd
@@ -405,12 +469,25 @@ def _main(runtime):
     if not os.path.isfile(redis_exe):
         raise LifecycleError('Portable Redis missing; run setup first')
     def start_redis():
-        proc = runtime.launch('redis', [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)],
+        argv, switch = redis_argv(redis_exe, redis_port, str(mutable_hub))
+        proc = runtime.launch('redis', argv,
             cwd=str(mutable_hub), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             creationflags=hide_flags)
         proc.child['native'] = {'kind': 'redis', 'port': int(redis_port)}
         threading.Thread(target=stream_logs, args=(proc, '[REDIS]', log_file, log_lock), daemon=True).start()
         wait_redis(proc.child['process'], redis_port)
+        if switch:
+            try:
+                switch_on_aof(redis_port)
+                deadline = time.monotonic() + 60
+                while not aof_written(redis_port):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('its first rewrite did not finish in 60 s')
+                    time.sleep(.2)
+                print('[*] Redis keeps an append-only file now (at most a second lost in a crash)', flush=True)
+            except (OSError, RuntimeError) as error:
+                # Snapshots still work as before; tried again at the next start.
+                print(f'[!] Redis append-only file not switched on: {error}', flush=True)
         return proc
 
     redis_proc = start_redis()
