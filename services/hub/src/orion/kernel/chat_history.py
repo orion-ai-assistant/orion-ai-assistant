@@ -47,9 +47,8 @@ def failed_content(error, partial=''):
 
 async def persist_failed_turn(redis, chat_id, turn_id, user_message, error, state=None, metrics=None):
     """Save the failed question and response before publishing the terminal event."""
-    from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX
     from orion.kernel.registry import insert_messages
-    from orion.kernel.job_safety import job_key, TERMINAL_TTL
+    from orion.kernel.job_safety import job_key
     if not await redis.hsetnx(job_key(turn_id), 'history_saved', '1'):
         return  # A newer turn replaced this one and already saved it.
     state = state or {}
@@ -66,15 +65,10 @@ async def persist_failed_turn(redis, chat_id, turn_id, user_message, error, stat
     if metrics:
         assistant['metrics'] = metrics
     messages = [{**user_message, 'role': 'user', 'turn_id': turn_id, 'failed_turn': True}, assistant]
-    pipe = redis.pipeline()
-    for message in messages:
-        pipe.rpush(CHAT_HISTORY_KEY_PREFIX + chat_id, json.dumps(message))
-    pipe.expire(CHAT_HISTORY_KEY_PREFIX + chat_id, TERMINAL_TTL)
-    await pipe.execute()
     try:
         await insert_messages(chat_id=chat_id, messages=messages)
     except Exception:
-        logging.exception('Failed turn saved in Redis but not PostgreSQL for chat %s', chat_id)
+        logging.exception('Failed turn of chat %s could not be saved', chat_id)
 
 
 def visible_history(history: list[dict]) -> list[dict]:

@@ -230,18 +230,10 @@ async def _keep_superseded_turn(redis: Redis, chat_id: str, cache_ttl_seconds: i
         if value:
             assistant[key] = value
     messages = [{**json.loads(state["current_user_message"]), "turn_id": turn_id}, assistant]
-    # An expired cache list must be rebuilt first, or it would hold only this turn.
-    await _load_history_with_hydration(redis, chat_id, cache_ttl_seconds)
-    history_key = get_key(CHAT_HISTORY_KEY_PREFIX, chat_id)
-    pipe = redis.pipeline()
-    for message in messages:
-        pipe.rpush(history_key, json.dumps(message))
-    pipe.expire(history_key, cache_ttl_seconds)
-    await pipe.execute()
     try:
         await insert_messages(chat_id=chat_id, messages=messages)
     except Exception:
-        logger.exception("Superseded turn saved in Redis but not PostgreSQL for chat %s", chat_id)
+        logger.exception("Superseded turn of chat %s could not be saved", chat_id)
 
 
 async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None = None) -> JobStopResponse:
@@ -452,7 +444,7 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
     """
     await ensure_chat_access(redis, user_id, chat_id)
     settings = await get_runtime_settings(redis, user_id)
-    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
+    history = await _load_history(chat_id)
 
     from orion.kernel.chat_history import visible_history
     history = visible_history(history)
@@ -509,58 +501,26 @@ async def _audio_payload(chat_id, audio):
     return audio
 
 
-async def _load_history_with_hydration(
-    redis: Redis,
-    chat_id: str,
-    cache_ttl_seconds: int,
-) -> list[dict]:
-    """Core Cache-Aside logic shared between user and admin history reads."""
-    history_key = get_key(CHAT_HISTORY_KEY_PREFIX, chat_id)
-    raw_items = await redis.lrange(history_key, 0, -1)
+async def _load_history(chat_id: str) -> list[dict]:
+    """A chat's saved messages, from PostgreSQL: the one record of them.
 
-    # Cache Hit
-    if raw_items:
-        history = []
-        for item in raw_items:
-            try:
-                history.append(json.loads(item))
-            except json.JSONDecodeError:
-                continue
-        return history
-
-    # Cache Miss → fetch from PostgreSQL and hydrate Redis
-    logger.info("Cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
+    Redis no longer keeps a copy. The copy was a second place to write (Redis first, PostgreSQL after, so a
+    failed database write looked saved for an hour and was then gone), held whole chats in memory, and an
+    expired copy that a write recreated showed only that turn. One indexed read from the connection pool
+    costs about as much as reading and decoding the copy did. Redis keeps only what lives while a turn
+    runs: its state, stream, stop and claim keys.
+    """
     try:
-        db_history = await get_chat_history_db(chat_id)
+        return await get_chat_history_db(chat_id)
     except Exception:
         logger.exception("get_chat_history_db failed for chat %s", chat_id)
-        db_history = []
-
-    if db_history:
-        pipe = redis.pipeline()
-        for msg in db_history:
-            pipe.rpush(history_key, json.dumps(msg))
-        pipe.expire(history_key, cache_ttl_seconds)
-        await pipe.execute()
-        logger.info(
-            "Hydrated %d messages into Redis for chat %s (TTL=%ds)",
-            len(db_history), chat_id, cache_ttl_seconds,
-        )
-
-    return db_history
+        return []
 
 
 async def get_chat_history_admin(redis: Redis, chat_id: str) -> list[dict]:
-    meta_exists = await redis.exists(get_key(CHAT_META_KEY_PREFIX, chat_id))
-    if not meta_exists:
-        # Admin can still read from DB even if Redis TTL has expired
-        db_history = await get_chat_history_db(chat_id)
-        if not db_history:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        return db_history
-
-    settings = await get_runtime_settings(redis, "global")
-    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
+    history = await _load_history(chat_id)
+    if not history and not await redis.exists(get_key(CHAT_META_KEY_PREFIX, chat_id)):
+        raise HTTPException(status_code=404, detail="Chat not found")
 
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     if state and state.get("status") in {"queued", "processing"}:
@@ -657,8 +617,7 @@ async def delete_failed_turn(redis: Redis, user_id: str, chat_id: str, key: str)
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     if state.get('status') in {'queued', 'processing'}:
         raise HTTPException(409, 'Yanıt tamamlandıktan sonra silmeyi tekrar deneyin.')
-    settings = await get_runtime_settings(redis, user_id)
-    history = await _load_history_with_hydration(redis, chat_id, settings.redis_cache_ttl_seconds)
+    history = await _load_history(chat_id)
     try:
         remaining, removed = remove_failed_turn(history, key)
     except ValueError as exc:
@@ -671,16 +630,12 @@ async def delete_failed_turn(redis: Redis, user_id: str, chat_id: str, key: str)
     except Exception as exc:
         logger.exception('Could not delete failed turn for %s', chat_id)
         raise HTTPException(503, 'Mesaj veritabanından silinemedi.') from exc
-    pipe = redis.pipeline()
-    pipe.delete(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id))
     if deleted:
+        pipe = redis.pipeline()
         for prefix in (CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX):
             pipe.delete(get_key(prefix, chat_id))
         pipe.zrem(get_key(CHAT_USER_INDEX_PREFIX, user_id), chat_id)
-    elif remaining:
-        pipe.rpush(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id), *[json.dumps(m) for m in remaining])
-        pipe.expire(get_key(CHAT_HISTORY_KEY_PREFIX, chat_id), settings.redis_cache_ttl_seconds)
-    await pipe.execute()
+        await pipe.execute()
     event = (StreamEvent.chat_delete(chat_id) if deleted else
              StreamEvent(type='chat_history_changed', chat_id=chat_id))
     await redis.publish(get_key(ROOM_USER_PREFIX, user_id), event.model_dump_json())

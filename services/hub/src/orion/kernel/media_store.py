@@ -147,7 +147,7 @@ async def read_media(chat_id, media_id, *, offset=0, length=None):
 
 async def cleanup_orphan_media(redis, *, limit=100):
     """Remove old unreferenced media, retaining cached and in-flight chat data."""
-    from orion.contracts.constants import CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX
+    from orion.contracts.constants import CHAT_STATE_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX
     if not 1 <= limit <= 100:
         raise ValueError('Cleanup batch must be between 1 and 100')
     conn = await _connection()
@@ -169,7 +169,7 @@ async def cleanup_orphan_media(redis, *, limit=100):
                     # Skip busy chats rather than blocking a send or deletion.
                     locked = await conn.fetchval('select id from orion_chats where id=$1 for update skip locked', chat_id)
                     allowed[chat_id] = (bool(locked), bool(locked) and not await redis.exists(
-                        CHAT_HISTORY_KEY_PREFIX + chat_id, CHAT_STATE_KEY_PREFIX + chat_id,
+                        CHAT_STATE_KEY_PREFIX + chat_id,
                         ACTIVE_TURN_KEY_PREFIX + chat_id))
                 locked, can_delete = allowed[chat_id]
                 if not can_delete:

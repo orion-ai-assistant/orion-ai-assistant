@@ -11,7 +11,7 @@ import aiohttp
 from redis.asyncio import Redis
 from redis.exceptions import WatchError
 
-from orion.contracts.constants import ACTIVE_TURN_KEY_PREFIX, CHAT_HISTORY_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, TURN_STOP_KEY_PREFIX
+from orion.contracts.constants import ACTIVE_TURN_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, TURN_STOP_KEY_PREFIX
 from orion.kernel.config import RuntimeSettings, get_runtime_settings
 from orion.kernel.registry import insert_messages, get_chat_history_db
 from orion.worker.infra.context import JobContext
@@ -116,10 +116,6 @@ def fake_completion(prompt: str) -> str:
     )
 
 
-def _history_key(chat_id: str) -> str:
-    return f"{CHAT_HISTORY_KEY_PREFIX}{chat_id}"
-
-
 def _remove_failed_turns(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from orion.kernel.chat_history import successful_history
     return successful_history(history)
@@ -131,53 +127,19 @@ async def load_history(
     max_messages: int,
     cache_ttl_seconds: int,
 ) -> list[dict[str, Any]]:
-    """Return the recent message history for a chat, with Cache-Aside hydration.
+    """The model's view of a chat's history, read from PostgreSQL (see job_service._load_history).
 
-    1. Try Redis first (fast path).
-    2. On cache miss, fall back to PostgreSQL and hydrate Redis so subsequent
-       calls within the TTL window hit the cache.
+    The whole chat is read, not its tail: model_history counts turns from the chat's start so that
+    consecutive requests share their prefix (the provider's prompt cache).
     """
     if max_messages <= 0:
         return []
-
-    key = _history_key(chat_id)
-    raw_items = await redis.lrange(key, 0, -1)
-
-    # Cache Hit
-    if raw_items:
-        history: list[dict[str, Any]] = []
-        for item in raw_items:
-            try:
-                data = json.loads(item)
-            except json.JSONDecodeError:
-                continue
-            role = data.get("role")
-            content = data.get("content")
-            if role:
-                history.append(data)
-        return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages, HISTORY_SLIDE_TURNS))
-
-    # Cache Miss — hydrate from PostgreSQL
-    logging.info("Worker cache miss for chat history %s — hydrating from PostgreSQL", chat_id)
     try:
-        db_history = await get_chat_history_db(chat_id)
+        history = [message for message in await get_chat_history_db(chat_id) if message.get("role")]
     except Exception:
         logging.exception("get_chat_history_db failed for chat %s — returning empty history", chat_id)
         return []
-
-    if db_history:
-        pipe = redis.pipeline()
-        for msg in db_history:
-            pipe.rpush(key, json.dumps(msg))
-        pipe.expire(key, cache_ttl_seconds)
-        await pipe.execute()
-        logging.info(
-            "Hydrated %d messages into Redis for chat %s (TTL=%ds)",
-            len(db_history), chat_id, cache_ttl_seconds,
-        )
-
-    # Return only the last max_messages entries
-    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(db_history), max_messages, HISTORY_SLIDE_TURNS))
+    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages, HISTORY_SLIDE_TURNS))
 
 
 async def append_history(
@@ -212,25 +174,19 @@ async def append_history(
             except Exception:
                 logging.exception('TTS media persistence failed; retaining inline history fallback')
 
-    # 1. Write to Redis (hot cache)
-    key = _history_key(chat_id)
-    pipe = redis.pipeline()
-    for message in messages:
-        pipe.rpush(key, json.dumps(message))
-    # Cache full UI history; model_history applies a turn-safe context boundary.
-    pipe.expire(key, settings.redis_cache_ttl_seconds)
-    await pipe.execute()
-
-    # 2. Write-Through: persist to PostgreSQL
-    try:
-        await insert_messages(chat_id=chat_id, messages=messages)
-    except Exception:
-        # Non-fatal: messages are already in Redis and the stream continues.
-        # The missing DB write will be visible in logs for investigation.
-        logging.exception(
-            "Write-Through insert_messages failed for chat %s — messages are in Redis but not persisted to DB",
-            chat_id,
-        )
+    # PostgreSQL is the only record: a short outage (its supervisor restarting it) is waited out before the
+    # turn is given up as unsaved. The turn stays "processing" until this returns, so no client reads a
+    # history that misses it.
+    for attempt, pause in enumerate((0.5, 1.0, 2.0, 4.0, None)):
+        try:
+            await insert_messages(chat_id=chat_id, messages=messages)
+            return
+        except Exception:
+            if pause is None:
+                logging.exception("Turn of chat %s could not be saved after %d tries", chat_id, attempt + 1)
+                return
+            logging.warning("Saving the turn of chat %s failed; trying again in %.1f s", chat_id, pause)
+            await asyncio.sleep(pause)
 
 
 def _redis_text(value: Any) -> str | None:
