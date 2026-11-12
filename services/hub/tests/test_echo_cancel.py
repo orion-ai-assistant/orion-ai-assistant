@@ -219,12 +219,27 @@ class TurnTests(unittest.TestCase):
 
     def test_reference_missing_too_long_counts_as_silence(self):
         engine = HalvingEngine()
-        turn = Turn(DeviceStream(engine), self.ring, ref_start=self.ring.end, clock=self.clock, stall=0.3)
+        quiet = filled_ring(self.clock, np.zeros(RATE * 4, np.float32))
+        turn = Turn(DeviceStream(engine), quiet, ref_start=quiet.end, clock=self.clock, stall=0.3)
         mic = np.full(HOP * 4, 0.2, np.float32)
         self.assertEqual(len(turn.feed(mic)), 0)
         self.clock.now += 0.5  # capture stalled (device switch, disarm)
         out = turn.feed(np.zeros(0, np.float32))
         self.assertEqual(len(out), HOP * 4 - 640)
+        self.assertEqual(turn.late, HOP * 4)
+
+    def test_a_late_reference_while_the_pc_plays_is_waited_for(self):
+        engine = HalvingEngine()
+        turn = Turn(DeviceStream(engine), self.ring, ref_start=self.ring.end, clock=self.clock, stall=0.3)
+        mic = np.full(HOP * 4, 0.2, np.float32)
+        self.assertEqual(len(turn.feed(mic)), 0)
+        self.clock.now += 0.5  # the loopback fell behind while Orion speaks: not silence
+        self.assertEqual(len(turn.feed(np.zeros(0, np.float32))), 0)
+        self.ring.write(np.full(HOP * 4, LOUD, np.float32), self.clock.now)
+        out = turn.feed(np.zeros(0, np.float32))
+        self.assertEqual(len(out), HOP * 4 - 640)
+        self.assertEqual(turn.late, 0)  # cleaned against the real reference
+        self.assertEqual(stream_frames(turn), 4)
 
 
 class FakeCapture:

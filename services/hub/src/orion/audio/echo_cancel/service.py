@@ -291,10 +291,11 @@ class EchoCanceller:
         # One line per turn: whether the reference had sound and how much the canceller took out
         # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
         suppressor = getattr(stream, "suppressor", None)
-        _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, %s",
+        _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, "
+                   "late reference %s s, %s",
                    device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
                    getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
-                   stats.get("cleaned_db"), stats["cpu_seconds"],
+                   stats.get("cleaned_db"), stats["cpu_seconds"], round(getattr(turn, "late", 0) / 16000, 2),
                    suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         return out
 

@@ -23,6 +23,7 @@ import numpy as np
 
 HOP = 256
 RATE = 16000
+QUIET = 10 ** (-65 / 20)  # the reference's silence (engines.REF_THRESHOLD)
 
 
 class DeviceStream:
@@ -109,12 +110,17 @@ class DeviceStream:
 
 
 class Turn:
-    def __init__(self, stream, ring, ref_start, clock=time.perf_counter, stall=0.3):
+    def __init__(self, stream, ring, ref_start, clock=time.perf_counter, stall=0.3, playing_stall=1.5):
         self.stream = stream
         self.ring = ring
         self.ref_start = ref_start  # absolute ring index paired with mic sample 0
         self.clock = clock
         self.stall = stall  # after this long, a reference the ring still lacks counts as silence
+        # ...unless the PC was just playing: then it is late, not silent. Taken for silence, Orion's own
+        # voice passed the canceller untouched for half a second when the loopback capture fell ~0.3 s
+        # behind at a turn's start (2026-11-12, both dumped turns at 1.3-1.8 s).
+        self.playing_stall = playing_stall
+        self.late = 0  # mic samples cleaned against a reference that never came in time
         self._pending = np.zeros(0, np.float32)
         self._consumed = 0  # mic samples already turned into frames
         self._drop = stream.latency
@@ -146,8 +152,11 @@ class Turn:
             ready = frames
         else:
             # A reference the ring still lacks after `stall` seconds counts as silence (capture stopped).
-            while ready < frames and self.clock() - self.ring.time_of(start + (ready + 1) * HOP) >= self.stall:
+            stall = self._stall() if ready < frames else self.stall
+            while ready < frames and self.clock() - self.ring.time_of(start + (ready + 1) * HOP) >= stall:
                 ready += 1
+                if start + ready * HOP > captured:
+                    self.late += HOP
         out = np.zeros(0, np.float32)
         if ready:
             n = ready * HOP
@@ -169,6 +178,14 @@ class Turn:
         if not final:
             self.emitted += len(out)
         return out
+
+
+    def _stall(self):
+        end = self.ring.end
+        n = min(RATE // 2, end)
+        if n and float(np.max(np.abs(self.ring.read(end - n, n)))) > QUIET:
+            return self.playing_stall
+        return self.stall
 
 
 def to_float(pcm16):
