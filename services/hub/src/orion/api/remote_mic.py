@@ -114,12 +114,12 @@ class PhoneAudioCleaner:
             with suppress(Exception):
                 await self._call('disarm')
 
-    async def start_turn(self, device, preroll, start_time):
+    async def start_turn(self, device, preroll, start_time, mic=None):
         self._raw.discard(device)
         if self.canceller is None:
             return preroll
         try:
-            return await self._call('start_turn', device, preroll, start_time)
+            return await self._call('start_turn', device, preroll, start_time, *(() if mic is None else (mic,)))
         except Exception:
             log.warning('Echo canceller failed at turn start; raw audio for this turn', exc_info=True)
             self._raw.add(device)
@@ -698,7 +698,8 @@ async def clean_turn_audio(link, turn, pcm, arrival=None):
             await turn['check']
             if link.turn is not turn:
                 return
-        out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'])
+        out = await link.cleaner.start_turn(turn['device'], bytes(turn['preroll']), turn['started'],
+                                            turn.get('name'))
         if out and link.turn is turn:
             final = gain.apply(out) if gain else out
             if dump is not None:

@@ -58,7 +58,7 @@ class FakeCanceller:
     def disarm(self):
         self._record('disarm')
 
-    def start_turn(self, device, preroll, start_time):
+    def start_turn(self, device, preroll, start_time, mic=None):
         self._record('start_turn', device, preroll, start_time)
         return b'C' + preroll
 

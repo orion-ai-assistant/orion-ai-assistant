@@ -130,12 +130,13 @@ class EchoCanceller:
 
     # --- turns (one phone at a time per device_id; calls for one device must not overlap) ---
 
-    def start_turn(self, device_id, preroll_pcm=b"", start_time=None):
+    def start_turn(self, device_id, preroll_pcm=b"", start_time=None, mic=None):
         """Open a turn and return the cleaned pre-roll (same length as `preroll_pcm`).
 
         `preroll_pcm`: PCM16 LE mono 16 kHz recorded before the live stream (wake word included).
         `start_time`: `time.perf_counter()` when the first live sample (the one right after the
-        pre-roll) was captured; default now, i.e. when the turn start reached the Hub."""
+        pre-roll) was captured; default now, i.e. when the turn start reached the Hub.
+        `mic`: the microphone's name; its clock against the loudspeaker is its own."""
         start_time = self.clock() if start_time is None else start_time
         preroll = to_float(preroll_pcm)
         with self._lock:
@@ -148,6 +149,7 @@ class EchoCanceller:
             if stream is None:
                 turn = _PassThrough()
             else:
+                self._use_clock(stream, device_id, mic)
                 turn = Turn(stream, self.ring, self.ring.index_at(start_time) - len(preroll), clock=self.clock)
                 if os.environ.get("ORION_PC_MIC_DUMP") == "1":
                     turn.used_ref = []
@@ -338,8 +340,21 @@ class EchoCanceller:
         engine.want_chain = True  # audio only comes inside turns
         return engine
 
-    def _clock_key(self, device_id):
-        return f"{device_id} -> {getattr(self._capture, 'device_name', None)}"
+    def _clock_key(self, device_id, mic=None):
+        return f"{device_id} ({mic}) -> {getattr(self._capture, 'device_name', None)}"
+
+    def _use_clock(self, stream, device_id, mic):
+        """The clock learned for this microphone with this loudspeaker; another microphone (or the PC's
+        sound moved to another output) starts from its own, or learns it."""
+        key = self._clock_key(device_id, mic)
+        if getattr(stream, 'clock_key', None) == key:
+            return
+        stream.clock_key = key
+        known = self._load_clocks().get(key)
+        if known:
+            stream.clock_ratio, stream.clock_source = float(known[0]), known[1]
+        else:
+            stream.clock_ratio, stream.clock_source = 1.0, None
 
     def _load_clocks(self):
         if self._clocks is None:
@@ -361,7 +376,7 @@ class EchoCanceller:
         if stream is None or ratio is None:
             return
         clocks = self._load_clocks()
-        key = self._clock_key(device_id)
+        key = getattr(stream, 'clock_key', None) or self._clock_key(device_id)
         entry = [round(float(ratio), 7), getattr(stream, "clock_source", None)]
         if clocks.get(key) == entry:
             return
@@ -385,9 +400,6 @@ class EchoCanceller:
             stream = self._streams.get(device_id)
             if stream is None:
                 stream = self._device_stream(self._turn_engine())
-                known = self._load_clocks().get(self._clock_key(device_id))
-                if known:
-                    stream.clock_ratio, stream.clock_source = float(known[0]), known[1]
                 self._streams[device_id] = stream
                 while len(self._streams) > self.max_devices:
                     _, old = self._streams.popitem(last=False)

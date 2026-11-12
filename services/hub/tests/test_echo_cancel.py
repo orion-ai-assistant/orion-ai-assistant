@@ -423,6 +423,21 @@ class EchoCancellerTests(unittest.TestCase):
             turn = again._turns['pc:aa']
             self.assertEqual((turn.ratio, turn.stream.clock_source), (1.0036, 'audio'))
 
+    def test_each_microphone_keeps_its_own_clock(self):
+        self.ec.arm()
+        def turn(mic, ratio=None):
+            self.ec.start_turn('pc:aa', b'', mic=mic)
+            t = self.ec._turns['pc:aa']
+            if ratio is not None:
+                t.stream.clock_ratio, t.stream.clock_source = ratio, 'audio'
+            seen = t.ratio
+            self.ec.end_turn('pc:aa')
+            return seen
+        turn('Realtek', 1.0036)
+        self.assertEqual(turn('Realtek'), 1.0036)
+        self.assertEqual(turn('USB headset'), 1.0)  # another mic learns its own
+        self.assertEqual(turn('Realtek'), 1.0036)  # and the first one's comes back
+
     def test_a_short_cue_is_not_the_pc_playing_a_reply_is(self):
         self.ec.arm()
         self.clock.now += 2
