@@ -380,11 +380,13 @@ async def search_chats(user_id: str, query: str) -> list[dict]:
 
 
 async def index_chat_search() -> None:
-    """Once per start: make messages saved by older versions searchable, a batch at a time."""
+    """Once per start: make messages saved by older versions searchable and windowable, a batch at a time."""
     import asyncio
-    from orion.kernel.registry import index_unsearchable_messages
+    from orion.kernel.registry import index_message_turns, index_unsearchable_messages
     try:
         while await index_unsearchable_messages():
+            await asyncio.sleep(0.05)
+        while await index_message_turns():
             await asyncio.sleep(0.05)
     except Exception:
         logger.exception("Older messages could not be prepared for the chat search")
@@ -405,7 +407,8 @@ def history_window(history: list[dict], limit: int | None = None, before_turn: s
 
 
 async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_audio: bool = True,
-                           limit: int | None = None, before_turn: str | None = None) -> list[dict]:
+                           limit: int | None = None, before_turn: str | None = None,
+                           max_chars: int | None = None) -> list[dict]:
     """Return the full message history for a chat.
 
     Strategy:
@@ -416,18 +419,28 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
        UI always reflects the live generation.
     """
     await ensure_chat_access(redis, user_id, chat_id)
-    history = await _load_history(chat_id)
-
     from orion.kernel.chat_history import visible_history
-    history = visible_history(history)
+    if limit is None and before_turn is None and max_chars is None:
+        history = visible_history(await _load_history(chat_id))
+        live = True
+    else:
+        # Only the window is read: a chat of thousands of messages costs what its last page costs.
+        from orion.kernel.registry import get_chat_window_db
+        try:
+            window = await get_chat_window_db(chat_id, limit, before_turn, max_chars)
+        except Exception as exc:
+            logger.exception("Chat window could not be read for %s", chat_id)
+            raise HTTPException(status_code=503, detail="Sohbet şu anda okunamıyor.") from exc
+        if window is None:
+            return []
+        messages, size = window
+        history = visible_history(messages)[-size:] if size else []
+        live = before_turn is None
 
     # Append in-progress tokens for the currently streaming message (if any)
-    state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
+    state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id)) if live else {}
     if state and state.get("status") in {"queued", "processing"}:
         _append_processing_state(history, state)
-
-    if limit is not None or before_turn is not None:
-        history = history_window(history, limit, before_turn)
 
     if not include_audio:
         from urllib.parse import quote

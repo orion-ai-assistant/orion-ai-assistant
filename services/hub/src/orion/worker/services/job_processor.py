@@ -129,17 +129,21 @@ async def load_history(
 ) -> list[dict[str, Any]]:
     """The model's view of a chat's history, read from PostgreSQL (see job_service._load_history).
 
-    The whole chat is read, not its tail: model_history counts turns from the chat's start so that
+    Only a tail is read; model_history still counts turns from the chat's start (prior_turns), so
     consecutive requests share their prefix (the provider's prompt cache).
     """
     if max_messages <= 0:
         return []
+    from orion.kernel.registry import get_chat_tail_db
     try:
-        history = [message for message in await get_chat_history_db(chat_id) if message.get("role")]
+        # A tail well beyond max_messages (failed turns and tool calls take room); never the whole chat.
+        tail, prior_turns = await get_chat_tail_db(chat_id, max(4 * max_messages, 200))
     except Exception:
-        logging.exception("get_chat_history_db failed for chat %s — returning empty history", chat_id)
+        logging.exception("get_chat_tail_db failed for chat %s — returning empty history", chat_id)
         return []
-    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages, HISTORY_SLIDE_TURNS))
+    history = [message for message in tail if message.get("role")]
+    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages,
+                                                            HISTORY_SLIDE_TURNS, prior_turns=prior_turns))
 
 
 async def append_history(

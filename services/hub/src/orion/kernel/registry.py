@@ -261,6 +261,12 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
             "create index if not exists idx_orion_chat_messages_unindexed on orion_chat_messages (id) "
             "where search_text is null"
         )
+        # The turn a message belongs to ('' for none), so a window "before turn T" is found without opening JSON.
+        await conn.execute("alter table orion_chat_messages add column if not exists turn_id text")
+        await conn.execute(
+            "create index if not exists idx_orion_chat_messages_turnless on orion_chat_messages (id) "
+            "where turn_id is null"
+        )
     except (asyncpg.exceptions.UniqueViolationError, asyncpg.exceptions.DuplicateTableError):
         # A failure after serialization indicates an actual schema problem.
         raise
@@ -612,13 +618,13 @@ async def insert_messages(chat_id: str, messages: list[dict]) -> None:
     try:
         await _ensure_tables(conn)
         records = [
-            (chat_id, msg.get("role", "user"), json.dumps(msg), *_search_columns(msg))
+            (chat_id, msg.get("role", "user"), json.dumps(msg), *_search_columns(msg), str(msg.get("turn_id") or ""))
             for msg in messages
         ]
         await conn.executemany(
             """
-            insert into orion_chat_messages (chat_id, role, content_json, plain_text, search_text)
-            values ($1, $2, $3, $4, $5)
+            insert into orion_chat_messages (chat_id, role, content_json, plain_text, search_text, turn_id)
+            values ($1, $2, $3, $4, $5, $6)
             """,
             records,
         )
@@ -658,6 +664,113 @@ async def index_unsearchable_messages(batch: int = 100) -> int:
             await conn.executemany(
                 "update orion_chat_messages set plain_text = $2, search_text = $3 where id = $1", records)
         return len(records)
+    finally:
+        await conn.close()
+
+
+async def index_message_turns(batch: int = 200) -> int:
+    """Fill turn_id of messages saved before the column existed; returns how many (0: none left)."""
+    conn = await _connect()
+    if conn is None:
+        return 0
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch(
+            "select id, content_json from orion_chat_messages where turn_id is null order by id limit $1", batch)
+        records = []
+        for row in rows:
+            try:
+                message = json.loads(row["content_json"])
+            except json.JSONDecodeError:
+                message = {}
+            records.append((row["id"], str(message.get("turn_id") or "") if isinstance(message, dict) else ""))
+        if records:
+            await conn.executemany("update orion_chat_messages set turn_id = $2 where id = $1", records)
+        return len(records)
+    finally:
+        await conn.close()
+
+
+def _messages(rows) -> list[dict]:
+    result = []
+    for row in rows:
+        try:
+            result.append(json.loads(row["content_json"]))
+        except json.JSONDecodeError:
+            logger.warning("Skipping malformed message JSON")
+    return result
+
+
+async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str | None = None,
+                             max_chars: int | None = None) -> tuple[list[dict], int] | None:
+    """The newest messages of a chat (or those before `before_turn`), without reading the rest.
+
+    The window is `limit` messages, or fewer once their readable text reaches `max_chars` (at least one);
+    the second value is that size plus one when an older message exists (the client's "more above" sign).
+    The messages returned start at the beginning of their turn, so failed-turn labels see whole turns; the
+    caller keeps the last `size` of them. None: `before_turn` is not in this chat.
+    """
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        end_id = None
+        if before_turn is not None:
+            end_id = await conn.fetchval(
+                """select min(id) from orion_chat_messages where chat_id = $1
+                   and (turn_id = $2 or (turn_id is null and strpos(content_json, $2) > 0))""",
+                chat_id, before_turn)
+            if end_id is None:
+                return None
+        heads = await conn.fetch(
+            """select id, coalesce(length(plain_text), 0) as chars from orion_chat_messages
+               where chat_id = $1 and ($2::bigint is null or id < $2) order by id desc limit $3""",
+            chat_id, end_id, None if limit is None else limit + 1)
+        if not heads:
+            return [], 0
+        size, chars = 0, 0
+        for row in heads:
+            if (limit is not None and size >= limit) or (max_chars and size and chars >= max_chars):
+                break
+            size, chars = size + 1, chars + row["chars"]
+        older = size < len(heads)
+        oldest = heads[size]["id"] if older else heads[size - 1]["id"]
+        start = await conn.fetchval(
+            """select max(id) from orion_chat_messages where chat_id = $1 and id <= $2 and role = 'user'""",
+            chat_id, oldest)
+        rows = await conn.fetch(
+            """select content_json from orion_chat_messages
+               where chat_id = $1 and id >= $2 and ($3::bigint is null or id < $3) order by id""",
+            chat_id, start or 0, end_id)
+        return _messages(rows), size + (1 if older else 0)
+    finally:
+        await conn.close()
+
+
+async def get_chat_tail_db(chat_id: str, rows: int) -> tuple[list[dict], int]:
+    """The last `rows` messages of a chat from the start of their first turn, and how many successful turns
+    came before them (the model's history counts turns from the chat's start; see tool_history.model_history)."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        oldest = await conn.fetchval(
+            """select min(id) from (select id from orion_chat_messages where chat_id = $1
+               order by id desc limit $2) tail""", chat_id, rows)
+        if oldest is None:
+            return [], 0
+        start = await conn.fetchval(
+            "select max(id) from orion_chat_messages where chat_id = $1 and id <= $2 and role = 'user'",
+            chat_id, oldest) or 0
+        prior = await conn.fetchval(
+            """select count(*) from orion_chat_messages where chat_id = $1 and id < $2 and role = 'user'
+               and strpos(content_json, '"failed_turn": true') = 0""", chat_id, start)
+        found = await conn.fetch(
+            "select content_json from orion_chat_messages where chat_id = $1 and id >= $2 order by id",
+            chat_id, start)
+        return _messages(found), prior
     finally:
         await conn.close()
 

@@ -75,7 +75,7 @@ def _without_direct_copy(group):
 HISTORY_SLIDE_TURNS = 4
 
 
-def model_history(history, max_messages, slide=1):
+def model_history(history, max_messages, slide=1, prior_turns=0):
     """Keep whole user turns, including paired calls/results, at the boundary.
 
     ``slide`` > 1 lets the window start only at every ``slide``-th turn of the chat (never more than a
@@ -104,7 +104,8 @@ def model_history(history, max_messages, slide=1):
         kept.insert(0, group)
         count += len(group)
     # Turn indexes count from the start of the chat, so the window start only moves every ``block`` turns.
-    start = len(valid) - len(kept)
+    # ``prior_turns``: successful turns before ``history`` when only the chat's tail was read.
+    start = prior_turns + len(valid) - len(kept)
     block = max(1, min(slide, len(kept) // 3))
     kept = kept[min(-(-start // block) * block - start, len(kept) - 1):]
     names = {call['id']: call.get('function', {}).get('name')

@@ -230,9 +230,10 @@ async def list_chats_endpoint(request: Request, limit: int | None = Query(None, 
 async def get_chat_history_endpoint(chat_id: str, request: Request, include_audio: bool = True,
                                     limit: int | None = Query(None, ge=1, le=1000),
                                     before_turn: str | None = Query(None, max_length=200),
+                                    max_chars: int | None = Query(None, ge=200, le=1_000_000),
                                     current_user: str = Depends(get_current_user)) -> list[dict]:
     return await get_chat_history(request.app.state.redis, current_user, chat_id, include_audio=include_audio,
-                                  limit=limit, before_turn=before_turn)
+                                  limit=limit, before_turn=before_turn, max_chars=max_chars)
 
 @router.get("/api/v1/chats/{chat_id}/turns/{turn_id}/audio", response_model=dict)
 async def get_turn_audio_endpoint(chat_id: str, turn_id: str, request: Request, current_user: str = Depends(get_current_user)) -> dict:
