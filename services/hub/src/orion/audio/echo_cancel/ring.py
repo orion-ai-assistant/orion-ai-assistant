@@ -31,6 +31,13 @@ class ReferenceRing:
         self._origin = None  # clock time of absolute index 0
         self._lock = threading.Lock()
         self.gap_samples = 0
+        # After a pause the first packets wait here (`settle` seconds at most) before they join the
+        # timeline: a capture thread that was only held up (the Hub busy with a turn) delivers its backlog
+        # in a burst that fills the gap itself, while a PC that really fell silent sends no more. Padding
+        # at once shifted every later sample by the hold-up: Orion's voice reached the canceller ~70 ms
+        # after its echo within one 30 s turn, and passed it (2026-11-12, 21:16).
+        self.settle = 0.08
+        self._staged = None  # (samples, when the pause ended)
 
     # --- writer side (loopback capture thread) ---
 
@@ -41,9 +48,26 @@ class ReferenceRing:
         with self._lock:
             if self._origin is None:
                 self._origin = now - (self._end + len(x)) / self.rate
+            if self._staged is not None:
+                staged, since = self._staged
+                staged = np.concatenate([staged, x])
+                behind = round((now - self._origin) * self.rate) - (self._end + len(staged))
+                self._last_write = now
+                if behind <= self.slack:
+                    self._staged = None  # the backlog filled the gap: the capture was only late
+                    self._append(staged)
+                elif now - since >= self.settle:
+                    self._commit_pause(now)
+                else:
+                    self._staged = (staged, since)
+                return
             behind = round((now - self._origin) * self.rate) - (self._end + len(x))
             paused = self._last_write is None or now - len(x) / self.rate - self._last_write > self.gap
+            first = self._last_write is None
             self._last_write = now
+            if paused and behind > self.slack and not first:
+                self._staged = (x, now)  # a pause, or a late capture whose backlog follows: see `settle`
+                return
             if paused and behind > 0:
                 self._pad(behind)  # nothing played in between
             elif behind < -2 * self.slack:
@@ -58,10 +82,23 @@ class ReferenceRing:
                 self._window_lag = min(self._window_lag, behind)
             self._append(x)
 
+    def _commit_pause(self, now):
+        """No backlog came: the PC was silent. Zeros up to the staged packets, which end at `now`."""
+        staged, _ = self._staged
+        self._staged = None
+        behind = round((now - self._origin) * self.rate) - (self._end + len(staged))
+        if behind > 0:
+            self._pad(behind)
+        self._append(staged)
+
     def advance(self, now=None):
         """Pad silence up to `now` minus the slack; call periodically while nothing is written."""
         now = self.clock() if now is None else now
         with self._lock:
+            if self._staged is not None:
+                if now - self._staged[1] >= self.settle:
+                    self._commit_pause(self._last_write)
+                return
             if self._origin is None:
                 self._origin = now - self._end / self.rate
             if self._last_write is not None and now - self._last_write <= self.gap:

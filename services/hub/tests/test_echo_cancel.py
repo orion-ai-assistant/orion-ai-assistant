@@ -101,10 +101,13 @@ class RingTests(unittest.TestCase):
         ring.write(np.ones(160, np.float32), clock.now)
         clock.now += 0.5  # loopback sent nothing for half a second
         ring.write(np.ones(160, np.float32), clock.now)
+        self.assertEqual(ring.end, 160)  # held a moment: is a backlog on its way?
+        clock.now += ring.settle + 1e-3
+        ring.advance()  # none came: the PC was silent
         self.assertEqual(ring.end, 8160)
         self.assertEqual(ring.gap_samples, 8000 - 160)
         np.testing.assert_array_equal(ring.read(160, 7840), np.zeros(7840))
-        self.assertEqual(ring.index_at(clock.now), 8160)
+        self.assertEqual(ring.index_at(clock.now - ring.settle - 1e-3), 8160)  # the last packet's time
 
     def test_advance_pads_idle_time_but_keeps_slack(self):
         clock = FakeClock()
@@ -129,6 +132,21 @@ class RingTests(unittest.TestCase):
             ring.write(np.ones(160, np.float32), clock.now)
         self.assertEqual(ring.gap_samples, 0)
         np.testing.assert_array_equal(ring.read(0, ring.end), np.ones(ring.end))
+
+    def test_a_capture_held_up_longer_than_a_pause_is_not_padded(self):
+        clock = FakeClock()
+        ring = ReferenceRing(clock=clock)
+        for i in range(100):
+            clock.now += 0.01
+            ring.write(np.full(160, i + 1, np.float32), clock.now)
+        clock.now += 0.3  # the Hub was busy: 30 packets wait, then arrive in a burst
+        for i in range(31):
+            ring.write(np.full(160, 101 + i, np.float32), clock.now)
+        self.assertEqual(ring.gap_samples, 0)
+        # Every packet sits where it was captured: no zeros pushed the later ones back.
+        self.assertEqual(ring.end, 131 * 160)
+        self.assertEqual(ring.read(130 * 160, 1)[0], 131)
+        self.assertLessEqual(abs(ring.index_at(clock.now) - ring.end), ring.slack)
 
     def test_slow_device_clock_lag_stays_bounded(self):
         clock = FakeClock()
@@ -235,7 +253,7 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(len(turn.feed(mic)), 0)
         self.clock.now += 0.5  # the loopback fell behind while Orion speaks: not silence
         self.assertEqual(len(turn.feed(np.zeros(0, np.float32))), 0)
-        self.ring.write(np.full(HOP * 4, LOUD, np.float32), self.clock.now)
+        self.ring.write(np.full(RATE // 2, LOUD, np.float32), self.clock.now)  # its backlog in one burst
         out = turn.feed(np.zeros(0, np.float32))
         self.assertEqual(len(out), HOP * 4 - 640)
         self.assertEqual(turn.late, 0)  # cleaned against the real reference
