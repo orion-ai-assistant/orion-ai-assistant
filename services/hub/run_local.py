@@ -818,7 +818,10 @@ def _relay_main(runtime, env, local_port):
         while not stopping.wait(.2):
             if runtime.requested():
                 break
-            runtime.refresh_children()
+            try:
+                runtime.refresh_children()
+            except Exception as error:  # A look that fails this time must not stop the window server.
+                print(f'[!] Child records not refreshed: {error}', flush=True)
             if not living(runtime.children['local']['process']):
                 runtime.status = 'starting'
                 runtime.save()

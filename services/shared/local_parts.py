@@ -1865,7 +1865,10 @@ def serve(part_id):
         # Once a second: each look opens the job and process handles (several times a second cost a few
         # percent of a core per part for weeks).
         while not runtime.requested() and child.poll() is None:
-            runtime.refresh_children()
+            try:
+                runtime.refresh_children()
+            except Exception as error:  # A look that fails this second must not stop a serving engine.
+                print(f'[!] Child records not refreshed: {error}', flush=True)
             time.sleep(1)
 
 

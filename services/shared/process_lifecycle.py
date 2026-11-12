@@ -562,7 +562,7 @@ class Runtime:
                     job.root_alive(child['process'])
                     # Only current kernel members; historical PIDs cannot block
                     # stop or authorize signaling after reuse by another process.
-                    child['descendants'] = [item for item in job.records()
+                    child['descendants'] = [item for item in job.records(strict=False)
                         if child['process'] is None or item['pid'] != child['process']['pid']]
                 continue
             try:
@@ -580,7 +580,9 @@ class Runtime:
                                 raise LifecycleError('Child user identity mismatch')
                             if (item['pid'], item['started']) not in known:
                                 descendants.append(item)
-                        except psutil.NoSuchProcess:
+                        except (LifecycleError, psutil.Error):
+                            # Started or ended while read (see Job.records): read again next time. A watcher
+                            # that raised here stopped the whole Router over a short-lived FFmpeg/conhost.
                             pass
             except psutil.NoSuchProcess:
                 continue

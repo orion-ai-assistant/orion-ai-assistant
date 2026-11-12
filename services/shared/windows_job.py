@@ -144,7 +144,11 @@ class Job:
         except psutil.NoSuchProcess:
             return False
 
-    def records(self):
+    def records(self, strict=True):
+        """Current members. strict (stop, port ownership) fails on any member it cannot read. A watching
+        caller passes strict=False: a member that is starting or ending can read differently between two
+        looks (Windows fills in a new process's command line after creating it), and is only left out of
+        this look - the next one reads it again. It never authorizes a signal either way."""
         records = []
         user = psutil.Process().username()
         for pid in self.pids():
@@ -159,6 +163,9 @@ class Job:
                     records.append(record)
             except psutil.NoSuchProcess:
                 continue
+            except (LifecycleError, psutil.Error):
+                if strict:
+                    raise
         return records
 
     def wait_empty(self, timeout):

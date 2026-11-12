@@ -22,7 +22,10 @@ def main():
         wait_health(child, port, timeout=SERVICE_READY_TIMEOUT)
         runtime.ready()
         while not runtime.requested() and child.poll() is None:
-            runtime.refresh_children()
+            try:
+                runtime.refresh_children()
+            except Exception as error:  # A look that fails this second must not stop a serving service.
+                print(f'[!] Child records not refreshed: {error}', flush=True)
             time.sleep(1)  # Ten looks a second at the job and process handles cost CPU for weeks.
 
 
