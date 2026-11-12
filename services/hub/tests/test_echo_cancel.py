@@ -357,6 +357,18 @@ class EchoCancellerTests(unittest.TestCase):
         self.clock.now += seconds
         self.ec.ring.write(np.full(int(seconds * RATE), LOUD, np.float32), self.clock.now)
 
+    def test_a_short_cue_is_not_the_pc_playing_a_reply_is(self):
+        self.ec.arm()
+        self.clock.now += 2
+        self.ec.ring.write(np.zeros(2 * RATE, np.float32), self.clock.now)
+        self.clock.now += .2
+        cue = np.zeros(int(.2 * RATE), np.float32)
+        cue[:int(.16 * RATE)] = LOUD  # "dıdıt"
+        self.ec.ring.write(cue, self.clock.now)
+        self.assertFalse(self.ec.playing())
+        self.play(.6)  # Orion's reply
+        self.assertTrue(self.ec.playing())
+
     def test_turn_api_round_trip_and_state_survives_turns(self):
         self.ec.arm()
         self.play(2.5)

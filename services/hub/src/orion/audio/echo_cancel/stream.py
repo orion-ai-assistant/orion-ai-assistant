@@ -206,6 +206,12 @@ class Turn:
                 self.leak += n
             if self.used_ref is not None:
                 self.used_ref.append(ref.copy())
+                kept = 0  # the dump keeps 90 s: so does this, also in a turn of hours
+                for i in range(len(self.used_ref) - 1, -1, -1):
+                    kept += len(self.used_ref[i])
+                    if kept >= 90 * RATE:
+                        del self.used_ref[:i]
+                        break
             self.counted += n
             self._mic_history = np.concatenate([self._mic_history, self._pending[:n]])[-(DELAY_WINDOW + DELAY_SEARCH):]
             self._pending = self._pending[n:]

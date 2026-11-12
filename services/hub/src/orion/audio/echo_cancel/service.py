@@ -173,14 +173,19 @@ class EchoCanceller:
             return False
         return float(np.max(np.abs(self.ring.read(start, end - start)))) <= REF_THRESHOLD
 
-    def playing(self, seconds=1.2):
-        """Whether the PC played sound within the last `seconds` (its echo may still be in the room)."""
+    def playing(self, seconds=1.2, least=0.4):
+        """Whether the PC played sound for `least` seconds of the last `seconds` (its echo may still be in
+        the room). A cue ("dıdıt", 0.16 s) is not playing: it held a turn's first second at the low lift,
+        and the user's voice grew louder a second in (2026-11-12)."""
         if self._capture is None:
             return False
         from .engines import REF_THRESHOLD
         end = self.ring.end
-        n = min(round(seconds * 16000), end)
-        return n > 0 and float(np.max(np.abs(self.ring.read(end - n, n)))) > REF_THRESHOLD
+        n = min(round(seconds * 16000), end) // 256 * 256
+        if n <= 0:
+            return False
+        hops = np.max(np.abs(self.ring.read(end - n, n).reshape(-1, 256)), axis=1)
+        return int(np.count_nonzero(hops > REF_THRESHOLD)) * 256 >= least * 16000
 
     def check_preroll(self, device_id, preroll_pcm, start_time=None, chain=False):
         """The pre-roll cleaned for the PC's quick Orion check while the turn's own audio is still
@@ -273,7 +278,7 @@ class EchoCanceller:
             return np.zeros(0, np.float32)
         c0 = time.thread_time()
         if os.environ.get("ORION_PC_MIC_DUMP") == "1" and isinstance(turn, Turn):
-            if turn.used_ref is not None:
+            if turn.used_ref:
                 # The reference each frame was actually cleaned against, the last 90 s like the mic's dump
                 # (the ring kept only its last few seconds, too little for a long turn).
                 out_ref = np.concatenate(turn.used_ref) if turn.used_ref else np.zeros(0, np.float32)
