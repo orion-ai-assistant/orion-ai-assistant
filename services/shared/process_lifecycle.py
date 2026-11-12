@@ -553,8 +553,8 @@ class Runtime:
         return True
 
     def refresh_children(self):
-        # Supervisors call this several times a second for weeks: the state file is written (with fsync) only
-        # when a child's descendants changed, not on every call.
+        # The supervisor calls this every second for weeks: the state file is written (with fsync) only when a
+        # child's descendants changed, not on every call.
         before = json.dumps(self.children, sort_keys=True, default=str)
         for child in self.children.values():
             if child.get('job'):
