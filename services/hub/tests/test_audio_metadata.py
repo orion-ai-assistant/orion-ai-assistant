@@ -31,7 +31,7 @@ class MetadataTests(unittest.IsolatedAsyncioTestCase):
         redis = Mock(hgetall=AsyncMock(return_value={}))
         with patch.object(job_service, 'ensure_chat_access', AsyncMock()), \
              patch.object(job_service, 'get_runtime_settings', AsyncMock(return_value=SimpleNamespace(redis_cache_ttl_seconds=3600))), \
-             patch.object(job_service, '_load_history_with_hydration', AsyncMock(return_value=[original])):
+             patch.object(job_service, '_load_history', AsyncMock(return_value=[original])):
             light = await job_service.get_chat_history(redis, 'user', 'chat', include_audio=False)
             self.assertNotIn('audio', light[0]['audio'])
             self.assertEqual(light[0]['audio']['duration_ms'], 1500)
@@ -44,7 +44,7 @@ class MetadataTests(unittest.IsolatedAsyncioTestCase):
     async def test_audio_access_is_checked_before_loading_any_recording(self):
         redis = Mock()
         with patch.object(job_service, 'ensure_chat_access', AsyncMock(side_effect=HTTPException(403))), \
-             patch.object(job_service, '_load_history_with_hydration', AsyncMock()) as read, \
+             patch.object(job_service, '_load_history', AsyncMock()) as read, \
              patch.object(job_service, 'get_chat_history_db', AsyncMock()) as db:
             with self.assertRaises(HTTPException):
                 await job_service.get_turn_audio(redis, 'other-user', 'chat', 'turn')

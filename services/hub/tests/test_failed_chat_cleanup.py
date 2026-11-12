@@ -62,7 +62,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.redis.delete.assert_not_awaited()
         self.redis.publish.assert_not_awaited()
 
-    async def test_failure_is_saved_to_cache_and_db_with_attachments_and_exclusion(self):
+    async def test_failure_is_saved_to_db_with_attachments_and_exclusion(self):
         question = {'role': 'user', 'content': 'prompt', 'display_text': 'visible',
                     'attachments': [{'name': 'test.txt', 'data': 'hello', 'isText': True}]}
         with patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
@@ -76,7 +76,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('partial', messages[1]['content'])
         self.assertEqual(messages[1]['metrics'], {'total_ms': 100})
         self.assertEqual(successful_history(messages), [])
-        self.assertEqual(self.redis.pipeline.return_value.rpush.call_count, 2)
+        self.redis.pipeline.assert_not_called()  # no Redis copy of history
 
     async def test_running_and_completed_chats_are_kept(self):
         for status in ('queued', 'processing', 'completed', 'stopped'):

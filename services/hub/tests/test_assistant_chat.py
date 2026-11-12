@@ -204,7 +204,7 @@ class SupersededHistoryTests(unittest.IsolatedAsyncioTestCase):
             await job_service._keep_superseded_turn(redis, 'chat', 3600)
         expected = [{'role': 'user', 'content': 'ilk soru', 'turn_id': 'old'},
                     {'role': 'assistant', 'content': 'Yarım', 'turn_id': 'old'}]
-        self.assertEqual(self.pushed(redis), expected)
+        redis.pipeline.assert_not_called()  # PostgreSQL is the only record of history
         self.assertEqual(insert.call_args.kwargs['messages'], expected)
         redis.hsetnx.assert_awaited_once_with('orion:job:old', 'history_saved', '1')
 

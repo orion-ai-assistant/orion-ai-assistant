@@ -261,10 +261,10 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
             await media_store.read_media('chat', ref['media_id'])
         self.assertEqual(await self.count(), 4)
 
-    async def test_orphan_cleanup_protects_redis_history_jobs_and_reused_references(self):
+    async def test_orphan_cleanup_protects_running_jobs_and_reused_references(self):
         ref = (await media_store.store_attachments('chat', 'alice', [self.attachment()]))[0]
         redis = Mock(exists=AsyncMock(return_value=1))
-        for key in ['chat:history:chat', 'chat:state:chat', 'active_turn:chat']:
+        for key in ['chat:state:chat', 'active_turn:chat']:
             await self.age_media()
             async def exists(*keys):
                 return int(key in keys)

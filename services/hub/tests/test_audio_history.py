@@ -19,7 +19,7 @@ class AudioHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.persistence.start()
         self.addCleanup(self.persistence.stop)
 
-    async def test_audio_is_stored_in_database_and_restored_after_cache_loss(self):
+    async def test_audio_is_stored_in_database_and_restored_from_it(self):
         redis = Mock()
         redis.publish = AsyncMock()
         redis.lrange = AsyncMock(return_value=[])
@@ -41,9 +41,10 @@ class AudioHistoryTests(unittest.IsolatedAsyncioTestCase):
             rows = conn.executemany.call_args.args[1]
             self.assertEqual(json.loads(rows[1][2])['audio'], audio)
             conn.fetch = AsyncMock(return_value=[{'content_json': row[2]} for row in rows])
-            restored = await job_service._load_history_with_hydration(redis, 'chat', 3600)
+            restored = await job_service._load_history('chat')
         self.assertEqual(restored[1]['audio'], audio)
         self.assertEqual(restored[1]['audio']['arrival_ms'], 2100)
+        redis.lrange.assert_not_called()
 
     async def test_audio_is_not_sent_to_llm_after_database_hydration(self):
         redis = Mock()

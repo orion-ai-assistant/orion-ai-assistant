@@ -172,7 +172,7 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     await self.asyncSetUp()
                 await self.crash(stage)
                 owner = await self.owner()
-                with patch.object(worker, 'process_message', AsyncMock()) as process:
+                with patch.object(worker, 'process_message', AsyncMock()) as process,                         patch('orion.kernel.registry.insert_messages', AsyncMock()) as insert:
                     await worker.recover_pending(self.redis, socket.gethostname() + ':new', owner)
                 process.assert_not_awaited()
                 self.assertEqual(await self.redis.hget('chat:state:chat', 'status'), 'failed')
@@ -180,7 +180,9 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await self.redis.xpending(STREAM_NAME, CONSUMER_GROUP))['pending'], 0)
                 if stage != 'after_started':
                     self.assertEqual(await self.redis.get('external:' + stage), '1')
-                failed_history = [json.loads(item) for item in await self.redis.lrange('chat:history:chat', 0, -1)]
+                # The failed question and error go to PostgreSQL, the one record; Redis keeps no history copy.
+                self.assertEqual(await self.redis.exists('chat:history:chat'), 0)
+                failed_history = insert.call_args.kwargs['messages']
                 self.assertEqual(len(failed_history), 2)
                 self.assertTrue(all(item['failed_turn'] for item in failed_history))
                 from orion.kernel.chat_history import successful_history

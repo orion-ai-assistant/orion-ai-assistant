@@ -52,14 +52,15 @@ class FailedTurnRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(m['failed_turn'] for m in saved))
         self.assertIn('Router offline', saved[1]['generation_error'])
         good = [{'role': 'user', 'content': 'next'}, {'role': 'assistant', 'content': 'answer'}]
-        self.redis.lrange = AsyncMock(return_value=[json.dumps(m) for m in saved + good])
+        stored = AsyncMock(return_value=saved + good)
 
         async def hydrate(chat, messages):
             return messages
 
-        with patch.object(processor, 'hydrate_model_media', hydrate):
+        with patch.object(processor, 'hydrate_model_media', hydrate), patch.object(processor, 'get_chat_history_db', stored):
             model = await processor.load_history(self.redis, 'chat', 20, 3600)
         self.assertEqual(model, good)
+        self.redis.lrange.assert_not_called()
 
     async def test_watchdog_persists_failed_question_and_error(self):
         question = {'role': 'user', 'content': 'waiting', 'turn_id': 'turn'}
@@ -76,7 +77,7 @@ class FailedTurnRetentionTests(unittest.IsolatedAsyncioTestCase):
                {'role': 'assistant', 'content': 'offline', 'generation_error': 'offline'}]
         with patch.object(job_service, 'ensure_chat_access', AsyncMock()), patch.object(
                 job_service, 'get_runtime_settings', AsyncMock(return_value=RuntimeSettings())), patch.object(
-                job_service, '_load_history_with_hydration', AsyncMock(return_value=raw)):
+                job_service, '_load_history', AsyncMock(return_value=raw)):
             history = await job_service.get_chat_history(self.redis, 'alice', 'chat')
         self.assertEqual(len(history), 2)
         self.assertTrue(all(m['failed_turn'] for m in history))

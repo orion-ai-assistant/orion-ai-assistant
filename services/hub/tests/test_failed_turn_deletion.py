@@ -22,20 +22,18 @@ class FailedTurnDeletionTests(unittest.IsolatedAsyncioTestCase):
         self.durable = AsyncMock(return_value=False)
         for guard in (
             patch.object(job_service, 'ensure_chat_access', self.access),
-            patch.object(job_service, '_load_history_with_hydration', self.load),
-            patch.object(job_service, 'get_runtime_settings', AsyncMock(return_value=SimpleNamespace(redis_cache_ttl_seconds=3600))),
+            patch.object(job_service, '_load_history', self.load),
             patch('orion.kernel.registry.delete_failed_turn_db', self.durable),
         ):
             guard.start()
             self.addCleanup(guard.stop)
 
-    async def test_selected_failure_deleted_from_cache_and_published_to_owner(self):
+    async def test_selected_failure_deleted_from_db_and_published_to_owner(self):
         result = await job_service.delete_failed_turn(self.redis, 'alice', 'chat', 'bad')
         self.assertEqual(result['status'], 'updated')
         self.durable.assert_awaited_once_with('chat', 'bad', delete_empty=False,
                                              removed_media={'media'}, retained_media=set())
-        pipe = self.redis.pipeline.return_value
-        self.assertEqual([json.loads(m) for m in pipe.rpush.call_args.args[1:]], self.good)
+        self.redis.pipeline.assert_not_called()  # history is not cached in Redis
         event = json.loads(self.redis.publish.call_args.args[1])
         self.assertEqual(event['type'], 'chat_history_changed')
         self.assertEqual(event['chat_id'], 'chat')
@@ -46,7 +44,6 @@ class FailedTurnDeletionTests(unittest.IsolatedAsyncioTestCase):
         result = await job_service.delete_failed_turn(self.redis, 'alice', 'chat', 'bad')
         self.assertEqual(result['status'], 'deleted')
         self.redis.pipeline.return_value.zrem.assert_called_once()
-        self.redis.pipeline.return_value.rpush.assert_not_called()
         self.assertEqual(json.loads(self.redis.publish.call_args.args[1])['type'], 'chat_delete')
 
     async def test_running_successful_missing_and_forbidden_requests_cannot_mutate(self):
