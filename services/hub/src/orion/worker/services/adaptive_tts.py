@@ -1,4 +1,9 @@
-"""The first three sentences one request each, then batches of up to two sentences (~10 s of speech).
+"""The first two sentences one request each, then as many ready sentences as fit in ~26 s of speech.
+
+The speech service stops at ~30 s of audio (a 640-character part came back as
+30.1 s and the rest was never spoken), so a request's length is bounded by its
+estimated duration, not by a sentence count: short sentences go four or five
+at a time, long ones one or two.
 
 Every spoken reply goes this way, in the assistant and in a plain chat. A
 sentence under MIN_WORDS ("Selam.") or one with nothing to say ("—") is not
@@ -17,10 +22,13 @@ from orion.worker.services.tts_stream import PartialSpeech, relay_tts_batches
 
 class AdaptiveTts:
     MAX_QUEUED_CHARS = 12_000
-    SINGLE_REQUESTS = 3
-    # One or two sentences per request, ~10 s of speech at most: the speech service degrades past ~20 s.
-    MAX_BATCH_SENTENCES = 2
-    MAX_BATCH_CHARS = 300
+    SINGLE_REQUESTS = 2
+    # Measured on Orion's own voice: 12.5 characters a second typically, 11.5 for the slower parts.
+    SPEECH_CHARS_PER_SECOND = 11.5
+    # Under the speech service's ~30 s, with room for a slow part.
+    MAX_BATCH_SECONDS = 26
+    MAX_BATCH_CHARS = int(MAX_BATCH_SECONDS * SPEECH_CHARS_PER_SECOND)  # 299
+    MAX_BATCH_SENTENCES = 8
     MIN_WORDS = 3
 
     def __init__(self, context, settings, should_stop, arrival_ms):

@@ -116,6 +116,55 @@ class WorkerSupervisor:
         self.report(f"Worker restarted (PID {replacement.pid}, attempt {self.attempts}/5)")
 
 
+class DatabaseSupervisor:
+    """Start the Hub's PostgreSQL again when it ends under a running Hub.
+
+    Windows once refused it memory (error 1455, the paging file full) and it shut down; the Hub then answered 503
+    for hours. Checked every CHECK seconds; a failed start is retried after a growing delay of up to MAX_DELAY,
+    never given up: nothing works without the database."""
+    CHECK = 10
+    MAX_DELAY = 60
+
+    def __init__(self, database, stopping, report, clock=time.monotonic):
+        self.database = database
+        self.stopping = stopping
+        self.report = report
+        self.clock = clock
+        self.failures = 0
+        self.next_check = clock() + self.CHECK
+
+    def alive(self):
+        # The server this process started (Windows): a cheap look at its process. Otherwise pg_ctl status.
+        server = getattr(self.database, '_server', None)
+        if server is not None:
+            return server.poll() is None
+        return self.database.ready()
+
+    def check(self):
+        if self.stopping.is_set() or self.clock() < self.next_check:
+            return
+        try:
+            alive = self.alive()
+        except Exception:
+            alive = False  # Not answering (still recovering, or gone): treated as down.
+        if alive:
+            self.failures = 0
+            self.next_check = self.clock() + self.CHECK
+            return
+        self.report("PostgreSQL is not running; starting it again")
+        try:
+            self.database.ensure()
+        except Exception as error:
+            self.failures += 1
+            delay = min(self.CHECK * 2 ** self.failures, self.MAX_DELAY)
+            self.report(f"PostgreSQL restart failed ({error}); next try in {delay}s")
+            self.next_check = self.clock() + delay
+            return
+        self.failures = 0
+        self.report("PostgreSQL started again")
+        self.next_check = self.clock() + self.CHECK
+
+
 def _main(runtime):
     if os.name == 'nt':
         os.system("")  # Enable ANSI colors in Windows cmd
@@ -282,6 +331,14 @@ def _main(runtime):
 
     supervisor = WorkerSupervisor(worker_proc, start_worker, replace_worker, stopping, report_worker)
 
+    def report_database(message):
+        with log_lock:
+            log_file.write(f"[DATABASE] {message}\n")
+            log_file.flush()
+        print(f"[DATABASE] {message}")
+
+    database_supervisor = DatabaseSupervisor(database, stopping, report_database)
+
     # Installer's Hub button and manager.py both use this entry point.
     try:
         from services.shared.flutter_launcher import start_flutter
@@ -355,6 +412,7 @@ def _main(runtime):
                     wait_health(replacement, port, certificate=identity['cert'] if tls else None,
                                 identity=identity['id'] if label == 'mobile' else None)
                     runtime.ready()
+            database_supervisor.check()
             supervisor.check()
             if not worker_ready(supervisor.worker, redis_port):
                 runtime.status = 'starting'

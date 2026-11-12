@@ -118,7 +118,7 @@ class SegmentTests(unittest.TestCase):
         segmenter = SentenceSegmenter()
         parts = segmenter.feed('kelime ' * 300, final=True)
         self.assertGreater(len(parts), 1)
-        # About 10 s of speech at most: past ~20 s the speech service degrades.
+        # ~26 s of speech at most: the speech service stops at ~30 s.
         self.assertTrue(all(len(part) <= 300 for part in parts))
 
 
@@ -126,7 +126,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
     def context(self):
         return SimpleNamespace(voice=None, emit_audio_stream=AsyncMock(), emit_audio=AsyncMock(return_value={'saved': True}))
 
-    async def test_first_three_sentences_go_alone_then_ready_ones_two_at_a_time(self):
+    async def test_first_two_sentences_go_alone_then_ready_ones_together(self):
         context = self.context()
         first = asyncio.Event()
         release = asyncio.Event()
@@ -151,18 +151,35 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             result = await asyncio.wait_for(finishing, 1)
         self.assertEqual(result, {'saved': True})
         # The short tail goes with the last part, which was not asked for yet, instead of in a request of its own.
-        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.', 'Üçüncü cümle geldi.',
-                                    'Dördüncü cümle geldi.\nBeşinci cümle geldi.',
+        # Short sentences fit ~26 s together: the four that were ready go in one request.
+        self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.',
+                                    'Üçüncü cümle geldi.\nDördüncü cümle geldi.\nBeşinci cümle geldi.\n'
                                     'Altıncı cümle geldi. Son parça'])
         events = context.emit_audio_stream.call_args_list
         self.assertEqual(sum(c.args[0] == 'audio_start' for c in events), 1)
         self.assertEqual(sum(c.args[0] == 'audio_done' for c in events), 1)
         chunks = [c.args[1] for c in events if c.args[0] == 'audio_chunk']
-        self.assertEqual([c['sequence'] for c in chunks], [0, 1, 2, 3, 4])
-        # The two-sentence part starts at sentence 3; the next one at 5.
-        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 2, 3, 5])
+        self.assertEqual([c['sequence'] for c in chunks], [0, 1, 2])
+        self.assertEqual([c['sentence_index'] for c in chunks], [0, 1, 2])
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
-            self.assertEqual(wav.readframes(5), b'\x01\x02' * 5)
+            self.assertEqual(wav.readframes(3), b'\x01\x02' * 3)
+
+    async def test_a_request_stays_under_about_26_seconds_of_speech(self):
+        context = self.context()
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        sentence = 'Bu cümle yaklaşık yedi saniyelik bir konuşma kadar uzun, bilerek böyle yazıldı ve sürüyor. '
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Bir. İki. ' + sentence * 6)
+            await asyncio.wait_for(speech.finish(), 1)
+        batches = requests[2:]
+        self.assertGreater(len(batches), 1)
+        for batch in batches:
+            seconds = len(batch) / AdaptiveTts.SPEECH_CHARS_PER_SECOND
+            self.assertLessEqual(seconds, AdaptiveTts.MAX_BATCH_SECONDS)
 
     async def test_opening_line_goes_alone_and_lead_ins_stay_with_their_line(self):
         context = self.context()
