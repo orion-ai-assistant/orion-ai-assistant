@@ -122,3 +122,25 @@ async def create_assistant_message(redis: Redis, payload: JobCreateRequest) -> J
             payload.chat_id = chat_id
             payload.tool_selection = None  # A draft's tools only apply to a new chat.
             return await create_job(redis, payload)
+
+
+# One "Orion" is answered once. The phone and the PC beside it both hear it and both used to send the
+# same request (2026-11-12): the first device to claim the wake takes the turn, a device claiming within
+# the window steps back silently. Kept in Redis: the Hub's API servers are separate processes.
+WAKE_WINDOW_MS = 2500
+
+
+async def claim_wake(redis: Redis, user_id: str, device: str, window_ms: int = WAKE_WINDOW_MS) -> tuple[bool, str]:
+    key = f"assistant:wake:{user_id}"
+    for _ in range(2):  # the claim may expire between the two calls
+        if await redis.set(key, device, nx=True, px=window_ms):
+            return True, device
+        owner = await redis.get(key)
+        if owner is None:
+            continue
+        owner = owner.decode() if isinstance(owner, bytes) else str(owner)
+        if owner == device:
+            await redis.pexpire(key, window_ms)
+            return True, device
+        return False, owner
+    return True, device

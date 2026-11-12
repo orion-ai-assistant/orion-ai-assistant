@@ -128,6 +128,18 @@ async def claim_assistant_chat_endpoint(payload: AssistantChatClaim, request: Re
     return {"chat_id": await claim_assistant_chat(request.app.state.redis, current_user, payload.chat_id)}
 
 
+class WakeClaim(BaseModel):
+    device: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/api/v1/assistant/wake")
+async def claim_wake_endpoint(payload: WakeClaim, request: Request, current_user: str = Depends(get_current_user)):
+    """A device heard "Orion": whether it takes the turn (another device beside it may have heard it first)."""
+    from orion.api.services.assistant_chat import claim_wake
+    granted, owner = await claim_wake(request.app.state.redis, current_user, payload.device)
+    return {"granted": granted, "owner": owner}
+
+
 @router.post("/api/v1/audio/normalize")
 async def normalize_audio_endpoint(payload: dict, current_user: str = Depends(get_current_user)):
     from orion.contracts.http import Attachment
