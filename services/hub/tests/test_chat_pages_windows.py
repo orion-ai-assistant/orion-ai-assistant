@@ -232,7 +232,11 @@ class WindowTests(PgCase):
         redis.hgetall.return_value = {}
         with patch.object(job_service, 'ensure_chat_access', AsyncMock()):
             page = await job_service.get_chat_history(redis, 'alice', 'chat', limit=4)
-            self.assertEqual(page, self.old_way(chat(5), limit=4))
+            expected = self.old_way(chat(5), limit=4)
+            # Older messages exist: the extra first message carries the marker; the rest is the old window.
+            self.assertEqual(page, [{**expected[0], 'has_older': True}, *expected[1:]])
+            whole = await job_service.get_chat_history(redis, 'alice', 'chat', limit=50)
+            self.assertNotIn('has_older', whole[0])
             self.assertEqual(await job_service.get_chat_history(redis, 'alice', 'chat', limit=4, before_turn='gone'), [])
             with patch.object(registry, 'get_chat_window_db', AsyncMock(side_effect=RuntimeError('down'))), \
                     self.assertLogs(level='ERROR'):

@@ -379,7 +379,24 @@ async def search_chats(user_id: str, query: str) -> list[dict]:
     ]
 
 
-async def index_chat_search() -> None:
+async def _drop_legacy_redis_copies(redis: Redis) -> None:
+    """Chat history lists, chat metadata and chat list indexes that versions before 2026-11-13 kept in Redis.
+    Nothing reads them now; the index had no expiry, so it would stay for good."""
+    removed = 0
+    for pattern in (f"{CHAT_HISTORY_KEY_PREFIX}*", f"{CHAT_META_KEY_PREFIX}*", f"{CHAT_USER_INDEX_PREFIX}*"):
+        batch = []
+        async for key in redis.scan_iter(match=pattern, count=500):
+            batch.append(key)
+            if len(batch) >= 500:
+                removed += await redis.delete(*batch)
+                batch = []
+        if batch:
+            removed += await redis.delete(*batch)
+    if removed:
+        logger.info("Removed %d Redis key(s) left from older versions' chat copies", removed)
+
+
+async def index_chat_search(redis: Redis | None = None) -> None:
     """Once per start: make messages saved by older versions searchable and windowable, a batch at a time."""
     import asyncio
     from orion.kernel.registry import index_message_turns, index_unsearchable_messages
@@ -388,6 +405,8 @@ async def index_chat_search() -> None:
             await asyncio.sleep(0.05)
         while await index_message_turns():
             await asyncio.sleep(0.05)
+        if redis is not None:
+            await _drop_legacy_redis_copies(redis)
         from orion.kernel.media_migration import migrate_inline_media
         moved = await migrate_inline_media()
         if moved:
@@ -431,15 +450,19 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
         # Only the window is read: a chat of thousands of messages costs what its last page costs.
         from orion.kernel.registry import get_chat_window_db
         try:
-            window = await get_chat_window_db(chat_id, limit, before_turn, max_chars)
+            window = await get_chat_window_db(chat_id, limit, before_turn, max_chars, with_older=True)
         except Exception as exc:
             logger.exception("Chat window could not be read for %s", chat_id)
             raise HTTPException(status_code=503, detail="Sohbet şu anda okunamıyor.") from exc
         if window is None:
             return []
-        messages, size = window
+        messages, size, older = window
         history = visible_history(messages)[-size:] if size else []
         live = before_turn is None
+        if older and history:
+            # The first message is the extra one that says older ones exist. Marked, so a client need not guess
+            # (with max_chars it cannot count); older clients ignore the key.
+            history[0] = {**history[0], "has_older": True}
 
     # Append in-progress tokens for the currently streaming message (if any)
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id)) if live else {}

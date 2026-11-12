@@ -614,7 +614,8 @@ async def insert_messages(chat_id: str, messages: list[dict]) -> None:
         return
     conn = await _connect()
     if conn is None:
-        return
+        # PostgreSQL is the only record of a turn: an unsaved one must look unsaved (callers retry or log).
+        raise RuntimeError("Postgres is unavailable; messages not saved")
     try:
         await _ensure_tables(conn)
         records = [
@@ -702,13 +703,14 @@ def _messages(rows) -> list[dict]:
 
 
 async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str | None = None,
-                             max_chars: int | None = None) -> tuple[list[dict], int] | None:
+                             max_chars: int | None = None, *, with_older: bool = False):
     """The newest messages of a chat (or those before `before_turn`), without reading the rest.
 
     The window is `limit` messages, or fewer once their readable text reaches `max_chars` (at least one);
     the second value is that size plus one when an older message exists (the client's "more above" sign).
     The messages returned start at the beginning of their turn, so failed-turn labels see whole turns; the
-    caller keeps the last `size` of them. None: `before_turn` is not in this chat.
+    caller keeps the last `size` of them. None: `before_turn` is not in this chat. with_older adds a third
+    value: whether the first of those `size` is the extra, older message.
     """
     conn = await _connect()
     if conn is None:
@@ -728,7 +730,7 @@ async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str |
                where chat_id = $1 and ($2::bigint is null or id < $2) order by id desc limit $3""",
             chat_id, end_id, None if limit is None else limit + 1)
         if not heads:
-            return [], 0
+            return ([], 0, False) if with_older else ([], 0)
         size, chars = 0, 0
         for row in heads:
             if (limit is not None and size >= limit) or (max_chars and size and chars >= max_chars):
@@ -743,7 +745,8 @@ async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str |
             """select content_json from orion_chat_messages
                where chat_id = $1 and id >= $2 and ($3::bigint is null or id < $3) order by id""",
             chat_id, start or 0, end_id)
-        return _messages(rows), size + (1 if older else 0)
+        found = _messages(rows), size + (1 if older else 0)
+        return (*found, older) if with_older else found
     finally:
         await conn.close()
 
