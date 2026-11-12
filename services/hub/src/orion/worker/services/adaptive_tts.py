@@ -1,4 +1,4 @@
-"""The first three sentences one request each, then bounded batches of whatever is ready.
+"""The first three sentences one request each, then batches of up to two sentences (~10 s of speech).
 
 Every spoken reply goes this way, in the assistant and in a plain chat. A
 sentence under MIN_WORDS ("Selam.") or one with nothing to say ("—") is not
@@ -18,8 +18,9 @@ from orion.worker.services.tts_stream import PartialSpeech, relay_tts_batches
 class AdaptiveTts:
     MAX_QUEUED_CHARS = 12_000
     SINGLE_REQUESTS = 3
-    MAX_BATCH_SENTENCES = 3
-    MAX_BATCH_CHARS = 600
+    # One or two sentences per request, ~10 s of speech at most: the speech service degrades past ~20 s.
+    MAX_BATCH_SENTENCES = 2
+    MAX_BATCH_CHARS = 300
     MIN_WORDS = 3
 
     def __init__(self, context, settings, should_stop, arrival_ms):

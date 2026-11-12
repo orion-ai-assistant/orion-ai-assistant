@@ -3,7 +3,8 @@ import re
 
 
 class SentenceSegmenter:
-    MAX_CHARS = 600
+    # About 10 s of speech: a longer request comes back slower and its sound degrades after ~20 s.
+    MAX_CHARS = 300
     MAX_PENDING = 12_000
     ABBREVIATIONS = {"dr", "prof", "doç", "sn", "say", "örn", "vb", "vs", "bkz", "mr", "mrs", "ms", "no"}
 
