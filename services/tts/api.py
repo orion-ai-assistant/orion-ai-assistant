@@ -112,6 +112,38 @@ async def idle_cleanup_worker():
             else:
                 last_request_time = time.time()
 
+ENGINE_PROBE_EVERY = 20  # seconds; see TTSEngine.HUNG_AFTER
+_engine_state = {"value": "ok"}
+
+
+async def engine_watchdog():
+    """Looks at the engine's own server in the background (its probe takes up to 3 s, more than the Hub's 0.5 s
+    look at /health may wait): a hung server is restarted, a dead one started again."""
+    while True:
+        await asyncio.sleep(ENGINE_PROBE_EVERY)
+        await check_engine_once()
+
+
+async def check_engine_once():
+    current = engine
+    if current is None:
+        return
+    try:
+        state = await asyncio.to_thread(current.server_state)
+    except Exception as e:
+        logger.warning(f"Engine check failed: {e}")
+        return
+    _engine_state["value"] = state
+    if state == "hung":
+        try:
+            await asyncio.to_thread(current.restart_hung_server)
+            _engine_state["value"] = "ok" if current.server_alive() else "down"
+        except Exception as e:
+            logger.error(f"Engine restart failed: {e}")
+    elif state == "down":
+        _restart_engine_soon()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
@@ -122,8 +154,10 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to load engine: {traceback.format_exc()}")
     
     cleanup_task = asyncio.create_task(idle_cleanup_worker())
+    watchdog_task = asyncio.create_task(engine_watchdog())
     yield
     cleanup_task.cancel()
+    watchdog_task.cancel()
     if engine: engine.cleanup()
 
 app = FastAPI(title="Orion TTS API", version="1.0.4", lifespan=lifespan)
@@ -142,6 +176,8 @@ async def health():
     if engine is not None and not engine.server_alive():
         _restart_engine_soon()
         return JSONResponse({"status": "engine_down"}, status_code=503)
+    if _engine_state["value"] == "hung":
+        return JSONResponse({"status": "engine_hung"}, status_code=503)
     return {"status": "ok"}
 
 _engine_restart = {"running": False, "at": 0.0}

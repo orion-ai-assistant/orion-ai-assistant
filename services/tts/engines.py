@@ -63,6 +63,40 @@ class TTSEngine:
         proc = getattr(self, "server_proc", None)
         return proc is not None and proc.poll() is None
 
+    # A server that runs but does not answer is hung (a stuck GPU call, a deadlock): its process looked alive, so
+    # nothing restarted it. HUNG_AFTER probes in a row without an answer, PROBE_EVERY apart (the API's watchdog),
+    # is far longer than any one sentence (about 10 s at most), so a busy server is not taken for a hung one.
+    HUNG_AFTER = 3
+    PROBE_TIMEOUT = 3.0
+
+    def server_answers(self) -> bool:
+        import urllib.request
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(f"http://{self.host}:{self.port}/health", timeout=self.PROBE_TIMEOUT) as response:
+                return response.status == 200
+        except Exception:
+            return False
+
+    def server_state(self) -> str:
+        """'ok', 'down' (its process ended) or 'hung' (running, but HUNG_AFTER probes in a row went unanswered)."""
+        if not hasattr(self, "_start_server"):
+            return "ok"
+        if not self.server_alive():
+            return "down"
+        if self.server_answers():
+            self._unanswered = 0
+            return "ok"
+        self._unanswered = getattr(self, "_unanswered", 0) + 1
+        return "hung" if self._unanswered >= self.HUNG_AFTER else "ok"
+
+    def restart_hung_server(self):
+        with _SERVER_START_LOCK:
+            logger.warning(f"The engine's server has not answered {getattr(self, '_unanswered', 0)} health checks in a row; restarting it")
+            self._shutdown_server()
+            self._unanswered = 0
+            self._start_server()
+
     def ensure_server(self):
         """Starts the engine's server again when it has died (it can, e.g. when the PC runs out of memory: ggml's
         GGML_ASSERT(ctx->mem_buffer != NULL)); before, the service stayed "healthy" with no model behind it."""

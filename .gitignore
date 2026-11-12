@@ -21,6 +21,7 @@ __pycache__/
 
 # Logs, PIDs, and local runtime state
 *.log
+*.log.[0-9]
 *.pid
 .installer.pid
 .service.pid
