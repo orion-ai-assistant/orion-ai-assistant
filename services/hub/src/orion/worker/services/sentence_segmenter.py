@@ -3,9 +3,9 @@ import re
 
 
 class SentenceSegmenter:
-    # A sentence longer than ~26 s of speech (11.5 characters a second) is cut at a word: the speech service stops
-    # at ~30 s of audio. AdaptiveTts.MAX_BATCH_CHARS is the same bound.
-    MAX_CHARS = 300
+    # Only a sentence longer than ~25 s of speech (11.5 characters a second) is cut at a word: the speech service
+    # stops at ~30 s of audio. AdaptiveTts.MAX_BATCH_CHARS is the same bound.
+    MAX_CHARS = 287
     MAX_PENDING = 12_000
     ABBREVIATIONS = {"dr", "prof", "doç", "sn", "say", "örn", "vb", "vs", "bkz", "mr", "mrs", "ms", "no"}
 

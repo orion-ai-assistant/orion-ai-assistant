@@ -118,8 +118,8 @@ class SegmentTests(unittest.TestCase):
         segmenter = SentenceSegmenter()
         parts = segmenter.feed('kelime ' * 300, final=True)
         self.assertGreater(len(parts), 1)
-        # ~26 s of speech at most: the speech service stops at ~30 s.
-        self.assertTrue(all(len(part) <= 300 for part in parts))
+        # ~25 s of speech at most: the speech service stops at ~30 s.
+        self.assertTrue(all(len(part) <= 287 for part in parts))
 
 
 class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
@@ -151,7 +151,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             result = await asyncio.wait_for(finishing, 1)
         self.assertEqual(result, {'saved': True})
         # The short tail goes with the last part, which was not asked for yet, instead of in a request of its own.
-        # Short sentences fit ~26 s together: the four that were ready go in one request.
+        # Short sentences fit ~20 s together: the four that were ready go in one request.
         self.assertEqual(requests, ['İlk cümle burada.', 'İkinci cümle geldi.',
                                     'Üçüncü cümle geldi.\nDördüncü cümle geldi.\nBeşinci cümle geldi.\n'
                                     'Altıncı cümle geldi. Son parça'])
@@ -164,7 +164,25 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         with wave.open(io.BytesIO(context.emit_audio.call_args.args[0])) as wav:
             self.assertEqual(wav.readframes(3), b'\x01\x02' * 3)
 
-    async def test_a_request_stays_under_about_26_seconds_of_speech(self):
+    async def test_a_request_fills_to_20_seconds_and_may_finish_its_sentence_up_to_25(self):
+        context = self.context()
+        requests = []
+        async def provider(text, *_):
+            requests.append(text)
+            yield b'\x01\x02', PCM
+        sentence = 'Bu cümle yaklaşık altı saniye sürecek kadar uzun ve bilerek yazıldı.'  # 68 chars, ~5.9 s
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('Birinci cümle burada. İkinci cümle burada. ' + (sentence + ' ') * 8)
+            await asyncio.wait_for(speech.finish(), 1)
+        batches = requests[2:]
+        # 3 sentences (~18 s) are under the target, so a 4th joins: ~24 s, within the bound. Never a 5th.
+        self.assertEqual([batch.count('\n') + 1 for batch in batches], [4, 4])
+        for batch in batches:
+            self.assertGreater(len(batch), AdaptiveTts.TARGET_BATCH_CHARS)
+            self.assertLessEqual(len(batch), AdaptiveTts.MAX_BATCH_CHARS)
+
+    async def test_a_request_stays_under_about_25_seconds_of_speech(self):
         context = self.context()
         requests = []
         async def provider(text, *_):

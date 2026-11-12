@@ -1,4 +1,4 @@
-"""The first two sentences one request each, then as many ready sentences as fit in ~26 s of speech.
+"""The first two sentences one request each, then ready sentences filled to ~20 s of speech (at most ~25 s).
 
 The speech service stops at ~30 s of audio (a 640-character part came back as
 30.1 s and the rest was never spoken), so a request's length is bounded by its
@@ -25,9 +25,12 @@ class AdaptiveTts:
     SINGLE_REQUESTS = 2
     # Measured on Orion's own voice: 12.5 characters a second typically, 11.5 for the slower parts.
     SPEECH_CHARS_PER_SECOND = 11.5
-    # Under the speech service's ~30 s, with room for a slow part.
-    MAX_BATCH_SECONDS = 26
-    MAX_BATCH_CHARS = int(MAX_BATCH_SECONDS * SPEECH_CHARS_PER_SECOND)  # 299
+    # A request is filled to ~20 s of speech; the sentence that crosses it may still join while the whole stays under
+    # ~25 s, so a part ends at a sentence and not just short of one. The speech service stops at ~30 s.
+    TARGET_BATCH_SECONDS = 20
+    MAX_BATCH_SECONDS = 25
+    TARGET_BATCH_CHARS = int(TARGET_BATCH_SECONDS * SPEECH_CHARS_PER_SECOND)  # 230
+    MAX_BATCH_CHARS = int(MAX_BATCH_SECONDS * SPEECH_CHARS_PER_SECOND)  # 287
     MAX_BATCH_SENTENCES = 8
     MIN_WORDS = 3
 
@@ -143,7 +146,8 @@ class AdaptiveTts:
                 # The first requests carry one sentence each, so the voice starts soon and never waits for a long
                 # part; after them, whatever is ready goes in bounded batches.
                 while requests >= self.SINGLE_REQUESTS and self.queue and len(batch) < self.MAX_BATCH_SENTENCES:
-                    if length + 1 + len(self.queue[0]) > self.MAX_BATCH_CHARS:
+                    if (length >= self.TARGET_BATCH_CHARS
+                            or length + 1 + len(self.queue[0]) > self.MAX_BATCH_CHARS):
                         break
                     part = self.queue.popleft()
                     batch.append(part)
