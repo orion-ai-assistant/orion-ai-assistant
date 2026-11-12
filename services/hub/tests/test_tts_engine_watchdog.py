@@ -96,3 +96,63 @@ def test_the_service_watchdog_restarts_a_hung_engine(monkeypatch):
     fake.server_state.return_value = 'ok'
     asyncio.run(api.check_engine_once())
     fake.restart_hung_server.assert_called_once()
+
+
+def test_a_single_request_that_makes_no_progress_is_hung_after_the_limit(server):
+    item = engine(server.server_address[1])  # Its /health still answers.
+    with item._engine_call():
+        assert item.server_state() == 'ok'
+        item._last_activity -= item.STALLED_AFTER + 1
+        assert item.stalled_seconds() >= item.STALLED_AFTER
+        assert item.server_state() == 'hung'
+
+
+def test_no_request_in_flight_is_never_stalled(server):
+    item = engine(server.server_address[1])
+    item._calls_state()
+    item._last_activity -= 10_000
+    assert item.stalled_seconds() == 0.0 and item.server_state() == 'ok'
+    with item._engine_call():
+        pass
+    assert item.stalled_seconds() == 0.0
+
+
+def test_a_queued_request_is_not_hung_while_another_progresses(server):
+    item = engine(server.server_address[1])
+    with item._engine_call() as running, item._engine_call():
+        item._last_activity -= item.STALLED_AFTER + 1
+        assert item.server_state() == 'hung'  # Nothing moved for the limit...
+        running.progress()  # ...until the running one receives a byte.
+        assert item.stalled_seconds() < 1
+        assert item.server_state() == 'ok'
+
+
+def test_time_spent_handing_a_piece_on_is_not_the_servers_stall(server):
+    item = engine(server.server_address[1])
+    with item._engine_call() as call:
+        call.progress()
+        with call.handing_on():  # A slow reader: nothing in flight on the server's side.
+            item._last_activity -= item.STALLED_AFTER + 1
+            assert item.stalled_seconds() == 0.0 and item.server_state() == 'ok'
+        assert item.stalled_seconds() < 1  # Counting starts again from the hand-back.
+        assert item.server_state() == 'ok'
+
+
+def test_a_finished_request_leaves_nothing_behind_even_on_error(server):
+    item = engine(server.server_address[1])
+    with pytest.raises(RuntimeError):
+        with item._engine_call():
+            raise RuntimeError('boom')
+    assert not item._calls
+
+
+def test_a_restart_clears_the_tracked_calls_and_the_stall(server):
+    item = engine(server.server_address[1])
+    item._shutdown_server = lambda: None
+    item._start_server = lambda: None
+    with item._engine_call():
+        item._last_activity -= item.STALLED_AFTER + 1
+        assert item.server_state() == 'hung'
+        item.restart_hung_server()
+        assert item.stalled_seconds() == 0.0
+        assert item.server_state() == 'ok'
