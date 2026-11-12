@@ -388,6 +388,10 @@ async def index_chat_search() -> None:
             await asyncio.sleep(0.05)
         while await index_message_turns():
             await asyncio.sleep(0.05)
+        from orion.kernel.media_migration import migrate_inline_media
+        moved = await migrate_inline_media()
+        if moved:
+            logger.info("Moved the inline media of %d older message(s) to the media store", moved)
     except Exception:
         logger.exception("Older messages could not be prepared for the chat search")
 

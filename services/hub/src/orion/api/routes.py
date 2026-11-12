@@ -254,9 +254,15 @@ async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
         raise HTTPException(404, 'Media not found') from exc
     except RuntimeError as exc:
         raise HTTPException(503, 'Media unavailable') from exc
-    headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+    # The id is the SHA-256 of the bytes: a media path never changes what it holds. The device that fetched it
+    # keeps it (private: never a shared cache) and asks again only after a month, or answers itself with 304.
+    etag = f'"{media_id}"'
+    headers = {'Cache-Control': 'private, max-age=2592000, immutable', 'ETag': etag,
+               'X-Content-Type-Options': 'nosniff',
                'Content-Security-Policy': "sandbox; default-src 'none'", 'Accept-Ranges': 'bytes',
                'Content-Length': str(total)}
+    if etag in [tag.strip() for tag in request.headers.get('if-none-match', '').split(',')]:
+        return Response(status_code=304, headers={k: v for k, v in headers.items() if k != 'Content-Length'})
     status_code = 200
     start, length = 0, None
     if request.method == 'GET':
