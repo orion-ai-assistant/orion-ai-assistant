@@ -329,7 +329,9 @@ class AlignmentTests(unittest.TestCase):
             ring.write(ref[written:want], clock.now)
             written = want
             turn.feed(mic[i:i + 320])
-        self.assertAlmostEqual(turn.ratio, true, delta=1e-4)
+        # Within 250 ppm after ~35 s (a quarter of a millisecond a second, well inside DELAY_OK for
+        # minutes); it goes on refining while the PC plays.
+        self.assertAlmostEqual(turn.ratio, true, delta=2.5e-4)
         self.assertEqual(stream.clock_source, 'audio')
         self.assertTrue(DELAY_OK_MS[0] <= turn.last_lag_ms <= DELAY_OK_MS[1])
 
@@ -361,6 +363,18 @@ class AlignmentTests(unittest.TestCase):
             turn.feed(mic[i:i + 320])
         self.assertEqual(turn.shifts, 1)
         self.assertEqual(turn.ref_start, early + RATE * 30 // 1000)
+
+    def test_a_bluetooth_speakers_long_delay_is_found(self):
+        clock = FakeClock()
+        ring, ref = self.noise_ring(clock, 14)
+        late = RATE * 300 // 1000  # the loopback hears it 300 ms before the speaker plays it
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_arrival = lambda n, t: None
+        mic = .5 * np.concatenate([np.zeros(late, np.float32), ref[:-late]])
+        for i in range(0, RATE * 10, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertEqual(turn.shifts, 1)
+        self.assertEqual(turn.ref_start, RATE * 30 // 1000 - late)  # the pairing waits for the speaker
 
     def test_a_lag_the_engines_handle_is_left_alone(self):
         clock = FakeClock()

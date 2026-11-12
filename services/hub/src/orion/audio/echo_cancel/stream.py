@@ -37,7 +37,8 @@ ARRIVAL_FIT = 8
 ARRIVAL_SPREAD = RATE * 4 // 1000
 DELAY_WINDOW = 2 * RATE  # mic audio each delay estimate looks at
 DELAY_EVERY = RATE // 2
-DELAY_SEARCH = RATE // 4  # +-250 ms around the pairing
+DELAY_SEARCH = RATE // 4  # an echo up to 250 ms before its pairing (the window ends this far back)
+DELAY_SEARCH_LATE = RATE * 600 // 1000  # ...or up to 600 ms after it: a Bluetooth speaker adds 150-300 ms
 DELAY_OK = (RATE * 5 // 1000, RATE * 80 // 1000)  # echo 5-80 ms after its reference: fine (108 leaked)
 DELAY_TARGET = RATE * 30 // 1000
 DELAY_AGREE = RATE * 10 // 1000
@@ -360,20 +361,21 @@ class Turn:
         # after it is already captured (the newest frame's reference just was).
         b = int(round(self._ref_pos - DELAY_SEARCH * self.ratio))
         a = b - int(round(DELAY_WINDOW * self.ratio))
-        if a - DELAY_SEARCH < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
+        if a - DELAY_SEARCH_LATE < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
             return
-        ref = self.ring.read(a - DELAY_SEARCH, (b - a) + 2 * DELAY_SEARCH).astype(np.float64)
-        middle = ref[DELAY_SEARCH:DELAY_SEARCH + (b - a)]
+        ref = self.ring.read(a - DELAY_SEARCH_LATE, (b - a) + DELAY_SEARCH_LATE + DELAY_SEARCH).astype(np.float64)
+        middle = ref[DELAY_SEARCH_LATE:DELAY_SEARCH_LATE + (b - a)]
         if float(np.mean(middle ** 2)) <= LOUD_REF:
             self._pending_lag = None
             return
         mic = self._mic_history[:DELAY_WINDOW].astype(np.float64)
         mic = mic - mic.mean()
         size = 1 << int(np.ceil(np.log2(len(ref) + len(mic))))
-        corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)), size)[:2 * DELAY_SEARCH + 1]
+        corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)),
+                            size)[:DELAY_SEARCH_LATE + DELAY_SEARCH + 1]
         # corr[t] = sum mic[n] * ref[n + t]; mic[n] holds the echo of reference index a + n - lag.
         t = int(np.argmax(np.abs(corr)))
-        lag = DELAY_SEARCH - t
+        lag = DELAY_SEARCH_LATE - t
         strength = abs(corr[t]) / np.sqrt(float(np.dot(mic, mic)) * float(np.dot(middle, middle)) + 1e-20)
         if strength < DELAY_CORRELATION:
             return
@@ -381,6 +383,8 @@ class Turn:
         self._learn_clock(self._consumed - DELAY_SEARCH - DELAY_WINDOW // 2, lag)
         if DELAY_OK[0] <= lag <= DELAY_OK[1]:
             self._pending_lag = None
+            if getattr(self.stream, 'clock_source', None) == 'audio':
+                self._since_estimate = -DELAY_EVERY  # settled: look half as often (half the CPU)
             return
         if self._pending_lag is None or abs(lag - self._pending_lag) > DELAY_AGREE:
             self._pending_lag = lag
