@@ -10,7 +10,9 @@ import numpy as np
 from orion.audio.echo_cancel import EchoCanceller, assets
 from orion.audio.echo_cancel.resample import StreamResampler
 from orion.audio.echo_cancel.ring import ReferenceRing
-from orion.audio.echo_cancel.stream import HOP, DeviceStream, Turn, to_float, to_pcm16
+from orion.audio.echo_cancel.stream import DELAY_OK, HOP, DeviceStream, Turn, to_float, to_pcm16
+
+DELAY_OK_MS = tuple(1000 * x / 16000 for x in DELAY_OK)
 
 RATE = 16000
 LOUD = 0.3
@@ -270,43 +272,73 @@ class AlignmentTests(unittest.TestCase):
         ring.write(ref, clock.now)
         return ring, ref
 
-    def test_a_slow_mic_clock_moves_the_pairing_while_the_pc_is_silent(self):
-        clock = FakeClock()
-        ring = ReferenceRing(seconds=40, clock=clock)
-        ring.write(np.zeros(RATE * 30, np.float32), clock.now + 30)
+    def silent_ring(self, clock, seconds):
+        ring = ReferenceRing(seconds=seconds + 5, clock=clock)
+        ring.write(np.zeros(RATE * seconds, np.float32), clock.now + seconds)
         clock.now += 1
-        turn = Turn(DeviceStream(HalvingEngine()), ring, ring.index_at(clock.now), clock=clock)
-        start = turn.ref_start
-        # 20 s of 20 ms packets holding 0.4 % fewer samples than the time they took.
-        for _ in range(1000):
+        return ring
+
+    def test_a_slow_mic_clock_is_learned_from_arrivals_while_the_pc_is_silent(self):
+        clock = FakeClock()
+        ring = self.silent_ring(clock, 60)
+        stream = DeviceStream(HalvingEngine())
+        turn = Turn(stream, ring, ring.index_at(clock.now), clock=clock)
+        start_gap = 0  # a packet's last sample is paired with the reference of the moment it arrives
+        # 40 s of 20 ms packets holding 0.3 % fewer samples than the time they took.
+        for _ in range(2000):
             clock.now += .02
             turn.feed(np.zeros(319, np.float32))
-        lost = 20 * RATE - 1000 * 319  # 1000 samples behind in the end
-        self.assertGreater(turn.ref_start - start, lost * .7)
-        self.assertLessEqual(turn.ref_start - start, lost)
+        self.assertAlmostEqual(turn.ratio, 320 / 319, delta=3e-4)
+        self.assertEqual(stream.clock_source, 'arrival')
+        # What slipped before the clock was known went back as well: the pairing is where it began.
+        paired = turn._ref_pos + len(turn._pending) * turn.ratio
+        self.assertLess(abs(ring.index_at(clock.now) - paired - start_gap), RATE * 10 // 1000)
+        # The next turn of this device starts with it.
+        self.assertEqual(Turn(stream, ring, 0, clock=clock).ratio, turn.ratio)
 
-    def test_late_first_packets_do_not_move_the_pairing(self):
+    def test_late_first_packets_do_not_change_the_clock(self):
         clock = FakeClock()
-        ring = ReferenceRing(seconds=40, clock=clock)
-        ring.write(np.zeros(RATE * 30, np.float32), clock.now + 30)
-        clock.now += 1
+        ring = self.silent_ring(clock, 60)
         turn = Turn(DeviceStream(HalvingEngine()), ring, ring.index_at(clock.now), clock=clock)
-        start = turn.ref_start
         clock.now += .3  # the first 2 s wait behind the "Orion" check, then catch up
         for _ in range(100):
             clock.now += .02 * .85
             turn.feed(np.zeros(320, np.float32))
-        for _ in range(400):  # then on time, with an accurate clock
+        for _ in range(1500):  # then on time, with an accurate clock
             clock.now += .02
             turn.feed(np.zeros(320, np.float32))
-        self.assertLessEqual(abs(turn.ref_start - start), RATE * 20 // 1000)
+        self.assertAlmostEqual(turn.ratio, 1.0, delta=5e-5)
+
+    def test_the_echo_drifting_on_the_audio_teaches_the_clock(self):
+        clock = FakeClock()
+        seconds = 40
+        noise = np.random.default_rng(11).standard_normal(RATE * seconds)
+        ref = (np.convolve(noise, np.ones(16) / 4, 'same') * .1).astype(np.float32)  # voice-like: below 1 kHz
+        ring = ReferenceRing(seconds=seconds + 5, clock=clock)
+        stream = DeviceStream(HalvingEngine())
+        turn = Turn(stream, ring, 0, clock=clock)
+        turn._track_arrival = lambda n, t: None  # only the audio decides here
+        # The mic runs 0.3 % slow: its sample k holds the reference at k * 1.003, 30 ms late.
+        true = 1.003
+        k = np.arange(int(RATE * (seconds - 2) / true))
+        mic = .5 * np.interp(k * true - RATE * 30 // 1000, np.arange(len(ref)), ref).astype(np.float32)
+        written = 0
+        for i in range(0, len(mic) - 320, 320):
+            clock.now += .02
+            want = min(len(ref), int((i + 320) * true) + RATE // 10)
+            ring.write(ref[written:want], clock.now)
+            written = want
+            turn.feed(mic[i:i + 320])
+        self.assertAlmostEqual(turn.ratio, true, delta=1e-4)
+        self.assertEqual(stream.clock_source, 'audio')
+        self.assertTrue(DELAY_OK_MS[0] <= turn.last_lag_ms <= DELAY_OK_MS[1])
 
     def test_an_echo_ahead_of_its_reference_is_realigned_from_the_audio(self):
         clock = FakeClock()
         ring, ref = self.noise_ring(clock, 12)
         early = RATE // 10  # the mic holds the echo of the reference 100 ms later than paired
         turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
-        turn._track_rate = lambda n: None  # only the audio decides here
+        turn._track_arrival = lambda n, t: None  # only the audio decides here
         mic = .5 * np.concatenate([ref[early:], np.zeros(early, np.float32)])
         for i in range(0, RATE * 8, 1600):
             turn.feed(mic[i:i + 1600])
@@ -319,7 +351,7 @@ class AlignmentTests(unittest.TestCase):
         ring = ReferenceRing(seconds=20, clock=clock)
         early = RATE // 10
         turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
-        turn._track_rate = lambda n: None
+        turn._track_arrival = lambda n, t: None
         mic = .5 * np.concatenate([ref[early:], np.zeros(early, np.float32)])
         written = 0
         for i in range(0, RATE * 8, 320):  # live: the ring holds the reference up to this packet only
@@ -335,7 +367,7 @@ class AlignmentTests(unittest.TestCase):
         ring, ref = self.noise_ring(clock, 12)
         late = RATE * 40 // 1000
         turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
-        turn._track_rate = lambda n: None
+        turn._track_arrival = lambda n, t: None
         mic = .5 * np.concatenate([np.zeros(late, np.float32), ref[:-late]])
         for i in range(0, RATE * 8, 1600):
             turn.feed(mic[i:i + 1600])
@@ -372,6 +404,24 @@ class EchoCancellerTests(unittest.TestCase):
     def play(self, seconds):
         self.clock.now += seconds
         self.ec.ring.write(np.full(int(seconds * RATE), LOUD, np.float32), self.clock.now)
+
+    def test_a_learned_mic_clock_survives_a_restart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = Path(folder) / 'echo-clocks.json'
+            def canceller():
+                ec = EchoCanceller(engine_factory=HalvingEngine, capture_factory=FakeCapture, clock=self.clock,
+                                   suppress=False, clock_store=store)
+                ec.arm()
+                return ec
+            first = canceller()
+            first.start_turn('pc:aa', b'')
+            first._turns['pc:aa'].stream.clock_ratio = 1.0036
+            first._turns['pc:aa'].stream.clock_source = 'audio'
+            first.end_turn('pc:aa')
+            again = canceller()  # the Hub restarted
+            again.start_turn('pc:aa', b'')
+            turn = again._turns['pc:aa']
+            self.assertEqual((turn.ratio, turn.stream.clock_source), (1.0036, 'audio'))
 
     def test_a_short_cue_is_not_the_pc_playing_a_reply_is(self):
         self.ec.arm()

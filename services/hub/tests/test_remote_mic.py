@@ -62,7 +62,7 @@ class FakeCanceller:
         self._record('start_turn', device, preroll, start_time)
         return b'C' + preroll
 
-    def process(self, device, pcm):
+    def process(self, device, pcm, arrival=None):
         self._record('process', device, pcm)
         return b'C' + pcm
 

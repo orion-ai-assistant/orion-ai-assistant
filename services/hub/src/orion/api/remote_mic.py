@@ -125,11 +125,13 @@ class PhoneAudioCleaner:
             self._raw.add(device)
             return preroll
 
-    async def process(self, device, pcm):
+    async def process(self, device, pcm, arrival=None):
+        """`arrival`: when the packet reached the Hub, before any queue (the echo pairing follows the mic's
+        clock from it)."""
         if self.canceller is None or device in self._raw:
             return pcm
         try:
-            return await self._call('process', device, pcm)
+            return await self._call('process', device, pcm, arrival)
         except Exception:
             # A switch to raw mid-turn may shift the timeline by the engine
             # latency; still better than silence.
@@ -155,6 +157,12 @@ class PhoneAudioCleaner:
             return bool(self.canceller.playing())
         except Exception:
             return False
+
+    async def skip(self, device, samples):
+        if self.canceller is None or device in self._raw or not hasattr(self.canceller, 'skip'):
+            return
+        with suppress(Exception):
+            await self._call('skip', device, samples)
 
     async def check_preroll(self, device, preroll, start_time, chain=False):
         """The pre-roll cleaned for the quick Orion check (`chain`: by the whole chain, while
@@ -186,7 +194,8 @@ def shared_cleaner():
         canceller = None
         try:
             from orion.audio.echo_cancel import EchoCanceller
-            canceller = EchoCanceller()
+            from orion.kernel.data_paths import hub_data
+            canceller = EchoCanceller(clock_store=hub_data() / 'echo-clocks.json')
         except Exception:
             log.info('Echo cancellation module unavailable; phone audio passes through', exc_info=True)
         _shared_cleaner = PhoneAudioCleaner(canceller)
@@ -510,7 +519,7 @@ class PcLink:
 
     async def _deliver(self, pcm):
         """Phone PCM in arrival order -> cleaned PCM to the PC assistant."""
-        await clean_turn_audio(self, self.turn, pcm)
+        await clean_turn_audio(self, self.turn, pcm, self.clock())
 
     async def send_check(self, turn, preroll):
         try:
@@ -661,7 +670,7 @@ class PcLink:
             await self.cleaner.disarm()
 
 
-async def clean_turn_audio(link, turn, pcm):
+async def clean_turn_audio(link, turn, pcm, arrival=None):
     """One packet of a turn (pre-roll first, then live) -> cleaned PCM to ``link.send_bytes``.
 
     ``turn``: {'device', 'preroll', 'need', 'started', 'open'}; nothing is sent once
@@ -700,7 +709,10 @@ async def clean_turn_audio(link, turn, pcm):
             return
     if gain:
         gain.observe(pcm, playing=_playing(link))
-    out = await link.cleaner.process(turn['device'], pcm)
+    skipped = turn.pop('skipped', 0)
+    if skipped and hasattr(link.cleaner, 'skip'):
+        await link.cleaner.skip(turn['device'], skipped)
+    out = await link.cleaner.process(turn['device'], pcm, arrival)
     if out and link.turn is turn:
         final = gain.apply(out) if gain else out
         if dump is not None:
@@ -852,22 +864,25 @@ class CleanLink:
             return  # between turns nothing is cleaned
         self._queued_bytes += len(pcm)
         while self._queued_bytes > self.MAX_QUEUED_BYTES and not self._queue.empty():
-            dropped, _ = self._queue.get_nowait()
+            dropped, dropped_turn, _ = self._queue.get_nowait()
             self._queued_bytes -= len(dropped)
+            if dropped_turn is not None and dropped_turn.get('open'):
+                # The echo pairing steps over the dropped audio instead of sliding by it.
+                dropped_turn['skipped'] = dropped_turn.get('skipped', 0) + len(dropped) // 2
             self.dropped_bytes += len(dropped)
             if self.dropped_bytes == len(dropped):
                 log.warning('PC microphone: cleaning falls behind; oldest audio dropped')
-        self._queue.put_nowait((pcm, self.turn))
+        self._queue.put_nowait((pcm, self.turn, self.clock()))
         if self._worker is None:
             self._worker = asyncio.create_task(self._clean_packets())
 
     async def _clean_packets(self):
         while True:
-            pcm, turn = await self._queue.get()
+            pcm, turn, arrival = await self._queue.get()
             self._queued_bytes -= len(pcm)
             try:
                 if turn is self.turn:
-                    await clean_turn_audio(self, turn, pcm)
+                    await clean_turn_audio(self, turn, pcm, arrival)
             except Exception:
                 log.warning('PC microphone packet failed', exc_info=True)
 

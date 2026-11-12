@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -22,7 +23,7 @@ class _PassThrough:
     def __init__(self):
         self.received = self.emitted = 0
 
-    def feed(self, mic):
+    def feed(self, mic, arrival=None):
         self.received += len(mic)
         self.emitted += len(mic)
         return mic
@@ -55,7 +56,7 @@ def _loopback(ring):
 
 class EchoCanceller:
     def __init__(self, engine_factory=None, capture_factory=_loopback, models_dir=None, ring_seconds=8.0,
-                 clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=None):
+                 clock=time.perf_counter, max_devices=4, vqe_factory=None, suppress=None, clock_store=None):
         self.ring = ReferenceRing(ring_seconds, clock=clock)
         if suppress is None:  # off unless ORION_RESIDUAL_ECHO=1 (Plan A; not needed live so far)
             suppress = os.environ.get("ORION_RESIDUAL_ECHO", "0") == "1"
@@ -78,6 +79,10 @@ class EchoCanceller:
         self._device_locks = {}
         self._lock = threading.Lock()
         self.last_turn = {}  # device_id -> stats of its last finished turn
+        # Each mic's clock against the PC's playback (`Turn.ratio`), kept across Hub restarts in this JSON
+        # file (None: in memory only), so a restarted Hub pairs right from its first turn.
+        self._clock_store = clock_store
+        self._clocks = None
 
     # --- PC assistant session ---
 
@@ -151,14 +156,21 @@ class EchoCanceller:
             self._turns[device_id] = turn
             return to_pcm16(self._feed(turn, preroll))
 
-    def process(self, device_id, pcm):
+    def process(self, device_id, pcm, arrival=None):
         """Feed live PCM16; returns the cleaned samples that are ready (sample-aligned with the input,
         possibly fewer or more bytes than given while the reference catches up)."""
         with self._device_locks[device_id]:
             turn = self._turns.get(device_id)
             if turn is None:
                 raise KeyError(f"No open turn for {device_id}")
-            return to_pcm16(self._feed(turn, to_float(pcm)))
+            return to_pcm16(self._feed(turn, to_float(pcm), arrival))
+
+    def skip(self, device_id, samples):
+        """Mic audio of the open turn that was dropped unheard (a backlog): the pairing steps over it."""
+        with self._device_locks[device_id]:
+            turn = self._turns.get(device_id)
+            if isinstance(turn, Turn):
+                turn.skip(samples)
 
     def reference_quiet(self, start_time, preroll_samples, margin=0.5):
         """Whether the PC played nothing from `preroll_samples` (plus `margin` s for the echo's way
@@ -266,9 +278,9 @@ class EchoCanceller:
                 "reference_device": getattr(capture, "device_name", None),
                 "devices": list(self._streams)}
 
-    def _feed(self, turn, mic):
+    def _feed(self, turn, mic, arrival=None):
         c0 = time.thread_time()
-        out = turn.feed(mic)
+        out = turn.feed(mic, arrival)
         turn.cpu += time.thread_time() - c0
         return out
 
@@ -290,6 +302,7 @@ class EchoCanceller:
             self._ref_dump[device_id] = to_pcm16(ref)
         out = turn.finish()
         stream = turn.stream
+        self._keep_clock(device_id, stream)
         stats = self.last_turn[device_id] = {
             "samples": turn.received,
             "processed_frames": getattr(stream, "processed_frames", 0),
@@ -305,13 +318,13 @@ class EchoCanceller:
         # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
         suppressor = getattr(stream, "suppressor", None)
         _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, "
-                   "late reference %s s, leaking %s s, delay %s ms (%s realigned), mic clock %s ms, %s",
+                   "late reference %s s, leaking %s s, delay %s ms (%s realigned), mic clock %+d ppm (%s), %s",
                    device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
                    getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
                    stats.get("cleaned_db"), stats["cpu_seconds"], round(getattr(turn, "late", 0) / 16000, 2),
                    round(getattr(turn, "leak", 0) / 16000, 1),
                    getattr(turn, "last_lag_ms", None), getattr(turn, "shifts", 0),
-                   round(getattr(turn, "rate_shift", 0) / 16, 1),
+                   getattr(turn, "clock_ppm", 0), getattr(stream, "clock_source", None) or "not yet",
                    suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         return out
 
@@ -325,6 +338,46 @@ class EchoCanceller:
         engine.want_chain = True  # audio only comes inside turns
         return engine
 
+    def _clock_key(self, device_id):
+        return f"{device_id} -> {getattr(self._capture, 'device_name', None)}"
+
+    def _load_clocks(self):
+        if self._clocks is None:
+            self._clocks = {}
+            if self._clock_store is not None:
+                try:
+                    import json
+                    data = json.loads(Path(self._clock_store).read_text(encoding="utf-8"))
+                    self._clocks = {k: v for k, v in data.items()
+                                    if isinstance(v, list) and len(v) == 2 and abs(float(v[0]) - 1) < .02}
+                except FileNotFoundError:
+                    pass
+                except Exception:
+                    log.warning("Echo clocks file unreadable; learning them again", exc_info=True)
+        return self._clocks
+
+    def _keep_clock(self, device_id, stream):
+        ratio = getattr(stream, "clock_ratio", None)
+        if stream is None or ratio is None:
+            return
+        clocks = self._load_clocks()
+        key = self._clock_key(device_id)
+        entry = [round(float(ratio), 7), getattr(stream, "clock_source", None)]
+        if clocks.get(key) == entry:
+            return
+        clocks[key] = entry
+        if self._clock_store is None:
+            return
+        try:
+            import json
+            path = Path(self._clock_store)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")  # the Hub's API servers are separate processes
+            tmp.write_text(json.dumps(clocks, indent=1), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            log.warning("Echo clocks could not be saved", exc_info=True)
+
     def _stream(self, device_id):
         if self._capture is None or self._engine_factory is None:
             return None
@@ -332,6 +385,9 @@ class EchoCanceller:
             stream = self._streams.get(device_id)
             if stream is None:
                 stream = self._device_stream(self._turn_engine())
+                known = self._load_clocks().get(self._clock_key(device_id))
+                if known:
+                    stream.clock_ratio, stream.clock_source = float(known[0]), known[1]
                 self._streams[device_id] = stream
                 while len(self._streams) > self.max_devices:
                     _, old = self._streams.popitem(last=False)

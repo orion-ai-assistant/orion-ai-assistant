@@ -26,9 +26,15 @@ RATE = 16000
 QUIET = 10 ** (-65 / 20)  # the reference's silence (engines.REF_THRESHOLD)
 LOUD_REF = 10 ** (-45 / 10)  # mean square: the PC plays clearly
 AUDIBLE = 10 ** (-70 / 10)
-RATE_WINDOW = 2 * RATE  # mic samples between estimates of the mic's clock
-RATE_STEP = RATE * 8 // 1000
-RATE_MAX_STEP = RATE * 20 // 1000  # 1 % of a window: far beyond a real clock's drift
+# The mic's clock against the reference (`Turn.ratio`).
+MAX_CLOCK_ERROR = .02
+MIN_CLOCK_ERROR = 2e-5  # 20 ppm: below it a fit changes nothing worth a move
+CLOCK_FIT = 6  # delay estimates...
+CLOCK_SPAN = 6 * RATE  # ...over at least this much mic audio
+CLOCK_SPREAD = RATE * 3 // 1000  # a fit whose delays scatter more is not a clock's straight line
+ARRIVAL_WINDOW = 2 * RATE
+ARRIVAL_FIT = 8
+ARRIVAL_SPREAD = RATE * 4 // 1000
 DELAY_WINDOW = 2 * RATE  # mic audio each delay estimate looks at
 DELAY_EVERY = RATE // 2
 DELAY_SEARCH = RATE // 4  # +-250 ms around the pairing
@@ -122,10 +128,29 @@ class DeviceStream:
 
 
 class Turn:
+    """A turn's mic samples, cleaned against the PC's playback they hold the echo of.
+
+    Mic sample k is paired with the reference at `_ref_pos` + k * `ratio` (ring indices, read with
+    cubic interpolation between samples). Timestamps alone do not keep that pairing: a mic's clock
+    runs off the PC's (the PC's Realtek microphone delivers ~0.36 % fewer samples than its playback,
+    so its echo moved ~4 ms a second and passed the canceller once it came before its reference,
+    2026-11-12), and buffers, padding and queues move it too. So:
+
+    - `ratio` (reference samples per mic sample) is learned per device and kept across turns
+      (`stream.clock_ratio`): from the slope of the echo's delay measured on the audio while the PC
+      plays, the truth; until that is known, from the packets' arrival times against the PC's clock.
+      Following it continuously keeps the pairing right through silences, so it is right when Orion
+      starts to speak.
+    - The echo's delay is measured on the audio every DELAY_EVERY while the PC plays; a delay outside
+      DELAY_OK on two estimates in a row moves the pairing so the reference leads by DELAY_TARGET.
+    """
+
     def __init__(self, stream, ring, ref_start, clock=time.perf_counter, stall=0.3, playing_stall=1.5):
         self.stream = stream
         self.ring = ring
-        self.ref_start = ref_start  # absolute ring index paired with mic sample 0
+        self.ref_start = ref_start  # ring index paired with mic sample 0 (plus the pairing's moves)
+        self.ratio = float(getattr(stream, 'clock_ratio', 1.0) or 1.0)
+        self._ref_pos = float(ref_start)  # ring position paired with the next mic sample
         self.clock = clock
         self.stall = stall  # after this long, a reference the ring still lacks counts as silence
         # ...unless the PC was just playing: then it is late, not silent. Taken for silence, Orion's own
@@ -137,17 +162,19 @@ class Turn:
         # voice (or the PC's sound) leaking into the turn. Only a figure for the log.
         self.leak = 0
         self.used_ref = None  # a list to keep the reference each frame was cleaned against (dumps)
-        # The echo's delay measured from the audio itself (see `_track_delay`).
+        # The echo's delay measured on the audio (`_track_delay`).
         self._mic_history = np.zeros(0, np.float32)
         self._since_estimate = 0
         self._pending_lag = None
+        self._lags = []  # (mic index, delay) since the pairing last moved, for the clock's slope
         self.shifts = 0
         self.last_lag_ms = None
-        # The mic's own clock (see `_track_rate`).
-        self._rate_base = None
-        self._rate_min = None
-        self._rate_counted = 0
-        self.rate_shift = 0  # samples the pairing moved for the mic's clock
+        # The packets' arrival against the PC's clock (`_track_arrival`).
+        self._arrivals = []  # (mic samples received, least delay in a window)
+        self._arrival_min = None
+        self._arrival_counted = 0
+        self._arrival_windows = 0
+        self._arrival_origin = 0  # mic samples received when the ratio last changed
         self._pending = np.zeros(0, np.float32)
         self._consumed = 0  # mic samples already turned into frames
         self._drop = stream.latency
@@ -157,11 +184,17 @@ class Turn:
         self.energy = {'mic': 0.0, 'ref': 0.0, 'out': 0.0}
         self.counted = 0
 
-    def feed(self, mic):
+    @property
+    def clock_ppm(self):
+        """How fast the reference runs against the mic, in millionths (positive: the mic is slower)."""
+        return round((self.ratio - 1) * 1e6)
+
+    def feed(self, mic, arrival=None):
+        """`arrival`: when the packet reached the Hub (`clock` time), before any queue."""
         mic = np.asarray(mic, np.float32).ravel()
-        self.received += len(mic)
         if len(mic):
-            self._track_rate(len(mic))
+            self._track_arrival(len(mic), self.clock() if arrival is None else arrival)
+        self.received += len(mic)
         self._pending = np.concatenate([self._pending, mic])
         return self._run(final=False)
 
@@ -172,35 +205,66 @@ class Turn:
         self._pending = np.concatenate([self._pending, np.zeros(pad, np.float32)])
         return self._run(final=True)[:missing]
 
+    @property
+    def _resampling(self):
+        return self.ratio != 1.0 or self._ref_pos != int(self._ref_pos)
+
+    def _needed(self, frames):
+        """Ring index one past the last sample the next `frames` frames read."""
+        last = self._ref_pos + (frames * HOP - 1) * self.ratio
+        return int(np.floor(last)) + (3 if self._resampling else 1)
+
+    def _reference(self, n, captured):
+        """The reference for the next `n` mic samples; what the ring does not hold yet is silence."""
+        if not self._resampling:
+            start = int(self._ref_pos)
+            ref = np.zeros(n, np.float32)
+            have = min(n, max(0, captured - start))
+            if have:
+                ref[:have] = self.ring.read(start, have)
+            return ref
+        pos = self._ref_pos + np.arange(n) * self.ratio
+        base = int(np.floor(pos[0])) - 1
+        span = int(np.floor(pos[-1])) + 3 - base
+        block = np.zeros(span, np.float32)
+        lo = max(base, 0)
+        hi = min(base + span, captured)
+        if hi > lo:
+            block[lo - base:hi - base] = self.ring.read(lo, hi - lo)
+        i = np.floor(pos).astype(np.int64) - base
+        f = (pos - np.floor(pos)).astype(np.float32)
+        p0, p1, p2, p3 = block[i - 1], block[i], block[i + 1], block[i + 2]
+        # Catmull-Rom: smooth between samples, exact on them.
+        return p1 + .5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)))
+
     def _run(self, final):
         frames = len(self._pending) // HOP
-        start = self.ref_start + self._consumed
         captured = self.ring.end
-        ready = min(frames, max(0, (captured - start) // HOP))
+        ready = 0
+        while ready < frames and self._needed(ready + 1) <= captured:
+            ready += 1
         if final:
             ready = frames
         else:
             # A reference the ring still lacks after `stall` seconds counts as silence (capture stopped).
             stall = self._stall() if ready < frames else self.stall
-            while ready < frames and self.clock() - self.ring.time_of(start + (ready + 1) * HOP) >= stall:
+            while ready < frames and self.clock() - self.ring.time_of(self._needed(ready + 1)) >= stall:
                 ready += 1
-                if start + ready * HOP > captured:
+                if self._needed(ready) > captured:
                     self.late += HOP
         out = np.zeros(0, np.float32)
         if ready:
             n = ready * HOP
-            ref = np.zeros(n, np.float32)
-            have = min(n, max(0, captured - start))
-            if have:
-                ref[:have] = self.ring.read(start, have)
+            ref = self._reference(n, captured)
+            self._ref_pos += n * self.ratio
             out = self.stream.process(self._pending[:n], ref)
             mic = self._pending[:n].astype(np.float64)
-            self.energy['mic'] += float(np.dot(mic, mic))
-            self.energy['ref'] += float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
-            out_energy = float(np.dot(out.astype(np.float64), out.astype(np.float64)))
-            self.energy['out'] += out_energy
-            ref_energy = float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
             mic_energy = float(np.dot(mic, mic))
+            ref_energy = float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
+            out_energy = float(np.dot(out.astype(np.float64), out.astype(np.float64)))
+            self.energy['mic'] += mic_energy
+            self.energy['ref'] += ref_energy
+            self.energy['out'] += out_energy
             if (ref_energy / n > LOUD_REF and out_energy > .25 * mic_energy
                     and out_energy / max(len(out), 1) > AUDIBLE):
                 self.leak += n
@@ -226,58 +290,80 @@ class Turn:
             self.emitted += len(out)
         return out
 
+    def _set_ratio(self, ratio, source):
+        self.ratio = float(np.clip(ratio, 1 - MAX_CLOCK_ERROR, 1 + MAX_CLOCK_ERROR))
+        self.stream.clock_ratio = self.ratio
+        self.stream.clock_source = source
+        self._lags = []
+        self._arrivals = []
+        self._arrival_origin = self.received
 
-    def _track_rate(self, n):
-        """Follow a microphone whose clock runs off the PC's.
+    def _track_arrival(self, n, arrival):
+        """Until the audio has shown the mic's clock, learn it from when packets arrive.
 
-        Pairing counts mic samples from the turn's start; a mic that delivers 15 936 samples a second
-        instead of 16 000 (the PC's Realtek microphone, 2026-11-12: its echo moved ~4 ms a second
-        relative to the reference, 160 ms in a 40 s turn) falls ever further behind the reference.
-        Each packet's arrival is compared with the ring's timeline; the least delayed one in every
-        RATE_WINDOW stands for the mic's position (the others waited in a queue), and when it has
-        moved RATE_STEP from the turn's first window the pairing follows it. Works while the PC is
-        silent too, so the pairing is right when Orion starts to speak."""
-        ahead = self.ring.index_at(self.clock()) - (self.ref_start + self.received)
-        self._rate_min = ahead if self._rate_min is None else min(self._rate_min, ahead)
-        self._rate_counted += n
-        if self._rate_counted < RATE_WINDOW:
+        `ahead` is how far the PC's clock is past the reference position paired with this packet's
+        last sample. The least of it in each ARRIVAL_WINDOW stands for the mic (the others waited in a
+        queue); the first window is skipped (it waits behind the "Orion" check), and the slope over
+        ARRIVAL_FIT windows is the clock difference: a mic falling behind makes `ahead` grow."""
+        if getattr(self.stream, 'clock_source', None) == 'audio':
             return
-        least, self._rate_min, self._rate_counted = self._rate_min, None, 0
-        # The baseline is the least delay seen yet: a turn's first packets wait behind the "Orion"
-        # check, and taking their delay for the baseline turned the next on-time ones into a mic running
-        # fast, 120-160 ms of wrong pairing in 8-12 s turns (2026-11-12, 21:45). Only a mic falling
-        # behind is followed here, a window's plausible drift at a time; anything else is left to the
-        # audio (`_track_delay`).
-        if self._rate_base is None or least < self._rate_base:
-            self._rate_base = least
+        paired = self._ref_pos + (len(self._pending) + n) * self.ratio
+        ahead = self.ring.index_at(arrival) - paired
+        self._arrival_min = ahead if self._arrival_min is None else min(self._arrival_min, ahead)
+        self._arrival_counted += n
+        if self._arrival_counted < ARRIVAL_WINDOW:
             return
-        moved = least - self._rate_base
-        if moved >= RATE_STEP:
-            moved = min(int(moved), RATE_MAX_STEP)
-            self.ref_start += moved
-            self.rate_shift += moved
+        least, self._arrival_min, self._arrival_counted = self._arrival_min, None, 0
+        self._arrival_windows += 1
+        if self._arrival_windows == 1:
+            return
+        self._arrivals.append((self.received + n, least))
+        if len(self._arrivals) < ARRIVAL_FIT:
+            return
+        k, a = np.array(self._arrivals[-ARRIVAL_FIT:], np.float64).T
+        fit = _robust_line(k, a, ARRIVAL_SPREAD)
+        if fit is None:
+            self._arrivals = self._arrivals[-(ARRIVAL_FIT // 2):]  # a busy stretch: look again
+            return
+        slope = fit[0]
+        if abs(slope) >= MIN_CLOCK_ERROR:
+            # What the old ratio let slip since it was set goes back too, not only what comes: the
+            # pairing was right at the turn's start (or when the ratio last changed).
+            slipped = slope * (self.received + n - self._arrival_origin)
+            self._set_ratio(self.ratio + slope, 'arrival')
+            self._ref_pos += slipped
+            self.ref_start += slipped
+        else:
+            self._arrivals = self._arrivals[-(ARRIVAL_FIT // 2):]
+
+    def skip(self, samples):
+        """`samples` of mic audio were dropped before they got here: pair what follows past them."""
+        self._ref_pos += samples * self.ratio
+        self._mic_history = np.zeros(0, np.float32)
+        self._lags = []
+
+    def _move(self, samples):
+        self._ref_pos += samples
+        self.ref_start += samples
+        self.shifts += 1
+        self._pending_lag = None
+        self._lags = []
+        self._mic_history = np.zeros(0, np.float32)
 
     def _track_delay(self):
-        """Keep the reference a little ahead of its echo, measured on the audio.
-
-        A turn pairs mic sample k with ring index `ref_start + k` from timestamps, and those slip: a
-        held-up loopback callback, padding, the browser's or Windows' buffers. In one PC turn the echo
-        went from 25 ms behind its reference to 135 ms ahead of it, and an echo that comes before its
-        reference cannot be cancelled: Orion's voice passed (2026-11-12, 21:23). While the PC plays,
-        the last 2 s of mic are cross-correlated with the reference around them; when the echo's lag
-        leaves DELAY_OK on two estimates in a row, the pairing moves so the reference leads by
-        DELAY_TARGET (the engines themselves handle a lag inside DELAY_OK)."""
+        """Measure the echo's delay on the audio while the PC plays; keep it inside DELAY_OK and learn
+        the mic's clock from how it moves (see the class)."""
         self._since_estimate = 0
         if len(self._mic_history) < DELAY_WINDOW + DELAY_SEARCH:
             return
         # The window ends DELAY_SEARCH before the newest mic sample: the reference up to DELAY_SEARCH
         # after it is already captured (the newest frame's reference just was).
-        b = self.ref_start + self._consumed - DELAY_SEARCH
-        a = b - DELAY_WINDOW
+        b = int(round(self._ref_pos - DELAY_SEARCH * self.ratio))
+        a = b - int(round(DELAY_WINDOW * self.ratio))
         if a - DELAY_SEARCH < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
             return
-        ref = self.ring.read(a - DELAY_SEARCH, DELAY_WINDOW + 2 * DELAY_SEARCH).astype(np.float64)
-        middle = ref[DELAY_SEARCH:DELAY_SEARCH + DELAY_WINDOW]
+        ref = self.ring.read(a - DELAY_SEARCH, (b - a) + 2 * DELAY_SEARCH).astype(np.float64)
+        middle = ref[DELAY_SEARCH:DELAY_SEARCH + (b - a)]
         if float(np.mean(middle ** 2)) <= LOUD_REF:
             self._pending_lag = None
             return
@@ -292,16 +378,31 @@ class Turn:
         if strength < DELAY_CORRELATION:
             return
         self.last_lag_ms = round(1000 * lag / RATE, 1)
+        self._learn_clock(self._consumed - DELAY_SEARCH - DELAY_WINDOW // 2, lag)
         if DELAY_OK[0] <= lag <= DELAY_OK[1]:
             self._pending_lag = None
             return
         if self._pending_lag is None or abs(lag - self._pending_lag) > DELAY_AGREE:
             self._pending_lag = lag
             return
-        self.ref_start += DELAY_TARGET - lag
-        self.shifts += 1
-        self._pending_lag = None
-        self._mic_history = np.zeros(0, np.float32)
+        self._move(DELAY_TARGET - lag)
+
+    def _learn_clock(self, k, lag):
+        """The delay drifts by (ratio - true ratio) per mic sample: its slope corrects the ratio."""
+        self._lags.append((k, lag))
+        if len(self._lags) < CLOCK_FIT or k - self._lags[0][0] < CLOCK_SPAN:
+            return
+        ks, lags = np.array(self._lags, np.float64).T
+        fit = _robust_line(ks, lags, CLOCK_SPREAD)
+        if fit is None:
+            self._lags = self._lags[len(self._lags) // 2:]  # scattered (speech over it): look again
+            return
+        slope = fit[0]
+        if abs(slope) >= MIN_CLOCK_ERROR:
+            self._set_ratio(self.ratio - slope, 'audio')
+        else:
+            self.stream.clock_source = 'audio'  # the ratio holds
+            self._lags = self._lags[len(self._lags) // 2:]
 
     def _stall(self):
         end = self.ring.end
@@ -309,6 +410,26 @@ class Turn:
         if n and float(np.max(np.abs(self.ring.read(end - n, n)))) > QUIET:
             return self.playing_stall
         return self.stall
+
+
+def _robust_line(x, y, spread):
+    """(slope, offset) of the straight line through most of the points, or None when they do not lie
+    on one: the point furthest off is dropped while one is off by more than 3 x `spread` (an estimate
+    taken over speech, a reflection), keeping at least two thirds; the rest must scatter less than
+    `spread`."""
+    keep = np.ones(len(x), bool)
+    while True:
+        slope, offset = np.polyfit(x[keep], y[keep], 1)
+        off = np.where(keep, np.abs(y - (slope * x + offset)), -1.0)
+        worst = int(np.argmax(off))
+        if off[worst] <= 3 * spread:
+            break
+        keep[worst] = False
+        if keep.sum() < max(3, -(-2 * len(x) // 3)):
+            return None
+    if float(np.std(y[keep] - (slope * x[keep] + offset))) > spread:
+        return None
+    return float(slope), float(offset)
 
 
 def to_float(pcm16):
