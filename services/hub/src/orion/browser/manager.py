@@ -103,6 +103,41 @@ def file_lock(path, timeout=3.0):
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+_tasks = set()
+
+
+def _background(coroutine):
+    """A task kept until it ends: one nobody holds can be garbage-collected while it runs."""
+    task = asyncio.create_task(coroutine)
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return task
+
+
+SHARED_LEASE_DAYS = 7
+
+
+def shared_lease(endpoint):
+    """The lock all Orion users take before using one desktop browser. Its name follows the browser's DevTools
+    endpoint, which changes with every browser start, so a new file was left behind each time: leases unused for
+    SHARED_LEASE_DAYS are removed (one still held cannot be, and stays)."""
+    root = browser_root()
+    lease = root / ('shared-' + hashlib.sha256(endpoint.encode()).hexdigest() + '.lock')
+    cutoff = time.time() - SHARED_LEASE_DAYS * 86400
+    try:
+        for old in root.glob('shared-*.lock'):
+            if old != lease and old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass
+    if lease.exists():
+        try:
+            os.utime(lease)
+        except OSError:
+            pass
+    return lease
+
+
 def user_data_dir(choice):
     if choice not in ('chrome', 'edge', 'brave'):
         raise BrowserUnavailable('Chrome, Edge veya Brave seçin.')
@@ -267,7 +302,7 @@ async def get_direct_connection(endpoint):
         await existing.close()
     try:
         async with asyncio.timeout(60):
-            asyncio.create_task(asyncio.to_thread(auto_approve_browser_dialogs))
+            _background(asyncio.to_thread(auto_approve_browser_dialogs))
             connection = await CDPSession.connect(endpoint, timeout=60)
             # Current page helpers poll state and do not consume unsolicited events.
             connection.discard_events = True
@@ -389,7 +424,7 @@ class BrowserManager:
             raise BrowserUnavailable(f'Tarayıcınızı açın ve {scheme}://inspect/#remote-debugging sayfasında uzaktan hata ayıklamayı etkinleştirin. Bu seçenek yoksa güncel Chrome kullanın.')
         if manual:
             # Save only after the browser has granted the actual connection.
-            asyncio.create_task(asyncio.to_thread(auto_approve_browser_dialogs, selected))
+            _background(asyncio.to_thread(auto_approve_browser_dialogs, selected))
             await get_connection(endpoint[1], authorize=True)
             self._write(self.config, {'mode': 'existing', 'browser': selected,
                                       'enabled': True, 'manual': False, 'autoconnect': True})
@@ -417,7 +452,7 @@ class BrowserManager:
                     self._write(self.config, {'mode': 'existing', 'browser': selected,
                                               'enabled': False, 'manual': False})
                 # Connect to CDP (this triggers the "Uzaktan hata ayıklamaya izin verilsin mi?" dialog in browser)
-                asyncio.create_task(asyncio.to_thread(auto_approve_browser_dialogs, selected))
+                _background(asyncio.to_thread(auto_approve_browser_dialogs, selected))
                 connection = await get_connection(endpoint[1], authorize=True)
                 await connection.send('Browser.getVersion')
                 self._write(self.config, {'mode': 'existing', 'browser': selected,
@@ -444,7 +479,7 @@ class BrowserManager:
             if not endpoint:
                 raise BrowserUnavailable('Tarayıcı bulunamadı. Seçtiğiniz tarayıcıyı açıp uzaktan hata ayıklama ayarını kontrol edin.')
             # This explicit recovery action reconnects automatically if needed.
-            asyncio.create_task(asyncio.to_thread(auto_approve_browser_dialogs, config.get('browser')))
+            _background(asyncio.to_thread(auto_approve_browser_dialogs, config.get('browser')))
             connection = await get_connection(endpoint[1], authorize=True)
             from .cdp import CDPConnectionLost, CDPTimeout, CDPError
             try:
@@ -478,7 +513,7 @@ class BrowserManager:
             if self._read(self.config).get('manual') and self._read(self.config).get('mode') == 'existing':
                 raise BrowserUnavailable('Doğrulamayı tamamlayıp tarayıcıya bağlan düğmesine basın.')
             _, endpoint = await self.ensure_launched()
-            lease = browser_root() / ('shared-' + hashlib.sha256(endpoint.encode()).hexdigest() + '.lock')
+            lease = shared_lease(endpoint)
             with file_lock(lease):
                 yield await get_connection(endpoint)
 
@@ -491,7 +526,7 @@ class BrowserManager:
                 raise BrowserUnavailable('Doğrulamayı tamamlayıp tarayıcıya bağlan düğmesine basın.')
             _, endpoint = await self.ensure_launched()
             # Serialize all Orion users sharing this actual desktop browser.
-            lease = browser_root() / ('shared-' + hashlib.sha256(endpoint.encode()).hexdigest() + '.lock')
+            lease = shared_lease(endpoint)
             with file_lock(lease):
                 connection = await get_connection(endpoint)
                 target = None
