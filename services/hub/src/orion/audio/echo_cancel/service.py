@@ -300,11 +300,13 @@ class EchoCanceller:
         # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
         suppressor = getattr(stream, "suppressor", None)
         _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, "
-                   "late reference %s s, leaking %s s, %s",
+                   "late reference %s s, leaking %s s, delay %s ms (%s realigned), mic clock %s ms, %s",
                    device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
                    getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
                    stats.get("cleaned_db"), stats["cpu_seconds"], round(getattr(turn, "late", 0) / 16000, 2),
                    round(getattr(turn, "leak", 0) / 16000, 1),
+                   getattr(turn, "last_lag_ms", None), getattr(turn, "shifts", 0),
+                   round(getattr(turn, "rate_shift", 0) / 16, 1),
                    suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         return out
 

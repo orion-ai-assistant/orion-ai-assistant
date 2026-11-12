@@ -260,6 +260,56 @@ class TurnTests(unittest.TestCase):
         self.assertEqual(stream_frames(turn), 4)
 
 
+class AlignmentTests(unittest.TestCase):
+    """The pairing follows the echo: a mic with a slow clock, and an echo that came before its reference."""
+
+    def noise_ring(self, clock, seconds):
+        ring = ReferenceRing(seconds=seconds + 5, clock=clock)
+        ref = (np.random.default_rng(7).standard_normal(RATE * seconds) * .1).astype(np.float32)
+        clock.now += seconds
+        ring.write(ref, clock.now)
+        return ring, ref
+
+    def test_a_slow_mic_clock_moves_the_pairing_while_the_pc_is_silent(self):
+        clock = FakeClock()
+        ring = ReferenceRing(seconds=40, clock=clock)
+        ring.write(np.zeros(RATE * 30, np.float32), clock.now + 30)
+        clock.now += 1
+        turn = Turn(DeviceStream(HalvingEngine()), ring, ring.index_at(clock.now), clock=clock)
+        start = turn.ref_start
+        # 20 s of 20 ms packets holding 0.4 % fewer samples than the time they took.
+        for _ in range(1000):
+            clock.now += .02
+            turn.feed(np.zeros(319, np.float32))
+        lost = 20 * RATE - 1000 * 319  # 1000 samples behind in the end
+        self.assertGreater(turn.ref_start - start, lost * .7)
+        self.assertLessEqual(turn.ref_start - start, lost)
+
+    def test_an_echo_ahead_of_its_reference_is_realigned_from_the_audio(self):
+        clock = FakeClock()
+        ring, ref = self.noise_ring(clock, 12)
+        early = RATE // 10  # the mic holds the echo of the reference 100 ms later than paired
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_rate = lambda n: None  # only the audio decides here
+        mic = .5 * np.concatenate([ref[early:], np.zeros(early, np.float32)])
+        for i in range(0, RATE * 8, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertEqual(turn.shifts, 1)
+        self.assertEqual(turn.ref_start, early + RATE * 30 // 1000)  # the reference now leads by 30 ms
+
+    def test_a_lag_the_engines_handle_is_left_alone(self):
+        clock = FakeClock()
+        ring, ref = self.noise_ring(clock, 12)
+        late = RATE * 40 // 1000
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_rate = lambda n: None
+        mic = .5 * np.concatenate([np.zeros(late, np.float32), ref[:-late]])
+        for i in range(0, RATE * 8, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertEqual(turn.shifts, 0)
+        self.assertEqual(turn.last_lag_ms, 40.0)
+
+
 class FakeCapture:
     def __init__(self, ring):
         self.ring = ring

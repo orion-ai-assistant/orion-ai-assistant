@@ -26,6 +26,16 @@ RATE = 16000
 QUIET = 10 ** (-65 / 20)  # the reference's silence (engines.REF_THRESHOLD)
 LOUD_REF = 10 ** (-45 / 10)  # mean square: the PC plays clearly
 AUDIBLE = 10 ** (-70 / 10)
+RATE_WINDOW = 2 * RATE  # mic samples between estimates of the mic's clock
+RATE_STEP = RATE * 8 // 1000
+RATE_MAX_STEP = RATE * 60 // 1000
+DELAY_WINDOW = 2 * RATE  # mic audio each delay estimate looks at
+DELAY_EVERY = RATE // 2
+DELAY_SEARCH = RATE // 4  # +-250 ms around the pairing
+DELAY_OK = (RATE * 5 // 1000, RATE * 120 // 1000)  # echo 5-120 ms after its reference: fine
+DELAY_TARGET = RATE * 30 // 1000
+DELAY_AGREE = RATE * 10 // 1000
+DELAY_CORRELATION = .2
 
 
 class DeviceStream:
@@ -127,6 +137,17 @@ class Turn:
         # voice (or the PC's sound) leaking into the turn. Only a figure for the log.
         self.leak = 0
         self.used_ref = None  # a list to keep the reference each frame was cleaned against (dumps)
+        # The echo's delay measured from the audio itself (see `_track_delay`).
+        self._mic_history = np.zeros(0, np.float32)
+        self._since_estimate = 0
+        self._pending_lag = None
+        self.shifts = 0
+        self.last_lag_ms = None
+        # The mic's own clock (see `_track_rate`).
+        self._rate_base = None
+        self._rate_min = None
+        self._rate_counted = 0
+        self.rate_shift = 0  # samples the pairing moved for the mic's clock
         self._pending = np.zeros(0, np.float32)
         self._consumed = 0  # mic samples already turned into frames
         self._drop = stream.latency
@@ -139,6 +160,8 @@ class Turn:
     def feed(self, mic):
         mic = np.asarray(mic, np.float32).ravel()
         self.received += len(mic)
+        if len(mic):
+            self._track_rate(len(mic))
         self._pending = np.concatenate([self._pending, mic])
         return self._run(final=False)
 
@@ -184,8 +207,12 @@ class Turn:
             if self.used_ref is not None:
                 self.used_ref.append(ref.copy())
             self.counted += n
+            self._mic_history = np.concatenate([self._mic_history, self._pending[:n]])[-DELAY_WINDOW:]
             self._pending = self._pending[n:]
             self._consumed += n
+            self._since_estimate += n
+            if self._since_estimate >= DELAY_EVERY and not final:
+                self._track_delay()
         if self._drop:
             cut = min(self._drop, len(out))
             out, self._drop = out[cut:], self._drop - cut
@@ -193,6 +220,75 @@ class Turn:
             self.emitted += len(out)
         return out
 
+
+    def _track_rate(self, n):
+        """Follow a microphone whose clock runs off the PC's.
+
+        Pairing counts mic samples from the turn's start; a mic that delivers 15 936 samples a second
+        instead of 16 000 (the PC's Realtek microphone, 2026-11-12: its echo moved ~4 ms a second
+        relative to the reference, 160 ms in a 40 s turn) falls ever further behind the reference.
+        Each packet's arrival is compared with the ring's timeline; the least delayed one in every
+        RATE_WINDOW stands for the mic's position (the others waited in a queue), and when it has
+        moved RATE_STEP from the turn's first window the pairing follows it. Works while the PC is
+        silent too, so the pairing is right when Orion starts to speak."""
+        ahead = self.ring.index_at(self.clock()) - (self.ref_start + self.received)
+        self._rate_min = ahead if self._rate_min is None else min(self._rate_min, ahead)
+        self._rate_counted += n
+        if self._rate_counted < RATE_WINDOW:
+            return
+        least, self._rate_min, self._rate_counted = self._rate_min, None, 0
+        if self._rate_base is None:
+            self._rate_base = least
+            return
+        moved = least - self._rate_base
+        if abs(moved) >= RATE_STEP:
+            moved = int(np.clip(moved, -RATE_MAX_STEP, RATE_MAX_STEP))
+            self.ref_start += moved
+            self.rate_shift += moved
+
+    def _track_delay(self):
+        """Keep the reference a little ahead of its echo, measured on the audio.
+
+        A turn pairs mic sample k with ring index `ref_start + k` from timestamps, and those slip: a
+        held-up loopback callback, padding, the browser's or Windows' buffers. In one PC turn the echo
+        went from 25 ms behind its reference to 135 ms ahead of it, and an echo that comes before its
+        reference cannot be cancelled: Orion's voice passed (2026-11-12, 21:23). While the PC plays,
+        the last 2 s of mic are cross-correlated with the reference around them; when the echo's lag
+        leaves DELAY_OK on two estimates in a row, the pairing moves so the reference leads by
+        DELAY_TARGET (the engines themselves handle a lag inside DELAY_OK)."""
+        self._since_estimate = 0
+        if len(self._mic_history) < DELAY_WINDOW:
+            return
+        b = self.ref_start + self._consumed
+        a = b - DELAY_WINDOW
+        if a - DELAY_SEARCH < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
+            return
+        ref = self.ring.read(a - DELAY_SEARCH, DELAY_WINDOW + 2 * DELAY_SEARCH).astype(np.float64)
+        middle = ref[DELAY_SEARCH:DELAY_SEARCH + DELAY_WINDOW]
+        if float(np.mean(middle ** 2)) <= LOUD_REF:
+            self._pending_lag = None
+            return
+        mic = self._mic_history.astype(np.float64)
+        mic = mic - mic.mean()
+        size = 1 << int(np.ceil(np.log2(len(ref) + len(mic))))
+        corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)), size)[:2 * DELAY_SEARCH + 1]
+        # corr[t] = sum mic[n] * ref[n + t]; mic[n] holds the echo of reference index a + n - lag.
+        t = int(np.argmax(np.abs(corr)))
+        lag = DELAY_SEARCH - t
+        strength = abs(corr[t]) / np.sqrt(float(np.dot(mic, mic)) * float(np.dot(middle, middle)) + 1e-20)
+        if strength < DELAY_CORRELATION:
+            return
+        self.last_lag_ms = round(1000 * lag / RATE, 1)
+        if DELAY_OK[0] <= lag <= DELAY_OK[1]:
+            self._pending_lag = None
+            return
+        if self._pending_lag is None or abs(lag - self._pending_lag) > DELAY_AGREE:
+            self._pending_lag = lag
+            return
+        self.ref_start += DELAY_TARGET - lag
+        self.shifts += 1
+        self._pending_lag = None
+        self._mic_history = np.zeros(0, np.float32)
 
     def _stall(self):
         end = self.ring.end
