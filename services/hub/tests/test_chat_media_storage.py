@@ -236,7 +236,29 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(head.body, b'')
         self.assertEqual(head.headers['content-length'], '10')
         self.assertEqual(invalid.status_code, 416)
-        self.assertEqual(full.headers['cache-control'], 'private, no-store')
+        # The id is the hash of the bytes: the device keeps the file for a month and revalidates with its ETag.
+        self.assertEqual(full.headers['cache-control'], 'private, max-age=2592000, immutable')
+        self.assertEqual(full.headers['etag'], f'"{ref["media_id"]}"')
+        self.assertEqual(part.headers['etag'], full.headers['etag'])
+        with patch.object(routes, 'ensure_chat_access', AsyncMock()),                 patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('304 reads no bytes'))):
+            for tags in (full.headers['etag'], 'W/"x", ' + full.headers['etag']):
+                same = await routes.chat_media_endpoint(
+                    'chat', ref['media_id'], request(headers=[(b'if-none-match', tags.encode())]), 'alice')
+                self.assertEqual((same.status_code, same.body), (304, b''))
+                self.assertEqual(same.headers['etag'], full.headers['etag'])
+                self.assertEqual(same.headers['cache-control'], 'private, max-age=2592000, immutable')
+            other = await routes.chat_media_endpoint(
+                'chat', ref['media_id'], request('HEAD', [(b'if-none-match', b'"other"')]), 'alice')
+            self.assertEqual(other.status_code, 200)
+
+    async def test_media_of_another_owner_is_refused_before_a_304(self):
+        def request():
+            app = SimpleNamespace(state=SimpleNamespace(redis=Mock()))
+            return Request(dict(type='http', method='GET', headers=[(b'if-none-match', b'"' + b'a' * 64 + b'"')], app=app))
+        with patch.object(routes, 'ensure_chat_access', AsyncMock(side_effect=HTTPException(403))):
+            with self.assertRaises(HTTPException) as raised:
+                await routes.chat_media_endpoint('chat', 'a' * 64, request(), 'bob')
+        self.assertEqual(raised.exception.status_code, 403)
 
     async def age_media(self, *, hours=72):
         conn = await registry._connect()

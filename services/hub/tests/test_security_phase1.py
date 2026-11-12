@@ -20,7 +20,7 @@ from orion.kernel import registry
 class FakeRedis:
     def __init__(self):
         self.counts = {}
-        self.hgetall = AsyncMock(return_value={"user_id": "alice", "chat_id": "a"})
+        self.hgetall = AsyncMock(return_value={})
         self.get = AsyncMock(return_value="alice-turn")
         self.pipeline = Mock()
         self.pubsub = Mock()
@@ -51,6 +51,8 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(auth_routes, "hash_password", return_value="hash"),
             patch.object(auth_routes, "verify_password", side_effect=lambda password, hashed: password == "correct"),
             patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())),
+            # The chat row in PostgreSQL is the owner record: chat "a" is alice's.
+            patch.object(job_service, "get_chat_db", AsyncMock(return_value={"user_id": "alice", "name": "a"})),
             # Keep the developer's own owner password (files/security) out of the test.
             patch.dict(os.environ, {"ADMIN_API_KEY": "", "ORION_SECURITY_DIR": self.security_dir.name}),
         ]
@@ -157,8 +159,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post("/api/v1/auth/" + endpoint, json={"username": "unicode", "password": "\u015f" * 37})
             self.assertEqual(response.status_code, 422)
 
-    async def test_durable_owner_check_when_redis_metadata_expires(self):
-        self.redis.hgetall.return_value = {}
+    async def test_owner_check_reads_the_chat_row(self):
         with patch.object(job_service, "get_chat_db", AsyncMock(return_value={"user_id": "alice"})):
             response = await self.client.get("/api/v1/chats/a/history", headers=self.headers())
             self.assertEqual(response.status_code, 403)

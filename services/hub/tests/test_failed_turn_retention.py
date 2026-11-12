@@ -52,12 +52,12 @@ class FailedTurnRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(m['failed_turn'] for m in saved))
         self.assertIn('Router offline', saved[1]['generation_error'])
         good = [{'role': 'user', 'content': 'next'}, {'role': 'assistant', 'content': 'answer'}]
-        stored = AsyncMock(return_value=saved + good)
+        stored = AsyncMock(return_value=(saved + good, 0))
 
         async def hydrate(chat, messages):
             return messages
 
-        with patch.object(processor, 'hydrate_model_media', hydrate), patch.object(processor, 'get_chat_history_db', stored):
+        with patch.object(processor, 'hydrate_model_media', hydrate), patch('orion.kernel.registry.get_chat_tail_db', stored):
             model = await processor.load_history(self.redis, 'chat', 20, 3600)
         self.assertEqual(model, good)
         self.redis.lrange.assert_not_called()

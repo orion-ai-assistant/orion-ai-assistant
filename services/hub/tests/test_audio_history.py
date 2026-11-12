@@ -51,6 +51,6 @@ class AudioHistoryTests(unittest.IsolatedAsyncioTestCase):
         redis.lrange = AsyncMock(return_value=[])
         redis.pipeline.return_value.execute = AsyncMock()
         stored = [{'role': 'assistant', 'content': 'hi', 'audio': {'audio': 'large-base64'}}]
-        with patch.object(job_processor, 'get_chat_history_db', AsyncMock(return_value=stored)):
+        with patch('orion.kernel.registry.get_chat_tail_db', AsyncMock(return_value=(stored, 0))):
             prompt = await job_processor.load_history(redis, 'chat', 20, 3600)
         self.assertEqual(prompt, [{'role': 'assistant', 'content': 'hi'}])

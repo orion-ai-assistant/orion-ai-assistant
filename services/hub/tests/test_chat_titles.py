@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi import HTTPException
+
 from orion.api.services import job_service
 from orion.contracts.http import JobCreateRequest
 from orion.contracts.settings import RuntimeSettings
@@ -31,12 +33,28 @@ class TitleTests(TitleTestBase):
         redis.pipeline = Mock(return_value=pipe)
         redis.exists.return_value = False
         request = JobCreateRequest(user_id="u", input={"text": "Bugün hava nasıl"})
-        with patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())), patch.object(job_service, "upsert_chat", AsyncMock()) as persist:
+        order = []
+        persist = AsyncMock(side_effect=lambda **kw: order.append("persist"))
+        pipe.execute.side_effect = lambda: order.append("queue")
+        with patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())), patch.object(job_service, "upsert_chat", persist):
             await job_service.create_job(redis, request)
         self.assertEqual(persist.call_args.kwargs["title"], "Bugün hava nasıl")
-        metadata = [c.kwargs["mapping"] for c in pipe.hset.call_args_list if "name" in c.kwargs.get("mapping", {})]
-        self.assertEqual(metadata[0]["name"], "Bugün hava nasıl")
+        # The chat row is written before the turn is queued, and Redis keeps no chat metadata any more.
+        self.assertEqual(order, ["persist", "queue"])
+        self.assertEqual([c for c in pipe.hset.call_args_list if "name" in c.kwargs.get("mapping", {})], [])
         pipe.execute.assert_awaited_once()
+
+    async def test_a_chat_that_cannot_be_saved_is_never_queued(self):
+        redis = AsyncMock()
+        pipe = Mock()
+        pipe.execute = AsyncMock()
+        redis.pipeline = Mock(return_value=pipe)
+        request = JobCreateRequest(user_id="u", input={"text": "merhaba"})
+        with patch.object(job_service, "get_runtime_settings", AsyncMock(return_value=RuntimeSettings())),                 patch.object(job_service, "upsert_chat", AsyncMock(side_effect=RuntimeError("Postgres is unavailable"))),                 self.assertLogs(level="ERROR"):
+            with self.assertRaises(HTTPException) as raised:
+                await job_service.create_job(redis, request)
+        self.assertEqual(raised.exception.status_code, 503)
+        pipe.execute.assert_not_awaited()
 
     async def test_ai_disabled_failure_and_manual_rename(self):
         context = SimpleNamespace(request=SimpleNamespace(chat_id=None), prompt="hello", chat_id="c", channel="u", turn_id="t", redis=AsyncMock())
@@ -52,12 +70,12 @@ class TitleTests(TitleTestBase):
                 await chat_titles.generate_chat_title(context, RuntimeSettings(ai_chat_titles_enabled=True))
             self.assertEqual(persist.await_count, 1)
 
-    async def test_ai_success_invalidates_cache_and_notifies(self):
+    async def test_ai_success_notifies_without_a_redis_copy_to_invalidate(self):
         context = SimpleNamespace(request=SimpleNamespace(chat_id=None), prompt="hello", chat_id="c", channel="u", turn_id="t", redis=AsyncMock())
         context.redis.hget.return_value = "t"
         with patch.object(chat_titles, "llama_chat", AsyncMock(return_value="A title")), patch.object(chat_titles, "replace_initial_chat_title", AsyncMock(return_value=True)):
             await chat_titles.generate_chat_title(context, RuntimeSettings(ai_chat_titles_enabled=True))
-        context.redis.delete.assert_awaited_once()
+        context.redis.delete.assert_not_awaited()
         context.redis.publish.assert_awaited_once()
 
 

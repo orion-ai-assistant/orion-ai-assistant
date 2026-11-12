@@ -84,10 +84,14 @@ class ChatSearchServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_results_carry_an_excerpt(self):
         rows = [{'chat_id': 'c1', 'title': 'Ekler', 'role': 'user', 'plain_text': 'benim adım Kürşat',
                  'created_at': datetime(2026, 11, 10, 9, 30, tzinfo=timezone.utc)}]
-        with patch.object(registry, 'search_chat_messages_db', AsyncMock(return_value=rows)) as search:
+        titles = [{'chat_id': 'c2', 'title': 'Kürşat notları', 'updated_at': datetime(2026, 11, 11, 8, 0, tzinfo=timezone.utc)}]
+        with patch.object(registry, 'search_chat_messages_db', AsyncMock(return_value=rows)) as search,                 patch.object(registry, 'search_chat_titles_db', AsyncMock(return_value=titles)) as by_title:
             found = await job_service.search_chats('u', ' KÜRŞAT ')
         search.assert_awaited_once_with('u', ['kürşat'])
-        self.assertEqual(found, [{'chat_id': 'c1', 'name': 'Ekler', 'role': 'user', 'snippet': 'benim adım Kürşat',
+        by_title.assert_awaited_once_with('u', ['kürşat'])
+        # Chat names holding the phrase come first, as role "title", the name being the excerpt.
+        self.assertEqual(found, [{'chat_id': 'c2', 'name': 'Kürşat notları', 'role': 'title', 'snippet': 'Kürşat notları',
+                                  'created_at': '2026-11-11T08:00:00+00:00'}, {'chat_id': 'c1', 'name': 'Ekler', 'role': 'user', 'snippet': 'benim adım Kürşat',
                                   'created_at': '2026-11-10T09:30:00+00:00'}])
 
     async def test_short_or_empty_queries_do_not_reach_the_database(self):
@@ -97,7 +101,8 @@ class ChatSearchServiceTests(unittest.IsolatedAsyncioTestCase):
         search.assert_not_awaited()
 
     async def test_database_failure_is_a_503(self):
-        with patch.object(registry, 'search_chat_messages_db', AsyncMock(side_effect=RuntimeError('down'))):
+        with patch.object(registry, 'search_chat_titles_db', AsyncMock(return_value=[])), \
+                patch.object(registry, 'search_chat_messages_db', AsyncMock(side_effect=RuntimeError('down'))):
             with self.assertRaises(HTTPException) as raised:
                 await job_service.search_chats('u', 'kürşat')
         self.assertEqual(raised.exception.status_code, 503)
@@ -118,7 +123,7 @@ class ChatSearchServiceTests(unittest.IsolatedAsyncioTestCase):
             await registry.insert_messages('c1', [{'role': 'user', 'content': 'p', 'display_text': 'İyi Günler'},
                                                   {'role': 'tool', 'content': 'x'}])
         records = conn.executemany.await_args.args[1]
-        self.assertEqual([record[3:] for record in records], [('İyi Günler', 'iyi günler'), ('', '')])
+        self.assertEqual([record[3:] for record in records], [('İyi Günler', 'iyi günler', ''), ('', '', '')])
 
     async def test_older_messages_are_indexed_in_batches(self):
         conn = AsyncMock()

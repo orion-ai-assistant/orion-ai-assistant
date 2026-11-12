@@ -148,16 +148,16 @@ class HistoryReadTests(unittest.IsolatedAsyncioTestCase):
         async def hydrate(chat, messages):
             return messages
 
-        with patch.object(job_processor, 'get_chat_history_db', AsyncMock(return_value=stored)) as db, \
+        with patch('orion.kernel.registry.get_chat_tail_db', AsyncMock(return_value=(stored, 0))) as db, \
                 patch.object(job_processor, 'hydrate_model_media', hydrate):
             history = await job_processor.load_history(redis, 'chat', 20, 3600)
-        db.assert_awaited_once_with('chat')
+        db.assert_awaited_once_with('chat', 200)
         self.assertEqual(history, stored[:2])
         self.assertEqual(redis.mock_calls, [])
 
     async def test_a_database_error_gives_an_empty_model_history(self):
         redis = Mock()
-        with patch.object(job_processor, 'get_chat_history_db', AsyncMock(side_effect=RuntimeError('down'))), \
+        with patch('orion.kernel.registry.get_chat_tail_db', AsyncMock(side_effect=RuntimeError('down'))), \
                 self.assertLogs(level='ERROR'):
             self.assertEqual(await job_processor.load_history(redis, 'chat', 20, 3600), [])
         self.assertEqual(redis.mock_calls, [])

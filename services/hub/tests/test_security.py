@@ -32,7 +32,10 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
         self.redis = Mock()
         self.redis.lock = Mock(side_effect=lambda *args, **kwargs: contextlib.nullcontext())
         self.redis.eval = AsyncMock(return_value=[1, 30])
-        self.redis.hgetall = AsyncMock(return_value={'user_id': 'alice', 'chat_id': 'a'})
+        self.redis.hgetall = AsyncMock(return_value={})
+        # The chat row in PostgreSQL is the owner record: chat 'a' is alice's.
+        self.owner = patch('orion.api.services.job_service.get_chat_db', AsyncMock(return_value={'user_id': 'alice', 'name': 'a'}))
+        self.owner.start()
         self.redis.ping = AsyncMock(return_value=True)
         self.app = FastAPI()
         self.app.state.redis = self.redis
@@ -43,6 +46,7 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.aclose()
+        self.owner.stop()
         self.lookup.stop()
         self.env.stop()
         self.security_dir.cleanup()
@@ -119,14 +123,12 @@ class SecurityTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=RuntimeSettings())), patch('orion.api.services.job_service.get_runtime_settings', AsyncMock(return_value=RuntimeSettings())):
                 response = await self.client.request(method, path, headers=self.headers, json=data)
             self.assertEqual(response.status_code, 403, path)
-        self.redis.hgetall.return_value = {}
         with patch('orion.api.services.job_service.get_chat_db', AsyncMock(return_value=None)):
             self.assertEqual((await self.client.get('/api/v1/chats/missing/history', headers=self.headers)).status_code, 404)
 
     async def test_foreign_turn_cannot_be_stopped_using_owned_chat(self):
-        self.redis.hgetall.return_value = {'user_id':'bob'}
         self.redis.get = AsyncMock(return_value='owned-turn')
-        with patch('orion.api.services.job_service.get_runtime_settings', AsyncMock(return_value=RuntimeSettings())):
+        with patch('orion.api.services.job_service.get_chat_db', AsyncMock(return_value={'user_id': 'bob'})),                 patch('orion.api.services.job_service.get_runtime_settings', AsyncMock(return_value=RuntimeSettings())):
             response = await self.client.post('/api/v1/chats/b/turns/alice-turn/stop', headers=self.headers)
         self.assertEqual(response.status_code, 404)
         self.redis.pipeline.assert_not_called()
