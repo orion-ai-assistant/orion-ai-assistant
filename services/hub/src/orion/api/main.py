@@ -20,6 +20,7 @@ from orion.contracts.constants import SETTINGS_DEFAULT_USER
 from services.shared.environment import get_redis_url, get_env
 from services.shared.update_gate import admitted, UpdateAdmission, wait_for_admission
 from orion.kernel.config import get_runtime_settings, seed_database_settings
+from orion.kernel.registry import close_pool
 
 class RevalidatedFiles(StaticFiles):
     """Static pages the browser asks about each time (a 304 when unchanged): after an update it never keeps
@@ -99,12 +100,14 @@ async def service_lifespan(app: FastAPI):
             yield
         finally:
             await app.state.redis.close()
+            await close_pool()
         return
     if app.state.public:
         try:
             yield
         finally:
             await app.state.redis.close()
+            await close_pool()
         return
     from orion.browser.bridge import BrowserBridge
     from orion.browser.manager import restore_saved_browsers
@@ -146,6 +149,7 @@ async def service_lifespan(app: FastAPI):
             await restore_task
         await bridge.close()
         await app.state.redis.close()
+        await close_pool()
 
 
 @asynccontextmanager

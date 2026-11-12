@@ -192,6 +192,8 @@ async def run_owned() -> None:
         if in_flight:
             await asyncio.gather(*in_flight, return_exceptions=True)
         await close_session()
+        from orion.kernel.registry import close_pool
+        await close_pool()
         if owner:
             try:
                 await redis.eval(COMPARE_DELETE, 1, OWNER_KEY, owner)

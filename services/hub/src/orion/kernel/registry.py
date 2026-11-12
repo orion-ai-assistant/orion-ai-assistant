@@ -47,9 +47,62 @@ async def set_chat_tool_selection(chat_id: str, user_id: str, selection):
 # ---------------------------------------------------------------------------
 
 import asyncio
+import weakref
 
-async def _connect(retries: int = 3, delay: float = 0.5, timeout: float = 2.0) -> asyncpg.Connection | None:
-    """Return an open asyncpg connection or None on failure, with retries and timeout."""
+# One small pool per event loop (each API process, the Worker). Opening a new PostgreSQL connection for
+# every call - every authenticated request checks its session - cost a TCP handshake, a login and a new
+# server process each time, for weeks. A pooled connection's close() hands it back instead.
+POOL_MAX = 8
+POOL_IDLE_SECONDS = 300
+_pools: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[str, asyncpg.Pool]]" = weakref.WeakKeyDictionary()
+_pool_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+class _PooledConnection:
+    """A pool connection that callers use like their own: close() returns it to the pool."""
+    __slots__ = ("_pool", "_conn")
+
+    def __init__(self, pool: asyncpg.Pool, conn):
+        self._pool, self._conn = pool, conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    async def close(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            # Release rolls back anything left open and resets the session; a broken one is dropped.
+            await self._pool.release(conn)
+
+
+async def _pool(database_url: str, timeout: float) -> asyncpg.Pool:
+    loop = asyncio.get_running_loop()
+    lock = _pool_locks.setdefault(loop, asyncio.Lock())
+    async with lock:
+        current = _pools.get(loop)
+        if current and current[0] == database_url and not current[1].is_closing():
+            return current[1]
+        if current:  # The address or password changed: the old connections are not reused.
+            current[1].terminate()
+        # min_size=0: nothing is opened until asked, so a database that is not up yet fails per call, as before.
+        pool = await asyncpg.create_pool(database_url, min_size=0, max_size=POOL_MAX, timeout=timeout,
+                                         max_inactive_connection_lifetime=POOL_IDLE_SECONDS)
+        _pools[loop] = (database_url, pool)
+        return pool
+
+
+async def close_pool() -> None:
+    """At shutdown: the pool of the running loop closes its connections."""
+    current = _pools.pop(asyncio.get_running_loop(), None)
+    if current:
+        try:
+            await asyncio.wait_for(current[1].close(), 5)
+        except Exception:
+            current[1].terminate()
+
+
+async def _connect(retries: int = 3, delay: float = 0.5, timeout: float = 2.0) -> _PooledConnection | None:
+    """A connection from this loop's pool, or None on failure, with retries and timeout."""
     try:
         database_url = get_postgres_url()
     except RuntimeError as exc:
@@ -58,7 +111,8 @@ async def _connect(retries: int = 3, delay: float = 0.5, timeout: float = 2.0) -
 
     for attempt in range(retries):
         try:
-            return await asyncpg.connect(database_url, timeout=timeout)
+            pool = await _pool(database_url, timeout)
+            return _PooledConnection(pool, await pool.acquire(timeout=timeout))
         except Exception as e:
             if attempt == retries - 1:
                 logger.warning("Failed to connect to Postgres after %d attempts: %s", retries, e)
@@ -69,9 +123,13 @@ async def _connect(retries: int = 3, delay: float = 0.5, timeout: float = 2.0) -
 
 
 async def check_db_health(timeout: float = 1.0) -> bool:
-    """Quick check if Postgres database is reachable and accepting queries."""
-    conn = await _connect(retries=1, delay=0.1, timeout=timeout)
-    if conn is None:
+    """Quick check if Postgres database is reachable and accepting queries.
+
+    A fresh connection, never a pooled one: an idle pooled connection that a restart broke would read as a
+    database that is down."""
+    try:
+        conn = await asyncpg.connect(get_postgres_url(), timeout=timeout)
+    except Exception:
         return False
     try:
         await conn.execute("SELECT 1")
@@ -679,6 +737,8 @@ async def get_turn_audio_db(chat_id: str, turn_id: str):
         value = await conn.fetchval("""
             select content_json from orion_chat_messages
             where chat_id=$1 and role='assistant'
+              -- A plain text match first: only the row(s) naming this turn are decoded as JSON.
+              and strpos(content_json, $2) > 0
               and content_json::jsonb->>'turn_id'=$2
               and content_json::jsonb ? 'audio'
             order by id desc limit 1
