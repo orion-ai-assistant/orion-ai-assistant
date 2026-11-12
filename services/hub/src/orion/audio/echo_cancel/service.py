@@ -144,6 +144,8 @@ class EchoCanceller:
                 turn = _PassThrough()
             else:
                 turn = Turn(stream, self.ring, self.ring.index_at(start_time) - len(preroll), clock=self.clock)
+                if os.environ.get("ORION_PC_MIC_DUMP") == "1":
+                    turn.used_ref = []
             turn.started = self.clock()
             turn.cpu = 0.0
             self._turns[device_id] = turn
@@ -271,9 +273,15 @@ class EchoCanceller:
             return np.zeros(0, np.float32)
         c0 = time.thread_time()
         if os.environ.get("ORION_PC_MIC_DUMP") == "1" and isinstance(turn, Turn):
-            start = max(turn.ref_start, self.ring.end - self.ring.capacity)
-            end = min(turn.ref_start + turn.received, self.ring.end)
-            ref = self.ring.read(start, end - start) if end > start else np.zeros(0, np.float32)
+            if turn.used_ref is not None:
+                # The reference each frame was actually cleaned against, the last 90 s like the mic's dump
+                # (the ring kept only its last few seconds, too little for a long turn).
+                out_ref = np.concatenate(turn.used_ref) if turn.used_ref else np.zeros(0, np.float32)
+                ref = out_ref[:turn.received][-90 * 16000:]
+            else:
+                start = max(turn.ref_start, self.ring.end - self.ring.capacity)
+                end = min(turn.ref_start + turn.received, self.ring.end)
+                ref = self.ring.read(start, end - start) if end > start else np.zeros(0, np.float32)
             self._ref_dump[device_id] = to_pcm16(ref)
         out = turn.finish()
         stream = turn.stream
@@ -292,10 +300,11 @@ class EchoCanceller:
         # (the user's own speech is in both mic and cleaned, so this is not a pure echo figure).
         suppressor = getattr(stream, "suppressor", None)
         _diag.info("Echo turn %s: %s s, reference %s dBFS (%s), mic %s dBFS -> cleaned %s dBFS, cpu %s s, "
-                   "late reference %s s, %s",
+                   "late reference %s s, leaking %s s, %s",
                    device_id, round(turn.received / 16000, 1), stats.get("reference_db"),
                    getattr(self._capture, "device_name", None) or "no loopback", stats.get("mic_db"),
                    stats.get("cleaned_db"), stats["cpu_seconds"], round(getattr(turn, "late", 0) / 16000, 2),
+                   round(getattr(turn, "leak", 0) / 16000, 1),
                    suppressor.summary(reset=True) if suppressor else "no residual echo suppression")
         return out
 

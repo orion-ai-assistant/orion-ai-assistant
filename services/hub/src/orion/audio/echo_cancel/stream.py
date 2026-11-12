@@ -24,6 +24,8 @@ import numpy as np
 HOP = 256
 RATE = 16000
 QUIET = 10 ** (-65 / 20)  # the reference's silence (engines.REF_THRESHOLD)
+LOUD_REF = 10 ** (-45 / 10)  # mean square: the PC plays clearly
+AUDIBLE = 10 ** (-70 / 10)
 
 
 class DeviceStream:
@@ -121,6 +123,10 @@ class Turn:
         # behind at a turn's start (2026-11-12, both dumped turns at 1.3-1.8 s).
         self.playing_stall = playing_stall
         self.late = 0  # mic samples cleaned against a reference that never came in time
+        # Mic samples where the PC played loudly yet the canceller took out less than 6 dB: Orion's
+        # voice (or the PC's sound) leaking into the turn. Only a figure for the log.
+        self.leak = 0
+        self.used_ref = None  # a list to keep the reference each frame was cleaned against (dumps)
         self._pending = np.zeros(0, np.float32)
         self._consumed = 0  # mic samples already turned into frames
         self._drop = stream.latency
@@ -168,7 +174,15 @@ class Turn:
             mic = self._pending[:n].astype(np.float64)
             self.energy['mic'] += float(np.dot(mic, mic))
             self.energy['ref'] += float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
-            self.energy['out'] += float(np.dot(out.astype(np.float64), out.astype(np.float64)))
+            out_energy = float(np.dot(out.astype(np.float64), out.astype(np.float64)))
+            self.energy['out'] += out_energy
+            ref_energy = float(np.dot(ref.astype(np.float64), ref.astype(np.float64)))
+            mic_energy = float(np.dot(mic, mic))
+            if (ref_energy / n > LOUD_REF and out_energy > .25 * mic_energy
+                    and out_energy / max(len(out), 1) > AUDIBLE):
+                self.leak += n
+            if self.used_ref is not None:
+                self.used_ref.append(ref.copy())
             self.counted += n
             self._pending = self._pending[n:]
             self._consumed += n
