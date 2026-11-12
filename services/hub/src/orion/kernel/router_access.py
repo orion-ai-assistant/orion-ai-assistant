@@ -60,6 +60,8 @@ def manual_state(router_id, subject):
 
 
 def save_manual(router_id, subject, *, key=None, enabled=True, remove=False):
+    from .router_accounts import forget_account_keys
+    forget_account_keys()  # This process binds the changed key at once; others within ACCOUNT_KEY_SECONDS.
     path = manual_path(router_id, subject)
     with identity_lock(security_dir()):
         if remove:

@@ -97,6 +97,7 @@ async def request_router(record, method, path, *, body=None, enrollment=None, ac
                     # The Router no longer knows this Hub (removed by its administrator): forget the old
                     # admission so the owner is asked for a new connection code.
                     await asyncio.to_thread(_state_path(record['id']).unlink, missing_ok=True)
+                    forget_account_keys()
                     raise EnrollmentRequired('Router bu Hub’ı kaldırmış. Hub sahibi, Hub panelinden yeni bir bağlantı kodu ile yeniden bağlamalı.')
                 if response.status >= 400:
                     messages = {401: 'Router bağlantı yetkisi geçersiz. Orion Panel’den yeniden bağlayın.',
@@ -141,6 +142,7 @@ async def connect_router(record, code=None):
     await request_router(record, 'POST', '/api/v1/hubs/enroll',
                          body={'id': identity['id'], 'name': identity['name'], 'token': token}, enrollment=enrollment)
     await asyncio.to_thread(atomic_write, _state_path(record['id']), b'{"connected":true}')
+    forget_account_keys()
 
 
 async def ensure_connection(record):
@@ -196,11 +198,32 @@ async def catalog_credentials():
     return '/api/v1/hubs/catalog/', {'x-orion-hub-key': await asyncio.to_thread(_credential, record['id'], 'hub')}
 
 
+# The account's Router key, as account_settings binds it, for ACCOUNT_KEY_SECONDS. Binding it reads the
+# selected Router, the account's identity, its encrypted key and its provisioning state from disk (about
+# 20 ms), and most requests (chat list, history, send, settings) ask for it. A Router that changed in the
+# meantime is still caught before anything is sent (router_access.validate_target); failures are never kept.
+ACCOUNT_KEY_SECONDS = 30.0
+_bound_keys: dict[str, tuple[float, object]] = {}
+
+
+def forget_account_keys(user_id: str | None = None) -> None:
+    """After a change of Router or of an account's key: the next request binds again."""
+    if user_id is None:
+        _bound_keys.clear()
+    else:
+        _bound_keys.pop(user_id, None)
+
+
 async def account_settings(settings, user_id):
     from .router_access import current_route, account_key
     current_route.set(None)
     if user_id == 'global':
         return settings
+    cached = _bound_keys.get(user_id)
+    if cached and time.monotonic() < cached[0]:
+        bound = cached[1]
+        current_route.set(bound.route)
+        return settings.model_copy(update={'router_api_key': str(bound)})
     try:
         record = await selected_router()
     except RouterAccountError:
@@ -213,6 +236,7 @@ async def account_settings(settings, user_id):
     key = await asyncio.to_thread(_credential, record['id'], 'account', subject)
     await provision_if_available(user_id, record)
     bound = await account_key(user_id, record, subject, key)
+    _bound_keys[user_id] = (time.monotonic() + ACCOUNT_KEY_SECONDS, bound)
     current_route.set(bound.route)
     return settings.model_copy(update={'router_api_key': str(bound)})
 
