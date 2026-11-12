@@ -28,11 +28,11 @@ LOUD_REF = 10 ** (-45 / 10)  # mean square: the PC plays clearly
 AUDIBLE = 10 ** (-70 / 10)
 RATE_WINDOW = 2 * RATE  # mic samples between estimates of the mic's clock
 RATE_STEP = RATE * 8 // 1000
-RATE_MAX_STEP = RATE * 60 // 1000
+RATE_MAX_STEP = RATE * 20 // 1000  # 1 % of a window: far beyond a real clock's drift
 DELAY_WINDOW = 2 * RATE  # mic audio each delay estimate looks at
 DELAY_EVERY = RATE // 2
 DELAY_SEARCH = RATE // 4  # +-250 ms around the pairing
-DELAY_OK = (RATE * 5 // 1000, RATE * 120 // 1000)  # echo 5-120 ms after its reference: fine
+DELAY_OK = (RATE * 5 // 1000, RATE * 80 // 1000)  # echo 5-80 ms after its reference: fine (108 leaked)
 DELAY_TARGET = RATE * 30 // 1000
 DELAY_AGREE = RATE * 10 // 1000
 DELAY_CORRELATION = .2
@@ -243,12 +243,17 @@ class Turn:
         if self._rate_counted < RATE_WINDOW:
             return
         least, self._rate_min, self._rate_counted = self._rate_min, None, 0
-        if self._rate_base is None:
+        # The baseline is the least delay seen yet: a turn's first packets wait behind the "Orion"
+        # check, and taking their delay for the baseline turned the next on-time ones into a mic running
+        # fast, 120-160 ms of wrong pairing in 8-12 s turns (2026-11-12, 21:45). Only a mic falling
+        # behind is followed here, a window's plausible drift at a time; anything else is left to the
+        # audio (`_track_delay`).
+        if self._rate_base is None or least < self._rate_base:
             self._rate_base = least
             return
         moved = least - self._rate_base
-        if abs(moved) >= RATE_STEP:
-            moved = int(np.clip(moved, -RATE_MAX_STEP, RATE_MAX_STEP))
+        if moved >= RATE_STEP:
+            moved = min(int(moved), RATE_MAX_STEP)
             self.ref_start += moved
             self.rate_shift += moved
 

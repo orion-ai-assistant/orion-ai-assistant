@@ -285,6 +285,22 @@ class AlignmentTests(unittest.TestCase):
         self.assertGreater(turn.ref_start - start, lost * .7)
         self.assertLessEqual(turn.ref_start - start, lost)
 
+    def test_late_first_packets_do_not_move_the_pairing(self):
+        clock = FakeClock()
+        ring = ReferenceRing(seconds=40, clock=clock)
+        ring.write(np.zeros(RATE * 30, np.float32), clock.now + 30)
+        clock.now += 1
+        turn = Turn(DeviceStream(HalvingEngine()), ring, ring.index_at(clock.now), clock=clock)
+        start = turn.ref_start
+        clock.now += .3  # the first 2 s wait behind the "Orion" check, then catch up
+        for _ in range(100):
+            clock.now += .02 * .85
+            turn.feed(np.zeros(320, np.float32))
+        for _ in range(400):  # then on time, with an accurate clock
+            clock.now += .02
+            turn.feed(np.zeros(320, np.float32))
+        self.assertLessEqual(abs(turn.ref_start - start), RATE * 20 // 1000)
+
     def test_an_echo_ahead_of_its_reference_is_realigned_from_the_audio(self):
         clock = FakeClock()
         ring, ref = self.noise_ring(clock, 12)
