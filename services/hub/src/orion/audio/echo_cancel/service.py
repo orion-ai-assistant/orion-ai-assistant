@@ -36,6 +36,7 @@ class _PassThrough:
 # threads (measured 2026-11-06 on 1.3 s: 383 -> 215 ms alone; DTLN gains nothing from more threads).
 # Turns keep one thread each (they run for minutes).
 CHECK_THREADS = 2
+MAX_CLOCKS = 10  # microphone + loudspeaker pairs whose clock ratio is kept
 
 
 def _factories(models_dir, threads=1):
@@ -378,9 +379,14 @@ class EchoCanceller:
         clocks = self._load_clocks()
         key = getattr(stream, 'clock_key', None) or self._clock_key(device_id)
         entry = [round(float(ratio), 7), getattr(stream, "clock_source", None)]
-        if clocks.get(key) == entry:
+        # Most recently used last: the store keeps the last MAX_CLOCKS (a ratio is only a head start;
+        # every turn measures it again, so a forgotten one is learned anew in seconds).
+        if clocks.get(key) == entry and next(reversed(clocks)) == key:
             return
+        clocks.pop(key, None)
         clocks[key] = entry
+        while len(clocks) > MAX_CLOCKS:  # mics and speakers long gone
+            del clocks[next(iter(clocks))]
         if self._clock_store is None:
             return
         try:

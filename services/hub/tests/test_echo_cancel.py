@@ -398,6 +398,58 @@ class AlignmentTests(unittest.TestCase):
         self.assertEqual(turn.shifts, 1)
         self.assertEqual(turn.ref_start, RATE * 30 // 1000 - late)  # the pairing waits for the speaker
 
+    def test_a_speaker_over_a_second_late_is_found(self):
+        clock = FakeClock()
+        ring, ref = self.noise_ring(clock, 16)
+        late = RATE * 1300 // 1000  # past what LocalVQE follows (~1 s): the pairing must move
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_arrival = lambda n, t: None
+        mic = .5 * np.concatenate([np.zeros(late, np.float32), ref[:-late]])
+        for i in range(0, RATE * 10, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertEqual(turn.shifts, 1)
+        self.assertEqual(turn.ref_start, RATE * 30 // 1000 - late)
+
+    def test_a_chance_match_far_back_does_not_move_the_pairing(self):
+        # Repeated sound (a chorus, a jingle): every 1.8 s the same, each time a little quieter, so the
+        # mic also matches the reference 1.8 s further back, more strongly than its true echo.
+        clock = FakeClock()
+        period, seconds = RATE * 18 // 10, 14
+        seg = (np.random.default_rng(3).standard_normal(period) * .1).astype(np.float32)
+        ref = np.concatenate([seg * 1.1 ** -i for i in range(seconds * RATE // period + 1)])[:RATE * seconds]
+        ring = ReferenceRing(seconds=seconds + 5, clock=clock)
+        clock.now += seconds
+        ring.write(ref, clock.now)
+        late = RATE * 30 // 1000
+        turn = Turn(DeviceStream(HalvingEngine()), ring, 0, clock=clock)
+        turn._track_arrival = lambda n, t: None
+        mic = .5 * np.concatenate([np.zeros(late, np.float32), ref[:-late]])
+        for i in range(0, RATE * 12, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertEqual(turn.shifts, 0)
+        self.assertEqual(turn.last_lag_ms, 30.0)
+
+    def test_music_is_measured_on_a_slow_mic_once_its_clock_is_known(self):
+        # Broadband sound drifts out of correlation within the 2 s window unless the reference is read on
+        # the mic's clock.
+        clock = FakeClock()
+        seconds, true = 14, 1.0036
+        ref = (np.random.default_rng(5).standard_normal(RATE * seconds) * .1).astype(np.float32)
+        ring = ReferenceRing(seconds=seconds + 5, clock=clock)
+        clock.now += seconds
+        ring.write(ref, clock.now)
+        stream = DeviceStream(HalvingEngine())
+        stream.clock_ratio = true
+        turn = Turn(stream, ring, 0, clock=clock)
+        turn._track_arrival = lambda n, t: None
+        k = np.arange(int(RATE * (seconds - 2) / true))
+        mic = .5 * np.interp(k * true - RATE * 40 // 1000, np.arange(len(ref)), ref).astype(np.float32)
+        for i in range(0, RATE * 10, 1600):
+            turn.feed(mic[i:i + 1600])
+        self.assertIsNotNone(turn.last_lag_ms)
+        self.assertAlmostEqual(turn.last_lag_ms, 40, delta=1)
+        self.assertEqual(turn.shifts, 0)
+
     def test_a_lag_the_engines_handle_is_left_alone(self):
         clock = FakeClock()
         ring, ref = self.noise_ring(clock, 12)
@@ -473,6 +525,30 @@ class EchoCancellerTests(unittest.TestCase):
         self.assertEqual(turn('Realtek'), 1.0036)
         self.assertEqual(turn('USB headset'), 1.0)  # another mic learns its own
         self.assertEqual(turn('Realtek'), 1.0036)  # and the first one's comes back
+
+    def test_only_the_most_recently_used_clocks_are_kept(self):
+        import json
+        from orion.audio.echo_cancel.service import MAX_CLOCKS
+        with tempfile.TemporaryDirectory() as folder:
+            store = Path(folder) / 'echo-clocks.json'
+            ec = EchoCanceller(engine_factory=HalvingEngine, capture_factory=FakeCapture, clock=self.clock,
+                               suppress=False, clock_store=store)
+            ec.arm()
+            def turn(mic):
+                ec.start_turn('pc:aa', b'', mic=mic)
+                t = ec._turns['pc:aa']
+                t.stream.clock_ratio, t.stream.clock_source = 1.001, 'audio'
+                ec.end_turn('pc:aa')
+            for i in range(MAX_CLOCKS):
+                turn(f'mic {i}')
+            turn('mic 0')  # used again: now the most recent
+            turn('mic new')
+            kept = json.loads(store.read_text(encoding='utf-8'))
+            self.assertEqual(len(kept), MAX_CLOCKS)
+            names = ' '.join(kept)
+            self.assertIn('(mic 0)', names)
+            self.assertIn('(mic new)', names)
+            self.assertNotIn('(mic 1)', names)  # the least recently used went
 
     def test_a_short_cue_is_not_the_pc_playing_a_reply_is(self):
         self.ec.arm()

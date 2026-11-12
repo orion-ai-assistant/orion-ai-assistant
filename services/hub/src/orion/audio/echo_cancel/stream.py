@@ -17,6 +17,7 @@ input (output[k] belongs to input[k]): it pairs mic sample k with the reference 
 captured, and drops the engine's latency at the start and flushes it at the end.
 """
 from collections import deque
+from functools import lru_cache
 import time
 
 import numpy as np
@@ -39,7 +40,15 @@ ARRIVAL_SPREAD = RATE * 4 // 1000
 DELAY_WINDOW = 2 * RATE  # mic audio each delay estimate looks at
 DELAY_EVERY = RATE // 2
 DELAY_SEARCH = RATE // 4  # an echo up to 250 ms before its pairing (the window ends this far back)
-DELAY_SEARCH_LATE = RATE * 600 // 1000  # ...or up to 600 ms after it: a Bluetooth speaker adds 150-300 ms
+# ...or up to 2 s after it: a Bluetooth or wireless speaker adds 150-300 ms, some much more; LocalVQE
+# follows an echo only up to ~1 s after its reference (measured 2026-11-13), so a later one must be moved.
+DELAY_SEARCH_LATE = 2 * RATE
+# Over 2 s, repeated speech or music gives chance peaks as high as the echo's (3 of 126 estimates on
+# the recordings, at 1.7-1.9 s): a peak within DELAY_NEAR wins over the best one beyond DELAY_FAR when it
+# has DELAY_NEAR_SHARE of its height. Between the two the best one is the same echo's, not a chance one.
+DELAY_NEAR = RATE * 120 // 1000
+DELAY_FAR = RATE * 220 // 1000
+DELAY_NEAR_SHARE = .8
 DELAY_OK = (RATE * 5 // 1000, RATE * 80 // 1000)  # echo 5-80 ms after its reference: fine (108 leaked)
 DELAY_TARGET = RATE * 30 // 1000
 DELAY_AGREE = RATE * 10 // 1000
@@ -143,7 +152,8 @@ class Turn:
       plays, the truth; until that is known, from the packets' arrival times against the PC's clock.
       Following it continuously keeps the pairing right through silences, so it is right when Orion
       starts to speak.
-    - The echo's delay is measured on the audio every DELAY_EVERY while the PC plays; a delay outside
+    - The echo's delay is measured on the audio every DELAY_EVERY while the PC plays (fresh each time,
+      never stored: a speaker or its delay may change any moment); a delay outside
       DELAY_OK on two estimates in a row moves the pairing so the reference leads by DELAY_TARGET.
     """
 
@@ -363,23 +373,37 @@ class Turn:
         # after it is already captured (the newest frame's reference just was).
         b = int(round(self._ref_pos - DELAY_SEARCH * self.ratio))
         a = b - int(round(DELAY_WINDOW * self.ratio))
-        if a - DELAY_SEARCH_LATE < max(0, self.ring.end - self.ring.capacity) or b + DELAY_SEARCH > self.ring.end:
+        start = a - int(round(DELAY_SEARCH_LATE * self.ratio))
+        end = b + int(round(DELAY_SEARCH * self.ratio)) + 2
+        if start < max(0, self.ring.end - self.ring.capacity) or end > self.ring.end:
             return
-        ref = self.ring.read(a - DELAY_SEARCH_LATE, (b - a) + DELAY_SEARCH_LATE + DELAY_SEARCH).astype(np.float64)
-        middle = ref[DELAY_SEARCH_LATE:DELAY_SEARCH_LATE + (b - a)]
+        raw = self.ring.read(start, end - start)
+        # On the mic's clock (one value per mic sample): otherwise a mic 0.36 % slow smears the echo over
+        # 7 ms of the window and broadband sound (music) no longer correlates (0.05 instead of 0.98).
+        span = DELAY_SEARCH_LATE + DELAY_WINDOW + DELAY_SEARCH
+        if self.ratio == 1.0:
+            ref = raw[:span].astype(np.float64)
+        else:
+            ref = np.interp(np.arange(span) * self.ratio, np.arange(len(raw)), raw)
+        middle = ref[DELAY_SEARCH_LATE:DELAY_SEARCH_LATE + DELAY_WINDOW]
         if float(np.mean(middle ** 2)) <= LOUD_REF:
             self._pending_lag = None
             return
         mic = self._mic_history[:DELAY_WINDOW].astype(np.float64)
         mic = mic - mic.mean()
-        size = 1 << int(np.ceil(np.log2(len(ref) + len(mic))))
-        corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)),
-                            size)[:DELAY_SEARCH_LATE + DELAY_SEARCH + 1]
-        # corr[t] = sum mic[n] * ref[n + t]; mic[n] holds the echo of reference index a + n - lag.
-        t = int(np.argmax(np.abs(corr)))
+        # The lags read never wrap around, so the FFT needs only the reference's length (not both).
+        size = _fast_size(len(ref))
+        corr = np.abs(np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(mic, size)),
+                                   size)[:DELAY_SEARCH_LATE + DELAY_SEARCH + 1])
+        # corr[t] = |sum mic[n] * ref[n + t]|; mic[n] holds the echo of reference (mic clock) a + n - lag.
+        norm = np.sqrt(float(np.dot(mic, mic)) * float(np.dot(middle, middle))) + 1e-20
+        t = int(np.argmax(corr))
         lag = DELAY_SEARCH_LATE - t
-        strength = abs(corr[t]) / np.sqrt(float(np.dot(mic, mic)) * float(np.dot(middle, middle)) + 1e-20)
-        if strength < DELAY_CORRELATION:
+        if lag > DELAY_FAR:
+            near = DELAY_SEARCH_LATE - DELAY_NEAR + int(np.argmax(corr[DELAY_SEARCH_LATE - DELAY_NEAR:]))
+            if corr[near] >= DELAY_NEAR_SHARE * corr[t] and corr[near] / norm >= DELAY_CORRELATION:
+                t, lag = near, DELAY_SEARCH_LATE - near
+        if corr[t] / norm < DELAY_CORRELATION:
             return
         self.last_lag_ms = round(1000 * lag / RATE, 1)
         self._learn_clock(self._consumed - DELAY_SEARCH - DELAY_WINDOW // 2, lag)
@@ -416,6 +440,23 @@ class Turn:
         if n and float(np.max(np.abs(self.ring.read(end - n, n)))) > QUIET:
             return self.playing_stall
         return self.stall
+
+
+@lru_cache(maxsize=8)
+def _fast_size(n):
+    """The smallest even length >= n made of 2s, 3s and 5s: the FFT is fast at it."""
+    best = 1 << int(np.ceil(np.log2(n)))
+    p5 = 1
+    while p5 < best:
+        p35 = p5
+        while p35 < best:
+            m = p35 * 2
+            while m < n:
+                m *= 2
+            best = min(best, m)
+            p35 *= 3
+        p5 *= 5
+    return best
 
 
 def _robust_line(x, y, spread):
