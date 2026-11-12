@@ -222,8 +222,12 @@ async def list_chats_endpoint(request: Request, current_user: str = Depends(get_
     return await get_user_chats(request.app.state.redis, current_user)
 
 @router.get("/api/v1/chats/{chat_id}/history", response_model=list[dict])
-async def get_chat_history_endpoint(chat_id: str, request: Request, include_audio: bool = True, current_user: str = Depends(get_current_user)) -> list[dict]:
-    return await get_chat_history(request.app.state.redis, current_user, chat_id, include_audio=include_audio)
+async def get_chat_history_endpoint(chat_id: str, request: Request, include_audio: bool = True,
+                                    limit: int | None = Query(None, ge=1, le=1000),
+                                    before_turn: str | None = Query(None, max_length=200),
+                                    current_user: str = Depends(get_current_user)) -> list[dict]:
+    return await get_chat_history(request.app.state.redis, current_user, chat_id, include_audio=include_audio,
+                                  limit=limit, before_turn=before_turn)
 
 @router.get("/api/v1/chats/{chat_id}/turns/{turn_id}/audio", response_model=dict)
 async def get_turn_audio_endpoint(chat_id: str, turn_id: str, request: Request, current_user: str = Depends(get_current_user)) -> dict:

@@ -425,7 +425,22 @@ async def index_chat_search() -> None:
         logger.exception("Older messages could not be prepared for the chat search")
 
 
-async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_audio: bool = True) -> list[dict]:
+def history_window(history: list[dict], limit: int | None = None, before_turn: str | None = None) -> list[dict]:
+    """The last `limit` messages, or the `limit` before the first message of `before_turn`, plus one more when
+    older ones exist (a client keeping weeks of one chat loads it a window at a time and knows from the extra
+    message that there is more). An unknown `before_turn` gives nothing."""
+    end = len(history)
+    if before_turn is not None:
+        end = next((index for index, message in enumerate(history) if message.get('turn_id') == before_turn), None)
+        if end is None:
+            return []
+    if limit is None:
+        return history[:end]
+    return history[max(0, end - limit - 1):end]
+
+
+async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_audio: bool = True,
+                           limit: int | None = None, before_turn: str | None = None) -> list[dict]:
     """Return the full message history for a chat.
 
     Strategy:
@@ -446,6 +461,9 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
     if state and state.get("status") in {"queued", "processing"}:
         _append_processing_state(history, state)
+
+    if limit is not None or before_turn is not None:
+        history = history_window(history, limit, before_turn)
 
     if not include_audio:
         from urllib.parse import quote
