@@ -3,7 +3,7 @@ import json
 import logging
 import re
 
-from orion.contracts.constants import CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX
+from orion.contracts.constants import CHAT_STATE_KEY_PREFIX
 from orion.contracts.events import StreamEvent
 from orion.kernel.chat_titles import initial_chat_title
 from orion.kernel.registry import replace_initial_chat_title, get_chat_db
@@ -45,7 +45,6 @@ async def generate_chat_title(context, settings):
         if active_turn != context.turn_id:
             return
         if await replace_initial_chat_title(context.chat_id, previous_title, title):
-            await context.redis.delete(f"{CHAT_META_KEY_PREFIX}{context.chat_id}")
             await context.redis.publish(context.channel, StreamEvent.chat_rename(
                 chat_id=context.chat_id, name=title,
             ).model_dump_json())

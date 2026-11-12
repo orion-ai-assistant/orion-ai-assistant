@@ -229,6 +229,10 @@ async def _create_tables(conn: asyncpg.Connection) -> None:
         await conn.execute(
             "create index if not exists idx_orion_chats_user_id on orion_chats (user_id, updated_at desc);"
         )
+        # Chat list pages: (updated_at, id) keys the page boundary.
+        await conn.execute(
+            "create index if not exists idx_orion_chats_user_page on orion_chats (user_id, updated_at desc, id desc);"
+        )
         # --- Chat Messages ---
         await conn.execute("alter table orion_chats add column if not exists tool_selection jsonb")
         # The user's one "Asistanla konuş" conversation, shared by their devices.
@@ -516,7 +520,8 @@ async def upsert_chat(chat_id: str, user_id: str, title: str = "New Chat") -> No
     """
     conn = await _connect()
     if conn is None:
-        return
+        # The chat row is the only record of the chat now: a send that cannot write it is refused.
+        raise RuntimeError("Postgres is unavailable")
     try:
         await _ensure_tables(conn)
         await conn.execute(
@@ -702,6 +707,33 @@ async def search_chat_messages_db(user_id: str, words: list[str], chats: int = 3
         await conn.close()
 
 
+async def search_chat_titles_db(user_id: str, words: list[str], limit: int = 20) -> list[dict]:
+    """Chats whose name holds the words as one phrase, most recently used first.
+
+    Names are folded like chat_search.fold (the four Turkish i's are one letter, then lower case). Clients
+    no longer hold the whole chat list, so they cannot match names themselves.
+    """
+    from orion.kernel.chat_search import phrase_pattern
+    if not words:
+        return []
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch(
+            """
+            select id as chat_id, title, updated_at from orion_chats
+            where user_id = $1 and not assistant and lower(translate(title, 'İIı', 'iii')) ~ $2
+            order by updated_at desc, id desc limit $3
+            """,
+            user_id, phrase_pattern(words), limit,
+        )
+        return [dict(row) for row in rows]
+    finally:
+        await conn.close()
+
+
 async def get_chat_history_db(chat_id: str) -> list[dict]:
     """Fetch all messages for a chat from PostgreSQL in chronological order.
 
@@ -776,34 +808,54 @@ async def get_chat_db(chat_id: str) -> dict | None:
         await conn.close()
 
 
-async def get_user_chats_db(user_id: str) -> list[dict]:
-    """Return a user's chat list (metadata only, no messages) ordered by
-    most-recently-updated first.
+def _chat_row(row) -> dict:
+    return {
+        "chat_id": row["chat_id"],
+        "user_id": row["user_id"],
+        "name": row["title"],
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    }
+
+
+async def get_user_chats_db(user_id: str, *, limit: int | None = None, before: tuple[datetime, str] | None = None,
+                            include_assistant: bool = True) -> list[dict]:
+    """A user's chats (metadata only), most recently updated first; ties by id, so pages never skip one.
+
+    With `limit`, one page; `before` is the (updated_at, chat_id) of the last chat of the previous page. The
+    (user_id, updated_at desc) index serves both. Without it, every chat (account rename needs them all).
     """
     conn = await _connect()
     if conn is None:
-        return []
+        raise RuntimeError("Postgres is unavailable")
     try:
         await _ensure_tables(conn)
         rows = await conn.fetch(
             """
             select id as chat_id, user_id, title, created_at, updated_at
             from orion_chats
-            where user_id = $1
-            order by updated_at desc
+            where user_id = $1 and ($2 or not assistant)
+              and ($3::timestamptz is null or (updated_at, id) < ($3::timestamptz, $4::text))
+            order by updated_at desc, id desc
+            limit $5
             """,
-            user_id,
+            user_id, include_assistant, before[0] if before else None, before[1] if before else None, limit,
         )
-        return [
-            {
-                "chat_id": row["chat_id"],
-                "user_id": row["user_id"],
-                "name": row["title"],
-                "created_at": row["created_at"].isoformat(),
-                "updated_at": row["updated_at"].isoformat(),
-            }
-            for row in rows
-        ]
+        return [_chat_row(row) for row in rows]
+    finally:
+        await conn.close()
+
+
+async def get_all_chats_db() -> list[dict]:
+    """Every chat's metadata, for the admin panel."""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch("select id as chat_id, user_id, title, created_at, updated_at from orion_chats "
+                                "order by updated_at desc, id desc")
+        return [_chat_row(row) for row in rows]
     finally:
         await conn.close()
 

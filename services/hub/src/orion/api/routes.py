@@ -218,8 +218,13 @@ async def get_chat_endpoint(chat_id: str, request: Request, current_user: str = 
     return await get_job(request.app.state.redis, current_user, chat_id)
 
 @router.get("/api/v1/chats", response_model=list[dict])
-async def list_chats_endpoint(request: Request, current_user: str = Depends(get_current_user)) -> list[dict]:
-    return await get_user_chats(request.app.state.redis, current_user)
+async def list_chats_endpoint(request: Request, limit: int | None = Query(None, ge=1, le=500),
+                              before: str | None = Query(None, max_length=300),
+                              current_user: str = Depends(get_current_user)) -> list[dict]:
+    """The newest `limit` chats, or those after `before` ("<updated_at>|<chat_id>" of the last one shown).
+    Without `limit`, all of them (older clients)."""
+    from orion.api.services.job_service import parse_chat_cursor
+    return await get_user_chats(request.app.state.redis, current_user, limit=limit, before=parse_chat_cursor(before))
 
 @router.get("/api/v1/chats/{chat_id}/history", response_model=list[dict])
 async def get_chat_history_endpoint(chat_id: str, request: Request, include_audio: bool = True,

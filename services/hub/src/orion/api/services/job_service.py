@@ -20,7 +20,7 @@ from orion.kernel.config import get_runtime_settings
 from orion.kernel.job_safety import job_key, WAITING_KEY, QUEUE_TIMEOUT_SECONDS, INIT_JOURNAL
 from orion.kernel.registry import (
     upsert_chat, rename_chat_db, touch_chat_db, get_user_chats_db, get_chat_db,
-    get_chat_history_db, delete_chat_db, get_turn_audio_db
+    get_chat_history_db, delete_chat_db, get_turn_audio_db, get_all_chats_db
 )
 
 logger = logging.getLogger(__name__)
@@ -40,23 +40,21 @@ def chat_access_message(state: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def check_chat_access(redis: Redis, user_id: str, chat_id: str) -> ChatAccessResult:
-    raw = await redis.hgetall(get_key(CHAT_META_KEY_PREFIX, chat_id))
-    if not raw:
+    """Whose chat this is, from its PostgreSQL row (one indexed read from the pool, ~0.5 ms).
+
+    Redis no longer keeps chat metadata: a second copy had to be written on every new chat, rename and
+    delete, and could disagree with the row. A database that does not answer is a 503, never "not found".
+    """
+    try:
         persistent = await get_chat_db(chat_id)
-        if persistent is None:
-            return ChatAccessResult(state="not_found", meta={})
-        if persistent["user_id"] != user_id:
-            return ChatAccessResult(state="forbidden", meta=persistent)
-        settings = await get_runtime_settings(redis, user_id)
-        meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
-        pipe = redis.pipeline()
-        pipe.hset(meta_key, mapping=persistent)
-        pipe.expire(meta_key, settings.redis_cache_ttl_seconds)
-        await pipe.execute()
-        return ChatAccessResult(state="ok", meta=persistent)
-    if raw.get("user_id") != user_id:
-        return ChatAccessResult(state="forbidden", meta=raw)
-    return ChatAccessResult(state="ok", meta=raw)
+    except Exception as exc:
+        logger.exception("Chat access could not be read for %s", chat_id)
+        raise HTTPException(status_code=503, detail="Sohbet şu anda okunamıyor.") from exc
+    if persistent is None:
+        return ChatAccessResult(state="not_found", meta={})
+    if persistent["user_id"] != user_id:
+        return ChatAccessResult(state="forbidden", meta=persistent)
+    return ChatAccessResult(state="ok", meta=persistent)
 
 async def ensure_chat_access(redis: Redis, user_id: str, chat_id: str) -> dict:
     access = await check_chat_access(redis, user_id, chat_id)
@@ -132,9 +130,16 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     if payload.chat_id:
         await _keep_superseded_turn(redis, chat_id, settings.redis_cache_ttl_seconds)
 
+    # The chat row is the chat's only record (list, access, messages' foreign key): it is written before the
+    # turn is queued, and a database that cannot take it refuses the send instead of losing the chat.
+    try:
+        await upsert_chat(chat_id=chat_id, user_id=payload.user_id, title=title)
+    except Exception as exc:
+        logger.exception("Chat %s could not be saved before admission", chat_id)
+        raise HTTPException(503, "Sohbet kaydedilemedi. Mesajınızı koruyup tekrar göndermeyi deneyin.") from exc
+
     # 2. Prepare Data
     state_key = get_key(CHAT_STATE_KEY_PREFIX, chat_id)
-    meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
 
     status_mapping = {
         "chat_id": chat_id, "status": "queued", "user_id": payload.user_id,
@@ -178,18 +183,6 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     pipe.publish(channel, StreamEvent.accepted(chat_id=chat_id, status="queued", turn_id=turn_id).model_dump_json())
     pipe.xadd(STREAM_NAME, fields=queue_record.model_dump(mode="json"))
 
-    # Meta Güncelleme: Yeni chat ise her şeyi yaz, mevcut ise sadece güncellenme zamanını.
-    meta_update = {"updated_at": now, "channel": channel}
-    if not payload.chat_id:
-        meta_update.update({"chat_id": chat_id, "user_id": payload.user_id, "created_at": now, "name": title})
-
-    pipe.hset(meta_key, mapping=meta_update)
-    pipe.expire(meta_key, settings.redis_cache_ttl_seconds)
-
-    # ZSET Update (Redis chat index — kept for fast active-session lookups)
-    timestamp = datetime.now(timezone.utc).timestamp()
-    pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, payload.user_id), {chat_id: timestamp})
-
     await pipe.execute()
     
     # Verify stop key was deleted (for debugging)
@@ -197,13 +190,6 @@ async def create_job(redis: Redis, payload: JobCreateRequest) -> JobCreateRespon
     if stop_key_exists:
         logger.warning("create_job: stop_key still exists after delete for chat %s — cleaning up explicitly", chat_id)
         await redis.delete(stop_key)
-
-    # 4. Write-Through: Persist chat metadata to PostgreSQL
-    try:
-        await upsert_chat(chat_id=chat_id, user_id=payload.user_id, title=title)
-    except Exception:
-        # Redis already accepted the job, so a temporary DB outage is non-fatal.
-        logger.exception("Write-Through upsert_chat failed for chat %s — continuing", chat_id)
 
     return JobCreateResponse(chat_id=chat_id, status="queued", created_at=now, turn_id=turn_id,
                              generation_id=turn_id, attachments=payload.input.display_attachments())
@@ -254,7 +240,6 @@ async def stop_job(redis: Redis, user_id: str, chat_id: str, turn_id: str | None
     pipe = redis.pipeline()
     pipe.set(get_key(TURN_STOP_KEY_PREFIX, resolved_turn_id), "1", ex=settings.stop_key_ttl_seconds)
     pipe.hset(get_key(CHAT_STATE_KEY_PREFIX, chat_id), mapping={"updated_at": now})
-    pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping={"updated_at": now})
     await pipe.execute()
 
     try:
@@ -287,7 +272,8 @@ async def get_job(redis: Redis, user_id: str, chat_id: str) -> JobStatusResponse
 # Chat List — Cache-Aside: PostgreSQL is source of truth
 # ---------------------------------------------------------------------------
 
-async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
+async def get_user_chats(redis: Redis, user_id: str, limit: int | None = None,
+                         before: tuple[datetime, str] | None = None) -> list[dict]:
     """Return the user's chat list.
 
     Redis is the hot path. PostgreSQL is used only when the Redis index or
@@ -295,48 +281,28 @@ async def get_user_chats(redis: Redis, user_id: str) -> list[dict]:
     The assistant chat is left out: it has its own page.
     """
     from orion.api.services.assistant_chat import hide_assistant_chat
-    settings = await get_runtime_settings(redis, user_id)
-    cache_ttl = settings.redis_cache_ttl_seconds
-    chat_ids = await redis.zrevrange(get_key(CHAT_USER_INDEX_PREFIX, user_id), 0, -1)
-    if chat_ids:
-        pipe = redis.pipeline()
-        for chat_id in chat_ids:
-            pipe.hgetall(get_key(CHAT_META_KEY_PREFIX, chat_id))
-        cached_chats = [meta for meta in await pipe.execute() if meta]
-        if len(cached_chats) == len(chat_ids):
-            return await hide_assistant_chat(redis, user_id, cached_chats)
-
-    # Redis cache miss or incomplete metadata: recover from durable storage.
     try:
-        db_chats = await get_user_chats_db(user_id)
-    except Exception:
-        logger.exception("get_user_chats_db failed for user %s, falling back to Redis ZSET", user_id)
-        return await hide_assistant_chat(redis, user_id, cached_chats) if chat_ids else []
-
-    if db_chats:
-        hydrated_chats = []
-        pipe = redis.pipeline()
-        for chat in db_chats:
-            chat_id = chat["chat_id"]
-            meta = {
-                "chat_id": chat_id,
-                "user_id": chat["user_id"],
-                "name": chat.get("name", "New Chat"),
-                "created_at": chat["created_at"],
-                "updated_at": chat["updated_at"],
-                "channel": get_key(ROOM_USER_PREFIX, user_id),
-            }
-            hydrated_chats.append(meta)
-            pipe.hset(get_key(CHAT_META_KEY_PREFIX, chat_id), mapping=meta)
-            pipe.expire(get_key(CHAT_META_KEY_PREFIX, chat_id), cache_ttl)
-            pipe.zadd(get_key(CHAT_USER_INDEX_PREFIX, user_id), {chat_id: _chat_timestamp(chat["updated_at"])})
-        await pipe.execute()
-        return await hide_assistant_chat(redis, user_id, hydrated_chats)
-    return []
+        chats = await get_user_chats_db(user_id, limit=limit, before=before, include_assistant=False)
+    except Exception as exc:
+        logger.exception("get_user_chats_db failed for user %s", user_id)
+        raise HTTPException(status_code=503, detail="Sohbet listesi şu anda okunamıyor.") from exc
+    channel = get_key(ROOM_USER_PREFIX, user_id)
+    # An assistant chat that only Redis knows yet (adopted before its row was flagged) is left out too.
+    return await hide_assistant_chat(redis, user_id, [{**chat, "channel": channel} for chat in chats])
 
 
-def _chat_timestamp(value: str) -> float:
-    return datetime.fromisoformat(value).timestamp()
+def parse_chat_cursor(value: str | None) -> tuple[datetime, str] | None:
+    """`before` of a chat list page: "<updated_at ISO>|<chat_id>" of the last chat already shown."""
+    if not value:
+        return None
+    stamp, separator, chat_id = value.partition("|")
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        moment = None
+    if not separator or not chat_id or moment is None or moment.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Geçersiz sayfa imleci.")
+    return moment, chat_id
 
 
 def _append_processing_state(history: list[dict], state: dict[str, str]) -> None:
@@ -385,20 +351,27 @@ async def search_chats(user_id: str, query: str) -> list[dict]:
     """Messages of the user that hold the query, each with its chat, an excerpt and its date.
 
     The query counts as one phrase; a message holding all its longer words
-    apart also matches, after the phrase matches. Names are not searched
-    here: every client already has the whole chat list.
+    apart also matches, after the phrase matches. Chat names holding the
+    phrase come first (clients hold only a page of the chat list).
     """
     from orion.kernel.chat_search import excerpt, query_words
     from orion.kernel.registry import search_chat_messages_db
     words = query_words(query)
     if not words or max(map(len, words)) < 2:
         return []
+    from orion.kernel.registry import search_chat_titles_db
     try:
+        titles = await search_chat_titles_db(user_id, words)
         rows = await search_chat_messages_db(user_id, words)
     except Exception as exc:
         logger.exception("Chat search failed for user %s", user_id)
         raise HTTPException(status_code=503, detail="Sohbetlerde şu anda aranamıyor.") from exc
+    # Name matches first (role "title", the name as the excerpt), then message matches.
     return [
+        {"chat_id": row["chat_id"], "name": row["title"], "role": "title", "snippet": row["title"],
+         "created_at": row["updated_at"].isoformat()}
+        for row in titles
+    ] + [
         {"chat_id": row["chat_id"], "name": row["title"], "role": row["role"],
          "snippet": excerpt(row["plain_text"] or "", words),
          "created_at": row["created_at"].isoformat() if row.get("created_at") else None}
@@ -443,7 +416,6 @@ async def get_chat_history(redis: Redis, user_id: str, chat_id: str, include_aud
        UI always reflects the live generation.
     """
     await ensure_chat_access(redis, user_id, chat_id)
-    settings = await get_runtime_settings(redis, user_id)
     history = await _load_history(chat_id)
 
     from orion.kernel.chat_history import visible_history
@@ -519,7 +491,7 @@ async def _load_history(chat_id: str) -> list[dict]:
 
 async def get_chat_history_admin(redis: Redis, chat_id: str) -> list[dict]:
     history = await _load_history(chat_id)
-    if not history and not await redis.exists(get_key(CHAT_META_KEY_PREFIX, chat_id)):
+    if not history and not await get_chat_db(chat_id):
         raise HTTPException(status_code=404, detail="Chat not found")
 
     state = await redis.hgetall(get_key(CHAT_STATE_KEY_PREFIX, chat_id))
@@ -532,16 +504,18 @@ async def get_chat_history_admin(redis: Redis, chat_id: str) -> list[dict]:
 # Rename / Delete
 # ---------------------------------------------------------------------------
 
-async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str, admin: bool = False) -> dict:
-    meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
+async def _chat_owner(redis: Redis, user_id: str | None, chat_id: str, admin: bool) -> str | None:
     if not admin:
         meta = await ensure_chat_access(redis, user_id, chat_id)
-        owner_id = meta.get("user_id", user_id)
-    else:
-        raw = await redis.hgetall(meta_key)
-        if not raw:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        owner_id = raw.get("user_id")
+        return meta.get("user_id", user_id)
+    row = await get_chat_db(chat_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return row.get("user_id")
+
+
+async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str, admin: bool = False) -> dict:
+    owner_id = await _chat_owner(redis, user_id, chat_id, admin)
 
     updated_at = utc_now()
     try:
@@ -549,8 +523,6 @@ async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str
     except Exception as exc:
         logger.exception("Could not persist chat rename for %s", chat_id)
         raise HTTPException(status_code=503, detail="Sohbet adı kalıcı olarak kaydedilemedi.") from exc
-
-    await redis.hset(meta_key, mapping={"name": name, "updated_at": updated_at})
 
     # Broadcast to other devices
     if owner_id:
@@ -561,16 +533,8 @@ async def rename_chat(redis: Redis, user_id: str | None, chat_id: str, name: str
 
 
 async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bool = False) -> dict:
-    meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)
-
-    if not admin:
-        meta = await ensure_chat_access(redis, user_id, chat_id)
-        owner_id = meta.get("user_id", user_id)
-    else:
-        raw = await redis.hgetall(meta_key)
-        if not raw:
-            raise HTTPException(status_code=404, detail="Chat not found")
-        owner_id = raw.get("user_id")
+    meta_key = get_key(CHAT_META_KEY_PREFIX, chat_id)  # Only leftovers of older versions are deleted.
+    owner_id = await _chat_owner(redis, user_id, chat_id, admin)
 
     try:
         await delete_chat_db(chat_id)
@@ -643,24 +607,8 @@ async def delete_failed_turn(redis: Redis, user_id: str, chat_id: str, key: str)
 
 
 async def get_all_chats_admin(redis: Redis) -> list[dict]:
-    """Scan all chat meta keys for admin panel."""
-    pattern = f"{CHAT_META_KEY_PREFIX}*"
-    cursor = 0
-    all_keys = []
-    while True:
-        cursor, keys = await redis.scan(cursor, match=pattern, count=200)
-        all_keys.extend(keys)
-        if cursor == 0:
-            break
-
-    if not all_keys:
-        return []
-
-    pipe = redis.pipeline()
-    for key in all_keys:
-        pipe.hgetall(key)
-    results = await pipe.execute()
-
-    chats = [meta for meta in results if meta]
-    chats.sort(key=lambda c: c.get("updated_at", ""), reverse=True)
-    return chats
+    """Every chat, for the admin panel (it listed only chats Redis happened to hold)."""
+    try:
+        return await get_all_chats_db()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Sohbetler şu anda okunamıyor.") from exc
