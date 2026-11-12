@@ -296,6 +296,28 @@ class AlignmentTests(unittest.TestCase):
         # The next turn of this device starts with it.
         self.assertEqual(Turn(stream, ring, 0, clock=clock).ratio, turn.ratio)
 
+    def test_a_stale_clock_from_the_audio_gives_way_to_clearly_different_arrivals(self):
+        clock = FakeClock()
+        ring = self.silent_ring(clock, 60)
+        stream = DeviceStream(HalvingEngine())
+        stream.clock_ratio, stream.clock_source = 1.0036, 'audio'  # learned before the mic was set to 48 kHz
+        turn = Turn(stream, ring, ring.index_at(clock.now), clock=clock)
+        for _ in range(2000):  # now an accurate clock
+            clock.now += .02
+            turn.feed(np.zeros(320, np.float32))
+        self.assertAlmostEqual(turn.ratio, 1.0, delta=3e-4)
+
+    def test_a_clock_confirmed_on_the_audio_is_not_moved_by_small_arrival_noise(self):
+        clock = FakeClock()
+        ring = self.silent_ring(clock, 60)
+        stream = DeviceStream(HalvingEngine())
+        stream.clock_ratio, stream.clock_source = 1.0004, 'audio'
+        turn = Turn(stream, ring, ring.index_at(clock.now), clock=clock)
+        for _ in range(2000):
+            clock.now += .02
+            turn.feed(np.zeros(320, np.float32))
+        self.assertEqual(turn.ratio, 1.0004)
+
     def test_late_first_packets_do_not_change_the_clock(self):
         clock = FakeClock()
         ring = self.silent_ring(clock, 60)

@@ -32,6 +32,7 @@ MIN_CLOCK_ERROR = 2e-5  # 20 ppm: below it a fit changes nothing worth a move
 CLOCK_FIT = 6  # delay estimates...
 CLOCK_SPAN = 6 * RATE  # ...over at least this much mic audio
 CLOCK_SPREAD = RATE * 3 // 1000  # a fit whose delays scatter more is not a clock's straight line
+STALE_CLOCK = 1e-3  # 1000 ppm
 ARRIVAL_WINDOW = 2 * RATE
 ARRIVAL_FIT = 8
 ARRIVAL_SPREAD = RATE * 4 // 1000
@@ -306,8 +307,7 @@ class Turn:
         last sample. The least of it in each ARRIVAL_WINDOW stands for the mic (the others waited in a
         queue); the first window is skipped (it waits behind the "Orion" check), and the slope over
         ARRIVAL_FIT windows is the clock difference: a mic falling behind makes `ahead` grow."""
-        if getattr(self.stream, 'clock_source', None) == 'audio':
-            return
+        confirmed = getattr(self.stream, 'clock_source', None) == 'audio'
         paired = self._ref_pos + (len(self._pending) + n) * self.ratio
         ahead = self.ring.index_at(arrival) - paired
         self._arrival_min = ahead if self._arrival_min is None else min(self._arrival_min, ahead)
@@ -327,7 +327,9 @@ class Turn:
             self._arrivals = self._arrivals[-(ARRIVAL_FIT // 2):]  # a busy stretch: look again
             return
         slope = fit[0]
-        if abs(slope) >= MIN_CLOCK_ERROR:
+        # A clock confirmed on the audio is finer than arrival times; they only overrule it when they
+        # clearly disagree: the same microphone set to another format, or another device by that name.
+        if abs(slope) >= (STALE_CLOCK if confirmed else MIN_CLOCK_ERROR):
             # What the old ratio let slip since it was set goes back too, not only what comes: the
             # pairing was right at the turn's start (or when the ratio last changed).
             slipped = slope * (self.received + n - self._arrival_origin)
