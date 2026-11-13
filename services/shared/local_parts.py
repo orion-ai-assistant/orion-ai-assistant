@@ -600,19 +600,20 @@ def prefetch_headers(data):
 # speech recognition model not measured (the user's own) shows its file x 1.5 (Small 2.1x, the large ones 1.55x), as
 # an estimate.
 BUFFERS_MB = 300
-MEASURED_VOXCPM2_MB = {'full': 4100, 'balanced': 3400, 'low': 3000}
-MEASURED_OMNIVOICE_MB = 1500
+# VoxCPM2 and OmniVoice (2026-11-14, the card to themselves, the engine's own dedicated GPU memory): (settled, peak)
+# in MB. Settled is what stays once a request has been answered; the peak is the most one request took (a long
+# text with a cloned voice), for a moment: each request allocates ~1.1-1.7 GB of working buffers and gives it back.
+MEASURED_VOXCPM2_MB = {
+    'cuda': {'full': (4313, 6171), 'balanced': (3575, 5435), 'low': (3237, 5097)},
+    'vulkan': {'full': (4167, 6341), 'balanced': (3384, 5323), 'low': (3058, 4917)},
+}
+MEASURED_OMNIVOICE_MB = {'cuda': (1797, 1911), 'vulkan': (1612, 1725)}
 MEASURED_WHISPER_MB = {'whisper-small': 520, 'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
-# The same model on Vulkan takes less than on CUDA, whose context costs more (2026-11-14, same card): VoxCPM2
-# 3599/2869/2519 MB on CUDA against 3475/2728/2379 on Vulkan (about 130 MB), OmniVoice 1531 against 1375, the
-# llama.cpp server 433 against 305 with a 200M model, whisper.cpp 1007 against 887. The tables above are CUDA's
-# (whisper.cpp's are Vulkan's, the engine it ships with first); these are what the other backend adds.
-HARDWARE_DELTA_MB = {'voxcpm2': {'vulkan': -130}, 'omnivoice': {'vulkan': -150}, 'llama': {'vulkan': -120},
-                     'whisper': {'cuda': 120}}
+# whisper.cpp's table is Vulkan's; CUDA's context costs ~120 MB more (1007 against 887 MB, same card). A llama.cpp
+# server holds 433 MB (CUDA) against 305 (Vulkan) with a 200M model, and neither it, whisper.cpp nor the embedding
+# server grew with a request (checked 2026-11-14: +0-20 MB).
+HARDWARE_DELTA_MB = {'llama': {'vulkan': -120}, 'whisper': {'cuda': 120}}
 
-
-def _shifted(value, delta):
-    return {key: item + delta for key, item in value.items()} if isinstance(value, dict) else value + delta
 
 
 def memory_facts(part, model, meta):
@@ -625,10 +626,12 @@ def memory_facts(part, model, meta):
         return {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB, 'by_hardware': by_hardware}
     if part['id'] == 'tts':
         if model.get('engine') == 'voxcpm2-gguf':
-            return {'by_mode': MEASURED_VOXCPM2_MB, 'measured': True, 'by_hardware': {
-                hw: {'by_mode': _shifted(MEASURED_VOXCPM2_MB, delta)} for hw, delta in HARDWARE_DELTA_MB['voxcpm2'].items()}}
-        return {'fixed_mb': MEASURED_OMNIVOICE_MB, 'measured': True, 'by_hardware': {
-            hw: {'fixed_mb': MEASURED_OMNIVOICE_MB + delta} for hw, delta in HARDWARE_DELTA_MB['omnivoice'].items()}}
+            return {'measured': True, 'by_hardware': {
+                hw: {'by_mode': {mode: low for mode, (low, high) in table.items()},
+                     'peak_by_mode': {mode: high for mode, (low, high) in table.items()}}
+                for hw, table in MEASURED_VOXCPM2_MB.items()}}
+        return {'measured': True, 'by_hardware': {
+            hw: {'fixed_mb': low, 'peak_mb': high} for hw, (low, high) in MEASURED_OMNIVOICE_MB.items()}}
     if model.get('id') in MEASURED_WHISPER_MB:
         base = MEASURED_WHISPER_MB[model['id']]
         return {'fixed_mb': base, 'measured': True, 'by_hardware': {

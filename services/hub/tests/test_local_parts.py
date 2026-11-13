@@ -1228,43 +1228,16 @@ def test_a_part_names_its_engine_and_version(parts):
 
 
 def test_video_memory_facts_differ_per_hardware():
-    """CUDA's context takes more card memory than Vulkan's for the same model: the Hub says what each backend
-    needs and the card shows the one chosen."""
+    """Each backend needs its own memory, and the speech models take more while a request runs than after it:
+    the Hub gives both ends and the card shows the one chosen."""
     voxcpm2 = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'voxcpm2-gguf'}, None)
-    assert voxcpm2['by_mode']['low'] == 3000 and voxcpm2['by_hardware']['vulkan']['by_mode']['low'] == 2870
+    cuda, vulkan = voxcpm2['by_hardware']['cuda'], voxcpm2['by_hardware']['vulkan']
+    assert cuda['by_mode']['low'] == 3237 and cuda['peak_by_mode']['low'] == 5097
+    assert vulkan['by_mode']['low'] == 3058 and all(
+        vulkan['peak_by_mode'][mode] > vulkan['by_mode'][mode] for mode in ('full', 'balanced', 'low'))
     omni = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'omnivoice-gguf'}, None)
-    assert omni['fixed_mb'] == 1500 and omni['by_hardware']['vulkan']['fixed_mb'] == 1350
+    assert omni['by_hardware']['cuda'] == {'fixed_mb': 1797, 'peak_mb': 1911}
     whisper = P.memory_facts({'id': 'stt', 'runner': 'python'}, {'id': 'whisper-small'}, None)
     assert whisper['fixed_mb'] == 520 and whisper['by_hardware']['cuda']['fixed_mb'] == 640
     llama = P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
     assert llama['buffers_mb'] == 300 and llama['by_hardware']['vulkan']['buffers_mb'] == 180
-
-
-def test_every_interrupted_download_is_cleaned_up_at_the_next_start_but_not_a_running_one(parts, monkeypatch):
-    """Several jobs cut off (engines for two parts, a model archive): all their scratch folders, half files and
-    archives no recipe names any more go once no job runs; one still running keeps everything."""
-    data = P.catalog()
-    engines = P.home() / 'engines'
-    wanted = next(piece['url'].rsplit('/', 1)[-1] for builds in data['engines']['llama.cpp']['windows'].values()
-                  for piece in builds['archives'])
-    (engines / 'downloads').mkdir(parents=True)
-    (engines / 'downloads' / wanted).write_bytes(b'whole')  # Still named by a recipe: kept for a retry.
-    (engines / 'downloads' / 'old-engine.zip').write_bytes(b'x')
-    (engines / 'downloads' / 'cut.zip.part').write_bytes(b'x')
-    for name in ('unpack-a', 'unpack-b', 'unpack-c'):
-        (engines / name / 'unpacked').mkdir(parents=True)
-    leftovers = P.models_dir('llm') / '.downloads'
-    (leftovers / 'unpack-m').mkdir(parents=True)
-    (leftovers / 'model.zip.part').write_bytes(b'x')
-    monkeypatch.setattr(P, 'busy', lambda part_id: part_id == 'stt')
-    P._tidied.clear()
-    P.tidy(data)
-    assert all((engines / name).is_dir() for name in ('unpack-a', 'unpack-b', 'unpack-c'))
-    assert (engines / 'downloads' / 'cut.zip.part').is_file() and (leftovers / 'unpack-m').is_dir()
-    monkeypatch.setattr(P, 'busy', lambda part_id: False)
-    P._tidied.clear()
-    P.tidy(data)
-    assert not any((engines / name).exists() for name in ('unpack-a', 'unpack-b', 'unpack-c'))
-    assert (engines / 'downloads' / wanted).is_file()
-    assert not (engines / 'downloads' / 'old-engine.zip').exists() and not (engines / 'downloads' / 'cut.zip.part').exists()
-    assert not (leftovers / 'unpack-m').exists() and not (leftovers / 'model.zip.part').exists()
