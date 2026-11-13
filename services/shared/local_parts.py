@@ -6,6 +6,8 @@ is installed, and the jobs that download and install them.
       config.json                         per part: enabled, model, settings
       engines/<engine>-<version>/<hw>/    an engine (llama-server, tts-server, or a Python service's extra
                                           packages under site/), shared by the parts that use it
+      engines/shared/<sha256>/            an archive several engines carry (CUDA's runtime, 373 MB): unpacked
+                                          once, its files hard-linked into each engine folder
       models/<part>/<folder>/<files>      (the installation's models location's parts/ when it has one; the user
                                           can move it: `location`, services/shared/parts_location.py)
       models/<part>/custom/<name>/        the user's own models: a folder each, read from its files
@@ -239,10 +241,21 @@ def python_fits(engine, data=None):
     return 'pythons' not in entry or _python() in entry['pythons']
 
 
+def shared_dir(piece):
+    """Where a `shared` archive is unpacked, once for every engine that carries it."""
+    key = piece.get('sha256', '')[:16] or piece['url'].rsplit('/', 1)[-1].removesuffix('.zip')
+    return home() / 'engines' / 'shared' / key
+
+
+def _have_shared(piece):
+    return bool(piece.get('shared')) and (shared_dir(piece) / '.complete').is_file()
+
+
 def engine_size(engine, hardware, data=None):
-    """Bytes to download for the engine when every piece says its size, else None."""
+    """Bytes to download for the engine when every piece says its size, else None (a shared archive already
+    here downloads no more)."""
     recipe = engine_recipe(engine, hardware, data) or {}
-    pieces = recipe.get('archives', []) + recipe.get('wheels', [])
+    pieces = [piece for piece in recipe.get('archives', []) + recipe.get('wheels', []) if not _have_shared(piece)]
     return sum(piece['size'] for piece in pieces) if all('size' in piece for piece in pieces) else None
 
 
@@ -581,11 +594,14 @@ def prefetch_headers(data):
 
 
 # Video memory a model needs, as facts for the page to work out with the user's choices (the context, the memory
-# mode): llama.cpp models = their file + the context's cache + about 0.3 GB of working buffers; the speech models'
-# are what was measured on an RTX 3060 Ti (VoxCPM2 by mode; OmniVoice ~1-1.5 GB), speech recognition's is the
-# model file itself, not measured yet (docs/bilesenler.md).
+# mode): llama.cpp models = their file + the context's cache + about 0.3 GB of working buffers. The speech models'
+# are measured on an RTX 3060 Ti after the model loaded and answered one ~280-character request (the engine's own
+# dedicated GPU memory, 2026-11-13): VoxCPM2 v1.0.3 on CUDA by mode, OmniVoice on CUDA, whisper.cpp on Vulkan. A
+# speech recognition model not measured shows its file x 1.5 (the measured ones are 1.5-1.55 x), as an estimate.
 BUFFERS_MB = 300
-MEASURED_VOXCPM2_MB = {'full': 4900, 'balanced': 3700, 'low': 3200}
+MEASURED_VOXCPM2_MB = {'full': 4100, 'balanced': 3400, 'low': 3000}
+MEASURED_OMNIVOICE_MB = 1500
+MEASURED_WHISPER_MB = {'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
 
 
 def memory_facts(part, model, meta):
@@ -598,8 +614,10 @@ def memory_facts(part, model, meta):
     if part['id'] == 'tts':
         if model.get('engine') == 'voxcpm2-gguf':
             return {'by_mode': MEASURED_VOXCPM2_MB, 'measured': True}
-        return {'fixed_mb': 1200, 'measured': False}
-    return {'fixed_mb': model.get('size_mb') or 0, 'measured': False}
+        return {'fixed_mb': MEASURED_OMNIVOICE_MB, 'measured': True}
+    if model.get('id') in MEASURED_WHISPER_MB:
+        return {'fixed_mb': MEASURED_WHISPER_MB[model['id']], 'measured': True}
+    return {'fixed_mb': round((model.get('size_mb') or 0) * 1.5), 'measured': False}
 
 
 def model_meta(part, model, name=None):
@@ -1016,8 +1034,8 @@ def vram_field(part, model=None):
             return None
         if model is not None and for_model(part, model).get('engine') != 'voxcpm2-gguf':
             return None
-        detail = {'balanced': 'Yaklaşık 1,2 GB daha az bellek, ses biraz geç başlar.',
-                  'low': 'Yaklaşık 1,7 GB daha az bellek, biraz daha yavaş.'}
+        detail = {'balanced': 'Yaklaşık 0,7 GB daha az bellek, ses biraz geç başlar.',
+                  'low': 'Yaklaşık 1,1 GB daha az bellek, biraz daha yavaş.'}
         hint = 'Yalnızca VoxCPM2 için.'
     else:
         detail = {'balanced': 'Bellek yaklaşık yarıya iner, yanıt biraz geç gelir.',
@@ -1830,8 +1848,15 @@ def tidy(data):
                 for path in older_engines(name, hw_id, data)}
     folder = home() / 'engines'
     for path in folder.iterdir() if folder.is_dir() else []:
-        if path.is_dir() and path.name not in current and path.name != 'downloads' and not path.name.startswith('unpack-'):
+        if (path.is_dir() and path.name not in current and path.name not in ('downloads', 'shared')
+                and not path.name.startswith('unpack-')):
             shutil.rmtree(path, ignore_errors=True)
+    # A shared archive goes when no engine links to its files any more (and no job is putting one together).
+    busy_unpacking = any(path.name.startswith('unpack-') for path in folder.iterdir()) if folder.is_dir() else True
+    for store in (folder / 'shared').iterdir() if (folder / 'shared').is_dir() and not busy_unpacking else []:
+        files = [path for path in store.rglob('*') if path.is_file() and path.name != '.complete']
+        if all(path.stat().st_nlink <= 1 for path in files):
+            shutil.rmtree(store, ignore_errors=True)
     for part in data['parts']:
         for old in part.get('retired_models', {}):
             shutil.rmtree(models_dir(part['id']) / old, ignore_errors=True)
@@ -2101,7 +2126,11 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
         unpacked.mkdir()
         if recipe.get('bundled'):
             shutil.copytree(ROOT / recipe['bundled'], unpacked, dirs_exist_ok=True)
-        pieces = [(piece, 'archive') for piece in recipe.get('archives', [])] + [(piece, 'wheel') for piece in recipe.get('wheels', [])]
+        for piece in recipe.get('archives', []):
+            if _have_shared(piece):
+                _link_tree(shared_dir(piece), unpacked)
+        pieces = ([(piece, 'archive') for piece in recipe.get('archives', []) if not _have_shared(piece)]
+                  + [(piece, 'wheel') for piece in recipe.get('wheels', [])])
         # One total for every piece: the catalog's sizes, else what the servers say (a total of one file only
         # made "616 / 373 MB").
         total = engine_size(part['engine'], hardware_id, data) or _remote_size([piece['url'] for piece, _ in pieces])
@@ -2116,7 +2145,19 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
             verify(archive, piece.get('sha256'), 'Motor dosyası')
             offset += archive.stat().st_size
             _update_job(part_id, phase='engine', label='Motor açılıyor…', rate=0)
-            if kind == 'wheel' or archive.suffix.lower() == '.zip':
+            if piece.get('shared'):
+                # Unpacked once for every engine that carries it; this engine gets links to its files.
+                store = shared_dir(piece)
+                scratch = Path(tempfile.mkdtemp(prefix='unpack-', dir=str(home() / 'engines')))
+                with zipfile.ZipFile(archive) as bundle:
+                    bundle.extractall(scratch / 'files')
+                (scratch / 'files' / '.complete').write_text(piece['url'], encoding='utf-8')
+                store.parent.mkdir(parents=True, exist_ok=True)
+                shutil.rmtree(store, ignore_errors=True)
+                os.replace(scratch / 'files', store)
+                shutil.rmtree(scratch, ignore_errors=True)
+                _link_tree(store, unpacked)
+            elif kind == 'wheel' or archive.suffix.lower() == '.zip':
                 with zipfile.ZipFile(archive) as bundle:
                     bundle.extractall(unpacked / 'site' if kind == 'wheel' else unpacked)
             else:  # One file the engine needs, as its source publishes it (whisper.cpp's VAD model).
@@ -2132,6 +2173,21 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
         shutil.rmtree(home() / 'engines' / 'downloads', ignore_errors=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _link_tree(source, target):
+    """`source`'s files at the same places under `target`: hard links (no second copy on the disk), a copy where
+    the disk cannot link."""
+    for path in source.rglob('*'):
+        if path.is_dir() or path.name == '.complete':
+            continue
+        destination = target / path.relative_to(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.unlink(missing_ok=True)
+        try:
+            os.link(path, destination)
+        except OSError:
+            shutil.copy2(path, destination)
 
 
 def _fetch_model(part_id, part, model, cancelled, settings=None, step='', roles=None):

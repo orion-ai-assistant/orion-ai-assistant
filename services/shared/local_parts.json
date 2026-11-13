@@ -12,6 +12,7 @@
             },
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "shared": true,
               "size": 391443627
             }
           ]
@@ -50,6 +51,7 @@
             },
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "shared": true,
               "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
               "size": 391443627
             }
@@ -92,6 +94,7 @@
             },
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "shared": true,
               "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
               "size": 391443627
             }
@@ -317,6 +320,20 @@
             "ggml-large-v3-turbo-q5_0.bin": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
           },
           "size_mb": 547
+        },
+        {
+          "id": "whisper-large-v3",
+          "name": "Whisper Large-v3",
+          "description": "En doğru tanıma, Türkçede en iyisi; Turbo'dan yavaş, ekran kartı ister.",
+          "folder": "whisper-large-v3",
+          "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/",
+          "files": [
+            "ggml-large-v3-q5_0.bin"
+          ],
+          "sha256": {
+            "ggml-large-v3-q5_0.bin": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"
+          },
+          "size_mb": 1031
         }
       ],
       "retired_models": {

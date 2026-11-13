@@ -3,6 +3,7 @@ internet, never touches a real installation: parts live under tmp_path, files co
 import hashlib
 import json
 import os
+import shutil
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1152,3 +1153,43 @@ def test_a_new_engine_version_downloads_while_the_old_one_runs_and_replaces_it_a
     (P.run_dir('tts') / 'engine.txt').write_text(str(current), encoding='utf-8')
     P.keep_running()
     assert not old.parent.exists() and current.is_dir()
+
+
+def test_a_shared_archive_downloads_once_and_is_linked_into_each_engine(parts, monkeypatch):
+    """CUDA's runtime (373 MB) is in llama.cpp's, OmniVoice's and VoxCPM2's recipes: it downloads and unpacks once,
+    each engine folder gets hard links to its files (no second copy), a new engine version downloads only its
+    own zip, and the runtime goes when no engine links to it."""
+    import hashlib
+    httpd = ThreadingHTTPServer(('127.0.0.1', 0), Archives)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f'http://127.0.0.1:{httpd.server_address[1]}/'
+    runtime, one, two = zip_bytes({'cudart64_12.dll': 'rt'}), zip_bytes({'a.exe': '1'}), zip_bytes({'b.exe': '2'})
+    Archives.files = {'cudart.zip': runtime, 'one.zip': one, 'two.zip': two}
+    piece = lambda name, body, **extra: {'url': base + name, 'sha256': hashlib.sha256(body).hexdigest(),
+                                         'size': len(body), **extra}
+    shared = piece('cudart.zip', runtime, shared=True)
+    data = P.catalog()
+    data['engines']['one'] = {'version': 'v1', 'windows': {'cuda': {'archives': [piece('one.zip', one), shared]}}}
+    data['engines']['two'] = {'version': 'v1', 'windows': {'cuda': {'archives': [piece('two.zip', two), shared]}}}
+    monkeypatch.setattr(P, 'catalog', lambda: data)
+    fetched = []
+    real = P.download
+    monkeypatch.setattr(P, 'download', lambda url, *a, **k: fetched.append(url.rsplit('/', 1)[-1]) or real(url, *a, **k))
+    settings = {'hardware': 'cuda'}
+    try:
+        P._install_engine('tts', {'engine': 'one', 'runner': 'python'}, settings, data, lambda: False)
+        assert P.engine_size('two', 'cuda', data) == len(two)  # The runtime is here already.
+        P._install_engine('tts', {'engine': 'two', 'runner': 'python'}, settings, data, lambda: False)
+        assert fetched == ['one.zip', 'cudart.zip', 'two.zip']
+        dll = P.engine_dir('two', 'cuda') / 'cudart64_12.dll'
+        assert dll.read_text() == 'rt' and dll.stat().st_nlink == 3  # The store and two engines: one copy.
+        P._tidied.clear()
+        P.tidy(data)
+        assert P.shared_dir(shared).is_dir()
+        shutil.rmtree(P.engine_dir('one', 'cuda'))
+        shutil.rmtree(P.engine_dir('two', 'cuda'))
+        P._tidied.clear()
+        P.tidy(data)
+        assert not P.shared_dir(shared).exists()
+    finally:
+        httpd.shutdown()
