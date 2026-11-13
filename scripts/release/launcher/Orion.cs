@@ -211,6 +211,7 @@ internal sealed class Host : Form
     private ToolStripMenuItem stopListening;                       // Shown while Orion's window listens.
     private ToolStripMenuItem menuTitle;                           // Menu title whose icon is refreshed on update.
     private string iconText = "Orion AI";
+    private string lastRefreshError;
     private DateTime launcherWriteTime = DateTime.MinValue;        // Orion.exe on disk; when it changes the tray icon is refreshed.
 
     internal Host(string id, string folder, string script, string registry)
@@ -279,26 +280,32 @@ internal sealed class Host : Form
     // An update replaces Orion.exe on disk while this older copy keeps running (renamed aside).
     // When the new file's timestamp differs from the last one seen, the tray icon is refreshed
     // from the new file's embedded icon, so the user sees the new icon without restarting Orion.
+    // The icon is read from a uniquely named copy: within one process Windows hands back the icon it first
+    // read from a path (PrivateExtractIconsW), so reading the replaced Orion.exe again returned the OLD icon
+    // (measured: the tray kept the old icon while a fresh process showed the new one).
     private void RefreshTrayIcon()
     {
+        string copy = null;
         try
         {
             string exe = Path.Combine(folder, "Orion.exe");
             if (!File.Exists(exe)) return;
             DateTime writeTime = File.GetLastWriteTimeUtc(exe);
             if (writeTime == launcherWriteTime) return;
-            launcherWriteTime = writeTime;
+            copy = Path.Combine(Path.GetTempPath(), "orion-icon-" + Guid.NewGuid().ToString("N") + ".exe");
+            File.Copy(exe, copy);  // A copy still being written throws: launcherWriteTime stays, the next tick retries.
             int size = SystemInformation.SmallIconSize.Width;
-            IntPtr handle = Native.ExtractIcon(exe, size);
+            IntPtr handle = Native.ExtractIcon(copy, size);
             if (handle != IntPtr.Zero)
             {
                 var newIcon = (Icon)System.Drawing.Icon.FromHandle(handle).Clone();
                 Native.DestroyIcon(handle);
                 icon.Icon = newIcon;
             }
+            else HostLog("tray icon: no icon at " + size + " px in " + exe);
             if (menuTitle != null)
             {
-                IntPtr menuHandle = Native.ExtractIcon(exe, Ui.Scale(20));
+                IntPtr menuHandle = Native.ExtractIcon(copy, Ui.Scale(20));
                 if (menuHandle != IntPtr.Zero)
                 {
                     using (var menuIcon = System.Drawing.Icon.FromHandle(menuHandle))
@@ -308,6 +315,26 @@ internal sealed class Host : Form
                     Native.DestroyIcon(menuHandle);
                 }
             }
+            launcherWriteTime = writeTime;
+            HostLog("tray icon refreshed from Orion.exe written " + writeTime.ToString("o"));
+        }
+        catch (Exception e)
+        {
+            // Retried every tick; the same failure is written once.
+            if (e.Message != lastRefreshError) HostLog("tray icon refresh failed (retries): " + e.Message);
+            lastRefreshError = e.Message;
+        }
+        finally { if (copy != null) { try { File.Delete(copy); } catch (Exception) { } } }
+    }
+
+    // One small log next to Orion.exe (bootstrap\orion-host.log), only for rare events; cut when it grows.
+    private void HostLog(string text)
+    {
+        try
+        {
+            string file = Path.Combine(folder, "orion-host.log");
+            if (File.Exists(file) && new FileInfo(file).Length > 100000) File.Delete(file);
+            File.AppendAllText(file, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + text + "\r\n");
         }
         catch (Exception) { }
     }
