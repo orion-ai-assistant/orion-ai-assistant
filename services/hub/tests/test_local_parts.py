@@ -58,7 +58,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     assert all(part['installable'] and part['state'] == 'absent' for part in by_id.values())
     assert by_id['embedding']['model'] == 'jina-v5-omni-nano'  # The recommended model, nothing installed yet.
     # Speech recognition's CUDA engine brings cuBLAS (~650 MB); Vulkan and the processor are small.
-    assert by_id['stt']['model'] == 'whisper-small' and 600 < by_id['stt']['engines']['cuda']['mb'] < 700
+    assert by_id['stt']['model'] == 'whisper-large-v3' and 600 < by_id['stt']['engines']['cuda']['mb'] < 700
     assert by_id['stt']['engines']['vulkan']['mb'] < 20 and by_id['stt']['engines']['cpu']['mb'] < 20
     keys = lambda part: [field['key'] for field in by_id[part]['advanced']]
     assert keys('llm') == ['hardware', 'gpu', 'context_size', 'parallel', 'vram_mode', 'vision']  # Two cards: which one.

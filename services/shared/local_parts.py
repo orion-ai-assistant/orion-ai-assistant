@@ -474,9 +474,9 @@ def default_settings(part, model, hw):
     """What a part runs with unless the user changes it (Gelişmiş ayarlar)."""
     hardware_id = choices(part, hw)[0]['id']
     if part.get('runner') == 'python':
-        return {'hardware': hardware_id, 'gpu': 'all', **({'vram_mode': 'full'} if part['id'] == 'tts' else {})}
+        return {'hardware': hardware_id, 'gpu': 'all', **({'vram_mode': 'balanced'} if part['id'] == 'tts' else {})}
     settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1,
-                'vram_mode': 'full'}
+                'vram_mode': 'balanced'}
     if any(item.get('mmproj') for item in part.get('models', [])):
         settings['vision'] = True
     return settings
@@ -597,11 +597,12 @@ def prefetch_headers(data):
 # mode): llama.cpp models = their file + the context's cache + about 0.3 GB of working buffers. The speech models'
 # are measured on an RTX 3060 Ti after the model loaded and answered one ~280-character request (the engine's own
 # dedicated GPU memory, 2026-11-13): VoxCPM2 v1.0.3 on CUDA by mode, OmniVoice on CUDA, whisper.cpp on Vulkan. A
-# speech recognition model not measured shows its file x 1.5 (the measured ones are 1.5-1.55 x), as an estimate.
+# speech recognition model not measured (the user's own) shows its file x 1.5 (Small 2.1x, the large ones 1.55x), as
+# an estimate.
 BUFFERS_MB = 300
 MEASURED_VOXCPM2_MB = {'full': 4100, 'balanced': 3400, 'low': 3000}
 MEASURED_OMNIVOICE_MB = 1500
-MEASURED_WHISPER_MB = {'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
+MEASURED_WHISPER_MB = {'whisper-small': 520, 'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
 
 
 def memory_facts(part, model, meta):
@@ -1018,8 +1019,8 @@ def to_front(matches, wait=3.0):
             user.AttachThreadInput(mine, theirs, False)
 
 
-# "Bellek": how much of the model sits on the card. Full is the default (all of it); the other two keep part of it
-# on the processor: less video memory, slower (the layers run one after the other, so the card waits for them).
+# "Bellek": how much of the model sits on the card. Balanced is the default; full puts all of it there, balanced and
+# low keep part of it on the processor: less video memory, slower (the layers run one after the other).
 VRAM_MODES = ('full', 'balanced', 'low')
 VOXCPM2_LAYERS = {'balanced': 14, 'low': 7}  # of the BaseLM's 28; measured on an RTX 3060 Ti (CUDA and Vulkan alike)
 LLAMA_SHARE = {'balanced': 0.5, 'low': 0.25}  # the share of a llama.cpp model's layers kept on the card
@@ -1036,7 +1037,7 @@ def vram_field(part, model=None):
             return None
         detail = {'balanced': 'Yaklaşık 0,7 GB daha az bellek, ses biraz geç başlar.',
                   'low': 'Yaklaşık 1,1 GB daha az bellek, biraz daha yavaş.'}
-        hint = 'Yalnızca VoxCPM2 için.'
+        hint = None
     else:
         detail = {'balanced': 'Bellek yaklaşık yarıya iner, yanıt biraz geç gelir.',
                   'low': 'Bellek yaklaşık dörtte birine iner, yanıt daha geç gelir.'}

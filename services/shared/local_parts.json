@@ -304,8 +304,7 @@
           "sha256": {
             "ggml-small-q8_0.bin": "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f"
           },
-          "size_mb": 252,
-          "recommended": true
+          "size_mb": 252
         },
         {
           "id": "whisper-large-v3-turbo",
@@ -333,7 +332,8 @@
           "sha256": {
             "ggml-large-v3-q5_0.bin": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1"
           },
-          "size_mb": 1031
+          "size_mb": 1031,
+          "recommended": true
         }
       ],
       "retired_models": {
@@ -363,7 +363,7 @@
       "models": [
         {
           "id": "omnivoice-gguf",
-          "name": "OmniVoice (GGUF)",
+          "name": "OmniVoice",
           "description": "Türkçe dahil çok dilli, ses klonlayabilir; ekran kartında az bellek ister.",
           "folder": "omnivoice-gguf",
           "url": "https://huggingface.co/Serveurperso/OmniVoice-GGUF/resolve/017094167b5c9ed565a5076ac9b3b93c5ecf5c73/",
@@ -380,7 +380,7 @@
         },
         {
           "id": "voxcpm2-gguf",
-          "name": "VoxCPM2 (GGUF)",
+          "name": "VoxCPM2",
           "description": "30 dil (Türkçe dahil), 48 kHz, ses tasarımı ve klonlama; OmniVoice'tan daha büyük ve yavaş.",
           "folder": "voxcpm2-gguf",
           "engine": "voxcpm2-gguf",

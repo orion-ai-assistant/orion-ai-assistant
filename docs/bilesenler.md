@@ -282,9 +282,10 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   ayarı yok) ve ses tanıma (whisper.cpp'de yalnız `--no-gpu` var) için böyle bir mod yok.
   **Bellek tahmini** (kartın "Gelişmiş ayarlar" satırı): llama.cpp modelleri = dosya + bağlamın önbelleği (GGUF
   başlığından) + ~0,3 GB tampon, moda göre payı. Konuşma modelleri aynı şekilde ölçüldü (istekten sonra):
-  VoxCPM2 yukarıdaki değerler, OmniVoice CUDA 1,5 GB (boşta 1,0), whisper.cpp Vulkan: Large-v3 Turbo 0,84 GB,
-  Large-v3 1,6 GB. Ölçülmemiş bir ses tanıma modeli (Small) dosyasının 1,5 katı "tahmini" gösterilir
-  (`memory_facts`). VoxCPM2'de klon sesle
+  VoxCPM2 yukarıdaki değerler, OmniVoice CUDA 1,5 GB (boşta 1,0), whisper.cpp Vulkan: Small 0,52 GB, Large-v3
+  Turbo 0,84 GB, Large-v3 1,6 GB. Kullanıcının kendi ses tanıma modeli dosyasının 1,5 katı "tahmini" gösterilir
+  (`memory_facts`). Kart bu değeri "… GB VRAM" diye yazar. Varsayılan bellek modu dengeli; ileride kartın
+  VRAM'ine göre seçilebilir. Önerilen ses tanıma modeli Large-v3. VoxCPM2'de klon sesle
   üretim yaklaşık 1 GB daha fazla bellek ister (ölçüm: tam hızda zirve +6,0 GB, klonsuz +5,2 GB).
   VoxCPM2'de istekte ne konuşma tarifi ne klon ses varsa motor "A clear voice sweet girl." ile konuşur
   (`DEFAULT_VOICE_DESIGN`, engines.py). 48 → 24 kHz indirme (`HalfRate`) parça sınırlarında kesintisiz ve filtresi
