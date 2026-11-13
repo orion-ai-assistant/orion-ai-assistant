@@ -8,7 +8,7 @@ failing deep inside a service.
 from pathlib import Path
 import socket
 
-HUB = {'POSTGRES_PORT': 5445, 'REDIS_PORT': 6379, 'HUB_PORT': 8909, 'ORION_LOCAL_PORT': 8910,
+HUB = {'POSTGRES_PORT': 5445, 'REDIS_PORT': 6379, 'ORION_LOCAL_PORT': 8910,
        'ORION_MOBILE_PORT': 8443, 'ORION_FLUTTER_PORT': 8090}
 LIGHT_HUB = ('ORION_LOCAL_PORT', 'ORION_FLUTTER_PORT')  # A light Hub has no database, Redis or phone listener.
 ROUTER = {'ORION_ROUTER_TLS_PORT': 9443, 'ORION_ROUTER_LOCAL_HTTP_PORT': 20128, 'POSTGRES_PORT': 5433}

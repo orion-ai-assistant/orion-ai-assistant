@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $base = Join-Path $env:LOCALAPPDATA 'Orion'
 $exe = Join-Path $base 'bootstrap\Orion.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "Orion.exe yok: $exe" }
-$ports = [ordered]@{ 'router.pg' = 5433; 'router.http' = 20128; 'hub.pg' = 5445; 'redis' = 6379; 'hub.api' = 8909; 'flutter' = 8090 }
+$ports = [ordered]@{ 'router.pg' = 5433; 'router.http' = 20128; 'hub.pg' = 5445; 'redis' = 6379; 'hub.api' = 8910; 'flutter' = 8090 }
 $folder = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '.tmp'
 New-Item -ItemType Directory -Force -Path $folder | Out-Null
 $out = Join-Path $folder('measure-desktop-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
@@ -78,7 +78,7 @@ function Router-Timing {
 }
 
 Say ("Orion olcumu " + (Get-Date -Format 's') + "  makine: $env:COMPUTERNAME")
-if ((Listening)[8909]) { Measure-Stop 'baslangic' ; Start-Sleep -Seconds 5 }
+if ((Listening)[8910]) { Measure-Stop 'baslangic' ; Start-Sleep -Seconds 5 }
 for ($i = 1; $i -le $Rounds; $i++) {
     Measure-Launch "tur $i"
     Start-Sleep -Seconds 10   # Pencere ve servisler otursun.

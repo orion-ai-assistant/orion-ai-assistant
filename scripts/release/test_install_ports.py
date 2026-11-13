@@ -18,7 +18,7 @@ def record(tmp_path, local='', mode=''):
 
 
 def test_a_full_hub_needs_its_database_redis_and_listeners(tmp_path):
-    assert install_ports.ports(record(tmp_path, 'POSTGRES_PORT=5500\n')) == [5433, 5500, 6379, 8090, 8443, 8909, 8910,
+    assert install_ports.ports(record(tmp_path, 'POSTGRES_PORT=5500\n')) == [5433, 5500, 6379, 8090, 8443, 8910,
                                                                              9555, 20128]
 
 
@@ -38,7 +38,7 @@ def test_a_held_port_is_reported(tmp_path, monkeypatch):
 
 def test_a_new_installation_checks_the_ports_of_its_type():
     assert install_ports.defaults('baglan') == [8090, 8910]
-    assert install_ports.defaults('merkez') == [5433, 5445, 6379, 8090, 8443, 8909, 8910, 9443, 20128]
+    assert install_ports.defaults('merkez') == [5433, 5445, 6379, 8090, 8443, 8910, 9443, 20128]
 
 
 def test_the_holder_of_a_port_is_named():

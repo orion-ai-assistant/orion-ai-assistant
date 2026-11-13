@@ -433,7 +433,6 @@ def _main(runtime):
     print("==========================================")
     
     # Environment config
-    hub_port = get_env("HUB_PORT")
     env = os.environ.copy()
     # No browser entry for other devices: they use the Orion app on the mobile port.
     local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
@@ -447,7 +446,7 @@ def _main(runtime):
         register_native_hub(_repo_root, int(mobile_port))
     except (OSError, ValueError, ImportError) as error:
         print(f'[!] Local desktop registration unavailable: {type(error).__name__}; phone QR remains available')
-    if len({int(hub_port), int(mobile_port), local_port}) != 3:
+    if len({int(mobile_port), local_port}) != 2:
         raise RuntimeError('Hub ports must differ')
     if not env.get('JWT_SECRET_KEY') or env.get('JWT_SECRET_KEY') == 'super-secret-default-key-for-dev':
         import secrets
@@ -479,7 +478,6 @@ def _main(runtime):
     # Commands
     hub_venv_py = os.path.join(hub_dir, ".venv", "Scripts", "python.exe") if os.name == 'nt' else os.path.join(hub_dir, ".venv", "bin", "python")
     py_bin = hub_venv_py if os.path.exists(hub_venv_py) else sys.executable
-    api_cmd = [py_bin, '-m', 'orion.api.web_server', '--host', '127.0.0.1', '--port', str(hub_port)]
     mobile_cmd = [py_bin, '-m', 'orion.api.mobile_server']
     local_cmd = [py_bin, '-m', 'orion.api.web_server', '--local', '--http-loopback', '--host', '127.0.0.1', '--port', str(local_port)]
     worker_cmd = [py_bin, "-m", "orion.worker.main"]
@@ -552,17 +550,12 @@ def _main(runtime):
     redis_proc = start_redis()
     processes.append(redis_proc)
     all_pids.append(redis_proc.pid)
-    for label, port in [('api', hub_port), ('local', local_port), ('mobile', mobile_port)]:
+    for label, port in [('local', local_port), ('mobile', mobile_port)]:
         if label not in runtime.children:
             assert_port_free(port)
 
-    print(f"[*] Launching API on port {hub_port}...")
-    api_proc = runtime.launch('api', api_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
-    processes.append(api_proc)
-    all_pids.append(api_proc.pid)
-    threading.Thread(target=stream_logs, args=(api_proc, "[API]", log_file, log_lock), daemon=True).start()
-
-    print(f'[*] PC owner home: https://localhost:{hub_port}/')
+    # Two API servers: the local one (the window, and the owner panel at /panel) and the phones' TLS one. A third,
+    # on HUB_PORT (8909), served the panel's app a second time and had no client left.
     local_proc = runtime.launch('local', local_cmd, python=True, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=hide_flags)
     processes.append(local_proc)
     all_pids.append(local_proc.pid)
@@ -611,7 +604,7 @@ def _main(runtime):
     try:
         from services.shared.flutter_launcher import start_flutter
         flutter_proc = start_flutter(repo_root, py_bin, get_env,
-            {int(hub_port), int(mobile_port), local_port, int(redis_port), int(pg_port),
+            {int(mobile_port), local_port, int(redis_port), int(pg_port),
              int(get_env('ORION_ROUTER_TLS_PORT', default='9443', required=False)),
              int(get_env('ORION_ROUTER_LOCAL_PORT', default='20128', required=False)),
              int(get_env('INSTALLER_PORT', default='7171', required=False))},
@@ -624,7 +617,6 @@ def _main(runtime):
     
     from orion.kernel.local_security import tls_identity
     identity = tls_identity()
-    wait_health(api_proc, hub_port, certificate=identity['cert'])
     wait_health(local_proc, local_port)
     wait_health(mobile_proc, mobile_port, certificate=identity['cert'], identity=identity['id'])
     worker_deadline = time.monotonic() + 30
@@ -685,7 +677,7 @@ def _main(runtime):
             runtime.status = 'starting'
             runtime.save()
 
-    current = {'redis': redis_proc, 'api': api_proc, 'local': local_proc, 'mobile': mobile_proc}
+    current = {'redis': redis_proc, 'local': local_proc, 'mobile': mobile_proc}
 
     def child_running(label):
         child = runtime.children.get(label)
@@ -719,7 +711,7 @@ def _main(runtime):
 
     # Redis first: an API server that starts while Redis is down fails its startup.
     child_supervisors = [ChildSupervisor('Redis', lambda: child_running('redis'), restart_redis, stopping, report_child)]
-    for label, command, port, tls in [('api', api_cmd, hub_port, True), ('local', local_cmd, local_port, False),
+    for label, command, port, tls in [('local', local_cmd, local_port, False),
                                       ('mobile', mobile_cmd, mobile_port, True)]:
         child_supervisors.append(ChildSupervisor(f'API server {label}', lambda label=label: child_running(label),
                                                  server_restarter(label, command, port, tls), stopping, report_child))

@@ -110,14 +110,14 @@ class WorkerSupervisorTests(unittest.TestCase):
                 proc.wait(timeout=10)
 
     def test_main_updates_pid_and_stops_current_worker_on_signal(self):
-        apis = [Mock(pid=pid) for pid in range(200, 203)]
+        apis = [Mock(pid=pid) for pid in range(200, 202)]  # The local and the phone server.
         for proc in apis:
             proc.poll.return_value = None
         redis = Mock(pid=199)
         redis.child = {'process': {}}
         redis.poll.return_value = None
         children = [redis] + apis + [self.worker, self.replacement]
-        runtime = Mock(children={label: {'process': {}} for label in ('redis', 'api', 'local', 'mobile')})
+        runtime = Mock(children={label: {'process': {}} for label in ('redis', 'local', 'mobile')})
         runtime.requested.return_value = False
         runtime.launch.side_effect = children
         handlers = {}

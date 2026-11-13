@@ -276,7 +276,7 @@ def test_a_marker_left_by_a_killed_quit_is_ignored(install):
 def test_supervised_children_stop_together_and_are_not_stopped_twice(tmp_path):
     from services.shared import process_lifecycle
     runtime = process_lifecycle.Runtime.__new__(process_lifecycle.Runtime)
-    runtime.children = {name: {'control': str(tmp_path / name), 'process': None} for name in ('api', 'local', 'mobile')}
+    runtime.children = {name: {'control': str(tmp_path / name), 'process': None} for name in ('local', 'mobile')}
     runtime.children['redis'] = {'control': None, 'process': None}
     stopped = []
     def stop(self, timeout=10):
@@ -286,7 +286,7 @@ def test_supervised_children_stop_together_and_are_not_stopped_twice(tmp_path):
             patch.object(process_lifecycle.ManagedChild, 'stop', stop):
         started = time.monotonic()
         runtime.stop_children()
-        assert time.monotonic() - started < 1.2  # Three 0.5 s graceful stops share one wait.
+        assert time.monotonic() - started < 1.2  # Two 0.5 s graceful stops share one wait.
         assert stopped[-1] is True  # The native child (redis) still goes last.
         runtime.database, runtime.jobs, runtime.lock = None, {}, type('L', (), {'__exit__': lambda self: None})()
         with patch.object(process_lifecycle, 'child_tree_alive', return_value=False), \

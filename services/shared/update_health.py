@@ -87,13 +87,11 @@ def runtime_probe():
     from .native_services import hub_mode
     if hub_mode(root) == 'relay':
         return relay_probe(state, items)
-    from orion.kernel.local_security import tls_identity
-    identity = tls_identity()
-    wait_health(Child(state['children']['api']), int(get_env('HUB_PORT')),
-                certificate=identity['cert'], timeout=10)
+    # The local server (plain HTTP on this PC); the owner panel's app answers /ready under /panel.
+    local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
+    wait_health(Child(state['children']['local']), local_port, timeout=10)
     # ready checks authenticated app DB connectivity, not just an open port.
-    wait_health(Child(state['children']['api']), int(get_env('HUB_PORT')),
-                certificate=identity['cert'], path='/ready', timeout=10)
+    wait_health(Child(state['children']['local']), local_port, path='/panel/ready', timeout=10)
     database = hub_database(root, get_env)
     if not database.ready() or database.sql("SELECT to_regclass('public.orion_settings') IS NOT NULL") != 't':
         raise RuntimeError('Expected DB/schema unavailable')

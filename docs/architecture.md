@@ -21,3 +21,18 @@ Project architecture documentation for Orion AI Assistant.
   - Vektör veritabanı (pgvector) gelince de bu ayar uygundur. Dizin büyürse (yüz binlerce vektör) önce
     `shared_buffers`'ı 64-128 MB'a çıkarmak düşünülür; HNSW dizini kurarken geçici `maintenance_work_mem`
     yükseltmek daha çok fark eder.
+
+## Hub'ın sunucuları (2026-11-13)
+
+- Hub **iki** API sunucusu çalıştırır: yerel (127.0.0.1:8910, düz HTTP: PC penceresi ve `/panel` altında sahip
+  paneli) ve telefon (0.0.0.0:8443, TLS, sabitlenmiş sertifika). Ayrı olmaları bilinçli bir güvenlik ayrımı:
+  ağa yalnız TLS'li, telefon kimliği isteyen uygulama açık; pencere yalnız bilgisayarın içinden erişir.
+- Üçüncüsü (127.0.0.1:8909, `HUB_PORT`) kaldırıldı: panelin uygulamasını ikinci kez sunuyordu ("yalnızca yönetim
+  içindir") ve hiçbir istemcisi kalmamıştı. ~110 MB RAM. Güncelleme sonrası sağlık kontrolü artık yerel sunucuda
+  (`/health`, `/panel/ready`). `HUB_PORT` yalnız eski Docker dosyalarında duruyor.
+
+## Pencere gizliyken bellek (2026-11-13)
+
+`OrionUi.exe` pencere gizlenince/küçülünce WebView2'ye `MemoryUsageTargetLevel.Low` verir, gösterilince Normal.
+Sayfa (zamanlayıcılar, ses) çalışmaya devam eder. Ölçüm (taze profil, tek koşu): fiziksel RAM (working set)
+gösterilirken ~505 MB, gizliyken ~160 MB; taahhüt edilen bellek (private bytes) neredeyse değişmez (~345 → 320 MB).
