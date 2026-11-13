@@ -28,12 +28,10 @@ import struct
 if str(get_env("GPU_COUNT", default="1", required=False)).strip() == "0":
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["GGML_BACKEND"] = "CPU"
-try:
-    import torch
-    def is_cuda_available(): return torch.cuda.is_available()
-except ImportError:
-    torch = None
-    def is_cuda_available(): return False
+def is_cuda_available():
+    """Whether torch sees a CUDA card: only when a PyTorch engine runs (it loaded torch); the GGUF engines never do."""
+    import engines
+    return bool(engines.TORCH_AVAILABLE and engines.torch.cuda.is_available())
 import gc
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Response

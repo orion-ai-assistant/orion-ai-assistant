@@ -1,12 +1,22 @@
 import os
 from services.shared.environment import get_env
 import sys
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    torch = None
-    TORCH_AVAILABLE = False
+# torch only for the PyTorch engines (VoxCPMEngine, OmniVoiceEngine: the Docker images). The GGUF engines drive a C++
+# server and never load it: importing torch alone holds ~170 MB in this process. load_torch() imports it on first use.
+torch = None
+TORCH_AVAILABLE = False
+
+
+def load_torch():
+    """torch, imported now (None when it is not installed)."""
+    global torch, TORCH_AVAILABLE
+    if torch is None:
+        try:
+            import torch as module
+        except ImportError:
+            return None
+        torch, TORCH_AVAILABLE = module, True
+    return torch
 import gc
 import random
 import io
@@ -40,8 +50,10 @@ _SERVER_START_LOCK = threading.Lock()
 
 
 class TTSEngine:
+    uses_torch = False  # The PyTorch engines; the others never import it.
+
     def __init__(self):
-        self.device = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if self.uses_torch and load_torch() and torch.cuda.is_available() else "cpu"
         self.low_vram = _env_to_bool(get_env("LOW_VRAM", "false"), default=False)
 
     def set_seed(self, seed: int):
@@ -182,6 +194,8 @@ class TTSEngine:
             torch.cuda.empty_cache()
 
 class VoxCPMEngine(TTSEngine):
+    uses_torch = True
+
     def __init__(self, model_id="openbmb/VoxCPM2"):
         super().__init__()
         import voxcpm
@@ -286,6 +300,8 @@ class VoxCPMEngine(TTSEngine):
                 yield b"".join(buffer)
 
 class OmniVoiceEngine(TTSEngine):
+    uses_torch = True
+
     def __init__(self, model_id: str):
         super().__init__()
         from omnivoice.models.omnivoice import OmniVoice
@@ -1334,12 +1350,13 @@ class VoiceRegistry:
         if not path or not path.exists():
             return None
         try:
-            if TORCH_AVAILABLE:
+            # Clones are pickled dicts of bytes; a torch.save file (a zip, from a PyTorch engine) needs torch.
+            import zipfile
+            if zipfile.is_zipfile(path) and load_torch():
                 return torch.load(path, weights_only=False)
-            else:
-                import pickle
-                with open(path, "rb") as f:
-                    return pickle.load(f)
+            import pickle
+            with open(path, "rb") as f:
+                return pickle.load(f)
         except Exception as e:
             logger.error(f"Failed to load voice cache {path}: {e}")
             return None
@@ -1360,7 +1377,7 @@ class VoiceRegistry:
             raise ValueError("Invalid voice name")
         self.storage_path.mkdir(parents=True, exist_ok=True)
         path = self.storage_path / f"{name}_{engine_name}.pt"
-        if TORCH_AVAILABLE:
+        if TORCH_AVAILABLE:  # A PyTorch engine's cache may hold tensors.
             torch.save(cache_obj, path)
         else:
             import pickle
