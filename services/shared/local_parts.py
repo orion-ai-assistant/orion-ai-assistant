@@ -1136,6 +1136,9 @@ def _python_command(part, model, settings, data=None):
                TRANSFORMERS_OFFLINE='1')
     if part['id'] == 'tts':
         env['ORION_TTS_VOICE_DATA_DIR'] = str(models_dir('tts') / VOICES_DIR)
+    # numpy's OpenBLAS reserves ~30 MB of working buffer per CPU core when it loads (+363 MB on 12 cores, measured
+    # in a process that only imports numpy); these processes pass audio around and do no matrix work.
+    env.setdefault('OPENBLAS_NUM_THREADS', '1')
     env[part['port_key']] = port
     env.update({key: value.format(**values) for key, value in part.get('env', {}).items()})
     if gpu and part.get('engine') == 'voxcpm2-gguf' and settings.get('vram_mode') in VOXCPM2_LAYERS:

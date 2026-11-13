@@ -59,4 +59,10 @@ Flutter'ın çizim motoru (CanvasKit, 64 MB), iki ONNX çalışma ortamı (Siler
   numaralandırıcısını yaratıp bırakıyordu; her çağrı ~1,5 KB yerel bellek sızdırıyordu (python izlemesi görmez; ölçüm: 2000 çağrıda
   +3 MB) ve her seferinde yeni bir ctypes sınıfı (`GUID`, DLL) da yaratıyordu. Artık numaralandırıcı döngü iş parçacığında bir kez
   açılır (`RenderDeviceId`), sınıflar bir kez yaratılır (`_com()`, `pc_audio.py`'de de). Ölçüm: 6000 çağrıda 0 MB büyüme.
+- Bileşen süreçleri (TTS/STT Python sarmalayıcıları, `services/shared/local_parts.py`) da `OPENBLAS_NUM_THREADS=1` ile açılır. Ölçüm (12
+  çekirdek): yalnızca `import numpy` +363 MB ayırılmış bellek; `numpy` + `torch` 540 MB, tek iş parçacığıyla 187 MB.
+- TTS motoru (llama-tts-server, CUDA, "düşük" mod = BaşLM'nin 7/28 katmanı GPU'da) ölçümü: ayrılan bellek (commit) 5,7 GB, fiziksel
+  RAM 3,2 GB, GPU 3,5 GB. Ayrılanın ~3,5 GB'ı GPU belleğinin Windows'taki yansımasıdır (RAM'de yer tutmaz: özel bölgelerin 4,3 GB'ı ayrılmış
+  ama yalnızca 0,8 GB'ı RAM'de). 0 katmanla bile 3,96 GB / GPU 2,65 GB (akustik model F16 1,8 GB, BaşLM katman sayısından bağımsız,
+  KV önbelleği 32768 sabit; `-c` etkisiz). Katman başına ~120 MB GPU.
 
