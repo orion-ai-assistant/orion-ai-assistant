@@ -188,14 +188,19 @@ async def relay_tts_batches(context, settings, should_stop: Callable[[], Awaitab
                     pending += chunk
                     aligned = len(pending) & ~1
                     if aligned:
-                        await context.emit_audio_stream("audio_chunk", {
-                            "chunk": base64.b64encode(pending[:aligned]).decode("ascii"),
-                            "sequence": sequence,
-                            "sentence_index": sentence_index,
-                        })
-                        relayed_chunks.append(pending[:aligned])
+                        # Counted before it is published, and published even if the user's stop cancels this
+                        # task meanwhile: audio_done's totals must say what the client received (a chunk
+                        # published but not counted made the client throw away the whole recording).
+                        piece = pending[:aligned]
+                        number = sequence
+                        relayed_chunks.append(piece)
                         sequence += 1
                         pending = pending[aligned:]
+                        await asyncio.shield(context.emit_audio_stream("audio_chunk", {
+                            "chunk": base64.b64encode(piece).decode("ascii"),
+                            "sequence": number,
+                            "sentence_index": sentence_index,
+                        }))
             if pending:
                 raise RuntimeError("Incomplete PCM sample")
             if failed:

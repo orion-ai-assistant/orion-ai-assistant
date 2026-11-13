@@ -1889,6 +1889,13 @@ def tidy(data):
         if path.is_dir() and path.name not in ('downloads', 'shared') and (
                 (scratch and not jobs_running) or (not scratch and path.name not in current)):
             shutil.rmtree(path, ignore_errors=True)
+    if not jobs_running:
+        _drop_stale_downloads(data, folder / 'downloads')
+        for part in data['parts']:
+            leftovers = models_dir(part['id']) / '.downloads'
+            for path in leftovers.iterdir() if leftovers.is_dir() else []:
+                if path.name.startswith('unpack-') or path.name.endswith('.part'):
+                    shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
     # A shared archive goes when no engine links to its files any more (and no job is putting one together).
     busy_unpacking = any(path.name.startswith('unpack-') for path in folder.iterdir()) if folder.is_dir() else True
     for store in (folder / 'shared').iterdir() if (folder / 'shared').is_dir() and not busy_unpacking else []:
@@ -1898,6 +1905,21 @@ def tidy(data):
     for part in data['parts']:
         for old in part.get('retired_models', {}):
             shutil.rmtree(models_dir(part['id']) / old, ignore_errors=True)
+
+
+def _drop_stale_downloads(data, folder):
+    """Engine archives of jobs that never finished (killed with the Hub, an update, a power cut), once no job runs:
+    a cut download starts over anyway, and a finished one stays only while a recipe in the catalog still names it
+    (a whole archive for hardware the user never picked would otherwise sit there for good)."""
+    wanted = {piece['url'].rsplit('/', 1)[-1] for entry in data['engines'].values()
+              for builds in entry.get('windows', {}).values() for piece in builds.get('archives', []) + builds.get('wheels', [])}
+    for path in folder.iterdir() if folder.is_dir() else []:
+        if path.name.endswith('.part') or path.name not in wanted:
+            path.unlink(missing_ok=True)
+    try:
+        folder.rmdir()
+    except OSError:
+        pass
 
 
 def keep_running():
@@ -2187,13 +2209,15 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
                 # Unpacked once for every engine that carries it; this engine gets links to its files.
                 store = shared_dir(piece)
                 scratch = Path(tempfile.mkdtemp(prefix='unpack-', dir=str(home() / 'engines')))
-                with zipfile.ZipFile(archive) as bundle:
-                    bundle.extractall(scratch / 'files')
-                (scratch / 'files' / '.complete').write_text(piece['url'], encoding='utf-8')
-                store.parent.mkdir(parents=True, exist_ok=True)
-                shutil.rmtree(store, ignore_errors=True)
-                os.replace(scratch / 'files', store)
-                shutil.rmtree(scratch, ignore_errors=True)
+                try:
+                    with zipfile.ZipFile(archive) as bundle:
+                        bundle.extractall(scratch / 'files')
+                    (scratch / 'files' / '.complete').write_text(piece['url'], encoding='utf-8')
+                    store.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.rmtree(store, ignore_errors=True)
+                    os.replace(scratch / 'files', store)
+                finally:
+                    shutil.rmtree(scratch, ignore_errors=True)
                 _link_tree(store, unpacked)
             elif kind == 'wheel' or archive.suffix.lower() == '.zip':
                 with zipfile.ZipFile(archive) as bundle:
@@ -2208,7 +2232,13 @@ def _install_engine(part_id, part, settings, data, cancelled, step=''):
         if final.exists():
             shutil.rmtree(final)
         os.replace(unpacked, final)
-        shutil.rmtree(home() / 'engines' / 'downloads', ignore_errors=True)
+        # Only this engine's archives: another part's job may be downloading into the same folder.
+        for piece, _ in pieces:
+            (home() / 'engines' / 'downloads' / piece['url'].rsplit('/', 1)[-1]).unlink(missing_ok=True)
+        try:
+            (home() / 'engines' / 'downloads').rmdir()
+        except OSError:
+            pass
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -1238,3 +1238,33 @@ def test_video_memory_facts_differ_per_hardware():
     assert whisper['fixed_mb'] == 520 and whisper['by_hardware']['cuda']['fixed_mb'] == 640
     llama = P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
     assert llama['buffers_mb'] == 300 and llama['by_hardware']['vulkan']['buffers_mb'] == 180
+
+
+def test_every_interrupted_download_is_cleaned_up_at_the_next_start_but_not_a_running_one(parts, monkeypatch):
+    """Several jobs cut off (engines for two parts, a model archive): all their scratch folders, half files and
+    archives no recipe names any more go once no job runs; one still running keeps everything."""
+    data = P.catalog()
+    engines = P.home() / 'engines'
+    wanted = next(piece['url'].rsplit('/', 1)[-1] for builds in data['engines']['llama.cpp']['windows'].values()
+                  for piece in builds['archives'])
+    (engines / 'downloads').mkdir(parents=True)
+    (engines / 'downloads' / wanted).write_bytes(b'whole')  # Still named by a recipe: kept for a retry.
+    (engines / 'downloads' / 'old-engine.zip').write_bytes(b'x')
+    (engines / 'downloads' / 'cut.zip.part').write_bytes(b'x')
+    for name in ('unpack-a', 'unpack-b', 'unpack-c'):
+        (engines / name / 'unpacked').mkdir(parents=True)
+    leftovers = P.models_dir('llm') / '.downloads'
+    (leftovers / 'unpack-m').mkdir(parents=True)
+    (leftovers / 'model.zip.part').write_bytes(b'x')
+    monkeypatch.setattr(P, 'busy', lambda part_id: part_id == 'stt')
+    P._tidied.clear()
+    P.tidy(data)
+    assert all((engines / name).is_dir() for name in ('unpack-a', 'unpack-b', 'unpack-c'))
+    assert (engines / 'downloads' / 'cut.zip.part').is_file() and (leftovers / 'unpack-m').is_dir()
+    monkeypatch.setattr(P, 'busy', lambda part_id: False)
+    P._tidied.clear()
+    P.tidy(data)
+    assert not any((engines / name).exists() for name in ('unpack-a', 'unpack-b', 'unpack-c'))
+    assert (engines / 'downloads' / wanted).is_file()
+    assert not (engines / 'downloads' / 'old-engine.zip').exists() and not (engines / 'downloads' / 'cut.zip.part').exists()
+    assert not (leftovers / 'unpack-m').exists() and not (leftovers / 'model.zip.part').exists()
