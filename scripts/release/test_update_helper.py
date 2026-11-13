@@ -473,7 +473,9 @@ def test_http_and_websocket_admission_during_health(installed):
     asyncio.run(boundary({'type': 'websocket', 'path': '/ws'}, None, send))
     assert messages[-1]['code'] == 1013
     asyncio.run(boundary({'type': 'http', 'path': '/health', 'method': 'GET'}, None, send))
-    assert called == ['/health']
+    # The health check's readiness on the local server (8910): the owner panel's app answers it under /panel.
+    asyncio.run(boundary({'type': 'http', 'path': '/panel/ready', 'method': 'GET'}, None, send))
+    assert called == ['/health', '/panel/ready']
 
 
 @pytest.mark.parametrize('label', [side + ':' + name for name in ACTIVATION_WRITES for side in ('before', 'after')])

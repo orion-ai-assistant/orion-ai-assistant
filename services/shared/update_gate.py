@@ -141,7 +141,9 @@ class UpdateAdmission:
     async def __call__(self, scope, receive, send):
         if scope['type'] in {'http', 'websocket'} and blocked() and not (
                 scope['type'] == 'http' and scope.get('method') == 'GET'
-                and scope.get('path') in {'/health', '/ready', '/api/v1/tls/identity'}):
+                # /panel/ready: the update's health check asks the local server (8910), where the owner panel's
+                # app answers under /panel; refused, every update was rolled back (0.2.49, 2026-11-13).
+                and scope.get('path') in {'/health', '/ready', '/panel/ready', '/api/v1/tls/identity'}):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:
