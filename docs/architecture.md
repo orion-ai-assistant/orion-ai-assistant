@@ -36,3 +36,12 @@ Project architecture documentation for Orion AI Assistant.
 `OrionUi.exe` pencere gizlenince/küçülünce WebView2'ye `MemoryUsageTargetLevel.Low` verir, gösterilince Normal.
 Sayfa (zamanlayıcılar, ses) çalışmaya devam eder. Ölçüm (taze profil, tek koşu): fiziksel RAM (working set)
 gösterilirken ~505 MB, gizliyken ~160 MB; taahhüt edilen bellek (private bytes) neredeyse değişmez (~345 → 320 MB).
+
+## Dinlerken pencerenin belleği (2026-11-13)
+
+PC'de dinleme açıkken sayfada "Orion" algılayıcısı üç kez bulunur (ham mikrofonda algılama, Orion konuşurken
+temizlenmiş seste algılama, Hub'a gitmeden önce doğrulama) ve Silero VAD iki kez. İşleri ayrı; birleştirmek
+istek sırası gerektirir. Algılama modelinin wasm'ı 128 MB başlangıç belleğiyle derlenmişti, gerçekte ~6 MB
+kullanıyor: başlangıç 16 MB'a indirildi (`packages/vad_audio/tool/shrink_wake_word_memory.py`, yeni model
+dışa aktarılınca tekrar çalıştırılmalı). Sayfa süreci dinlerken ~760 MB → ~490 MB taahhüt. Kalan büyük parçalar:
+Flutter'ın çizim motoru (CanvasKit, 64 MB), iki ONNX çalışma ortamı (Silero).
