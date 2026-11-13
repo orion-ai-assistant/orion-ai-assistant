@@ -106,7 +106,9 @@ async def service_lifespan(app: FastAPI):
             await app.state.redis.close()
             await close_pool()
         return
-    if app.state.public:
+    # The local API (8910) is the owner process: the browser bridge, the Router selection and the local parts
+    # run here. They ran in the 8909 server until it went (2026-11-13), and stopped with it until they moved.
+    if app.state.public and not app.state.local_entry:
         try:
             yield
         finally:
@@ -119,8 +121,9 @@ async def service_lifespan(app: FastAPI):
     restore_task = asyncio.create_task(admitted(restore_saved_browsers()))
     async def start_association():
         await wait_for_admission()
-        # One process keeps the Router selection fresh: the owner API listener.
-        if app.state.discovery_enabled:
+        # One process keeps the Router selection fresh: the local API (8910). It was the 8909 server's job, and
+        # stopped when that server went (2026-11-13) until it moved here.
+        if app.state.local_entry:
             association.start()
     association_task = asyncio.create_task(start_association())
 
@@ -128,7 +131,7 @@ async def service_lifespan(app: FastAPI):
         # The same owner process starts the local parts the user installed (Bileşenler) and brings back one
         # that stopped; parts the user did not install never start.
         await wait_for_admission()
-        if not app.state.discovery_enabled:
+        if not app.state.local_entry:
             return
         from services.shared import local_parts
         while True:
