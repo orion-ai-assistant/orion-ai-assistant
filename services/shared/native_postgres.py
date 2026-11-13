@@ -88,6 +88,12 @@ def owned_server(command, data, lock_directory, log):
     return job, process
 
 
+
+# A few users on one PC. Windows reserves shared_buffers in full at start (128 MB by default, per server), so it
+# stays small: the system's file cache keeps the rest of the data, a later vector index included. Each connection
+# slot reserves memory too; the pools here open at most a few dozen.
+MEMORY_SETTINGS = ('-c', 'shared_buffers=32MB', '-c', 'max_connections=50')
+
 class SettingDenied(LifecycleError):
     """The role may not read this server setting (it lacks pg_read_all_settings)."""
 
@@ -227,14 +233,14 @@ class Postgres:
                 # listen_addresses: never another network, whatever postgresql.conf says.
                 command = [str(self.executable), '-D', str(self.data), '-p', str(self.port), '-c', 'fsync=on',
                            '-c', 'full_page_writes=on', '-c', 'synchronous_commit=on',
-                           '-c', 'listen_addresses=localhost']
+                           '-c', 'listen_addresses=localhost', *MEMORY_SETTINGS]
                 self.job, self._server = owned_server(command, self.data, self.directory, log)
                 if not self._ready_soon(40, server=self._server):  # pg_ctl's 30 s start wait + its 10 s readiness check.
                     raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
                 return
             command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(log),
                        '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on '
-                       '-c listen_addresses=localhost', '-w', '-t', '30']
+                       '-c listen_addresses=localhost ' + ' '.join(MEMORY_SETTINGS), '-w', '-t', '30']
             self.job, result = owned_start(command, self.data, self.directory, timeout=35)
             if result.returncode or not self._ready_soon():
                 raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
