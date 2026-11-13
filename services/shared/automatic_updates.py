@@ -590,6 +590,11 @@ class AutomaticUpdates:
                         if target.custom['component'] != kind:
                             raise UpdateError('Stable target component mismatch')
                         clients[name], found[name] = client, target
+                        if 'sequence' not in current:
+                            # The record names a release folder that is not there (a stale copy of the registry):
+                            # say so instead of a bare KeyError.
+                            failures.append('InstalledReleaseMissing')
+                            continue
                         if target.custom['sequence'] > current['sequence']:
                             names.append(name)
                 if not polled:
