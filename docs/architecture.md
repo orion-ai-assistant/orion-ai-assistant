@@ -65,4 +65,8 @@ Flutter'ın çizim motoru (CanvasKit, 64 MB), iki ONNX çalışma ortamı (Siler
   RAM 3,2 GB, GPU 3,5 GB. Ayrılanın ~3,5 GB'ı GPU belleğinin Windows'taki yansımasıdır (RAM'de yer tutmaz: özel bölgelerin 4,3 GB'ı ayrılmış
   ama yalnızca 0,8 GB'ı RAM'de). 0 katmanla bile 3,96 GB / GPU 2,65 GB (akustik model F16 1,8 GB, BaseLM katman sayısından bağımsız,
   KV önbelleği 32768 sabit; `-c` etkisiz). Katman başına ~120 MB GPU.
+- TTS motorunun GPU belleği en uzun isteğe göre büyür ve öyle kalır (ggml hesap tamponları): taze 3,32 GB; 30 karakter sonrası 3,34;
+  318 karakter 3,72; 636 karakter 3,93 GB (ayrılan 5,37 → 6,36 GB); kısa istek küçültmez. Hub tek istekte en fazla 287 karakter gönderir
+  (`sentence_segmenter.MAX_CHARS`), yani pratikte ~3,7 GB'ta durur; sızıntı değil.
+- TTS sarmalayıcısı (`services/tts`) torch'u yalnız PyTorch motorlarında yükler (`load_torch()`); GGUF motorlarıyla süreç ~400 → 50 MB.
 
