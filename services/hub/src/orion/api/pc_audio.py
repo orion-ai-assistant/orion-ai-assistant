@@ -1,6 +1,7 @@
 """Optional Windows per-app ducking with a bounded lease; no shell or extra packages."""
 import asyncio
 import ctypes
+import functools
 import json
 import os
 import secrets
@@ -32,18 +33,24 @@ def duck_store_path():
     return Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'orion' / 'pc-audio-duck.json'
 
 
+@functools.lru_cache(maxsize=None)
+def _com():
+    """The GUID type and ole32, made once: a new ctypes class per call is never freed."""
+    class GUID(ctypes.Structure):
+        _fields_ = [("data", ctypes.c_ubyte * 16)]
+        def __init__(self, value):
+            super().__init__()
+            self.data[:] = uuid.UUID(value).bytes_le
+    return GUID, ctypes.OleDLL("ole32")
+
+
 def audio_sessions(levels=None):
     """{instance id: {"app", "level", "muted"}} for every active playback
     session; `levels` ({instance id: level}) is applied first."""
     if os.name != "nt":
         raise RuntimeError("PC ducking requires a Windows Hub")
     from ctypes import wintypes
-    class GUID(ctypes.Structure):
-        _fields_ = [("data", ctypes.c_ubyte * 16)]
-        def __init__(self, value):
-            super().__init__()
-            self.data[:] = uuid.UUID(value).bytes_le
-    ole = ctypes.OleDLL("ole32")
+    GUID, ole = _com()
     ole.CoInitializeEx(None, 0)
     refs = []
     def call(pointer, slot, argtypes, *args):

@@ -55,3 +55,8 @@ Flutter'ın çizim motoru (CanvasKit, 64 MB), iki ONNX çalışma ortamı (Siler
   bellek harcar. Yerel kütüphanelerin (numpy dışındaki C kodu, LiteRT) belleğini göstermez.
 - numpy'nin OpenBLAS'ı Hub süreçlerinde tek iş parçacığıyla yüklenir (`run_local.py`): çekirdek başına tampon
   12 çekirdekte süreç başına +363 MB ayırıyordu.
+- Bulunan sızıntı (izleme raporundan): yankı önleyicinin çıkış aygıtı denetimi (`audio/echo_cancel/loopback.py`) her 0,5 sn'de Windows ses
+  numaralandırıcısını yaratıp bırakıyordu; her çağrı ~1,5 KB yerel bellek sızdırıyordu (python izlemesi görmez; ölçüm: 2000 çağrıda
+  +3 MB) ve her seferinde yeni bir ctypes sınıfı (`GUID`, DLL) da yaratıyordu. Artık numaralandırıcı döngü iş parçacığında bir kez
+  açılır (`RenderDeviceId`), sınıflar bir kez yaratılır (`_com()`, `pc_audio.py`'de de). Ölçüm: 6000 çağrıda 0 MB büyüme.
+
