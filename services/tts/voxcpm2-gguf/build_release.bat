@@ -10,7 +10,7 @@ rem upstream d30f00f plus our commits: it builds with MSVC (ssize_t, struct iove
 rem generation at a time and stops a whole-waveform request whose client hung up; it keeps the encoded reference audio
 rem (the same voice with every request is encoded once).
 set REPO=https://github.com/krstalacam/llama.cpp-omni
-set COMMIT=9b49812768a984852496d1ef07ece328ca35fb74
+set COMMIT=43cf1f968dd851398caf5e5c51403f927bd0cdac
 
 set WHAT=%~1
 if "%WHAT%"=="" set WHAT=all

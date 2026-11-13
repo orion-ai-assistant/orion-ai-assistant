@@ -175,6 +175,14 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
 - `python package_release.py` her takımı `voxcpm2-gguf-windows-<donanım>.zip` yapar, adres, SHA-256 ve boyutu
   yazar; ziplerin yeri `voxcpm2-v<sürüm>` yayını (şu an `voxcpm2-v1.0.2`; `RELEASE_TAG`). CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
   llama.cpp'nin `cudart` zipi ikinci arşivdir).
+- KV önbelleği (commit `43cf1f9`, yalnız Vulkan denendi): BaseLM (llama bağlamı) ile ResidualLM'in önbelleği koda gömülü 32768
+  konumla baştan ayrılıyordu (~1,1 GB). Artık tek ayardan: `--voxcpm2-ctx N` (env `LLAMA_ARG_VOXCPM2_CTX`, varsayılan 2048).
+  Sınır aşılacaksa `prefill`/`decode_step` `fail("request too long ...")` ile hata döner, çökmez; her istek logda
+  `VoxCPM2: request uses N of M positions` yazar. Ölçüm (Vulkan, `--voxcpm2-n-gpu-layers 0`, RTX 3060 Ti): 30 karakter 38,
+  300 karakter 313-356, 600 karakter 490-510 konum; Orion'un en kötü isteği (<=287 karakter + 20 sn referans + <=200 adım)
+  bunun altında, yani 2048'in yarısını geçmez. 2048 ile 32768 aynı metin+seed için bayt bayt aynı uzunlukta wav üretir.
+  Boşta commit 3,61 -> 2,32 GB, WorkingSet 1,09 -> 0,23 GB, VRAM 2,50 -> 2,06 GB; 7 katman GPU'da: commit 3,95 -> 2,63,
+  VRAM 2,91 -> 2,32 GB. Kart doluyken (başkaları ~4,8 GB) 32768 ile uzun/klonlu istekler 500 verdi, 2048 ile hepsi geçti.
 - Denemek: `llama-tts-server.exe --voxcpm2-base-lm VoxCPM2-BaseLM-Q8_0.gguf --voxcpm2-acoustic
   VoxCPM2-Acoustic-F16.gguf --host 127.0.0.1 --port 18807`; `POST /v1/audio/speech`
   `{"model": "voxcpm", "input": "...", "reference_audio": "<base64 WAV>", "prompt_text": "<örneğin metni>"}`.
