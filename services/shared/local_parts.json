@@ -224,7 +224,10 @@
       "engine": "llama.cpp",
       "port_key": "LLM_PORT",
       "port": 8085,
-      "args": [],
+      "args": [
+        "--flash-attn",
+        "auto"
+      ],
       "context_size": 8192,
       "cloud": "Kurulmazsa sohbet Router'daki bulut modelleriyle sürer.",
       "models": [
@@ -243,10 +246,6 @@
           ],
           "mmproj": "mmproj-BF16.gguf",
           "size_mb": 2332,
-          "args": [
-            "--flash-attn",
-            "auto"
-          ],
           "recommended": true,
           "mmproj_mb": 941
         },
