@@ -69,6 +69,10 @@ async def service_lifespan(app: FastAPI):
             raise RuntimeError('Public Hub requires a configured JWT_SECRET_KEY')
     from orion.worker.tools._registry import get_registry
     get_registry()
+    from orion.kernel.memory_trace import report_growth
+    # Only while the Hub runs with PYTHONTRACEMALLOC: the code lines that grow (docs/architecture.md).
+    app.state.memory_trace = asyncio.create_task(
+        report_growth('mobile' if app.state.mobile else 'local' if app.state.public else 'panel'))
     app.state.redis = Redis.from_url(get_redis_url(), decode_responses=True, protocol=2)
     from orion.kernel.activity import DRAIN_KEY
     with suppress(Exception):

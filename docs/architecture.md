@@ -45,3 +45,13 @@ istek sırası gerektirir. Algılama modelinin wasm'ı 128 MB başlangıç belle
 kullanıyor: başlangıç 16 MB'a indirildi (`packages/vad_audio/tool/shrink_wake_word_memory.py`, yeni model
 dışa aktarılınca tekrar çalıştırılmalı). Sayfa süreci dinlerken ~760 MB → ~490 MB taahhüt. Kalan büyük parçalar:
 Flutter'ın çizim motoru (CanvasKit, 64 MB), iki ONNX çalışma ortamı (Silero).
+
+## Bellek ölçümü (2026-11-13)
+
+- Denetçi her 10 dakikada `hub.log`'a `[MEMORY] local … MB, mobile … MB, worker … MB, redis … MB` yazar (her sürecin
+  başlattıklarıyla birlikte ayırdığı bellek). Saatlerce büyüyen bir süreç burada görünür.
+- Hub `PYTHONTRACEMALLOC=1` ile başlatılırsa API sunucuları da her 10 dakikada en çok büyüyen kod satırlarını yazar
+  (`Memory local (pid …): … grew since start: …`, `orion/kernel/memory_trace.py`). Yalnız teşhis için: CPU ve
+  bellek harcar. Yerel kütüphanelerin (numpy dışındaki C kodu, LiteRT) belleğini göstermez.
+- numpy'nin OpenBLAS'ı Hub süreçlerinde tek iş parçacığıyla yüklenir (`run_local.py`): çekirdek başına tampon
+  12 çekirdekte süreç başına +363 MB ayırıyordu.

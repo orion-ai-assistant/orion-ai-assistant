@@ -739,6 +739,27 @@ def _main(runtime):
     # (process handles, a Redis connection and an fsync'd state file each time) cost ~15% of a core at idle.
     TICK, CHECK = .2, 2.0
     next_check = 0.0
+
+    # Every MEMORY_EVERY seconds: what each child (with the processes it started) holds. A server that grows by the
+    # hour shows here; PYTHONTRACEMALLOC=1 then names its code lines (orion.kernel.memory_trace).
+    MEMORY_EVERY = 600
+    next_memory = time.monotonic() + 60
+
+    def report_memory():
+        import psutil
+        parts = []
+        for label, proc in [*current.items(), ('worker', supervisor.worker)]:
+            try:
+                root = psutil.Process(proc.pid)
+                tree = [root, *root.children(recursive=True)]
+                held = sum(getattr(info, 'private', info.rss) for info in (p.memory_info() for p in tree))
+                parts.append(f'{label} {held >> 20} MB')
+            except (psutil.Error, AttributeError):
+                continue
+        with log_lock:
+            log_file.write(f"[MEMORY] {', '.join(parts)}\n")
+            log_file.flush()
+
     try:
         while not stopping.wait(TICK):
             if runtime.requested():
@@ -758,6 +779,12 @@ def _main(runtime):
                 mark_starting()
             elif runtime.status == 'starting':
                 runtime.ready()
+            if time.monotonic() >= next_memory:
+                next_memory = time.monotonic() + MEMORY_EVERY
+                try:
+                    report_memory()
+                except Exception as error:  # A measurement never ends the Hub.
+                    report_child(f'Memory not measured: {error}')
     except KeyboardInterrupt:
         pass
     finally:
