@@ -98,7 +98,12 @@ zip Toolkit'siz bilgisayarda açılmaz.
    ```
 3. Adres, SHA-256 ve boyut `local_parts.json`'a yazılır: `engines` → `omnivoice-gguf` → `windows` → `<donanım>`.
    Motorun `version` alanı değişirse her bilgisayar o motoru yeniden indirir; yalnızca yeni bir donanım tarifi
-   eklenince değiştirmek gerekmez.
+   eklenince değiştirmek gerekmez. Bu her motor için aynı (LLM/embedding'in llama.cpp'si, STT, OmniVoice, VoxCPM2):
+   Hub güncellenince bileşen eski sürümle çalışmaya devam eder, bir iş yalnız seçili donanımın yeni motorunu
+   arka planda indirir ve hiçbir şey yeniden başlamaz. Bir sonraki başlatma yeniyi kullanır; bileşen yeni
+   sürümle cevap verince eski klasör silinir (içinde açık dosya varsa silinmez). Yeni sürüm açılmazsa o Hub
+   çalıştığı sürece eskisi kullanılır. İndirme olmazsa kart hatayı gösterir, eski sürüm çalışır, sonraki Hub
+   açılışında yeniden denenir (`local_parts.py`: `older_engines`, `engine_in_use`, `_update_engines`).
 4. Katalog Hub paketinin içinde gider: kullanıcılar yeni tarifi bir sonraki Hub yayınıyla (`release.cmd`) alır.
    Zip yayında yokken katalog onu gösterirse o seçenek indirmede hata verir. Bu yüzden sıra: önce zip, sonra
    Hub yayını.

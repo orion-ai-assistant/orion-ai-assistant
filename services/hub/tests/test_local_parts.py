@@ -1107,3 +1107,48 @@ def test_internet_downloads_are_verified_by_windows(monkeypatch):
     monkeypatch.setattr(windows_trust, 'context', lambda: made)
     handler = next(h for h in P.public_opener().handlers if isinstance(h, urllib.request.HTTPSHandler))
     assert handler._context is made
+
+
+def test_a_new_engine_version_downloads_while_the_old_one_runs_and_replaces_it_after_a_start(parts, monkeypatch):
+    """An Orion update raised an engine's version: the part keeps running on the earlier one, a job downloads
+    the new one for this hardware only, the next start takes it, and the earlier one goes once a part answered
+    on the new one. If the new one does not start, the earlier one runs until the Hub starts again."""
+    P.write_part_config('tts', enabled=True, settings={'hardware': 'cuda', 'gpu': 'all'})
+    part = P.spec('tts')
+    model, settings = P.effective(part, TWO_CARDS)
+    engine = P.for_model(part, model)['engine']
+    current = P.engine_dir(engine, 'cuda')
+    old = current.parents[1] / f'{engine}-v0.9' / 'cuda'
+    old.mkdir(parents=True)
+    (old / '.complete').write_text('v0.9', encoding='utf-8')
+    monkeypatch.setattr(P, 'downloaded', lambda *args, **kwargs: True)
+    started = []
+    monkeypatch.setattr(P, 'start_part', lambda part_id: started.append(part_id))
+    monkeypatch.setattr(P, '_updating', set())
+    monkeypatch.setattr(P, '_old_engine', set())
+    P._tidied.clear()
+
+    P.keep_running()
+    assert old.is_dir()  # The update's tidy keeps it.
+    assert P.engine_in_use(engine, 'cuda') == old and P.ready(part, model, settings) and started == ['tts']
+    assert P.spawned[-1][:3] == ['job', 'tts', 'engine']  # The new version downloads; nothing restarts.
+    assert P.job('tts')['action'] == 'engine'
+    P.keep_running()
+    assert len(P.spawned) == 1  # Once per Hub run.
+
+    current.mkdir(parents=True)  # The job finished.
+    (current / '.complete').write_text(P.catalog()['engines'][engine]['version'], encoding='utf-8')
+    (P.home() / 'jobs' / 'tts.json').unlink()
+    assert P.engine_in_use(engine, 'cuda') == current
+    monkeypatch.setenv(P.OLD_ENGINE, '1')  # A start after the new one failed runs the earlier one.
+    assert P.engine_in_use(engine, 'cuda') == old
+    monkeypatch.delenv(P.OLD_ENGINE)
+
+    P.run_dir('tts').mkdir(parents=True, exist_ok=True)
+    (P.run_dir('tts') / 'engine.txt').write_text(str(old), encoding='utf-8')
+    monkeypatch.setattr(P, 'answers', lambda port, timeout=.5: True)
+    P.keep_running()
+    assert old.is_dir()  # Still running the earlier one: it stays.
+    (P.run_dir('tts') / 'engine.txt').write_text(str(current), encoding='utf-8')
+    P.keep_running()
+    assert not old.parent.exists() and current.is_dir()

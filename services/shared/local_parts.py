@@ -163,8 +163,8 @@ def engine_dir(engine, hardware, data=None):
     return home() / 'engines' / f'{engine}-{entry["version"]}{tag}' / hardware
 
 
-def engine_exe(engine, hardware, data=None):
-    folder = engine_dir(engine, hardware, data)
+def engine_exe(engine, hardware, data=None, folder=None):
+    folder = folder or engine_dir(engine, hardware, data)
     name = 'llama-server.exe' if os.name == 'nt' else 'llama-server'
     found = next(iter(sorted(folder.rglob(name))), None) if folder.is_dir() else None
     return found
@@ -194,6 +194,42 @@ def part_engines(part):
 def engine_ready(engine, hardware, data=None):
     folder = engine_dir(engine, hardware, data)
     return (folder / '.complete').is_file() or (engine == 'llama.cpp' and engine_exe(engine, hardware, data) is not None)
+
+
+def _engine_tags(entry):
+    return ['-py' + version.replace('.', '') for version in entry['pythons']] if 'pythons' in entry else ['']
+
+
+def older_engines(engine, hardware, data=None):
+    """Complete folders of this engine's earlier versions for `hardware`, newest first. An Orion update that
+    raises an engine's version keeps the old one: the part runs on it while the new one downloads, and it goes
+    once a part has answered on the new one (`_drop_older`)."""
+    data = data or catalog()
+    current = engine_dir(engine, hardware, data)
+    tags = _engine_tags(data['engines'][engine])
+    root = home() / 'engines'
+    found = []
+    for folder in root.iterdir() if root.is_dir() else []:
+        path = folder / hardware
+        try:
+            version = (path / '.complete').read_text(encoding='utf-8').strip()
+        except OSError:
+            continue
+        if path != current and folder.name in {f'{engine}-{version}{tag}' for tag in tags}:
+            found.append(path)
+    return sorted(found, key=lambda path: (path / '.complete').stat().st_mtime, reverse=True)
+
+
+OLD_ENGINE = 'ORION_OLD_ENGINE'  # Set for a start after the new engine version failed to start in this Hub run.
+
+
+def engine_in_use(engine, hardware, data=None):
+    """The folder a start runs: the catalog's version, else the newest earlier one (the new one is still
+    downloading, or did not start in this Hub run); None when neither is here."""
+    older = older_engines(engine, hardware, data)
+    if engine_ready(engine, hardware, data) and not (os.getenv(OLD_ENGINE) and older):
+        return engine_dir(engine, hardware, data)
+    return older[0] if older else None
 
 
 def python_fits(engine, data=None):
@@ -1099,7 +1135,8 @@ def command(part, model, settings, data=None):
     if part.get('runner') == 'python':
         return _python_command(part, model, settings, data)
     from .service_access import bind_host, own_origins
-    exe = engine_exe(part['engine'], settings['hardware'], data)
+    folder = engine_in_use(part['engine'], settings['hardware'], data)
+    exe = engine_exe(part['engine'], settings['hardware'], data, folder) if folder else None
     if exe is None:
         raise PartError('Motor kurulu değil.')
     files = model_files(part, model, settings)
@@ -1118,8 +1155,8 @@ def command(part, model, settings, data=None):
 
 def _python_command(part, model, settings, data=None):
     """One of Orion's own services on the packaged Python, with its engine's packages and libraries."""
-    folder = engine_dir(part['engine'], settings['hardware'], data)
-    if not engine_ready(part['engine'], settings['hardware'], data):
+    folder = engine_in_use(part['engine'], settings['hardware'], data)
+    if folder is None:
         raise PartError('Motor kurulu değil.')
     port = str(os.getenv(part['port_key']) or part['port'])
     gpu = settings['hardware'] != 'cpu'
@@ -1390,7 +1427,7 @@ def start_job(part_id, action, *, model=None, settings=None, fetch=None):
             saved = read_config().get(part_id, {}).get('settings') or {}
             values['settings'] = {**saved, **clean_settings(part, settings, hw, chosen)}
         write_part_config(part_id, **values)
-    elif action != 'download':
+    elif action not in ('download', 'engine'):
         raise PartError('Bilinmeyen iş.')
     (home() / 'jobs' / f'{part_id}.cancel').unlink(missing_ok=True)
     if action == 'install':
@@ -1460,9 +1497,10 @@ def apply_choice(part_id):
 
 
 def ready(part, model, settings, data=None):
-    """Everything `model` needs with `settings` is here: its files and the engine for that hardware."""
-    return downloaded(part, model, settings) and engine_ready(for_model(part, model, data)['engine'],
-                                                              settings['hardware'], data)
+    """Everything `model` needs with `settings` is here: its files and an engine for that hardware (an earlier
+    version runs while the catalog's one downloads)."""
+    return downloaded(part, model, settings) and engine_in_use(for_model(part, model, data)['engine'],
+                                                               settings['hardware'], data) is not None
 
 
 def _signature(model, settings):
@@ -1651,7 +1689,7 @@ def apply(part_id, *, wish=None, restart=False):
                 model, settings = effective(part, hardware())
                 if model is None or not downloaded(part, model, settings):
                     raise MissingFiles('Modelin dosyaları eksik; indir ve başlat ile tamamla')
-                if not engine_ready(for_model(part, model)['engine'], settings['hardware']):
+                if engine_in_use(for_model(part, model)['engine'], settings['hardware']) is None:
                     raise MissingFiles('Bu donanımın motoru indirilmedi; indir ve başlat ile tamamla')
                 try:
                     start_part(part_id)
@@ -1699,8 +1737,19 @@ def unused_engines(part, data=None):
         if running and answers(int(os.getenv(other['port_key']) or other['port'])):
             model = next((m for m in other.get('models', []) if m['id'] == running.get('model')), None)
             used.add(engine_dir(for_model(other, model, data)['engine'], running['settings']['hardware'], data))
-    folders = [engine_dir(engine, hw_id, data) for engine in mine for hw_id in (engine_builds(engine, data) or {})]
+    used |= {engine_in_use(engine, hw_id, data) for engine, hw_id in list(_in_use_by_others(used, mine, data))}
+    folders = [path for engine in mine for hw_id in (engine_builds(engine, data) or {})
+               for path in [engine_dir(engine, hw_id, data)] + older_engines(engine, hw_id, data)]
     return [folder for folder in folders if folder.is_dir() and folder not in used]
+
+
+def _in_use_by_others(used, engines, data):
+    """(engine, hardware) of `engines` whose catalog folder another part uses: the earlier version it may be
+    running on stays too."""
+    for engine in engines:
+        for hw_id in engine_builds(engine, data) or {}:
+            if engine_dir(engine, hw_id, data) in used:
+                yield engine, hw_id
 
 
 HINTS = (('out of memory', 'Ekran kartının belleği yetmedi: bağlam boyutunu ya da aynı anda isteği küçült, '
@@ -1744,6 +1793,9 @@ def start_part(part_id):
     folder = run_dir(part_id)
     folder.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING='utf-8')
+    env.pop(OLD_ENGINE, None)
+    if part_id in _old_engine:
+        env[OLD_ENGINE] = '1'
     return ensure_started(folder, 'part', [sys.executable, '-B', '-m', 'services.shared.local_parts', 'serve', part_id],
                           env=env, timeout=READY_TIMEOUT + 15)
 
@@ -1772,8 +1824,10 @@ def tidy(data):
     _tidied.append(True)
     current = set()
     for name, entry in data['engines'].items():
-        tags = ['-py' + version.replace('.', '') for version in entry['pythons']] if 'pythons' in entry else ['']
-        current |= {f'{name}-{entry["version"]}{tag}' for tag in tags}
+        current |= {f'{name}-{entry["version"]}{tag}' for tag in _engine_tags(entry)}
+    # An earlier version of an engine still in the catalog stays until a part has run the new one (`_drop_older`).
+    current |= {path.parent.name for name in data['engines'] for hw_id in (engine_builds(name, data) or {})
+                for path in older_engines(name, hw_id, data)}
     folder = home() / 'engines'
     for path in folder.iterdir() if folder.is_dir() else []:
         if path.is_dir() and path.name not in current and path.name != 'downloads' and not path.name.startswith('unpack-'):
@@ -1817,6 +1871,74 @@ def keep_running():
             start_part(part['id'])
         except Exception as error:
             print(f'local part {part["id"]} did not start: {type(error).__name__}: {error}', flush=True)
+            engine = for_model(part, model, data)['engine']
+            if (part['id'] not in _old_engine and older_engines(engine, settings['hardware'], data)
+                    and _engine_used(part['id']) == engine_dir(engine, settings['hardware'], data)):
+                # The new engine version did not start: the earlier one runs until the Hub starts again.
+                print(f'local part {part["id"]}: starting it on the earlier engine version', flush=True)
+                _old_engine.add(part['id'])
+                try:
+                    start_part(part['id'])
+                except Exception as again:
+                    print(f'local part {part["id"]} did not start: {type(again).__name__}: {again}', flush=True)
+    _update_engines(data, config, hw)
+
+
+_old_engine = set()  # parts whose new engine version failed to start in this Hub run
+_updating = set()  # (engine, hardware) whose new version a job downloaded, or tried to, in this Hub run
+
+
+def _engine_used(part_id):
+    """The engine folder the part's last start ran (`serve` writes it)."""
+    try:
+        text = (run_dir(part_id) / 'engine.txt').read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+    return Path(text) if text else None
+
+
+def _update_engines(data, config, hw):
+    """An Orion update raised an engine's version: the installed parts run on the earlier one while a job
+    downloads the new one (this hardware's only); the next start runs the new one, and once a part answers on
+    it the earlier one goes. Nothing restarts for it."""
+    for part in data['parts']:
+        if not part.get('engine') or not config.get(part['id'], {}).get('enabled'):
+            continue
+        model, settings = effective(part, hw, config)
+        if model is None:
+            continue
+        engine, hw_id = for_model(part, model, data)['engine'], settings['hardware']
+        if not older_engines(engine, hw_id, data):
+            continue
+        if engine_ready(engine, hw_id, data):
+            if (part['id'] not in _old_engine and _engine_used(part['id']) == engine_dir(engine, hw_id, data)
+                    and answers(int(os.getenv(part['port_key']) or part['port']))):
+                _drop_older(engine, hw_id, data)
+        elif (engine, hw_id) not in _updating and not busy(part['id']) and engine_recipe(engine, hw_id, data):
+            _updating.add((engine, hw_id))
+            try:
+                start_job(part['id'], 'engine')
+                print(f'local part {part["id"]}: downloading engine {engine} {data["engines"][engine]["version"]} '
+                      f'({hw_id}); the earlier version runs until the next start', flush=True)
+            except Exception as error:
+                print(f'local part {part["id"]}: engine update did not start: {error}', flush=True)
+
+
+def _drop_older(engine, hardware, data):
+    """The earlier versions' folders, each only when nothing runs from it: Windows refuses to rename a folder
+    with an open file in it, so a running engine is never half deleted."""
+    for folder in older_engines(engine, hardware, data):
+        trash = folder.with_name(f'{folder.name}.old-{os.getpid()}')
+        try:
+            os.replace(folder, trash)
+        except OSError:
+            continue
+        shutil.rmtree(trash, ignore_errors=True)
+        try:
+            folder.parent.rmdir()  # The version folder, once no other hardware's engine is in it.
+        except OSError:
+            pass
+        print(f'engine {engine}: removed the earlier version {folder.parent.name} ({hardware})', flush=True)
 
 
 HUNG_PASSES = 3
@@ -1855,6 +1977,9 @@ def serve(part_id):
         log_path.write_text(f'Orion: {error}\n', encoding='utf-8')
         raise
     _write_json(folder / 'applied.json', _signature(model, settings))
+    engine = for_model(part, model, data)['engine'] if part.get('engine') else None
+    used = engine_in_use(engine, settings['hardware'], data) if engine else None
+    (folder / 'engine.txt').write_text(str(used or ''), encoding='utf-8')
     with Runtime(run_dir(part_id), 'part') as runtime:
         if 'engine' not in runtime.children:
             assert_port_free(port)
@@ -2077,8 +2202,12 @@ def run_job(part_id, action, model_id, fetch=None):
         steps = ([] if action != 'install' or engine_ready(part['engine'], settings['hardware'], data) else ['engine'])
         steps += [] if downloaded(part, model, settings) else ['model']
         step = lambda name: f'{steps.index(name) + 1}/{len(steps)} · ' if len(steps) > 1 and name in steps else ''
-        if action == 'install':
+        if action in ('install', 'engine'):
             _install_engine(part_id, part, settings, data, cancelled, step('engine'))
+        if action == 'engine':  # A new engine version: the part keeps running and takes it at its next start.
+            _update_job(part_id, phase='done', label='Motorun yeni sürümü indi; bir sonraki başlatmada kullanılacak.',
+                        rate=0, finished=time.time())
+            return 0
         _fetch_model(part_id, part, model, cancelled, settings, step('model'), fetch)
         if action == 'install':
             again = bool(read_config().get(part_id, {}).get('enabled'))
@@ -2099,6 +2228,8 @@ def run_job(part_id, action, model_id, fetch=None):
         return 1
     except Exception as error:
         detail = str(error) if isinstance(error, (PartError, OSError)) else f'{type(error).__name__}: {error}'
+        if action == 'engine':
+            detail = f'Motorun yeni sürümü indirilemedi; eski sürümle çalışmaya devam ediyor. ({detail})'
         _update_job(part_id, phase='error', label='Olmadı.', error=detail, rate=0, finished=time.time())
         return 1
     finally:
@@ -2116,7 +2247,7 @@ def main(argv=None):
     apply_parser.add_argument('--id')
     job_parser = sub.add_parser('job')
     job_parser.add_argument('part')
-    job_parser.add_argument('kind', choices=['download', 'install'])
+    job_parser.add_argument('kind', choices=['download', 'install', 'engine'])
     job_parser.add_argument('model')
     job_parser.add_argument('--fetch')
     sub.add_parser('status')
