@@ -153,7 +153,7 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
 ## 7. VoxCPM2 motoru (llama.cpp-omni)
 
 - Kaynak: kendi fork'umuz [krstalacam/llama.cpp-omni](https://github.com/krstalacam/llama.cpp-omni), `orion` dalı
-  `9b49812768a984852496d1ef07ece328ca35fb74` (MIT; motor `voxcpm2-v1.0.2`), yalnızca `llama-tts-server` hedefi. Üst depo
+  `43cf1f968dd851398caf5e5c51403f927bd0cdac` (MIT; motor `voxcpm2-v1.0.3`; README commit `2c6f50b` yalnız doküman), yalnızca `llama-tts-server` hedefi. Üst depo
   [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) `d30f00f` üstüne kendi commit'lerimiz: MSVC'de derlenir
   (`src/llama-moe-slot.cpp` POSIX `ssize_t` / `struct iovec` kullanıyordu) ve TTS sunucusu üretimi tek tek yapar
   (`server-voxcpm2.cpp` `generate_mutex`; önce httplib iki isteği aynı KV önbellekte çalıştırıp çöküyordu), akışsız
@@ -173,9 +173,9 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
   (CUDA 12.1 bu Visual Studio'yu ancak böyle kabul eder; CMake derleyiciyi tanırken bunu ortam değişkeninden okur).
   Batch argümanında `=` ayırıcıdır: bayrakları argüman olarak değil ortam değişkeniyle geçir.
 - `python package_release.py` her takımı `voxcpm2-gguf-windows-<donanım>.zip` yapar, adres, SHA-256 ve boyutu
-  yazar; ziplerin yeri `voxcpm2-v<sürüm>` yayını (şu an `voxcpm2-v1.0.2`; `RELEASE_TAG`). CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
+  yazar; ziplerin yeri `voxcpm2-v<sürüm>` yayını (şu an `voxcpm2-v1.0.3`; `RELEASE_TAG`). CUDA zipine CUDA çalışma zamanı konmaz (OmniVoice'taki gibi
   llama.cpp'nin `cudart` zipi ikinci arşivdir).
-- KV önbelleği (commit `43cf1f9`, yalnız Vulkan denendi): BaseLM (llama bağlamı) ile ResidualLM'in önbelleği koda gömülü 32768
+- KV önbelleği (commit `43cf1f9`, motor `voxcpm2-v1.0.3`): BaseLM (llama bağlamı) ile ResidualLM'in önbelleği koda gömülü 32768
   konumla baştan ayrılıyordu (~1,1 GB). Artık tek ayardan: `--voxcpm2-ctx N` (env `LLAMA_ARG_VOXCPM2_CTX`, varsayılan 2048).
   Sınır aşılacaksa `prefill`/`decode_step` `fail("request too long ...")` ile hata döner, çökmez; her istek logda
   `VoxCPM2: request uses N of M positions` yazar. Ölçüm (Vulkan, `--voxcpm2-n-gpu-layers 0`, RTX 3060 Ti): 30 karakter 38,
@@ -183,6 +183,8 @@ kaydından doldurur (`orion-router/core/router/runners/tts.py`, `_engine_default
   bunun altında, yani 2048'in yarısını geçmez. 2048 ile 32768 aynı metin+seed için bayt bayt aynı uzunlukta wav üretir.
   Boşta commit 3,61 -> 2,32 GB, WorkingSet 1,09 -> 0,23 GB, VRAM 2,50 -> 2,06 GB; 7 katman GPU'da: commit 3,95 -> 2,63,
   VRAM 2,91 -> 2,32 GB. Kart doluyken (başkaları ~4,8 GB) 32768 ile uzun/klonlu istekler 500 verdi, 2048 ile hepsi geçti.
+  CUDA (7 katman, 280 karakter, referans sesli): boşta VRAM/commit 3,10/4,14 -> 2,46/2,81 GB, istekten sonra
+  3,27/5,82 -> 2,70/4,44 GB, süre 13,2 -> 9,1 sn, ses süresi aynı (12,0 sn).
 - Denemek: `llama-tts-server.exe --voxcpm2-base-lm VoxCPM2-BaseLM-Q8_0.gguf --voxcpm2-acoustic
   VoxCPM2-Acoustic-F16.gguf --host 127.0.0.1 --port 18807`; `POST /v1/audio/speech`
   `{"model": "voxcpm", "input": "...", "reference_audio": "<base64 WAV>", "prompt_text": "<örneğin metni>"}`.
