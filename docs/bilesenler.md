@@ -274,13 +274,17 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   Gelişmiş ayarlar: nerede çalışsın, hangi kart (birden çok varsa), bağlam, eşzamanlı istek (kartta tüm katmanlar kartta).
   **Bellek kullanımı** (`vram_mode`: tam / dengeli / düşük): dengeli ve düşükte modelin bir kısmı işlemcide kalır
   (llama.cpp: katmanların 1/2'si ve 1/4'ü, `-ngl`; VoxCPM2: BaseLM'in 28 katmanından 14 ve 7'si,
-  `--voxcpm2-n-gpu-layers`). Ölçüm (RTX 3060 Ti, Ryzen 5 5600X, VoxCPM2): tam +4,9 GB, 14 katman +3,7 GB, 7 katman
-  +3,2 GB; hız oranı 0,35 → 0,56 → 0,66 (1'in altı = gerçek zamandan hızlı), akış kesilmedi. Katmanlar sırayla
+  `--voxcpm2-n-gpu-layers`). Ölçüm (RTX 3060 Ti, Ryzen 5 5600X, VoxCPM2 v1.0.3 CUDA, 2026-11-13; model yüklenip
+  ~280 karakterlik bir isteği cevapladıktan sonra motor sürecinin ekran kartı belleği): tam 4,1 GB (10,1 sn),
+  14 katman 3,4 GB (13,3 sn), 7 katman 3,0 GB (14,3 sn), ses 18 sn. Eski motorla (KV önbelleği 32768) 4,9 / 3,7 /
+  3,2 GB'tı. Eski ölçümün hız oranı 0,35 → 0,56 → 0,66 (1'in altı = gerçek zamandan hızlı), akış kesilmedi. Katmanlar sırayla
   çalıştığı için işlemcideki her katman süreyi uzatır; yavaş işlemcide sonuç farklı olur. OmniVoice (katman
   ayarı yok) ve ses tanıma (whisper.cpp'de yalnız `--no-gpu` var) için böyle bir mod yok.
   **Bellek tahmini** (kartın "Gelişmiş ayarlar" satırı): llama.cpp modelleri = dosya + bağlamın önbelleği (GGUF
-  başlığından) + ~0,3 GB tampon, moda göre payı; VoxCPM2 ölçülen değerler; OmniVoice ~1-1,5 GB (gözlem).
-  Ses tanıma (STT): model dosyası boyutu kadar varsayıldı, **henüz ölçülmedi** (yapılacak). VoxCPM2'de klon sesle
+  başlığından) + ~0,3 GB tampon, moda göre payı. Konuşma modelleri aynı şekilde ölçüldü (istekten sonra):
+  VoxCPM2 yukarıdaki değerler, OmniVoice CUDA 1,5 GB (boşta 1,0), whisper.cpp Vulkan: Large-v3 Turbo 0,84 GB,
+  Large-v3 1,6 GB. Ölçülmemiş bir ses tanıma modeli (Small) dosyasının 1,5 katı "tahmini" gösterilir
+  (`memory_facts`). VoxCPM2'de klon sesle
   üretim yaklaşık 1 GB daha fazla bellek ister (ölçüm: tam hızda zirve +6,0 GB, klonsuz +5,2 GB).
   VoxCPM2'de istekte ne konuşma tarifi ne klon ses varsa motor "A clear voice sweet girl." ile konuşur
   (`DEFAULT_VOICE_DESIGN`, engines.py). 48 → 24 kHz indirme (`HalfRate`) parça sınırlarında kesintisiz ve filtresi
