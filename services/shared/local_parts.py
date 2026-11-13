@@ -603,21 +603,36 @@ BUFFERS_MB = 300
 MEASURED_VOXCPM2_MB = {'full': 4100, 'balanced': 3400, 'low': 3000}
 MEASURED_OMNIVOICE_MB = 1500
 MEASURED_WHISPER_MB = {'whisper-small': 520, 'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
+# The same model on Vulkan takes less than on CUDA, whose context costs more (2026-11-14, same card): VoxCPM2
+# 3599/2869/2519 MB on CUDA against 3475/2728/2379 on Vulkan (about 130 MB), OmniVoice 1531 against 1375, the
+# llama.cpp server 433 against 305 with a 200M model, whisper.cpp 1007 against 887. The tables above are CUDA's
+# (whisper.cpp's are Vulkan's, the engine it ships with first); these are what the other backend adds.
+HARDWARE_DELTA_MB = {'voxcpm2': {'vulkan': -130}, 'omnivoice': {'vulkan': -150}, 'llama': {'vulkan': -120},
+                     'whisper': {'cuda': 120}}
+
+
+def _shifted(value, delta):
+    return {key: item + delta for key, item in value.items()} if isinstance(value, dict) else value + delta
 
 
 def memory_facts(part, model, meta):
     if part.get('runner') != 'python':
         weights = model.get('size_mb') or 0
+        by_hardware = {hw: {'buffers_mb': BUFFERS_MB + delta} for hw, delta in HARDWARE_DELTA_MB['llama'].items()}
         layers, heads, kv_heads, dims = (meta or {}).get('layers'), (meta or {}).get('heads'),             (meta or {}).get('kv_heads'), (meta or {}).get('dims')
         # The cache holds a key and a value (2 bytes each) per layer, KV head and head dimension, per token.
         kv = 2 * layers * kv_heads * (dims // heads) * 2 * 1000 / 1048576 if layers and heads and kv_heads and dims else None
-        return {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB}
+        return {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB, 'by_hardware': by_hardware}
     if part['id'] == 'tts':
         if model.get('engine') == 'voxcpm2-gguf':
-            return {'by_mode': MEASURED_VOXCPM2_MB, 'measured': True}
-        return {'fixed_mb': MEASURED_OMNIVOICE_MB, 'measured': True}
+            return {'by_mode': MEASURED_VOXCPM2_MB, 'measured': True, 'by_hardware': {
+                hw: {'by_mode': _shifted(MEASURED_VOXCPM2_MB, delta)} for hw, delta in HARDWARE_DELTA_MB['voxcpm2'].items()}}
+        return {'fixed_mb': MEASURED_OMNIVOICE_MB, 'measured': True, 'by_hardware': {
+            hw: {'fixed_mb': MEASURED_OMNIVOICE_MB + delta} for hw, delta in HARDWARE_DELTA_MB['omnivoice'].items()}}
     if model.get('id') in MEASURED_WHISPER_MB:
-        return {'fixed_mb': MEASURED_WHISPER_MB[model['id']], 'measured': True}
+        base = MEASURED_WHISPER_MB[model['id']]
+        return {'fixed_mb': base, 'measured': True, 'by_hardware': {
+            hw: {'fixed_mb': base + delta} for hw, delta in HARDWARE_DELTA_MB['whisper'].items()}}
     return {'fixed_mb': round((model.get('size_mb') or 0) * 1.5), 'measured': False}
 
 
@@ -1372,6 +1387,7 @@ def part_status(part, hw, config, data):
             'model': model['id'] if model else None, 'settings': settings,
             'vision_off': _vision_off(entry),
             'engines': engine_facts(run['engine'], part, hw, data),
+            'engine_label': engine_label(run['engine'], settings['hardware'], data),
             'models': models, 'advanced': advanced(part, hw, model),
             'job': current, 'error': (change or {}).get('error'),
             # What the service runs with (the page compares the choice with it: "not applied yet").
@@ -1379,6 +1395,23 @@ def part_status(part, hw, config, data):
             # The engines the user can bring a model for (one not in Orion yet is shown, not offered).
             'user': {'kinds': [{**kind, 'ready': kind['engine'] in part_engines(part)} for kind in kinds],
                      'folder': str(user_dir(part['id']))} if kinds else None}
+
+
+ENGINE_LABELS = {'llama.cpp': 'llama.cpp', 'whisper.cpp': 'whisper.cpp', 'omnivoice-gguf': 'OmniVoice',
+                 'voxcpm2-gguf': 'VoxCPM2'}
+
+
+def engine_label(engine, hardware, data=None):
+    """'llama.cpp b11026': the engine a part runs on and the version of the folder it uses (an earlier version while
+    the catalog's one downloads), None when no engine is there."""
+    folder = engine_in_use(engine, hardware, data)
+    try:
+        version = (folder / '.complete').read_text(encoding='utf-8').strip()
+    except (OSError, TypeError):
+        return None
+    # The catalog's versions repeat the engine's name ('voxcpm2-v1.0.3', 'tts-v1.1.0'): show the number.
+    version = re.sub(r'^(?:voxcpm2|tts)-', '', version)
+    return f'{ENGINE_LABELS.get(engine, engine)} {version}'
 
 
 def engine_facts(engine, part, hw, data):
@@ -1848,9 +1881,13 @@ def tidy(data):
     current |= {path.parent.name for name in data['engines'] for hw_id in (engine_builds(name, data) or {})
                 for path in older_engines(name, hw_id, data)}
     folder = home() / 'engines'
+    # An `unpack-` folder is a job's scratch space; with no job running it is what an interrupted one left
+    # (an Orion update restarts the Hub mid-install): hundreds of MB that nothing will ever use.
+    jobs_running = any(busy(part['id']) for part in data['parts'])
     for path in folder.iterdir() if folder.is_dir() else []:
-        if (path.is_dir() and path.name not in current and path.name not in ('downloads', 'shared')
-                and not path.name.startswith('unpack-')):
+        scratch = path.name.startswith('unpack-')
+        if path.is_dir() and path.name not in ('downloads', 'shared') and (
+                (scratch and not jobs_running) or (not scratch and path.name not in current)):
             shutil.rmtree(path, ignore_errors=True)
     # A shared archive goes when no engine links to its files any more (and no job is putting one together).
     busy_unpacking = any(path.name.startswith('unpack-') for path in folder.iterdir()) if folder.is_dir() else True

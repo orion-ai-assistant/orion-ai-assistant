@@ -1016,10 +1016,11 @@ def test_a_speech_model_is_known_by_its_header(parts):
         'model.safetensors: safetensors (Hugging Face)', 'silero.bin: başka bir ggml', 'whisper.gguf: GGUF']
 
 
-def test_an_update_leaves_no_faster_whisper_behind(parts):
+def test_an_update_leaves_no_faster_whisper_behind(parts, monkeypatch):
     """A PC that ran speech recognition on faster-whisper: its engine (1.4 GB with cuDNN) and our CTranslate2
     models go at the first start of the new Hub; the choice moves to whisper.cpp's model of the same size.
-    The user's own models stay, and so does a job's scratch folder."""
+    The user's own models stay, and so does a running job's scratch folder."""
+    monkeypatch.setattr(P, 'busy', lambda part_id: part_id == 'llm')
     engines = P.home() / 'engines'
     old = engines / 'faster-whisper-1.2.1-py311' / 'cuda'
     old.mkdir(parents=True)
@@ -1193,3 +1194,47 @@ def test_a_shared_archive_downloads_once_and_is_linked_into_each_engine(parts, m
         assert not P.shared_dir(shared).exists()
     finally:
         httpd.shutdown()
+
+
+def test_an_interrupted_install_leaves_no_scratch_folder_after_the_next_start(parts, monkeypatch):
+    """A job killed mid-unpack (an Orion update restarts the Hub) leaves its `unpack-` folder; tidy removes it
+    when no job runs, and leaves it while one does."""
+    scratch = P.home() / 'engines' / 'unpack-abc123'
+    (scratch / 'unpacked').mkdir(parents=True)
+    (scratch / 'unpacked' / 'big.dll').write_bytes(b'x')
+    monkeypatch.setattr(P, 'busy', lambda part_id: part_id == 'tts')
+    P._tidied.clear()
+    P.tidy(P.catalog())
+    assert scratch.is_dir()  # A job is putting an engine together.
+    monkeypatch.setattr(P, 'busy', lambda part_id: False)
+    P._tidied.clear()
+    P.tidy(P.catalog())
+    assert not scratch.exists()
+
+
+def test_a_part_names_its_engine_and_version(parts):
+    """The card says what the service runs on: the engine's name and the version of the folder in use."""
+    part = P.spec('stt')
+    model, settings = P.effective(part, TWO_CARDS)
+    engine = P.for_model(part, model)['engine']
+    assert P.engine_label(engine, settings['hardware']) is None  # Not installed.
+    folder = P.engine_dir(engine, settings['hardware'])
+    folder.mkdir(parents=True)
+    (folder / '.complete').write_text(P.catalog()['engines'][engine]['version'], encoding='utf-8')
+    assert P.engine_label(engine, settings['hardware']) == f"whisper.cpp {P.catalog()['engines'][engine]['version']}"
+    P.write_part_config('stt', enabled=True)
+    row = next(item for item in P.status()['parts'] if item['id'] == 'stt')
+    assert row['engine_label'] == P.engine_label(engine, row['settings']['hardware'])
+
+
+def test_video_memory_facts_differ_per_hardware():
+    """CUDA's context takes more card memory than Vulkan's for the same model: the Hub says what each backend
+    needs and the card shows the one chosen."""
+    voxcpm2 = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'voxcpm2-gguf'}, None)
+    assert voxcpm2['by_mode']['low'] == 3000 and voxcpm2['by_hardware']['vulkan']['by_mode']['low'] == 2870
+    omni = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'omnivoice-gguf'}, None)
+    assert omni['fixed_mb'] == 1500 and omni['by_hardware']['vulkan']['fixed_mb'] == 1350
+    whisper = P.memory_facts({'id': 'stt', 'runner': 'python'}, {'id': 'whisper-small'}, None)
+    assert whisper['fixed_mb'] == 520 and whisper['by_hardware']['cuda']['fixed_mb'] == 640
+    llama = P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
+    assert llama['buffers_mb'] == 300 and llama['by_hardware']['vulkan']['buffers_mb'] == 180
