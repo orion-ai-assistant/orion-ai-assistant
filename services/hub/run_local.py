@@ -434,6 +434,10 @@ def _main(runtime):
     
     # Environment config
     env = os.environ.copy()
+    # numpy's OpenBLAS prepares a buffer for every core when it loads: +363 MB committed per process on a 12-core PC
+    # (9 MB with one thread). The Hub's processes (API servers, Worker, the TTS/STT wrappers they start) do small
+    # audio arithmetic; the heavy work runs in the engines' own threads. A value set by the user still wins.
+    env.setdefault('OPENBLAS_NUM_THREADS', '1')
     # No browser entry for other devices: they use the Orion app on the mobile port.
     local_port = int(get_env('ORION_LOCAL_PORT', default='8910', required=False))
     env['ORION_LOCAL_PORT'] = str(local_port)
