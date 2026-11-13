@@ -153,7 +153,22 @@ class WindowTests(PgCase):
         await registry.insert_messages(chat_id, messages)
 
     def old_way(self, full, limit=None, before_turn=None):
-        return job_service.history_window(visible_history(full), limit, before_turn)
+        """The window over the whole visible history: the last `limit` messages reaching back to the start of
+        their oldest turn, plus the one message before them when older ones exist."""
+        history = visible_history(full)
+        if limit is None:
+            return job_service.history_window(history, None, before_turn)
+        end = len(history)
+        if before_turn is not None:
+            end = next((i for i, m in enumerate(history) if m.get('turn_id') == before_turn), None)
+            if end is None:
+                return []
+        if end == 0:
+            return []
+        start = max(0, end - limit)
+        while start > 0 and history[start]['role'] != 'user':
+            start -= 1
+        return history[max(0, start - 1):end]
 
     async def new_way(self, limit=None, before_turn=None, max_chars=None):
         window = await registry.get_chat_window_db('chat', limit, before_turn, max_chars)
@@ -217,14 +232,26 @@ class WindowTests(PgCase):
     async def test_max_chars_cuts_the_window_by_readable_text_and_keeps_at_least_one_message(self):
         await self.store(chat(6, answer_chars=100))  # Each message is about 105 characters.
         messages, size = await registry.get_chat_window_db('chat', 50, None, 250)
-        self.assertEqual(size, 4)  # Three messages reach 250; one older exists.
-        self.assertEqual(visible_history(messages)[-size:][-3:], visible_history(messages)[-3:])
+        # Three messages reach 250, back to their turn's start: four; one older exists.
+        self.assertEqual(size, 5)
+        self.assertEqual(visible_history(messages)[-size:][-4:], visible_history(messages)[-4:])
         _, size = await registry.get_chat_window_db('chat', 50, None, 1)
-        self.assertEqual(size, 2)  # One message, plus the sign that older ones exist.
+        self.assertEqual(size, 3)  # One message with its question, plus the sign that older ones exist.
         _, size = await registry.get_chat_window_db('chat', 2, None, 100_000)
         self.assertEqual(size, 3)  # The limit still applies.
         _, size = await registry.get_chat_window_db('chat', 50, None, 100_000)
         self.assertEqual(size, 12)
+
+    async def test_one_answer_longer_than_max_chars_comes_with_its_question_and_no_older_sign(self):
+        # The only turn of a chat, its answer past max_chars: a client dropped the question as the "older"
+        # message, then the answer as the rest of a cut turn, and the chat opened empty.
+        await self.store(turn(0, answer_chars=20_000))
+        messages, size, older = await registry.get_chat_window_db('chat', 60, None, 12_000, with_older=True)
+        self.assertEqual((len(messages), size, older), (2, 2, False))
+        await self.store(turn(1, answer_chars=20_000))
+        messages, size, older = await registry.get_chat_window_db('chat', 60, None, 12_000, with_older=True)
+        self.assertEqual((size, older), (3, True))
+        self.assertEqual([m['content'][:2] for m in visible_history(messages)[-size:]], ['a0', 'q1', 'a1'])
 
     async def test_the_history_service_uses_the_window_and_a_database_error_is_a_503(self):
         await self.store(chat(5))

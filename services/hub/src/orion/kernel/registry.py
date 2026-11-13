@@ -736,15 +736,29 @@ async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str |
             if (limit is not None and size >= limit) or (max_chars and size and chars >= max_chars):
                 break
             size, chars = size + 1, chars + row["chars"]
-        older = size < len(heads)
-        oldest = heads[size]["id"] if older else heads[size - 1]["id"]
-        start = await conn.fetchval(
+        # The window reaches back to the start of its oldest turn: one long answer (past max_chars) still comes
+        # with its question, and the question is not taken for an "older" message (a client dropped it as the
+        # extra, then the answer as the rest of a cut turn: the chat opened empty).
+        kept_from = await conn.fetchval(
             """select max(id) from orion_chat_messages where chat_id = $1 and id <= $2 and role = 'user'""",
-            chat_id, oldest)
+            chat_id, heads[size - 1]["id"]) or heads[size - 1]["id"]
+        size = await conn.fetchval(
+            """select count(*) from orion_chat_messages
+               where chat_id = $1 and id >= $2 and ($3::bigint is null or id < $3)""",
+            chat_id, kept_from, end_id)
+        # The extra message that says older ones exist: the one just before the window, read with its turn.
+        extra = await conn.fetchval(
+            "select max(id) from orion_chat_messages where chat_id = $1 and id < $2", chat_id, kept_from)
+        older = extra is not None
+        start = kept_from
+        if older:
+            start = await conn.fetchval(
+                """select max(id) from orion_chat_messages where chat_id = $1 and id <= $2 and role = 'user'""",
+                chat_id, extra) or extra
         rows = await conn.fetch(
             """select content_json from orion_chat_messages
                where chat_id = $1 and id >= $2 and ($3::bigint is null or id < $3) order by id""",
-            chat_id, start or 0, end_id)
+            chat_id, start, end_id)
         found = _messages(rows), size + (1 if older else 0)
         return (*found, older) if with_older else found
     finally:
