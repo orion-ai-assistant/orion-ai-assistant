@@ -63,7 +63,7 @@ göründüğü: [ikonlar.md](ikonlar.md).
 | Hub penceresi (başlık, görev çubuğu) | Güncelleme Orion'u yeniden başlatınca: eski exe'yle açık kalan pencere kapatılıp yeni exe ile açılır. |
 | Router paneli ve penceresi | Router güncellenince; pencere ikonu her açılışta Router'dan alınır. |
 | Masaüstü / Başlat kısayolları | Kısayol yeniden yazılınca; ardından Windows'un ikon önbelleği yenilenir (`SHChangeNotify` ve `ie4uinit.exe -ClearIconCache`). |
-| Gizli simgeler (bildirim alanı / tepsi ikonu) | Güncelleme yeni Orion.exe'yi yazınca 500 ms içinde; çalışan yerleşik host süreci yeni ikonu dinamik yükler. |
+| Gizli simgeler (bildirim alanı / tepsi ikonu) | Güncelleme yeni Orion.exe'yi yazınca 500 ms içinde; çalışan yerleşik host süreci yeni ikonu dinamik yükler. Düzeltme gelmeden önceki exe bunu yapamıyordu (aynı yoldan eski ikonu okuyordu); düzeltmeyi içeren sürüme ilk geçişte Orion'u bir kez kapatıp açmak gerekebilir. Ayrıntı: [tepsi-ikonu.md](tepsi-ikonu.md). |
 
 ### Windows tarafı (bizim elimizde olmayan kısım)
 
