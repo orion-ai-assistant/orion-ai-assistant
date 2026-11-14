@@ -314,3 +314,12 @@ def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeyp
     assert gone['silinenler'] == [{'id': 5, 'metin': 'eski'}]
     nothing = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[9]), context))
     assert 'silinmedi' in nothing['not']
+
+
+def test_the_memory_page_paths_pass_the_access_boundary():
+    """The page's GET/POST/DELETE (and the browser's preflight) were refused with 404 before the memory paths
+    were listed: the app showed "Hub bağlantısı kurulamadı"."""
+    from orion.api.access_boundary import public_path
+    for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete'):
+        assert public_path(path)
+    assert not public_path('/api/v1/memoryx')
