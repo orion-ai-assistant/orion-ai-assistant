@@ -492,6 +492,25 @@ def embedding_profile(config=None, hw=None):
             'document_prefix': model.get('document_prefix', ''), 'vector_space': model.get('vector_space', '')}
 
 
+
+def embedding_media(config=None, hw=None):
+    """Which media the selected local embedding model takes now: its name, whether it has an extra file (mmproj),
+    whether that file is on, and image/audio as the file's header says (the catalog's `mmproj_kinds` until the
+    header is known). Without the extra file on, neither image nor audio is taken."""
+    part = spec('embedding')
+    model, settings = effective(part, hardware() if hw is None else hw, config)
+    model = model or {}
+    has_extra = bool(model.get('mmproj'))
+    kinds = set(model.get('mmproj_kinds') or [])
+    if has_extra:
+        meta = model_meta(part, model, model['mmproj'])
+        if meta:
+            kinds = {kind for kind, key in (('image', 'vision'), ('audio', 'audio')) if meta.get(key)}
+    on = has_extra and bool(settings.get('vision', True))
+    return {'model': model.get('name') or model.get('id') or 'Embedding modeli', 'has_extra': has_extra,
+            'extra_on': on, 'extra_kinds': sorted(kinds),
+            'image': on and 'image' in kinds, 'audio': on and 'audio' in kinds}
+
 CONTEXT_FALLBACK = 131072
 _metas = {}
 _GGUF_FORMATS = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d'}

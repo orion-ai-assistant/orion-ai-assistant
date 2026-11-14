@@ -1,6 +1,8 @@
 """Minimal memory: chunks of a saved chat with their embedding, searched by the `hafizada_ara` tool.
 
-Rows carry their own text and do not reference the chat, so deleting the chat keeps them. Rows of another
+Rows carry their own text and do not reference the chat, so deleting the chat keeps them. Image and audio rows
+(kind 'image'/'audio') carry a short label as their text and `media_id`: a link of owner 'memory' keeps the file
+after the chat is deleted, and deleting the row drops that link. Rows of another
 embedding model (`vector_space`) are never compared with the current one, only counted."""
 from __future__ import annotations
 
@@ -45,6 +47,9 @@ async def ensure_memory_table(conn) -> None:
                     created_at timestamptz not null default now()
                 )""")
             await conn.execute("alter table orion_memory add column if not exists kind text not null default 'text'")
+            await conn.execute("alter table orion_memory add column if not exists media_id text")
+            await conn.execute("alter table orion_memory add column if not exists media_mime text")
+            await conn.execute("alter table orion_memory add column if not exists media_seconds real")
             await conn.execute("create index if not exists idx_orion_memory_user on orion_memory (user_id, vector_space)")
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
@@ -108,11 +113,174 @@ def chat_text(messages: list[dict]) -> str:
     return "\n\n".join(paragraphs)
 
 
-async def save_chat(user_id: str, chat_id: str, title: str, settings) -> int:
-    """Chunk, embed and store the chat; returns how many chunks were saved."""
+AUDIO_PIECE_SECONDS = 60  # Gemma's mmproj: 25 tokens/s, so a piece fits the default 2048 context.
+NOUNS = {"image": ("görsel", "görseller"), "audio": ("ses kaydı", "sesler")}
+NO_MEDIA = {"has_extra": False, "extra_on": False, "extra_kinds": [], "image": False, "audio": False}
+
+
+def chat_media(messages: list[dict]) -> list[dict]:
+    """Images and audio the user sent in the chat (attachments and media parts), once each by media id. The
+    assistant's messages, its spoken replies (TTS) included, are never taken."""
+    found, seen = [], set()
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        shown = message.get("display_text")
+        content = message.get("content")
+        text = (shown if isinstance(shown, str) else content if isinstance(content, str) else "") or ""
+        items = [item for item in message.get("attachments") or [] if isinstance(item, dict)]
+        if isinstance(content, list):
+            items += [part["attachment"] for part in content if isinstance(part, dict)
+                      and part.get("type") == "hub_media" and isinstance(part.get("attachment"), dict)]
+        for item in items:
+            media_id, mime = item.get("media_id"), str(item.get("mime_type") or "").lower()
+            kind = "image" if mime.startswith("image/") else "audio" if mime.startswith("audio/") else None
+            if not kind or not isinstance(media_id, str) or media_id in seen:
+                continue
+            seen.add(media_id)
+            found.append({"kind": kind, "media_id": media_id, "mime": mime, "name": item.get("name") or "",
+                          "text": text.strip()[:300]})
+    return found
+
+
+def media_support(local: bool, model_name: str) -> dict:
+    """What the active embedding model takes now (local_parts.embedding_media); a cloud model takes no media."""
+    if local:
+        from services.shared import local_parts
+        try:
+            return local_parts.embedding_media()
+        except Exception as exc:
+            logger.warning("Embedding media support unknown: %s", exc)
+    return {"model": model_name, **NO_MEDIA}
+
+
+def skip_warning(kind: str, count: int, support: dict) -> str:
+    noun, many = NOUNS[kind]
+    head = f"Sohbette {count} {noun} var ama"
+    if support["has_extra"] and kind in support["extra_kinds"] and not support["extra_on"]:
+        return (f"{head} {support['model']} modelinin ek dosyası kapalı; {many} kaydedilmedi. "
+                "Görsel/ses için modelin ek dosyasını aç (Bileşenler → Hafıza).")
+    sense, label = ("görselleri", "Görsel") if kind == "image" else ("sesi", "Ses")
+    return (f"{head} {support['model']} {sense} anlamıyor; {many} kaydedilmedi. "
+            f"{label} için EmbeddingGemma 2'yi ek dosyasıyla seç.")
+
+
+def clock(seconds: float) -> str:
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def audio_pieces(raw: bytes, piece_seconds: int = AUDIO_PIECE_SECONDS) -> tuple[list[bytes], float]:
+    """Decode any audio PyAV reads and cut it into 16 kHz mono WAV pieces of at most `piece_seconds`; returns
+    (pieces, total seconds)."""
+    import io
+    import wave
+    import av
+    rate = 16000
+    pcm = bytearray()
+    with av.open(io.BytesIO(raw)) as source:
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=rate)
+
+        def take(frames):
+            for frame in frames:
+                pcm.extend(bytes(frame.planes[0])[:frame.samples * 2])
+        for frame in source.decode(audio=0):
+            take(resampler.resample(frame))
+        take(resampler.resample(None))
+    step = piece_seconds * rate * 2
+    pieces = []
+    for start in range(0, len(pcm), step):
+        chunk = bytes(pcm[start:start + step])
+        if len(chunk) < rate // 5:  # A tail under 0.1 s says nothing.
+            continue
+        out = io.BytesIO()
+        with wave.open(out, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(rate)
+            writer.writeframes(chunk)
+        pieces.append(out.getvalue())
+    return pieces, len(pcm) / (rate * 2)
+
+
+async def _embed_media(parts: list[dict], target) -> list[float]:
+    from orion.worker.services.router import generate_embeddings
+    vector = await generate_embeddings(parts, target)  # Media take no prefix (EmbeddingGemma 2: text only).
+    if not vector or len(vector) != 768:
+        raise ValueError("Embedding modeli 768 boyutlu vektör döndürmedi")
+    return vector
+
+
+async def _read_chat_media(chat_id: str, media_id: str) -> tuple[str, bytes]:
+    from orion.kernel.media_store import read_media
+    return await read_media(chat_id, media_id)
+
+
+async def _media_rows(item: dict, chat_id: str, target) -> list[tuple[str, list[float], float | None]]:
+    """(label, vector, seconds) per row of one image or audio file: one image, one row per <=60 s of audio."""
+    import asyncio
+    from orion.worker.services.router import audio_part, image_part
+    mime, raw = await _read_chat_media(chat_id, item["media_id"])
+    tail = f" — {item['text']}" if item["text"] else ""
+    if item["kind"] == "image":
+        return [((item["name"] or "Görsel") + tail, await _embed_media([image_part(raw, mime)], target), None)]
+    pieces, seconds = await asyncio.to_thread(audio_pieces, raw)
+    if not pieces:
+        raise ValueError("ses çözülemedi")
+    name = item["name"] if not item["name"].lower().startswith(("ses", "audio", "recording", "voice")) else ""
+    base = f"Ses kaydı {clock(seconds)}" + (f" ({name})" if name else "")
+    rows = []
+    for index, piece in enumerate(pieces, 1):
+        part = f" parça {index}/{len(pieces)}" if len(pieces) > 1 else ""
+        rows.append((base + part + tail, await _embed_media([audio_part(piece, "wav")], target), seconds))
+    return rows
+
+
+MEDIA_INSERT_SQL = (
+    "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
+    "media_id, media_mime, media_seconds) values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10) returning id")
+
+
+async def _save_media(conn, user_id, chat_id, title, items, space, target, support) -> tuple[int, dict, list[str]]:
+    from orion.kernel.media_store import link_media
+    saved, skipped, failed, warnings = 0, {}, {}, []
+    for kind in ("image", "audio"):
+        wanted = [item for item in items if item["kind"] == kind]
+        if not wanted:
+            continue
+        if not support[kind]:
+            skipped[kind] = len(wanted)
+            warnings.append(skip_warning(kind, len(wanted), support))
+            continue
+        for item in wanted:
+            if await conn.fetchval("select 1 from orion_memory where user_id = $1 and vector_space = $2 "
+                                   "and media_id = $3 limit 1", user_id, space, item["media_id"]):
+                continue
+            try:
+                rows = await _media_rows(item, chat_id, target)
+                async with conn.transaction():
+                    for label, vector, seconds in rows:
+                        row_id = await conn.fetchval(
+                            MEDIA_INSERT_SQL, user_id, label[:1000], space, _vector(vector), "chat_save",
+                            title or None, kind, item["media_id"], item["mime"], seconds)
+                        await link_media(item["media_id"], "memory", str(row_id), conn=conn)
+                saved += len(rows)
+            except Exception as exc:
+                logger.warning("Memory could not store %s %s: %s", kind, item["media_id"][:12], exc)
+                failed[kind] = failed.get(kind, 0) + 1
+    for kind, count in failed.items():
+        warnings.append(f"{count} {NOUNS[kind][0]} kaydedilemedi (embedding modeli işleyemedi).")
+    return saved, skipped, warnings
+
+
+async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
+    """Chunk, embed and store the chat's text, and the images and audio the active model takes. Returns
+    {"saved": new rows, "skipped": {kind: count}, "warnings": [Turkish sentences]}."""
     from orion.worker.services.router import chunk_text
-    chunks = chunk_text(chat_text(await registry.get_chat_history_db(chat_id)))
-    if not chunks:
+    messages = await registry.get_chat_history_db(chat_id)
+    chunks = chunk_text(chat_text(messages))
+    items = chat_media(messages)
+    if not chunks and not items:
         raise MemoryUnavailable("Bu sohbette kaydedilecek metin yok.")
     conn = await _connect()
     try:
@@ -122,7 +290,13 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> int:
         for chunk in chunks:
             for vector in await _embed(chunk, target, "document", local):
                 rows.append((user_id, chunk, space, _vector(vector), title or None))
-        return await _insert_new(conn, rows, "chat_save")
+        saved = await _insert_new(conn, rows, "chat_save")
+        skipped, warnings = {}, []
+        if items:
+            support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
+            more, skipped, warnings = await _save_media(conn, user_id, chat_id, title, items, space, target, support)
+            saved += more
+        return {"saved": saved, "skipped": skipped, "warnings": warnings}
     finally:
         await conn.close()
 
@@ -130,7 +304,7 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> int:
 INSERT_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title) "
     "select $1, $2, $3, $4::vector, $6, $5 where not exists "
-    "(select 1 from orion_memory where user_id = $1 and vector_space = $3 and text = $2)")
+    "(select 1 from orion_memory where user_id = $1 and vector_space = $3 and text = $2 and media_id is null)")
 MAX_NOTE = 4000
 
 
@@ -142,7 +316,8 @@ async def _insert_new(conn, rows, source_kind: str) -> int:
             continue
         seen.add((row[1], row[2]))
         existing = await conn.fetchval(
-            "select 1 from orion_memory where user_id = $1 and vector_space = $2 and text = $3", row[0], row[2], row[1])
+            "select 1 from orion_memory where user_id = $1 and vector_space = $2 and text = $3 and media_id is null",
+            row[0], row[2], row[1])
         if not existing:
             fresh.append((*row, source_kind))
     if fresh:
@@ -181,7 +356,8 @@ async def current_space(settings) -> str | None:
 KINDS = ("text", "image", "audio")
 MIN_SCORE = 0.45  # Below this a vector neighbour is noise, not a match by meaning.
 TEXT_CAP = 500
-_COLUMNS = "id, text, kind, vector_space, source_kind, source_chat_title, created_at"
+_COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
+            "media_seconds")
 
 
 def _filters(vector_space: str, kind: str, first: int) -> tuple[str, list]:
@@ -200,6 +376,10 @@ def _item(r, space, score=None, match=None) -> dict:
     item = {"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
             "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
             "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space}
+    if r.get("media_id"):
+        seconds = r.get("media_seconds")
+        item.update(media_id=r["media_id"], media_mime=r.get("media_mime"),
+                    media_seconds=None if seconds is None else round(float(seconds), 1))
     if match:
         item["match"] = match
         item["score"] = None if score is None else round(float(score), 4)
@@ -290,8 +470,14 @@ async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
     conn = await _connect()
     try:
         await ensure_memory_table(conn)
-        rows = await conn.fetch(
-            "delete from orion_memory where user_id = $1 and id = any($2::bigint[]) returning id, text", user_id, ids)
+        from orion.kernel.media_store import unlink_media
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "delete from orion_memory where user_id = $1 and id = any($2::bigint[]) returning id, text, media_id",
+                user_id, ids)
+            for r in rows:
+                if r.get("media_id"):
+                    await unlink_media(r["media_id"], "memory", str(r["id"]), conn=conn)
     finally:
         await conn.close()
     return [{"id": r["id"], "text": r["text"]} for r in rows]
@@ -305,11 +491,29 @@ async def search(user_id: str, query: str, settings) -> dict:
         target, space, local = await embedding_target(settings)
         vector = (await _embed(query, target, "query", local))[0]
         rows = await conn.fetch(
-            "select id, text, created_at from orion_memory where user_id = $1 and vector_space = $2 "
+            "select id, text, created_at, kind, media_id from orion_memory where user_id = $1 and vector_space = $2 "
             "order by embedding <=> $3::vector limit $4", user_id, space, _vector(vector), LIMIT)
         other = await conn.fetchval(
             "select count(*) from orion_memory where user_id = $1 and vector_space <> $2", user_id, space)
-        return {"rows": [{"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat()} for r in rows],
+        return {"rows": [{"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat(),
+                          "kind": r.get("kind") or "text", "media_id": r.get("media_id")} for r in rows],
                 "other_spaces": int(other or 0)}
     finally:
         await conn.close()
+
+
+async def read_item_media(user_id: str, item_id: int) -> tuple[str, bytes, str]:
+    """(mime, bytes, media id) of the file this user's memory row links. LookupError for anything else: another
+    user's row, a missing row, a row without media and a file that is gone are the same answer."""
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        row = await conn.fetchrow(
+            "select m.id, m.mime_type, m.data from orion_memory r join orion_media_links l "
+            "on l.media_id = r.media_id and l.owner_kind = 'memory' and l.owner_id = r.id::text "
+            "join orion_media m on m.id = r.media_id where r.user_id = $1 and r.id = $2", user_id, int(item_id))
+    finally:
+        await conn.close()
+    if row is None:
+        raise LookupError("Media not found")
+    return row["mime_type"], bytes(row["data"]), row["id"]

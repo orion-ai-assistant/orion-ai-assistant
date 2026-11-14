@@ -194,6 +194,7 @@
             "jina-embeddings-v5-omni-nano-retrieval-Q8_0.gguf"
           ],
           "mmproj": "jina-embeddings-v5-omni-nano-retrieval-vision-mmproj-F16.gguf",
+          "mmproj_kinds": ["image"],
           "mmproj_off_by_default": true,
           "size_mb": 222,
           "mmproj_mb": 194,
@@ -221,6 +222,7 @@
             "embeddinggemma-2-Q8_0.gguf"
           ],
           "mmproj": "mmproj-BF16.gguf",
+          "mmproj_kinds": ["image", "audio"],
           "mmproj_off_by_default": true,
           "size_mb": 296,
           "mmproj_mb": 937,

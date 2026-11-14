@@ -7,6 +7,16 @@ class MemoryInput(ToolInput):
     sorgu: str = Field(min_length=1, max_length=500, description="Hafızada aranacak şey, kısa bir cümle (ör. 'kullanıcının adı')")
 
 
+KIND_LABELS = {"image": "görsel", "audio": "ses kaydı"}
+
+
+def _row(row: dict) -> dict:
+    kind = row.get("kind", "text")
+    if kind in KIND_LABELS:
+        return {"id": row["id"], "tarih": row["date"], "tur": KIND_LABELS[kind], "etiket": row["text"]}
+    return {"id": row["id"], "tarih": row["date"], "metin": row["text"]}
+
+
 async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
     from orion.kernel import memory
     from orion.kernel.config import get_runtime_settings
@@ -14,7 +24,10 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
         found = await memory.search(context.user_id, args.sorgu, await get_runtime_settings(None, context.user_id))
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
-    result = {"kayitlar": [{"id": row["id"], "tarih": row["date"], "metin": row["text"]} for row in found["rows"]]}
+    result = {"kayitlar": [_row(row) for row in found["rows"]]}
+    if any(row.get("kind", "text") != "text" for row in found["rows"]):
+        result["medya_notu"] = ("Görsel/ses kayıtlarının yalnız etiketini ve tarihini biliyorsun, içeriğini göremezsin; "
+                                "kullanıcı Hafıza sayfasında açabilir.")
     if not result["kayitlar"]:
         result["not"] = "Hafızada ilgili kayıt bulunamadı."
     if found["other_spaces"]:
