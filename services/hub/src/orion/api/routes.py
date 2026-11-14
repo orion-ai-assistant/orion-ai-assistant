@@ -85,7 +85,7 @@ async def save_chat_to_memory(chat_id: str, request: Request, current_user: str 
                                        await get_runtime_settings(request.app.state.redis, current_user))
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"saved": saved}
+    return saved  # {"saved", "skipped", "warnings"}: images/audio the model can't take are skipped with a warning.
 
 
 class MemoryNote(BaseModel):
@@ -131,6 +131,25 @@ async def delete_memory_item(item_id: int, current_user: str = Depends(get_curre
     if not deleted:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.")
     return {"deleted": [row["id"] for row in deleted]}
+
+
+@router.get("/api/v1/memory/{item_id}/media")
+async def memory_item_media(item_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    """The image or audio a memory row keeps. Another user's row, a missing row and a row without media are the
+    same 404."""
+    from orion.kernel import memory
+    try:
+        mime, raw, media_id = await memory.read_item_media(current_user, item_id)
+    except LookupError as exc:
+        raise HTTPException(404, 'Media not found') from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    etag = f'"{media_id}"'
+    headers = {'Cache-Control': 'private, max-age=2592000, immutable', 'ETag': etag,
+               'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'"}
+    if etag in [tag.strip() for tag in request.headers.get('if-none-match', '').split(',')]:
+        return Response(status_code=304, headers=headers)
+    return Response(content=raw, media_type=mime, headers=headers)
 
 
 @router.post("/api/v1/memory/delete")

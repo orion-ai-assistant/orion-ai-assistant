@@ -38,6 +38,17 @@ class FakeConn:
     async def close(self):
         self.closed = True
 
+    def transaction(self):
+        return Tx()
+
+
+class Tx:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class Settings:
     router_model_group = 'chat'
@@ -83,7 +94,7 @@ def test_chat_text_keeps_only_what_the_user_and_the_assistant_said():
 def test_save_chat_stores_one_row_per_chunk_with_its_own_text_and_vector_space(monkeypatch):
     conn = FakeConn()
     wire(monkeypatch, conn)
-    assert asyncio.run(memory.save_chat('u1', 'c1', 'Tanışma', Settings())) == 1
+    assert asyncio.run(memory.save_chat('u1', 'c1', 'Tanışma', Settings())) == {'saved': 1, 'skipped': {}, 'warnings': []}
     user, text, space, vector, title, source = conn.inserted[0]
     assert source == 'chat_save'
     assert (user, space, title) == ('u1', 'embeddinggemma-2', 'Tanışma')
@@ -119,7 +130,8 @@ def test_search_returns_texts_with_dates_and_counts_other_vector_spaces(monkeypa
     conn = FakeConn(rows=rows, other=3)
     wire(monkeypatch, conn)
     found = asyncio.run(memory.search('u1', 'adım ne', Settings()))
-    assert found == {'rows': [{'id': 7, 'text': 'Kullanıcı: adım Ayşe', 'date': '2026-11-14'}], 'other_spaces': 3}
+    assert found == {'rows': [{'id': 7, 'text': 'Kullanıcı: adım Ayşe', 'date': '2026-11-14', 'kind': 'text',
+                                 'media_id': None}], 'other_spaces': 3}
     assert conn.fetch_args[:2] == ('u1', 'embeddinggemma-2') and conn.fetch_args[3] == memory.LIMIT
 
 
@@ -210,9 +222,9 @@ def _route(monkeypatch, assistant_chat, save):
 def test_the_endpoint_saves_the_assistant_chat_and_returns_the_count(monkeypatch):
     async def save(user, chat, title, settings):
         assert (user, chat, title) == ('u1', 'c1', 'Başlık')
-        return 4
+        return {'saved': 4, 'skipped': {}, 'warnings': []}
 
-    assert _route(monkeypatch, 'c1', save) == {'saved': 4}
+    assert _route(monkeypatch, 'c1', save) == {'saved': 4, 'skipped': {}, 'warnings': []}
 
 
 def test_the_endpoint_refuses_other_chats(monkeypatch):
@@ -236,7 +248,7 @@ def test_saving_twice_skips_texts_already_in_the_same_space(monkeypatch):
     asyncio.run(memory.save_chat('u1', 'c1', '', Settings()))
     conn.existing.add((conn.inserted[0][1], 'embeddinggemma-2'))
     conn.inserted.clear()
-    assert asyncio.run(memory.save_chat('u1', 'c1', '', Settings())) == 0 and not conn.inserted
+    assert asyncio.run(memory.save_chat('u1', 'c1', '', Settings()))['saved'] == 0 and not conn.inserted
     assert 'not exists' in memory.INSERT_SQL
 
 

@@ -733,3 +733,16 @@ Sıra önerisi yukarıdan aşağıya.
   PGDG deposunun `postgresql-16-pgvector` paketi, macOS'ta kaynaktan `make && make install` (`PG_CONFIG` o PostgreSQL'in)
   ya da Homebrew `pgvector` formülü (hangi `postgresql@` sürümüne bağlı olduğu doğrulanmadı). Taşınabilir PostgreSQL
   gelirse aynı tarif: `make` ile `vector.so`/`vector.dylib`, `postgres_vector.FILES` platforma göre.
+
+## Hafızada görsel ve ses (2026-11-14)
+
+- "Hafızaya kaydet" artık sohbetin metninin yanında kullanıcının gönderdiği görselleri ve ses kayıtlarını da (ekler ve
+  `hub_media` parçaları; asistanın TTS cevapları hariç) kaydeder: görsel başına bir vektör, ses için ≤60 sn'lik her parçaya
+  bir vektör (PyAV ile 16 kHz mono WAV'a çevrilir; Gemma'nın mmproj'u 25 token/sn, 2048 bağlama sığar). Medya ön eksiz gömülür.
+- Satır: `kind` 'image'/'audio', `text` kısa etiket ("kedi.jpg — mesaj", "Ses kaydı 2:10 parça 1/3 — mesaj"), `media_id`,
+  `media_mime`, `media_seconds`. Her satır `orion_media_links`'e ('memory', satır id) bağlanır: sohbet silinse de dosya kalır,
+  satır silinince bağ düşer. Aynı uzayda aynı `media_id` ikinci kez kaydedilmez.
+- Model bir türü almıyorsa (`local_parts.embedding_media`: ek dosya açık mı, mmproj başlığı / katalogdaki `mmproj_kinds`)
+  o tür atlanır ve sonuçta `skipped` + Türkçe `warnings` döner; uygulama uyarı varsa diyalog gösterir.
+- `GET /api/v1/memory/{id}/media` satırın dosyasını verir (sahibi değilse 404). Arama tüm türleri aynı uzayda karşılaştırır;
+  `hafizada_ara` görsel/ses satırları için yalnız etiket, tür ve tarih verir.
