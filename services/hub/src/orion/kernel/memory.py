@@ -44,6 +44,7 @@ async def ensure_memory_table(conn) -> None:
                     source_chat_title text,
                     created_at timestamptz not null default now()
                 )""")
+            await conn.execute("alter table orion_memory add column if not exists kind text not null default 'text'")
             await conn.execute("create index if not exists idx_orion_memory_user on orion_memory (user_id, vector_space)")
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
@@ -121,12 +122,105 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> int:
         for chunk in chunks:
             for vector in await _embed(chunk, target, "document", local):
                 rows.append((user_id, chunk, space, _vector(vector), title or None))
-        await conn.executemany(
-            "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title) "
-            "values ($1, $2, $3, $4::vector, 'chat_save', $5)", rows)
-        return len(rows)
+        return await _insert_new(conn, rows, "chat_save")
     finally:
         await conn.close()
+
+
+INSERT_SQL = (
+    "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title) "
+    "select $1, $2, $3, $4::vector, $6, $5 where not exists "
+    "(select 1 from orion_memory where user_id = $1 and vector_space = $3 and text = $2)")
+MAX_NOTE = 4000
+
+
+async def _insert_new(conn, rows, source_kind: str) -> int:
+    """Insert rows, skipping a text this user already has in the same vector space; returns how many were new."""
+    seen, fresh = set(), []
+    for row in rows:
+        if (row[1], row[2]) in seen:
+            continue
+        seen.add((row[1], row[2]))
+        existing = await conn.fetchval(
+            "select 1 from orion_memory where user_id = $1 and vector_space = $2 and text = $3", row[0], row[2], row[1])
+        if not existing:
+            fresh.append((*row, source_kind))
+    if fresh:
+        await conn.executemany(INSERT_SQL, fresh)
+    return len(fresh)
+
+
+async def add_note(user_id: str, text: str, settings, source_kind: str = "manual") -> int:
+    """Embed and store a text the user (or the assistant on the user's request) wants remembered."""
+    from orion.worker.services.router import chunk_text
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Hafızaya eklenecek metin boş.")
+    if len(text) > MAX_NOTE:
+        raise ValueError(f"Not çok uzun: en fazla {MAX_NOTE} karakter olabilir.")
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        target, space, local = await embedding_target(settings)
+        rows = []
+        for piece in chunk_text(text) or [text]:
+            for vector in await _embed(piece, target, "document", local):
+                rows.append((user_id, piece, space, _vector(vector), None))
+        return await _insert_new(conn, rows, source_kind)
+    finally:
+        await conn.close()
+
+
+async def current_space(settings) -> str | None:
+    try:
+        return (await embedding_target(settings))[1]
+    except MemoryUnavailable:
+        return None
+
+
+async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offset: int = 0) -> dict:
+    """A page of this user's rows (newest first, optional plain-text filter) and a summary of all of them."""
+    space = await current_space(settings)
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        pattern = f"%{q.strip()}%" if q and q.strip() else None
+        rows = await conn.fetch(
+            "select id, text, kind, vector_space, source_kind, source_chat_title, created_at from orion_memory "
+            "where user_id = $1 and ($2::text is null or text ilike $2) order by created_at desc, id desc "
+            "limit $3 offset $4", user_id, pattern, limit, offset)
+        matching = await conn.fetchval(
+            "select count(*) from orion_memory where user_id = $1 and ($2::text is null or text ilike $2)", user_id, pattern)
+        spaces = await conn.fetch(
+            "select vector_space as key, count(*) as n from orion_memory where user_id = $1 group by vector_space", user_id)
+        kinds = await conn.fetch(
+            "select kind as key, count(*) as n from orion_memory where user_id = $1 group by kind", user_id)
+    finally:
+        await conn.close()
+    per_space = {r["key"]: int(r["n"]) for r in spaces}
+    return {
+        "items": [{"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
+                   "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
+                   "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space} for r in rows],
+        "matching": int(matching or 0),
+        "summary": {"total": sum(per_space.values()), "per_vector_space": per_space,
+                    "per_kind": {r["key"]: int(r["n"]) for r in kinds}, "current_vector_space": space},
+    }
+
+
+async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
+    """Delete this user's rows among `ids`; returns the deleted rows (id, text). Other users' ids are ignored."""
+    ids = [int(i) for i in ids][:500]
+    if not ids:
+        return []
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        rows = await conn.fetch(
+            "delete from orion_memory where user_id = $1 and id = any($2::bigint[]) returning id, text", user_id, ids)
+    finally:
+        await conn.close()
+    return [{"id": r["id"], "text": r["text"]} for r in rows]
 
 
 async def search(user_id: str, query: str, settings) -> dict:
@@ -137,11 +231,11 @@ async def search(user_id: str, query: str, settings) -> dict:
         target, space, local = await embedding_target(settings)
         vector = (await _embed(query, target, "query", local))[0]
         rows = await conn.fetch(
-            "select text, created_at from orion_memory where user_id = $1 and vector_space = $2 "
+            "select id, text, created_at from orion_memory where user_id = $1 and vector_space = $2 "
             "order by embedding <=> $3::vector limit $4", user_id, space, _vector(vector), LIMIT)
         other = await conn.fetchval(
             "select count(*) from orion_memory where user_id = $1 and vector_space <> $2", user_id, space)
-        return {"rows": [{"text": r["text"], "date": r["created_at"].date().isoformat()} for r in rows],
+        return {"rows": [{"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat()} for r in rows],
                 "other_spaces": int(other or 0)}
     finally:
         await conn.close()

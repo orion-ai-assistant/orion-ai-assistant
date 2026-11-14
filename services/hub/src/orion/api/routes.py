@@ -88,6 +88,60 @@ async def save_chat_to_memory(chat_id: str, request: Request, current_user: str 
     return {"saved": saved}
 
 
+class MemoryNote(BaseModel):
+    text: str = ""
+
+
+class MemoryDelete(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+@router.get("/api/v1/memory")
+async def list_memory(request: Request, q: str = "", limit: int = 50, offset: int = 0,
+                      current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory
+    try:
+        return await memory.list_items(current_user, await get_runtime_settings(request.app.state.redis, current_user),
+                                       q[:200], max(1, min(limit, 200)), max(0, offset))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory")
+async def add_memory_note(payload: MemoryNote, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory
+    try:
+        added = await memory.add_note(current_user, payload.text,
+                                      await get_runtime_settings(request.app.state.redis, current_user))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"added": added}
+
+
+@router.delete("/api/v1/memory/{item_id}")
+async def delete_memory_item(item_id: int, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory
+    try:
+        deleted = await memory.delete_items(current_user, [item_id])
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.")
+    return {"deleted": [row["id"] for row in deleted]}
+
+
+@router.post("/api/v1/memory/delete")
+async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory
+    try:
+        deleted = await memory.delete_items(current_user, payload.ids)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"deleted": [row["id"] for row in deleted]}
+
+
 class SettingsUpdateRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=120)
     values: dict[str, str] = Field(default_factory=dict)
