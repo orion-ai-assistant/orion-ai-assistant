@@ -175,7 +175,7 @@
       "args": [
         "--embedding"
       ],
-      "context_size": 8192,
+      "context_size": 2048,
       "cloud": "Bulut seçeneği (Router üzerinden) sonraki aşamada.",
       "models": [
         {

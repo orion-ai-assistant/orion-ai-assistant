@@ -482,6 +482,16 @@ def default_settings(part, model, hw):
     return settings
 
 
+def embedding_profile(config=None, hw=None):
+    """What whoever embeds text needs to know about the local embedding server: its context (the longest piece it
+    takes, prefix included) and the selected model's prefixes (a missing prefix is no error, the scores just drop)."""
+    part = spec('embedding')
+    model, settings = effective(part, hardware() if hw is None else hw, config)
+    model = model or {}
+    return {'context': int(settings['context_size']), 'query_prefix': model.get('query_prefix', ''),
+            'document_prefix': model.get('document_prefix', '')}
+
+
 CONTEXT_FALLBACK = 131072
 _metas = {}
 _GGUF_FORMATS = {0: '<B', 1: '<b', 2: '<H', 3: '<h', 4: '<I', 5: '<i', 6: '<f', 7: '<?', 10: '<Q', 11: '<q', 12: '<d'}

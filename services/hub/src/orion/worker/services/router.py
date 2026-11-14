@@ -444,6 +444,50 @@ async def generate_embeddings(
     raise RuntimeError("No valid router URL found.")
 
 
+# Worst case for Turkish, code and non-Latin text: a token covers about two characters. Estimating this low only
+# makes pieces shorter than needed; estimating high would make the server refuse the input.
+EMBED_CHARS_PER_TOKEN = 2.0
+EMBED_TOKEN_MARGIN = 32  # Start/end tokens and the estimate's error.
+
+
+def split_for_embedding(text: str, prefix: str, context_tokens: int) -> list[str]:
+    """Pieces that fit the server's context together with the prefix, cut at a paragraph, line, sentence or
+    word boundary (a hard cut only for a word that is longer than a whole piece)."""
+    limit = max(64, int((context_tokens - EMBED_TOKEN_MARGIN) * EMBED_CHARS_PER_TOKEN) - len(prefix))
+    pieces: list[str] = []
+    rest = text.strip()
+    while len(rest) > limit:
+        window = rest[:limit]
+        cut = 0
+        for mark in ("\n\n", "\n", ". ", "! ", "? ", " "):
+            found = window.rfind(mark)
+            if found > limit // 2:
+                cut = found + len(mark)
+                break
+        cut = cut or limit
+        pieces.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    if rest or not pieces:
+        pieces.append(rest)
+    return [piece for piece in pieces if piece] or [""]
+
+
+async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document") -> list[list[float]]:
+    """One vector per piece of `text`. `kind` is "document" (what is stored) or "query" (what is searched with).
+    The local model's prefix is added and text past its context is split; a cloud model gets the text as it is."""
+    try:
+        local = await get_model_provider(settings.router_model_group, "embed") == "local"
+    except Exception:
+        local = False
+    prefix, context = "", 0
+    if local:
+        from services.shared import local_parts
+        profile = local_parts.embedding_profile()
+        prefix, context = profile[f"{kind}_prefix"], profile["context"]
+    pieces = split_for_embedding(text, prefix, context) if context else [text]
+    return [await generate_embeddings(prefix + piece, settings) for piece in pieces]
+
+
 # Backward Compatibility Alias
 tei_embed = generate_embeddings
 

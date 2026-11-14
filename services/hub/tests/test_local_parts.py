@@ -1297,3 +1297,13 @@ def test_the_gemma_chat_model_memory_was_measured_not_computed(parts):
     assert facts['vision_mb'] == 1120 and facts['mode_share'] and 25 < facts['kv_mb_per_1k'] < 26
     other = P.memory_facts(part, P.model_spec(part, 'miniplm-qwen-200m'), {})
     assert 'weights_mb' in other  # Models nobody measured keep the computed estimate.
+
+
+def test_the_embedding_profile_gives_context_and_the_selected_models_prefixes(parts):
+    """Whoever embeds text asks for the server's context (2048, enough for ~400-token chunks and cheap in memory)
+    and the prefixes of the model in use; EmbeddingGemma 2 is the default only after the user picks it."""
+    profile = P.embedding_profile({}, TWO_CARDS)
+    assert profile['context'] == 2048 and profile['query_prefix'] == 'Query: '
+    gemma = P.embedding_profile({'embedding': {'model': 'embeddinggemma-2'}}, TWO_CARDS)
+    assert gemma['query_prefix'] == 'task: search result | query: '
+    assert gemma['document_prefix'] == 'title: none | text: '
