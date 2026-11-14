@@ -273,30 +273,23 @@ def test_the_media_path_passes_the_access_boundary():
     assert public_path('/api/v1/memory/12/media')
 
 
-class SearchConn(Conn):
-    async def fetch(self, sql, *args):
-        import datetime as dt
-        self.search_sql = sql
-        return [{'id': 3, 'text': 'kedi.jpg — Kedimin fotoğrafı', 'kind': 'image', 'media_id': IMG,
-                 'created_at': dt.datetime(2026, 11, 14)},
-                {'id': 4, 'text': 'Kullanıcı: adım Ayşe', 'kind': 'text', 'media_id': None,
-                 'created_at': dt.datetime(2026, 11, 13)}]
-
-
-def test_search_compares_all_kinds_and_the_tool_gives_label_kind_and_date(monkeypatch):
-    conn = SearchConn()
-    wire(monkeypatch, conn, GEMMA)
+def test_the_tool_gives_label_kind_and_date_and_says_how_to_open_media(monkeypatch):
+    async def search(user, query, settings, page=1, kind='all'):
+        return {'rows': [{'id': 3, 'text': 'kedi.jpg — Kedimin fotoğrafı', 'kind': 'image', 'media_id': IMG,
+                          'date': '2026-11-14', 'score': 0.31, 'match': 'meaning'},
+                         {'id': 4, 'text': 'Kullanıcı: adım Ayşe', 'kind': 'text', 'media_id': None,
+                          'date': '2026-11-13', 'score': 0.2, 'match': 'meaning'}], 'more': False, 'other_spaces': 0}
 
     async def settings(*args):
         return object()
+    monkeypatch.setattr(memory, 'search', search)
     monkeypatch.setattr('orion.kernel.config.get_runtime_settings', settings)
     found = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='kedinin fotoğrafı'),
                                                  ToolContext('u1', 'c', 't', None)))
-    assert 'kind' not in conn.search_sql.split('where')[1]
     assert found['kayitlar'][0] == {'id': 3, 'tarih': '2026-11-14', 'tur': 'görsel',
-                                    'etiket': 'kedi.jpg — Kedimin fotoğrafı'}
-    assert found['kayitlar'][1] == {'id': 4, 'tarih': '2026-11-13', 'metin': 'Kullanıcı: adım Ayşe'}
-    assert 'göremezsin' in found['medya_notu']
+                                    'etiket': 'kedi.jpg — Kedimin fotoğrafı', 'skor': 0.31, 'eslesme': 'anlam'}
+    assert found['kayitlar'][1]['metin'] == 'Kullanıcı: adım Ayşe'
+    assert 'hafizadaki_medyayi_ac' in found['medya_notu'] and 'göremezsin' not in found['medya_notu']
 
 
 def test_list_items_carry_media_id_mime_and_seconds():

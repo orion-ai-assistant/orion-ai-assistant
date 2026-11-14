@@ -110,7 +110,32 @@ def model_history(history, max_messages, slide=1, prior_turns=0):
     kept = kept[min(-(-start // block) * block - start, len(kept) - 1):]
     names = {call['id']: call.get('function', {}).get('name')
              for group in kept for msg in group for call in msg.get('tool_calls', [])}
-    return [{key: (_model_tool_content(msg, names.get(msg.get('tool_call_id'))) if msg.get('role') == 'tool' else history_content(msg))
-             if key == "content" else msg[key]
-             for key in ("role", "content", "tool_calls", "tool_call_id") if key in msg}
-            for group in kept for msg in group]
+    projected = []
+    pending = []
+    for group in kept:
+        for msg in group:
+            if pending and msg.get('role') != 'tool':
+                projected.append(media_message(pending))
+                pending = []
+            projected.append({key: (_model_tool_content(msg, names.get(msg.get('tool_call_id'))) if msg.get('role') == 'tool' else history_content(msg))
+                              if key == "content" else msg[key]
+                              for key in ("role", "content", "tool_calls", "tool_call_id") if key in msg})
+            if msg.get('role') == 'tool' and isinstance(msg.get('media_refs'), list):
+                pending.extend(msg['media_refs'])
+    if pending:
+        projected.append(media_message(pending))
+    return projected
+
+
+def media_message(refs):
+    """The user message that shows the model the memory media a tool opened (tool results cannot carry media on
+    OpenAI-compatible APIs). It follows the round's tool results, now and on every later turn, byte for byte the
+    same, so the prompt cache holds; the files are references, hydrated per request."""
+    parts = [{"type": "text", "text": "Hafızadan açılan dosyalar (bunu kullanıcı yazmadı; hafizadaki_medyayi_ac "
+                                      "aracının sonucu):"}]
+    for ref in refs:
+        label = "Görsel" if ref.get("kind") == "image" else "Ses"
+        parts.append({"type": "text", "text": f"Kayıt {ref.get('memory_id')} — {label}: {ref.get('label') or ''}"})
+        parts.append({"type": "hub_media", "attachment": {
+            "media_id": ref["media_id"], "mime_type": ref.get("mime_type"), "memory_id": ref.get("memory_id")}})
+    return {"role": "user", "content": parts}

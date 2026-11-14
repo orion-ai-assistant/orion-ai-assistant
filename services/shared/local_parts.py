@@ -497,11 +497,17 @@ def embedding_media(config=None, hw=None):
     """Which media the selected local embedding model takes now: its name, whether it has an extra file (mmproj),
     whether that file is on, and image/audio as the file's header says (the catalog's `mmproj_kinds` until the
     header is known). Without the extra file on, neither image nor audio is taken."""
-    part = spec('embedding')
+    return part_media('embedding', config, hw)
+
+
+def part_media(part_id, config=None, hw=None):
+    """embedding_media for any llama-server part (the local chat model too). A model with an extra file whose kinds
+    are not known yet is taken to see images (the usual mmproj)."""
+    part = spec(part_id)
     model, settings = effective(part, hardware() if hw is None else hw, config)
     model = model or {}
     has_extra = bool(model.get('mmproj'))
-    kinds = set(model.get('mmproj_kinds') or [])
+    kinds = set(model.get('mmproj_kinds') or (['image'] if has_extra else []))
     if has_extra:
         meta = model_meta(part, model, model['mmproj'])
         if meta:

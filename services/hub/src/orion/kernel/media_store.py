@@ -151,6 +151,13 @@ async def _hold(conn, media_id, mime, raw):
         """, media_id, mime, len(raw), raw)
 
 
+async def hold_media(conn, media_id, mime, raw):
+    """Store a file (if new) inside the caller's transaction; link it with link_media(conn=conn) after."""
+    if media_id != hashlib.sha256(raw).hexdigest():
+        raise ValueError('Media id is not the SHA256 of the file')
+    await _hold(conn, media_id, mime, raw)
+
+
 async def _link(conn, media_id, owner_kind, owner_id):
     await conn.execute("""
         insert into orion_media_links(media_id, owner_kind, owner_id) values($1, $2, $3)
@@ -365,7 +372,14 @@ async def hydrate_model_media(chat_id, messages):
             for part in message['content']:
                 if part.get('type') == 'hub_media':
                     from orion.worker.services.attachments import media_part
-                    item = (await hydrate_attachments(chat_id, [part['attachment']]))[0]
+                    try:
+                        item = (await hydrate_attachments(chat_id, [part['attachment']]))[0]
+                    except LookupError:
+                        if not part['attachment'].get('memory_id'):
+                            raise
+                        # A memory file opened earlier whose link is gone: the turn goes on without it.
+                        parts.append({'type': 'text', 'text': '(Bu dosya artık yok.)'})
+                        continue
                     part = media_part(item['data'])
                 parts.append(part)
             message['content'] = parts
