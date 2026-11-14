@@ -618,20 +618,39 @@ HARDWARE_DELTA_MB = {'llama': {'vulkan': -120}, 'whisper': {'cuda': 120}}
 
 
 
-# Embedding servers (llama.cpp b12378, context 8192, the whole context as one batch; 2026-11-14, the card to themselves,
-# after inputs of 14 to ~7000 tokens, which moved them by less than 100 MB): MB by hardware, and what the extra file
-# (mmproj) adds. A llama.cpp model's file does not predict it (Jina's 431 MB file holds 0.8 GB, Gemma's 310 MB 1.4 GB).
-MEASURED_EMBEDDING_MB = {'jina-v5-omni-nano': {'cuda': 790, 'vulkan': 690, 'vision_mb': 355},
-                         'embeddinggemma-2': {'cuda': 1410, 'vulkan': 1440, 'vision_mb': 1085}}
+# Embedding servers (llama.cpp b12378, 2026-11-14, Vulkan, the card to themselves, after an input as long as the
+# batch): MB by the context they start with. An embedding model has no KV cache at all (the log has no "KV buffer"):
+# what grows is the compute buffer, which follows -ub, and Orion starts -b/-ub as large as the context. CUDA differs
+# a little by model (`delta`), the extra file (mmproj) adds `vision_mb`. A model file's size does not predict it
+# (Jina's 431 MB F16 file took 0.25 GB at the default batch, Gemma's 310 MB Q8 takes 1.4 GB at 8192).
+MEASURED_EMBEDDING_MB = {
+    'jina-v5-omni-nano': {'by_context': {512: 158, 1024: 193, 2048: 241, 4096: 374, 8192: 684},
+                          'delta': {'cuda': 102}, 'vision_mb': 355},
+    'embeddinggemma-2': {'by_context': {512: 276, 1024: 358, 2048: 536, 4096: 915, 8192: 1432},
+                         'delta': {'cuda': -36}, 'vision_mb': 1085},
+}
+
+
+# The Gemma 4 chat model (2026-11-14, llama.cpp b12378, context 8192, one request, the card to themselves): MB by
+# hardware. Its 2.3 GB file holds a large per-layer embedding table that stays on the processor, so the card takes
+# about half of what file + cache + buffers predicted (2.8 GB). The memory mode scales it as before, the context by
+# the model's own cache per 1000 tokens; the extra file (mmproj) adds `vision_mb`.
+MEASURED_LLM_MB = {'gemma-4-e2b-it-q3-k-s': {'vulkan': 1235, 'delta': {'cuda': 130}, 'vision_mb': 1120}}
 
 
 def memory_facts(part, model, meta):
     if part['id'] == 'embedding' and model.get('id') in MEASURED_EMBEDDING_MB:
-        table = dict(MEASURED_EMBEDDING_MB[model['id']])
-        vision = table.pop('vision_mb')
-        facts = {'fixed_mb': max(table.values()), 'measured': True,
-                 'by_hardware': {hw: {'fixed_mb': mb} for hw, mb in table.items()}}
-        return {**facts, 'vision_mb': vision} if model.get('mmproj') else facts
+        table = MEASURED_EMBEDDING_MB[model['id']]
+        facts = {'by_context': table['by_context'], 'measured': True,
+                 'by_hardware': {hw: {'delta_mb': delta} for hw, delta in table['delta'].items()}}
+        return {**facts, 'vision_mb': table['vision_mb']} if model.get('mmproj') else facts
+    if part['id'] == 'llm' and model.get('id') in MEASURED_LLM_MB:
+        table = MEASURED_LLM_MB[model['id']]
+        layers, heads, kv_heads, dims = ((meta or {}).get(key) for key in ('layers', 'heads', 'kv_heads', 'dims'))
+        kv = 2 * layers * kv_heads * (dims // heads) * 2 * 1000 / 1048576 if layers and heads and kv_heads and dims else 0
+        return {'fixed_mb': table['vulkan'], 'measured': True, 'mode_share': True, 'base_context': 8192,
+                'kv_mb_per_1k': kv, 'vision_mb': table['vision_mb'] if model.get('mmproj') else None,
+                'by_hardware': {hw: {'fixed_mb': table['vulkan'] + delta} for hw, delta in table['delta'].items()}}
     if part.get('runner') != 'python':
         weights = model.get('size_mb') or 0
         by_hardware = {hw: {'buffers_mb': BUFFERS_MB + delta} for hw, delta in HARDWARE_DELTA_MB['llama'].items()}

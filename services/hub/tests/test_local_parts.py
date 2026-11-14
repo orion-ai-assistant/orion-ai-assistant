@@ -1270,8 +1270,9 @@ def test_the_embedding_catalog_models_and_their_memory(parts):
     assert models['jina-v5-omni-nano']['query_prefix'] == 'Query: '
     assert models['embeddinggemma-2']['args'] == ['--pooling', 'mean']
     facts = P.memory_facts(part, models['embeddinggemma-2'], None)
-    assert facts['by_hardware']['cuda']['fixed_mb'] == 1410 and facts['vision_mb'] == 1085
-    assert P.memory_facts(part, models['jina-v5-omni-nano'], None)['by_hardware']['vulkan']['fixed_mb'] == 690
+    assert facts['by_context'][8192] == 1432 and facts['vision_mb'] == 1085
+    assert all(a < b for a, b in zip(sorted(facts['by_context'].values()), sorted(facts['by_context'].values())[1:]))
+    assert P.memory_facts(part, models['jina-v5-omni-nano'], None)['by_hardware']['cuda']['delta_mb'] == 102
 
 
 def test_an_embedding_models_extra_file_is_off_until_the_user_turns_it_on(parts):
@@ -1284,3 +1285,15 @@ def test_an_embedding_models_extra_file_is_off_until_the_user_turns_it_on(parts)
     model, settings = P.effective(part, TWO_CARDS)
     assert settings['vision'] is True and len(P.model_files(part, model, settings)) == 2
     assert set(P._vision_off({}, part)) == {'jina-v5-omni-nano', 'embeddinggemma-2'}
+
+
+def test_the_gemma_chat_model_memory_was_measured_not_computed(parts):
+    """File + cache + buffers said 2.8 GB; the card took 1.2 GB (Vulkan) / 1.35 GB (CUDA) because the large embedding
+    table stays on the processor. The extra file adds ~1.1 GB."""
+    part = P.spec('llm')
+    model = P.model_spec(part, 'gemma-4-e2b-it-q3-k-s')
+    facts = P.memory_facts(part, model, {'layers': 35, 'heads': 8, 'kv_heads': 1, 'dims': 1536})
+    assert facts['fixed_mb'] == 1235 and facts['by_hardware']['cuda']['fixed_mb'] == 1365
+    assert facts['vision_mb'] == 1120 and facts['mode_share'] and 25 < facts['kv_mb_per_1k'] < 26
+    other = P.memory_facts(part, P.model_spec(part, 'miniplm-qwen-200m'), {})
+    assert 'weights_mb' in other  # Models nobody measured keep the computed estimate.
