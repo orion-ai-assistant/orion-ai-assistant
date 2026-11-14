@@ -316,6 +316,35 @@ class LiveRedisAofTests(unittest.TestCase):
                 last.kill()
                 last.wait(10)
 
+    def test_an_oversized_aof_is_compacted_at_start(self):
+        """A dev Hub's 97 MB append-only file held 250 KB of data and took 23 s to load at every start (past the
+        15 s wait): an oversized file is rewritten once Redis answers, and Redis keeps serving meanwhile."""
+        import socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
+        with tempfile.TemporaryDirectory() as directory:
+            argv = [str(REDIS_EXE), '--bind', '127.0.0.1', '--port', str(port), '--appendonly', 'yes',
+                    '--appendfilename', run_local.AOF_NAME, '--auto-aof-rewrite-percentage', '0']
+            proc = self.start(directory, port, argv)
+            try:
+                for index in range(3000):
+                    run_local.redis_call(port, 'SET', 'same-key', f'value-{index}')
+                time.sleep(1.5)  # appendfsync everysec
+                aof = Path(directory, run_local.AOF_NAME)
+                grown = aof.stat().st_size
+                self.assertFalse(run_local.compact_aof(port, directory))  # Under the 16 MB line: left alone.
+                with patch.object(run_local, 'AOF_COMPACT_BYTES', 1000):
+                    self.assertTrue(run_local.compact_aof(port, directory))
+                deadline = time.monotonic() + 30
+                while aof.stat().st_size >= grown / 10:
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(.1)
+                self.assertTrue(run_local.redis_call(port, 'GET', 'same-key').startswith(b'$'))
+            finally:
+                proc.kill()
+                proc.wait(10)
+
     def test_an_empty_aof_left_by_an_interrupted_switch_does_not_hide_the_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, 'dump.rdb').write_bytes(b'REDIS0009 snapshot')

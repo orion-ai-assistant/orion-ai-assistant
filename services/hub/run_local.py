@@ -342,20 +342,28 @@ class RouterWatch:
         self.thread.start()
 
 
-def wait_redis(record, redis_port, timeout=15):
-    """Until this Redis process owns the port and answers PING."""
+def wait_redis(record, redis_port, timeout=15, loading_timeout=600):
+    """Until this Redis process owns the port and answers PING.
+
+    A Redis that answers -LOADING is reading its files (a 97 MB append-only file took 23 s): it is waited for as
+    long as it keeps loading (up to `loading_timeout`); `timeout` is for a Redis that never answers at all."""
     from services.shared.process_lifecycle import owns_listener, LifecycleError
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    loading = False
     while True:
         try:
             if owns_listener(record, redis_port):
                 with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=1) as redis_check:
                     redis_check.sendall(b'*1\r\n$4\r\nPING\r\n')
-                    if redis_check.recv(64).startswith(b'+PONG'):
+                    reply = redis_check.recv(64)
+                    if reply.startswith(b'+PONG'):
                         return
+                    if reply.startswith(b'-LOADING') and not loading:
+                        loading = True
+                        print('[*] Redis is loading its data...', flush=True)
         except OSError:
-            pass  # Still loading its snapshot.
-        if time.monotonic() >= deadline:
+            pass  # Not listening yet.
+        if time.monotonic() - start >= (loading_timeout if loading else timeout):
             raise LifecycleError('Redis readiness failed')
         time.sleep(.1)
 
@@ -377,7 +385,10 @@ def redis_argv(redis_exe, redis_port, directory):
     file loses at most a second. Starting with --appendonly yes while only dump.rdb exists would load an empty
     AOF instead of the snapshot, so the first time Redis starts from its snapshot, a copy of the snapshot is kept
     (dump.rdb.before-aof) and the AOF is switched on while it runs (switch_on_aof). Later starts load the AOF."""
-    argv = [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port)]
+    # Redis rewrites its append-only file when it doubled since the last rewrite, counted from the size it loaded:
+    # a file that once grew big (97 MB holding 250 KB of data) was read in full at every start. A low floor keeps
+    # it small; compact_aof rewrites an oversized one once at start.
+    argv = [redis_exe, '--bind', '127.0.0.1', '--port', str(redis_port), '--auto-aof-rewrite-min-size', '16mb']
     aof = os.path.join(directory, AOF_NAME)
     snapshot = os.path.join(directory, 'dump.rdb')
     if _size(aof) == 0 and _size(snapshot) > 0:
@@ -400,6 +411,17 @@ def redis_call(redis_port, *words, timeout=5):
     with socket.create_connection(('127.0.0.1', int(redis_port)), timeout=timeout) as client:
         client.sendall(command)
         return client.recv(256).split(b'\r\n', 1)[0]
+
+
+AOF_COMPACT_BYTES = 16 * 1024 * 1024
+
+
+def compact_aof(redis_port, directory):
+    """Ask Redis to rewrite an append-only file past AOF_COMPACT_BYTES (in the background; Redis keeps serving).
+    True when a rewrite was asked for."""
+    if _size(os.path.join(directory, AOF_NAME)) <= AOF_COMPACT_BYTES:
+        return False
+    return redis_call(redis_port, 'BGREWRITEAOF').startswith(b'+')
 
 
 def switch_on_aof(redis_port):
@@ -541,6 +563,12 @@ def _main(runtime):
         proc.child['native'] = {'kind': 'redis', 'port': int(redis_port)}
         threading.Thread(target=stream_logs, args=(proc, '[REDIS]', log_file, log_lock), daemon=True).start()
         wait_redis(proc.child['process'], redis_port)
+        if not switch:
+            try:
+                if compact_aof(redis_port, str(mutable_hub)):
+                    print('[*] Redis append-only file is being compacted in the background', flush=True)
+            except OSError as error:
+                print(f'[!] Redis append-only file not compacted: {error}', flush=True)
         if switch:
             try:
                 switch_on_aof(redis_port)
