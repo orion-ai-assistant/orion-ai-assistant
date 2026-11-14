@@ -1,5 +1,7 @@
 {
   "categories.browser.name": "Tarayıcı",
+  "categories.memory.name": "Hafıza",
+  "tools.hafizada_ara.name": "Hafızada ara",
   "categories.datetime.name": "Tarih ve saat",
   "categories.google_ai.name": "Google AI Modu",
   "categories.media.name": "YouTube ve YouTube Music",

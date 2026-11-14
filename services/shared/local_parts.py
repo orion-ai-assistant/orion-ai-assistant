@@ -489,7 +489,7 @@ def embedding_profile(config=None, hw=None):
     model, settings = effective(part, hardware() if hw is None else hw, config)
     model = model or {}
     return {'context': int(settings['context_size']), 'query_prefix': model.get('query_prefix', ''),
-            'document_prefix': model.get('document_prefix', '')}
+            'document_prefix': model.get('document_prefix', ''), 'vector_space': model.get('vector_space', '')}
 
 
 CONTEXT_FALLBACK = 131072

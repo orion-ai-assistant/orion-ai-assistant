@@ -72,6 +72,22 @@ async def reset_chat_tools(chat_id: str, request: Request, current_user: str = D
     return await save_selection(request.app.state.redis, current_user, chat_id, None)
 
 
+@router.post("/api/v1/chats/{chat_id}/memory/save")
+async def save_chat_to_memory(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """Only the "Asistanla konuş" chat is saved to memory, on the user's button press."""
+    from orion.api.services.assistant_chat import current_assistant_chat
+    from orion.kernel import memory
+    meta = await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    if await current_assistant_chat(request.app.state.redis, current_user) != chat_id:
+        raise HTTPException(400, "Yalnızca Asistanla konuş sohbeti hafızaya kaydedilir.")
+    try:
+        saved = await memory.save_chat(current_user, chat_id, meta.get("name") or "",
+                                       await get_runtime_settings(request.app.state.redis, current_user))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"saved": saved}
+
+
 class SettingsUpdateRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=120)
     values: dict[str, str] = Field(default_factory=dict)
