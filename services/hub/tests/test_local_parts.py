@@ -45,10 +45,11 @@ def parts(tmp_path, monkeypatch):
     return tmp_path / 'Parts'
 
 
-def fake_engine(home, hardware='vulkan'):  # The local LLM and embedding start on Vulkan.
-    folder = P.engine_dir('llama.cpp', hardware) / 'nested'
-    folder.mkdir(parents=True)
-    (folder / ('llama-server.exe' if os.name == 'nt' else 'llama-server')).write_bytes(b'')
+def fake_engine(home, hardware=None):  # Default: both engines (the local LLM starts on Vulkan, embedding on CUDA).
+    for name in ([hardware] if hardware else ['vulkan', 'cuda']):
+        folder = P.engine_dir('llama.cpp', name) / 'nested'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ('llama-server.exe' if os.name == 'nt' else 'llama-server')).write_bytes(b'')
 
 
 def test_every_part_installs_here_with_its_own_settings(parts):
@@ -56,7 +57,7 @@ def test_every_part_installs_here_with_its_own_settings(parts):
     by_id = {part['id']: part for part in status['parts']}
     assert set(by_id) == {'embedding', 'llm', 'stt', 'tts'}
     assert all(part['installable'] and part['state'] == 'absent' for part in by_id.values())
-    assert by_id['embedding']['model'] == 'jina-v5-omni-nano'  # The recommended model, nothing installed yet.
+    assert by_id['embedding']['model'] == 'embeddinggemma-2'  # The recommended model, nothing installed yet.
     # Speech recognition's CUDA engine brings cuBLAS (~650 MB); Vulkan and the processor are small.
     assert by_id['stt']['model'] == 'whisper-large-v3' and 600 < by_id['stt']['engines']['cuda']['mb'] < 700
     assert by_id['stt']['engines']['vulkan']['mb'] < 20 and by_id['stt']['engines']['cpu']['mb'] < 20
@@ -272,6 +273,7 @@ def test_the_engine_command_follows_the_part_model_and_settings(parts):
     argv, env, port = P.command(embedding, model, {**P.default_settings(embedding, model, TWO_CARDS), 'gpu': '1',
                                                     'hardware': 'cuda'})
     assert port == 8086 and '--embedding' in argv and argv[-2:] == ['--pooling', 'last']
+    assert argv[argv.index('--flash-attn') + 1] == 'auto'
     assert argv[argv.index('-ngl') + 1] == str(P.ALL_LAYERS) and env['CUDA_VISIBLE_DEVICES'] == '1'
     assert argv[argv.index('--host') + 1] == '127.0.0.1'  # Never on the network.
     llm = P.spec('llm')
@@ -1303,12 +1305,12 @@ def test_the_gemma_chat_model_memory_was_measured_not_computed(parts):
 
 def test_the_embedding_profile_gives_context_and_the_selected_models_prefixes(parts):
     """Whoever embeds text asks for the server's context (2048, enough for ~400-token chunks and cheap in memory)
-    and the prefixes of the model in use; EmbeddingGemma 2 is the default only after the user picks it."""
-    profile = P.embedding_profile({}, TWO_CARDS)
-    assert profile['context'] == 2048 and profile['query_prefix'] == 'Query: '
-    gemma = P.embedding_profile({'embedding': {'model': 'embeddinggemma-2'}}, TWO_CARDS)
-    assert gemma['query_prefix'] == 'task: search result | query: '
+    and the prefixes of the model in use; EmbeddingGemma 2 is the default, a saved Jina choice stays Jina."""
+    gemma = P.embedding_profile({}, TWO_CARDS)
+    assert gemma['context'] == 2048 and gemma['query_prefix'] == 'task: search result | query: '
     assert gemma['document_prefix'] == 'title: none | text: '
+    jina = P.embedding_profile({'embedding': {'model': 'jina-v5-omni-nano'}}, TWO_CARDS)
+    assert jina['query_prefix'] == 'Query: '
 
 
 def test_jinas_sound_entry_is_retired_and_embedding_has_no_memory_mode(parts):
@@ -1321,7 +1323,7 @@ def test_jinas_sound_entry_is_retired_and_embedding_has_no_memory_mode(parts):
     assert 'vram_mode' not in settings
     assert 'vram_mode' not in {field['key'] for field in P.advanced(part, TWO_CARDS, model)}
     assert P.clean_settings(part, {'vram_mode': 'low'}, TWO_CARDS, model) == {}
-    assert part['hardware'][0] == 'vulkan' and P.spec('llm')['hardware'][0] == 'vulkan'
+    assert part['hardware'][:2] == ['cuda', 'vulkan'] and P.spec('llm')['hardware'][0] == 'vulkan'
 
 
 def test_an_embedding_models_context_limit_is_known_before_its_file_is_there(parts):

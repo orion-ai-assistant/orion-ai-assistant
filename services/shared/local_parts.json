@@ -173,7 +173,9 @@
       "port_key": "EMBED_PORT",
       "port": 8086,
       "args": [
-        "--embedding"
+        "--embedding",
+        "--flash-attn",
+        "auto"
       ],
       "context_size": 2048,
       "cloud": "Bulut seçeneği (Router üzerinden) sonraki aşamada.",
@@ -203,8 +205,7 @@
           "document_prefix": "Document: ",
           "context_max": 8192,
           "dims": 768,
-          "vector_space": "jina-v5-omni-nano",
-          "recommended": true
+          "vector_space": "jina-v5-omni-nano"
         },
         {
           "id": "embeddinggemma-2",
@@ -231,7 +232,8 @@
           "document_prefix": "title: none | text: ",
           "context_max": 8192,
           "dims": 768,
-          "vector_space": "embeddinggemma-2"
+          "vector_space": "embeddinggemma-2",
+          "recommended": true
         }
       ],
       "retired_models": {
@@ -241,8 +243,8 @@
       },
       "runner": "llama",
       "hardware": [
-        "vulkan",
         "cuda",
+        "vulkan",
         "metal",
         "cpu"
       ]
