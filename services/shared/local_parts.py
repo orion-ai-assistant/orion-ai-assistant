@@ -666,6 +666,11 @@ MEASURED_EMBEDDING_MB = {
 # the model's own cache per 1000 tokens; the extra file (mmproj) adds `vision_mb`.
 MEASURED_LLM_MB = {'gemma-4-e2b-it-q3-k-s': {'vulkan': 1235, 'delta': {'cuda': 130}, 'vision_mb': 1120}}
 
+# A model not measured (the user's own) with an extra file: the card takes about 1.2x that file (measured: Gemma 4
+# 1120 MB for a 941 MB file, EmbeddingGemma 2 1085 MB for 937 MB; Jina's small 194 MB file took 355 MB, its
+# buffers weigh more at that size).
+VISION_MB_PER_FILE_MB = 1.2
+
 
 def memory_facts(part, model, meta):
     if part['id'] == 'embedding' and model.get('id') in MEASURED_EMBEDDING_MB:
@@ -686,7 +691,11 @@ def memory_facts(part, model, meta):
         layers, heads, kv_heads, dims = (meta or {}).get('layers'), (meta or {}).get('heads'),             (meta or {}).get('kv_heads'), (meta or {}).get('dims')
         # The cache holds a key and a value (2 bytes each) per layer, KV head and head dimension, per token.
         kv = 2 * layers * kv_heads * (dims // heads) * 2 * 1000 / 1048576 if layers and heads and kv_heads and dims else None
-        return {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB, 'by_hardware': by_hardware}
+        facts = {'weights_mb': weights, 'kv_mb_per_1k': kv, 'buffers_mb': BUFFERS_MB, 'by_hardware': by_hardware}
+        if model.get('mmproj') and model.get('mmproj_mb'):
+            # Not measured (a user's model): the extra file's share from its size, as the measured ones took it.
+            facts['vision_mb'] = round(model['mmproj_mb'] * VISION_MB_PER_FILE_MB)
+        return facts
     if part['id'] == 'tts':
         if model.get('engine') == 'voxcpm2-gguf':
             return {'measured': True, 'by_hardware': {

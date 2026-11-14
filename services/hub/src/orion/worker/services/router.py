@@ -381,8 +381,27 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
 #  Embedding
 # ---------------------------------------------------------------------------
 
+NATIVE_IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/bmp", "image/gif"}
+
+
+def to_png(data: bytes) -> bytes:
+    """Any image Pillow reads, as PNG (alpha kept, palette/CMYK made RGB)."""
+    import io
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as image:
+        image.seek(0)
+        frame = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
+    out = io.BytesIO()
+    frame.save(out, format="PNG")
+    return out.getvalue()
+
+
 def image_part(data: bytes, mime: str = "image/png") -> dict[str, Any]:
-    """One image as an embedding content part (llama-server with an mmproj)."""
+    """One image as an embedding content part (llama-server with an mmproj). llama-server decodes only what
+    stb_image reads (JPEG, PNG, BMP, GIF) and hands the rest (WebP, AVIF, TIFF, HEIC...) to ffmpeg, which an Orion
+    PC does not have ("failed to decode webp buffer"): those go as PNG (the first frame of an animation)."""
+    if mime.lower() not in NATIVE_IMAGE_MIMES:
+        data, mime = to_png(data), "image/png"
     encoded = base64.b64encode(data).decode("ascii")
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
 

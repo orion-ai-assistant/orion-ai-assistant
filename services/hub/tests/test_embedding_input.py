@@ -101,3 +101,15 @@ def test_a_cloud_model_gets_the_text_untouched(monkeypatch):
 def test_long_local_text_becomes_several_vectors(monkeypatch):
     sent, vectors = _embed_with(monkeypatch, 'local', text='Bir cümle daha. ' * 2000, kind='document')
     assert len(sent) == len(vectors) > 1 and all(item.startswith('title: none | text: ') for item in sent)
+
+
+def test_webp_goes_as_png_and_native_formats_stay():
+    import base64, io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new('RGBA', (4, 4), (255, 0, 0, 128)).save(out, format='WEBP')
+    url = image_part(out.getvalue(), 'image/webp')['image_url']['url']
+    assert url.startswith('data:image/png;base64,')
+    with Image.open(io.BytesIO(base64.b64decode(url.split(',', 1)[1]))) as png:
+        assert png.format == 'PNG' and png.mode == 'RGBA' and png.size == (4, 4)
+    assert image_part(b'\xff\xd8jpeg', 'image/jpeg')['image_url']['url'].startswith('data:image/jpeg;base64,')

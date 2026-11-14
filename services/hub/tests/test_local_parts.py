@@ -1339,3 +1339,9 @@ def test_the_model_row_shows_the_catalogs_context_and_vector_length(parts):
     part = P.spec('embedding')
     gemma = P.model_spec(part, 'embeddinggemma-2')
     assert gemma['dims'] == 768 and P.context_max(part, gemma) == 8192
+
+
+def test_users_model_with_an_extra_file_estimates_its_share():
+    facts = P.memory_facts({'id': 'llm'}, {'size_mb': 1000, 'mmproj': 'mmproj.gguf', 'mmproj_mb': 800}, {})
+    assert facts['vision_mb'] == 960
+    assert 'vision_mb' not in P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
