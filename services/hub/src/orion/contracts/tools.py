@@ -38,4 +38,6 @@ class ToolSelection(BaseModel):
 
 def default_tool_selection() -> ToolSelection:
     # New plugins never become enabled merely by being installed.
-    return ToolSelection(categories={"datetime": True}, functions={"get_current_time": True})
+    # The memory tool is the exception: it only reads what the user chose to save, so it is on from the start.
+    return ToolSelection(categories={"datetime": True, "memory": True},
+                         functions={"get_current_time": True, "hafizada_ara": True})

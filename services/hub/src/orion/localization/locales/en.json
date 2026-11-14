@@ -1,5 +1,7 @@
 {
   "categories.browser.name": "Browser",
+  "categories.memory.name": "Memory",
+  "tools.hafizada_ara.name": "Search memory",
   "categories.datetime.name": "Date and time",
   "categories.google_ai.name": "Google AI Mode",
   "categories.media.name": "YouTube and YouTube Music",
