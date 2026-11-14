@@ -636,6 +636,9 @@ HARDWARE_DELTA_MB = {'llama': {'vulkan': -120}, 'whisper': {'cuda': 120}}
 MEASURED_EMBEDDING_MB = {
     'jina-v5-omni-nano': {'by_context': {512: 158, 1024: 193, 2048: 241, 4096: 374, 8192: 684},
                           'delta': {'cuda': 102}, 'vision_mb': 355},
+    # The sound file (1.2 GB) measured on Vulkan at context 2048 after a spoken sentence: 1528 against 233 MB.
+    'jina-v5-omni-nano-audio': {'by_context': {512: 158, 1024: 193, 2048: 241, 4096: 374, 8192: 684},
+                                'delta': {'cuda': 102}, 'vision_mb': 1295},
     'embeddinggemma-2': {'by_context': {512: 276, 1024: 358, 2048: 536, 4096: 915, 8192: 1432},
                          'delta': {'cuda': -36}, 'vision_mb': 1085},
 }

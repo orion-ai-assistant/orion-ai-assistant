@@ -181,7 +181,7 @@
         {
           "id": "jina-v5-omni-nano",
           "name": "Jina Embeddings v5 Omni Nano",
-          "description": "Çok dilli ve hafif; çoğu bilgisayar için yeterli.",
+          "description": "Çok dilli ve hafif; çoğu bilgisayar için yeterli. Ek dosyası görsel anlar; ses için \"(ses)\" sürümünü seç.",
           "folder": "jina-embeddings",
           "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/d88747133a88c1ebb884d60392a25be08b8042f7/",
           "sha256": {
@@ -201,7 +201,32 @@
           ],
           "query_prefix": "Query: ",
           "document_prefix": "Document: ",
+          "vector_space": "jina-v5-omni-nano",
           "recommended": true
+        },
+        {
+          "id": "jina-v5-omni-nano-audio",
+          "name": "Jina Embeddings v5 Omni Nano (ses)",
+          "description": "Jina ile aynı model; ek dosyası görsel yerine ses anlar (konuşma kaydını metinle aratabilirsin). Ek dosya 1,2 GB. Vektörler Jina ile aynı uzayda.",
+          "folder": "jina-embeddings-audio",
+          "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/d88747133a88c1ebb884d60392a25be08b8042f7/",
+          "sha256": {
+            "jina-embeddings-v5-omni-nano-retrieval-Q8_0.gguf": "effc48f467d4eedf8c5f246633a69b3446d1b9df0a21158e0895f86c2a50e9c7",
+            "jina-embeddings-v5-omni-nano-retrieval-audio-mmproj-F16.gguf": "8ff2f45b2f1f682ef4d35bdb8b74726a24e3fe4ae0c333bb4f0e1a5b4facd83b"
+          },
+          "files": [
+            "jina-embeddings-v5-omni-nano-retrieval-Q8_0.gguf"
+          ],
+          "mmproj": "jina-embeddings-v5-omni-nano-retrieval-audio-mmproj-F16.gguf",
+          "size_mb": 222,
+          "mmproj_mb": 1221,
+          "args": [
+            "--pooling",
+            "last"
+          ],
+          "query_prefix": "Query: ",
+          "document_prefix": "Document: ",
+          "vector_space": "jina-v5-omni-nano"
         },
         {
           "id": "embeddinggemma-2",
@@ -225,7 +250,8 @@
             "mean"
           ],
           "query_prefix": "task: search result | query: ",
-          "document_prefix": "title: none | text: "
+          "document_prefix": "title: none | text: ",
+          "vector_space": "embeddinggemma-2"
         }
       ],
       "retired_models": {

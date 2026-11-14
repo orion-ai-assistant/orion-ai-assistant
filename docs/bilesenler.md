@@ -678,3 +678,25 @@ Sıra önerisi yukarıdan aşağıya.
   zayıf (kırmızı doğru, mavi/yeşil kıl payı, çizgili yanlış). Gerçek fotoğraflarla (Wikimedia'dan 7 görsel: kedi, köpek, Eyfel, Ayasofya, elma, muz, ayçiçeği; İngilizce sorgular) ikisi de 7/7 doğru görseli ilk sırada buldu (Gemma 2 benzerlik 0,71–0,79, Jina 0,34–0,50). Gemma 2 ses embedding'i aynı mmproj ile çalışıyor (`input_audio`, mono 16 kHz WAV, Windows SAPI konuşması): benzer iki cümlenin sesi 0,86, farklı konular 0,65–0,70, aynı cümlenin metin sorgusu kendi sesini 3/3 buldu (0,87–0,89, diğerleri 0,54–0,63). Jina'nın ses mmproj'u ayrı dosya, aynı anda yalnız biri.
 
 - **Embedding bağlamı 2048 (katalog varsayılanı):** `-c/-b/-ub` 2048; 400 token'lık parça + ön ek rahat sığar, bellek Gemma 2'de ~0,5 GB (8192'de 1,4 GB). Model sınırı 8192, Gelişmiş ayarlardan artırılır. Hub'da `embed_text(metin, ayarlar, "document"|"query")` yerel modelin ön ekini ekler (`local_parts.embedding_profile`) ve ön ek dahil bağlamı aşan metni sözcük/cümle/paragraf sınırında böler (token tahmini 2 karakter/token, kasıtlı düşük); bulut modeline metin olduğu gibi gider. Daha önce kaydedilmiş bağlam ayarı varsa o geçerli kalır.
+- **Jina'nın ses sürümü ayrı katalog satırı** (`jina-v5-omni-nano-audio`): llama-server tek ek dosya (mmproj) alır, Jina'nın
+  görsel (194 MB) ve ses (1,2 GB) dosyası aynı anda yüklenemez; bu yüzden iki satır var, ana model aynı (Q8_0), klasörleri ayrı
+  (biri silinince diğerinin dosyası gitmez; ana dosya iki kez iner, 222 MB). Ses dosyasıyla bellek ölçüldü (Vulkan, bağlam
+  2048, bir konuşmadan sonra): 1528 MB, ek dosyasız 233 MB. Ses testi (SAPI İngilizce konuşma, Türkçe ve İngilizce metin
+  sorgusu): Jina ses 6/6, Gemma 2 6/6 (diller arası: Türkçe sorgu İngilizce konuşmayı buluyor). Gemma 2 tek mmproj ile hem
+  görsel hem ses anlar.
+- **Türkçe sorgu ve benzer görsellerle fotoğraf testi** (12 fotoğraf: kedi, kaplan, aslan, 4 köpek cinsi, Eyfel, Ayasofya, elma,
+  muz, ayçiçeği; Türkçe sorgular): Gemma 2 12/12; Jina 9/12 (alman çoban köpeği, kaplan ve aslan benzer hayvanlarla karıştı,
+  aradaki skor farkı 0,01–0,04). Benzer görselleri ayırmak gerekiyorsa Gemma 2.
+- **Parçalama:** `split_for_embedding` bir taşma güvenlik ağıdır. Token sayısını sunucunun tokenizer'ı olmadan tahmin eder:
+  Han/kana/hangul karakteri 1 token, diğer karakterler 0,55 token (1,8 karakter/token). Ölçülen karakter/token: İngilizce 4,5,
+  Türkçe 3,2–3,6, Rusça 3,0–3,6, Arapça 2,5–2,8, Hintçe 2,1–3,8, kod 2,0–2,5, Korece 1,7–2,1, Japonca 1,5–2,2, Çince 1,3–1,8.
+  Gerçek sunucuda doğrulandı (Çince, Japonca, Korece, Rusça, Arapça, Türkçe, kod; bağlam 2048): en uzun parça Jina'da 1562,
+  Gemma'da 1780 token, hiçbiri reddedilmedi. Hafıza özelliği önce `chunk_text` ile (~400 token, paragraf sınırında) anlamlı
+  parçalar çıkarmalı, `embed_text` ancak taşan parçayı böler. `embed_text(..., title=...)` Gemma'nın `title: ... | text:`
+  önekine başlık koyar (anı/hikaye başlığı kaliteyi artırır; Jina'nın öneki başlık almaz).
+- **Hafıza için not (henüz yapılmadı): embedding modelini değiştirmek.** Farklı modellerin vektörleri aynı uzayda değildir
+  (boyut aynı olsa bile karşılaştırılamaz). Hafıza veritabanına yazarken her vektörle birlikte `vector_space` (katalogdaki alan:
+  `jina-v5-omni-nano`, `embeddinggemma-2`), boyut ve kaynak (metin/görsel/ses) saklanmalı; **kaynağın kendisi** (metin, resim,
+  ses dosyası) de saklanmalı, yoksa model değişince yeniden gömülemez. Model değişince: aynı `vector_space` (Jina görsel ↔ Jina
+  ses) yeniden gömme gerektirmez; farklıysa arka planda tüm kayıtlar yeni modelle yeniden gömülür, bitene kadar arama eski uzayda
+  sürer, sonra geçilir. Ses/görsel kayıtlar için yeni modelin ek dosyası olmalı (Gemma 2 tek dosya, Jina ya görsel ya ses).

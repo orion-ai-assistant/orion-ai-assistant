@@ -444,37 +444,89 @@ async def generate_embeddings(
     raise RuntimeError("No valid router URL found.")
 
 
-# Worst case for Turkish, code and non-Latin text: a token covers about two characters. Estimating this low only
-# makes pieces shorter than needed; estimating high would make the server refuse the input.
-EMBED_CHARS_PER_TOKEN = 2.0
-EMBED_TOKEN_MARGIN = 32  # Start/end tokens and the estimate's error.
+# Token estimate without the server's tokenizer (which the Router does not expose). Measured with llama.cpp b12378 on
+# EmbeddingGemma 2 and Jina v5 (characters per token): English 4.5, Turkish 3.2-3.6, Russian 3.0-3.6, Arabic 2.5-2.8,
+# Hindi 2.1-3.8, code 2.0-2.5, Korean 1.7-2.1, Japanese 1.5-2.2, Chinese 1.3-1.8. The estimate is deliberately low
+# (too many tokens counted only shortens a piece; too few would make the server refuse the input).
+EMBED_TOKENS_PER_CJK_CHAR = 1.0   # Han, kana, hangul: one token per character at worst.
+EMBED_TOKENS_PER_CHAR = 0.55      # Everything else: about 1.8 characters per token.
+EMBED_TOKEN_MARGIN = 32           # Start/end tokens and the estimate's error.
+
+
+def _is_cjk(char: str) -> bool:
+    code = ord(char)
+    return (0x2E80 <= code <= 0x9FFF or 0xAC00 <= code <= 0xD7AF or 0xF900 <= code <= 0xFAFF
+            or 0xFF00 <= code <= 0xFFEF or 0x20000 <= code <= 0x2FFFF)
+
+
+def estimate_tokens(text: str) -> int:
+    return int(sum(EMBED_TOKENS_PER_CJK_CHAR if _is_cjk(c) else EMBED_TOKENS_PER_CHAR for c in text)) + 1
+
+
+def _cut_by_tokens(text: str, budget: float, boundaries: tuple[str, ...]) -> int:
+    """Index to cut `text` at: the last boundary in its second half before `budget` estimated tokens run out
+    (the budget's end when there is none)."""
+    spent, end = 0.0, len(text)
+    for index, char in enumerate(text):
+        spent += EMBED_TOKENS_PER_CJK_CHAR if _is_cjk(char) else EMBED_TOKENS_PER_CHAR
+        if spent > budget:
+            end = index
+            break
+    if end >= len(text):
+        return len(text)
+    window = text[:end]
+    for mark in boundaries:
+        found = window.rfind(mark)
+        if found > end // 2:
+            return found + len(mark)
+    return max(end, 1)
+
+
+_BOUNDARIES = ("\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", "; ", " ")
+
+
+def split_by_tokens(text: str, budget: float) -> list[str]:
+    """Pieces of at most `budget` estimated tokens, cut at a paragraph, line, sentence or word boundary."""
+    pieces: list[str] = []
+    rest = text.strip()
+    while estimate_tokens(rest) > budget:
+        cut = _cut_by_tokens(rest, budget, _BOUNDARIES)
+        pieces.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    if rest:
+        pieces.append(rest)
+    return [piece for piece in pieces if piece]
 
 
 def split_for_embedding(text: str, prefix: str, context_tokens: int) -> list[str]:
-    """Pieces that fit the server's context together with the prefix, cut at a paragraph, line, sentence or
-    word boundary (a hard cut only for a word that is longer than a whole piece)."""
-    limit = max(64, int((context_tokens - EMBED_TOKEN_MARGIN) * EMBED_CHARS_PER_TOKEN) - len(prefix))
-    pieces: list[str] = []
-    rest = text.strip()
-    while len(rest) > limit:
-        window = rest[:limit]
-        cut = 0
-        for mark in ("\n\n", "\n", ". ", "! ", "? ", " "):
-            found = window.rfind(mark)
-            if found > limit // 2:
-                cut = found + len(mark)
-                break
-        cut = cut or limit
-        pieces.append(rest[:cut].strip())
-        rest = rest[cut:].strip()
-    if rest or not pieces:
-        pieces.append(rest)
-    return [piece for piece in pieces if piece] or [""]
+    """Pieces that fit the server's context together with the prefix. This is only the overflow guard; memory
+    code should chunk its text first (chunk_text) so every piece is a meaningful unit."""
+    budget = max(32, context_tokens - EMBED_TOKEN_MARGIN - estimate_tokens(prefix))
+    return split_by_tokens(text, budget) or [""]
 
 
-async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document") -> list[list[float]]:
+def chunk_text(text: str, target_tokens: int = 400) -> list[str]:
+    """Meaningful chunks of about `target_tokens`: whole paragraphs are packed together up to the target, a longer
+    paragraph is split at sentences. Use this before embedding what memory stores."""
+    chunks: list[str] = []
+    current = ""
+    for paragraph in (p.strip() for p in text.split("\n\n")):
+        if not paragraph:
+            continue
+        for piece in split_by_tokens(paragraph, target_tokens):
+            if current and estimate_tokens(current) + estimate_tokens(piece) > target_tokens:
+                chunks.append(current)
+                current = ""
+            current = f"{current}\n\n{piece}" if current else piece
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document", title: str = "") -> list[list[float]]:
     """One vector per piece of `text`. `kind` is "document" (what is stored) or "query" (what is searched with).
-    The local model's prefix is added and text past its context is split; a cloud model gets the text as it is."""
+    The local model's prefix is added and text past its context is split; a cloud model gets the text as it is.
+    `title` (documents only) goes into models whose document prefix takes one (EmbeddingGemma: "title: ... | text: ")."""
     try:
         local = await get_model_provider(settings.router_model_group, "embed") == "local"
     except Exception:
@@ -484,6 +536,9 @@ async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document
         from services.shared import local_parts
         profile = local_parts.embedding_profile()
         prefix, context = profile[f"{kind}_prefix"], profile["context"]
+        clean = " ".join(title.split()).replace("|", "/")
+        if clean and kind == "document" and prefix.startswith("title: none"):
+            prefix = prefix.replace("title: none", f"title: {clean}", 1)
     pieces = split_for_embedding(text, prefix, context) if context else [text]
     return [await generate_embeddings(prefix + piece, settings) for piece in pieces]
 

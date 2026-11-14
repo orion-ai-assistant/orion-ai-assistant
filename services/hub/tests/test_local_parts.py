@@ -1265,7 +1265,7 @@ def test_the_embedding_catalog_models_and_their_memory(parts):
     their video memory was measured (the extra file adds its own share)."""
     part = P.spec('embedding')
     models = {item['id']: item for item in part['models']}
-    assert set(models) == {'jina-v5-omni-nano', 'embeddinggemma-2'}
+    assert set(models) == {'jina-v5-omni-nano', 'jina-v5-omni-nano-audio', 'embeddinggemma-2'}
     assert all(item['files'][0].endswith('Q8_0.gguf') and item['mmproj'] for item in models.values())
     assert models['jina-v5-omni-nano']['query_prefix'] == 'Query: '
     assert models['embeddinggemma-2']['args'] == ['--pooling', 'mean']
@@ -1307,3 +1307,18 @@ def test_the_embedding_profile_gives_context_and_the_selected_models_prefixes(pa
     gemma = P.embedding_profile({'embedding': {'model': 'embeddinggemma-2'}}, TWO_CARDS)
     assert gemma['query_prefix'] == 'task: search result | query: '
     assert gemma['document_prefix'] == 'title: none | text: '
+
+
+def test_jina_has_a_sound_variant_that_shares_its_vector_space(parts):
+    """llama-server takes one extra file, so Jina's sound file is its own catalog entry: the same model weights
+    (so vectors stay compatible and a model switch between the two needs no re-embedding), its own folder (deleting
+    one never removes the other's files) and its own measured memory (the sound file adds ~1.3 GB)."""
+    part = P.spec('embedding')
+    models = {item['id']: item for item in part['models']}
+    vision, sound = models['jina-v5-omni-nano'], models['jina-v5-omni-nano-audio']
+    assert vision['files'] == sound['files'] and vision['sha256'][vision['files'][0]] == sound['sha256'][sound['files'][0]]
+    assert vision['vector_space'] == sound['vector_space'] == 'jina-v5-omni-nano'
+    assert vision['folder'] != sound['folder'] and 'audio' in sound['mmproj']
+    assert not sound.get('mmproj_off_by_default')  # Choosing this entry is the decision to download the sound file.
+    assert P.memory_facts(part, sound, None)['vision_mb'] == 1295
+    assert models['embeddinggemma-2']['vector_space'] == 'embeddinggemma-2'
