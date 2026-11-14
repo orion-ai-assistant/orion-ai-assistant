@@ -600,14 +600,16 @@ def prefetch_headers(data):
 # speech recognition model not measured (the user's own) shows its file x 1.5 (Small 2.1x, the large ones 1.55x), as
 # an estimate.
 BUFFERS_MB = 300
-# VoxCPM2 and OmniVoice (2026-11-14, the card to themselves, the engine's own dedicated GPU memory): (settled, peak)
-# in MB. Settled is what stays once a request has been answered; the peak is the most one request took (a long
-# text with a cloned voice), for a moment: each request allocates ~1.1-1.7 GB of working buffers and gives it back.
+# VoxCPM2 and OmniVoice (2026-11-14, the card to themselves, the engine's own dedicated GPU memory, requests of up
+# to 280 characters: the most Orion sends at once, adaptive_tts.MAX_BATCH_CHARS = 287): (settled, peak) in MB.
+# Settled is what stays once a request has been answered; the peak is the most one request took (the longest
+# text, a cloned voice), for a few seconds: VoxCPM2 allocates ~1.2 GB of working buffers per request and gives
+# them back. The card shows a range only where the two differ by 0.5 GB or more.
 MEASURED_VOXCPM2_MB = {
-    'cuda': {'full': (4313, 6171), 'balanced': (3575, 5435), 'low': (3237, 5097)},
-    'vulkan': {'full': (4167, 6341), 'balanced': (3384, 5323), 'low': (3058, 4917)},
+    'cuda': {'full': (4127, 5287), 'balanced': (3371, 4531), 'low': (3017, 4185)},
+    'vulkan': {'full': (3907, 5073), 'balanced': (3160, 4325), 'low': (2811, 3977)},
 }
-MEASURED_OMNIVOICE_MB = {'cuda': (1797, 1911), 'vulkan': (1612, 1725)}
+MEASURED_OMNIVOICE_MB = {'cuda': (1515, 1585), 'vulkan': (1372, 1440)}
 MEASURED_WHISPER_MB = {'whisper-small': 520, 'whisper-large-v3-turbo': 840, 'whisper-large-v3': 1610}
 # whisper.cpp's table is Vulkan's; CUDA's context costs ~120 MB more (1007 against 887 MB, same card). A llama.cpp
 # server holds 433 MB (CUDA) against 305 (Vulkan) with a 200M model, and neither it, whisper.cpp nor the embedding

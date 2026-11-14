@@ -285,11 +285,13 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
   VoxCPM2 yukarıdaki değerler, OmniVoice CUDA 1,5 GB (boşta 1,0), whisper.cpp Vulkan: Small 0,52 GB, Large-v3
   Turbo 0,84 GB, Large-v3 1,6 GB. Kullanıcının kendi ses tanıma modeli dosyasının 1,5 katı "tahmini" gösterilir
   (`memory_facts`). Kart bu değeri "… GB VRAM" diye yazar. Seçilen donanıma göre değişir. Konuşma
-  modelleri istek sırasında geçici tampon ayırır, bitince bırakır (2026-11-14, kart tek başına, motorun kendi
-  GPU belleği): VoxCPM2 CUDA düşük/dengeli/hızlı: istekten sonra 3,2 / 3,5 / 4,2 GB, zirve (uzun metin, klon ses)
-  5,0 / 5,3 / 6,0 GB; Vulkan 3,0 / 3,3 / 4,1 GB, zirve 4,8 / 5,2 / 6,2 GB. OmniVoice CUDA 1,8 GB (zirve 1,9),
-  Vulkan 1,6 (1,7). whisper.cpp, llama.cpp ve embedding isteğe göre büyümez (+0-20 MB). Kart "en düşük–en yüksek GB
-  VRAM" yazar. Vulkan CUDA'dan yalnızca 0,1-0,2 GB az tutar ve ~%40 yavaştır. Kart başlığının
+  modelleri istek sırasında geçici tampon ayırır, bitince bırakır (2026-11-14, kart tek başına, motorun kendi GPU
+  belleği, en çok 280 karakterlik istekler: Orion en çok 287 karakterlik parça gönderir; kurulu Hub durdurulan
+  TTS'i 60 sn'de yeniden başlattığı için ölçümde parça "duraklatıldı"): VoxCPM2 CUDA düşük/dengeli/hızlı: istekten
+  sonra 3,0 / 3,3 / 4,0 GB, zirve 4,1 / 4,4 / 5,2 GB; Vulkan 2,7 / 3,1 / 3,8 GB, zirve 3,9 / 4,2 / 5,0 GB. OmniVoice
+  CUDA 1,5 GB (zirve 1,55), Vulkan 1,3 (1,4). whisper.cpp, llama.cpp ve embedding isteğe göre büyümez (+0-20 MB).
+  Kart, ikisi 0,5 GB'tan fazla ayrışıyorsa "en düşük–en yüksek GB VRAM", değilse tek değer yazar. Vulkan CUDA'dan
+  0,2-0,3 GB az tutar ve ~%40 yavaştır. Kart başlığının
   altında motor ve sürümü yazar (`engine_label`). Varsayılan bellek modu dengeli; ileride kartın
   VRAM'ine göre seçilebilir. Önerilen ses tanıma modeli Large-v3. VoxCPM2'de klon sesle
   üretim yaklaşık 1 GB daha fazla bellek ister (ölçüm: tam hızda zirve +6,0 GB, klonsuz +5,2 GB).

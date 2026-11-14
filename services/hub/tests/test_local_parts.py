@@ -1232,11 +1232,11 @@ def test_video_memory_facts_differ_per_hardware():
     the Hub gives both ends and the card shows the one chosen."""
     voxcpm2 = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'voxcpm2-gguf'}, None)
     cuda, vulkan = voxcpm2['by_hardware']['cuda'], voxcpm2['by_hardware']['vulkan']
-    assert cuda['by_mode']['low'] == 3237 and cuda['peak_by_mode']['low'] == 5097
-    assert vulkan['by_mode']['low'] == 3058 and all(
+    assert cuda['by_mode']['low'] == 3017 and cuda['peak_by_mode']['low'] == 4185
+    assert vulkan['by_mode']['low'] == 2811 and all(
         vulkan['peak_by_mode'][mode] > vulkan['by_mode'][mode] for mode in ('full', 'balanced', 'low'))
     omni = P.memory_facts({'id': 'tts', 'runner': 'python'}, {'engine': 'omnivoice-gguf'}, None)
-    assert omni['by_hardware']['cuda'] == {'fixed_mb': 1797, 'peak_mb': 1911}
+    assert omni['by_hardware']['cuda'] == {'fixed_mb': 1515, 'peak_mb': 1585}
     whisper = P.memory_facts({'id': 'stt', 'runner': 'python'}, {'id': 'whisper-small'}, None)
     assert whisper['fixed_mb'] == 520 and whisper['by_hardware']['cuda']['fixed_mb'] == 640
     llama = P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
