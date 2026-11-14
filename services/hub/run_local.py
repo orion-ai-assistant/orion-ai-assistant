@@ -516,6 +516,10 @@ def _main(runtime):
         protected = False
     if not protected:
         print('[!] PostgreSQL still accepts logins without a password from this PC', flush=True)
+    # pgvector for the memory's embeddings: only the superuser may create it. Missing files or a failure are
+    # reported and the Hub runs on without vectors.
+    from services.shared import postgres_vector
+    postgres_vector.enable(database, admin, database.database)
     def before_stop():
         # Only drops the API's connections to the user's own browsers; the Job ends every Hub child anyway.
         # A failure here (API already gone, Windows ending the session) must not abort the stop: it left
