@@ -618,7 +618,20 @@ HARDWARE_DELTA_MB = {'llama': {'vulkan': -120}, 'whisper': {'cuda': 120}}
 
 
 
+# Embedding servers (llama.cpp b12378, context 8192, the whole context as one batch; 2026-11-14, the card to themselves,
+# after inputs of 14 to ~7000 tokens, which moved them by less than 100 MB): MB by hardware, and what the extra file
+# (mmproj) adds. A llama.cpp model's file does not predict it (Jina's 431 MB file holds 0.8 GB, Gemma's 310 MB 1.4 GB).
+MEASURED_EMBEDDING_MB = {'jina-v5-omni-nano': {'cuda': 790, 'vulkan': 690, 'vision_mb': 355},
+                         'embeddinggemma-2': {'cuda': 1410, 'vulkan': 1440, 'vision_mb': 1085}}
+
+
 def memory_facts(part, model, meta):
+    if part['id'] == 'embedding' and model.get('id') in MEASURED_EMBEDDING_MB:
+        table = dict(MEASURED_EMBEDDING_MB[model['id']])
+        vision = table.pop('vision_mb')
+        facts = {'fixed_mb': max(table.values()), 'measured': True,
+                 'by_hardware': {hw: {'fixed_mb': mb} for hw, mb in table.items()}}
+        return {**facts, 'vision_mb': vision} if model.get('mmproj') else facts
     if part.get('runner') != 'python':
         weights = model.get('size_mb') or 0
         by_hardware = {hw: {'buffers_mb': BUFFERS_MB + delta} for hw, delta in HARDWARE_DELTA_MB['llama'].items()}
@@ -1129,11 +1142,17 @@ def clean_settings(part, values, hw, model=None):
     return result
 
 
-def _vision_off(entry):
+def _vision_off(entry, part=None):
     """The models whose extra file (mmproj) the user turned off, from a part's saved entry. An entry from before
-    this was kept per model has one `vision` setting: it was the chosen model's."""
+    this was kept per model has one `vision` setting: it was the chosen model's. Until the user has set any, the
+    models that are `mmproj_off_by_default` (an embedding's extra file: optional, and 0.4-1.1 GB of card memory
+    and a big download) are off."""
     if 'vision_off' in entry:
         return list(entry['vision_off'])
+    if part is not None and not entry.get('settings', {}).get('vision') is False:
+        defaults = [item['id'] for item in part.get('models', []) if item.get('mmproj_off_by_default')]
+        if defaults:
+            return defaults
     return [entry['model']] if entry.get('model') and (entry.get('settings') or {}).get('vision') is False else []
 
 
@@ -1146,7 +1165,7 @@ def effective(part, hw, config=None):
     settings = {**default_settings(part, model, hw), **(config.get('settings') or {})}
     if 'vision' in settings and model is not None:
         # Each model keeps its own: the extra file is on unless that model's was turned off.
-        settings['vision'] = model['id'] not in _vision_off(config)
+        settings['vision'] = model['id'] not in _vision_off(config, part)
     settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
     settings.pop('compute_type', None)  # Speech's on faster-whisper; a ggml model carries its own precision.
     if 'context_size' in settings:
@@ -1185,6 +1204,10 @@ def command(part, model, settings, data=None):
             '-ngl', str(_gpu_layers(settings, files[0]))]
     if model.get('mmproj') and len(files) > len(model['files']):
         argv += ['--mmproj', str(files[-1])]
+    if part['id'] == 'embedding':
+        # An embedding has no output to stream: the server must take the whole input in one physical batch, and its
+        # default (512 tokens) answered 500 to anything longer however big the context was set.
+        argv += ['-b', str(settings['context_size']), '-ub', str(settings['context_size'])]
     argv += list(part.get('args', [])) + list(model.get('args', []))
     env = dict(os.environ)
     if settings.get('gpu', 'all') != 'all':
@@ -1390,7 +1413,7 @@ def part_status(part, hw, config, data):
             'state': state, 'enabled': bool(entry.get('enabled')), 'paused': bool(entry.get('paused')),
             # The saved choice (what Başlat, Kur or Uygula uses).
             'model': model['id'] if model else None, 'settings': settings,
-            'vision_off': _vision_off(entry),
+            'vision_off': _vision_off(entry, part),
             'engines': engine_facts(run['engine'], part, hw, data),
             'engine_label': engine_label(run['engine'], settings['hardware'], data),
             'models': models, 'advanced': advanced(part, hw, model),
@@ -1520,7 +1543,7 @@ def select(part_id, *, model=None, settings=None, vision_off=None):
         # The chosen model's switch (an older page): kept for that model.
         entry = read_config().get(part_id, {})
         chosen = values.get('model') or (effective(part, hw)[0] or {}).get('id')
-        off = set(values['vision_off'] if 'vision_off' in values else _vision_off(entry))
+        off = set(values['vision_off'] if 'vision_off' in values else _vision_off(entry, part))
         off.discard(chosen) if settings['vision'] else off.add(chosen)
         values['vision_off'] = sorted(off & known)
         settings = {key: value for key, value in settings.items() if key != 'vision'}
@@ -1588,7 +1611,7 @@ def delete_model(part_id, model_id, *, extra=False, file=None):
     entry = read_config().get(part_id, {})
     if extra:
         # Its extra file is gone: that model's choice stops asking for it (the others keep theirs).
-        write_part_config(part_id, vision_off=sorted({*_vision_off(entry), model_id}))
+        write_part_config(part_id, vision_off=sorted({*_vision_off(entry, part), model_id}))
     if not held(part, model_id, extra=extra):
         _drop(part, model, extra, file)
         return

@@ -354,7 +354,7 @@ ses tanıma (STT) ve seslendirme (TTS) kullanıcı istediğinde, istediği yerde
 
   | Motor | `min_compute` | Kaynak |
   |---|---|---|
-  | llama.cpp b11026 (hafıza, LLM) | 5.0 | resmi `llama-b11026-bin-win-cuda-12.4-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 |
+  | llama.cpp b12378 (hafıza, LLM; ELF/PTX satırı b11026'nınki, yeniden denetlenmedi) | 5.0 | resmi `llama-b11026-bin-win-cuda-12.4-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 |
   | OmniVoice `tts-v1.0.0` (TTS) | 7.5 | `CMakeLists.txt` `CMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real` (CUDA 12.1 ile); `bin/cuda/ggml-cuda.dll`: ELF sm_86, 89; PTX sm_75, 80 |
   | whisper.cpp v1.9.5 (STT) | 5.0 | resmi `b5454/whisper-bin-win-cuda-12.4.0-x64.zip` `ggml-cuda.dll`: ELF sm_86, sm_89; PTX sm_50, 61, 70, 75, 80, 90 (llama.cpp'ninkiyle aynı); yanındaki `cublas64_12.dll` (CUDA 12.4) sm_50'den başlıyor. 2026-11-03'e kadar STT faster-whisper/CTranslate2 idi ve sınırı cuDNN yüzünden 7.5'ti |
 
@@ -650,3 +650,22 @@ Sıra önerisi yukarıdan aşağıya.
   tasarımına ve üretilen klon sesine uygulanmaz; Noise Gate kullanılmaz. Var olan cache'ler yeniden klonlanmadan
   değişmez. Bellek/RAM sıkışınca sunucu "LocEnc sequence forward failed" ya da ggml
   `mem_buffer` hatasıyla düşebilir (sistemin boş taahhüt belleği ~4 GB iken görüldü).
+
+## Hafıza (embedding) modelleri (2026-11-14)
+
+- **Modeller:** Jina Embeddings v5 Omni Nano (Q8_0, 222 MB; pooling `last`) ve EmbeddingGemma 2 (Q8_0, 296 MB; pooling
+  `mean`). İkisinin de ek dosyası (mmproj) isteğe bağlı ve varsayılan **kapalı** (`mmproj_off_by_default`): Jina'nın
+  görsel mmproj'u 194 MB (+0,35 GB kart belleği), Gemma'nınki 937 MB (+1,1 GB). Jina'nın ses mmproj'u (1,2 GB) ayrı
+  dosya; tek ek dosya desteklendiği için alınmadı. LCO Embedding Omni 7B kaldırıldı (`retired_models`).
+- **Motor:** EmbeddingGemma 2'nin mimarisi (`gemma-embedding2`) llama.cpp b11026'da yok; b12378'de var, motor ona çıktı
+  (LLM de aynı motoru kullanır: Gemma 4 LLM'i yeni motorda denemedim, yalnızca embedding modelleri ve MiniPLM).
+- **`-b` ve `-ub`:** llama-server'ın varsayılan fiziksel batch'i 512 token; embedding'de girdi tek batch'e sığmak zorunda,
+  bağlam 8192 olsa da 578 tokenlık girdi 500 döndürüyordu. Orion embedding'i `-b`/`-ub` = bağlam boyutuyla başlatır
+  (`command`); motoru değiştirmek gerekmez, bu çalışma zamanı ayarıdır. Maliyeti: Jina F16 0,25 GB'tan 0,7 GB'a çıktı.
+- **Bellek** (ölçüm, kart tek başına, 14-~7000 tokenlık girdi, girdiyle <100 MB oynar; bağlam 8192): Jina Q8 CUDA 0,8 /
+  Vulkan 0,7 GB (+0,35 görsel dosya); Gemma 2 Q8 CUDA 1,4 / Vulkan 1,4 GB (+1,1 görsel dosya). Dosya boyutu belleği
+  öngörmez (eski formül Jina için 0,9 GB yazıyordu, gerçek 0,25).
+- **Ön ekler** (katalogda `query_prefix`/`document_prefix`, embedding'i çağıran kod ekler; yanlışsa hata vermez, skor
+  düşer): Gemma 2 sorgu `task: search result | query: `, doküman `title: none | text: `; Jina sorgu `Query: `, doküman
+  `Document: ` (Omni kartında ayrıca yazmıyor, text-nano kartından; doğrulanmadı). Gemma 2 için float16 kullanma (NaN).
+- **Doğrulanmadı:** görsel/ses embedding'i llama-server üzerinden (`<__media__>` istemi "Failed to tokenize prompt" verdi).

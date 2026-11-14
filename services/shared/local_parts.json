@@ -1,17 +1,17 @@
 {
   "engines": {
     "llama.cpp": {
-      "version": "b11026",
+      "version": "b12378",
       "windows": {
         "cuda": {
           "min_compute": 5.0,
           "archives": [
             {
-              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-cuda-12.4-x64.zip",
-              "size": 254193665
+              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-cuda-12.4-x64.zip",
+              "size": 319404332
             },
             {
-              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/cudart-llama-bin-win-cuda-12.4-x64.zip",
               "shared": true,
               "size": 391443627
             }
@@ -20,16 +20,16 @@
         "vulkan": {
           "archives": [
             {
-              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-vulkan-x64.zip",
-              "size": 31766385
+              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-vulkan-x64.zip",
+              "size": 38116588
             }
           ]
         },
         "cpu": {
           "archives": [
             {
-              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b11026/llama-b11026-bin-win-cpu-x64.zip",
-              "size": 18439911
+              "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-cpu-x64.zip",
+              "size": 25122595
             }
           ]
         }
@@ -181,37 +181,53 @@
           "folder": "jina-embeddings",
           "url": "https://huggingface.co/jinaai/jina-embeddings-v5-omni-nano-retrieval-GGUF/resolve/d88747133a88c1ebb884d60392a25be08b8042f7/",
           "sha256": {
-            "jina-embeddings-v5-omni-nano-retrieval-F16.gguf": "c2cc484bfb4a27556d122f254d85be365b73744cb6c17f5af3fe462a573c9c6a"
+            "jina-embeddings-v5-omni-nano-retrieval-Q8_0.gguf": "effc48f467d4eedf8c5f246633a69b3446d1b9df0a21158e0895f86c2a50e9c7",
+            "jina-embeddings-v5-omni-nano-retrieval-vision-mmproj-F16.gguf": "1dcd1cf7e8abe55b4c0f78979896d4b01ec28f51091cf74de7098c05864dd1d3"
           },
           "files": [
-            "jina-embeddings-v5-omni-nano-retrieval-F16.gguf"
+            "jina-embeddings-v5-omni-nano-retrieval-Q8_0.gguf"
           ],
-          "size_mb": 411,
+          "mmproj": "jina-embeddings-v5-omni-nano-retrieval-vision-mmproj-F16.gguf",
+          "mmproj_off_by_default": true,
+          "size_mb": 222,
+          "mmproj_mb": 194,
           "args": [
             "--pooling",
             "last"
           ],
+          "query_prefix": "Query: ",
+          "document_prefix": "Document: ",
           "recommended": true
         },
         {
-          "id": "lco-embedding-omni-7b",
-          "name": "LCO Embedding Omni 7B",
-          "description": "Daha güçlü ve uzun metinlerde daha iyi; ekran kartı ister.",
-          "folder": "LCO-Embedding",
-          "url": "https://huggingface.co/marksverdhei/LCO-Embedding-Omni-7B-GGUF/resolve/ace63ceae7ececf357d1d3cbf99c15101aa42457/",
+          "id": "embeddinggemma-2",
+          "name": "EmbeddingGemma 2",
+          "description": "Google'ın çok dilli embedding modeli; 8192 token'a kadar uzun metin, kod ve (ek dosyayla) görsel ve ses. Jina'dan biraz daha çok bellek ister.",
+          "folder": "embeddinggemma-2",
+          "url": "https://huggingface.co/unsloth/embeddinggemma-2-GGUF/resolve/031f0d4b35536f69ab3509d4893c923264fcf253/",
           "sha256": {
-            "LCO-Embedding-Omni-7B-IQ2_M.gguf": "dfba1fff793fc65b9c3e7d53fedbb6e8f7e2a2c24ddcc87b196dd39f49d41e88"
+            "embeddinggemma-2-Q8_0.gguf": "6f1bd4ac6c5df7444f9cca7ca36cafe6cfa34cd6f49fefb1e0b4be8143aed8bc",
+            "mmproj-BF16.gguf": "995aaa56e88b9b631f651861d659b728a625ccc02a238be37cff56cf11dc0032"
           },
           "files": [
-            "LCO-Embedding-Omni-7B-IQ2_M.gguf"
+            "embeddinggemma-2-Q8_0.gguf"
           ],
-          "size_mb": 2652,
+          "mmproj": "mmproj-BF16.gguf",
+          "mmproj_off_by_default": true,
+          "size_mb": 296,
+          "mmproj_mb": 937,
           "args": [
             "--pooling",
-            "last"
-          ]
+            "mean"
+          ],
+          "query_prefix": "task: search result | query: ",
+          "document_prefix": "title: none | text: "
         }
       ],
+      "retired_models": {
+        "lco-embedding-omni-7b": "embeddinggemma-2",
+        "LCO-Embedding": "embeddinggemma-2"
+      },
       "runner": "llama",
       "hardware": [
         "cuda",

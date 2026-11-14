@@ -1241,3 +1241,46 @@ def test_video_memory_facts_differ_per_hardware():
     assert whisper['fixed_mb'] == 520 and whisper['by_hardware']['cuda']['fixed_mb'] == 640
     llama = P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
     assert llama['buffers_mb'] == 300 and llama['by_hardware']['vulkan']['buffers_mb'] == 180
+
+
+def test_an_embedding_server_takes_the_whole_context_as_one_batch(parts):
+    """llama-server's default physical batch (512 tokens) answered 500 to a longer input however big the context was:
+    an embedding part starts with -b and -ub as large as its context; the other parts keep the defaults."""
+    for part_id, expect in (('embedding', True), ('llm', False)):
+        part = P.spec(part_id)
+        model, settings = P.effective(part, TWO_CARDS)
+        folder = P.engine_dir(P.for_model(part, model)['engine'], settings['hardware'])
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / ('llama-server.exe' if os.name == 'nt' else 'llama-server')).write_bytes(b'x')
+        (folder / '.complete').write_text(P.catalog()['engines']['llama.cpp']['version'], encoding='utf-8')
+        argv, env, port = P.command(part, model, settings)
+        assert ('-ub' in argv) is expect
+        if expect:
+            context = str(settings['context_size'])
+            assert argv[argv.index('-b') + 1] == context and argv[argv.index('-ub') + 1] == context
+
+
+def test_the_embedding_catalog_models_and_their_memory(parts):
+    """Jina and EmbeddingGemma 2 both come as a Q8_0 file with an optional extra file, each with its own prefixes;
+    their video memory was measured (the extra file adds its own share)."""
+    part = P.spec('embedding')
+    models = {item['id']: item for item in part['models']}
+    assert set(models) == {'jina-v5-omni-nano', 'embeddinggemma-2'}
+    assert all(item['files'][0].endswith('Q8_0.gguf') and item['mmproj'] for item in models.values())
+    assert models['jina-v5-omni-nano']['query_prefix'] == 'Query: '
+    assert models['embeddinggemma-2']['args'] == ['--pooling', 'mean']
+    facts = P.memory_facts(part, models['embeddinggemma-2'], None)
+    assert facts['by_hardware']['cuda']['fixed_mb'] == 1410 and facts['vision_mb'] == 1085
+    assert P.memory_facts(part, models['jina-v5-omni-nano'], None)['by_hardware']['vulkan']['fixed_mb'] == 690
+
+
+def test_an_embedding_models_extra_file_is_off_until_the_user_turns_it_on(parts):
+    """The extra file of an embedding model is optional: nothing downloads it and it takes no card memory until the
+    user asks; after that the user's own choice (per model) rules."""
+    part = P.spec('embedding')
+    model, settings = P.effective(part, TWO_CARDS)
+    assert settings['vision'] is False and len(P.model_files(part, model, settings)) == 1
+    P.write_part_config('embedding', vision_off=[])
+    model, settings = P.effective(part, TWO_CARDS)
+    assert settings['vision'] is True and len(P.model_files(part, model, settings)) == 2
+    assert set(P._vision_off({}, part)) == {'jina-v5-omni-nano', 'embeddinggemma-2'}
