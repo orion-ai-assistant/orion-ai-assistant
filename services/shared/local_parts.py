@@ -1428,8 +1428,10 @@ def part_status(part, hw, config, data):
                'extra': bool(item.get('mmproj')), 'extra_mb': item.get('mmproj_mb'),
                'extra_there': bool(item.get('mmproj')) and (folder / item.get('mmproj', '')).is_file(),
                'extra_name': extra[0], 'main_files': item['files'], 'extra_file': item.get('mmproj'),
-               'context_max': (meta.get('context') or CONTEXT_FALLBACK) if part.get('runner') != 'python' else None,
-               'dims': meta.get('dims') if part['id'] == 'embedding' else None,
+               'context_max': context_max(part, item) if part.get('runner') != 'python' else None,
+               # The vector's length: the catalog's when it says (EmbeddingGemma 2's header has 512 for its inner
+               # width, its pooled output is 768), else the file's.
+               'dims': (item.get('dims') or meta.get('dims')) if part['id'] == 'embedding' else None,
                'source': source_page(item)}
         # Its engine, every model its own (TTS: OmniVoice's or VoxCPM2's): what the page shows for every hardware
         # the moment this model is picked, not the saved model's.

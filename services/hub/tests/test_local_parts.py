@@ -1330,3 +1330,10 @@ def test_an_embedding_models_context_limit_is_known_before_its_file_is_there(par
     part = P.spec('embedding')
     for item in part['models']:
         assert P.context_max(part, item) == 8192
+
+
+def test_the_model_row_shows_the_catalogs_context_and_vector_length(parts):
+    """EmbeddingGemma 2's header says 256K context and 512 (its inner width); the row shows 8192 and 768."""
+    part = P.spec('embedding')
+    gemma = P.model_spec(part, 'embeddinggemma-2')
+    assert gemma['dims'] == 768 and P.context_max(part, gemma) == 8192
