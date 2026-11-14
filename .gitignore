@@ -99,3 +99,4 @@ build/
 
 # Bileşenler (local AI parts) of a Hub run from source
 .local_parts/
+!scripts/release/pgvector/*.zip

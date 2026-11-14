@@ -1322,3 +1322,11 @@ def test_jina_has_a_sound_variant_that_shares_its_vector_space(parts):
     assert not sound.get('mmproj_off_by_default')  # Choosing this entry is the decision to download the sound file.
     assert P.memory_facts(part, sound, None)['vision_mb'] == 1295
     assert models['embeddinggemma-2']['vector_space'] == 'embeddinggemma-2'
+
+
+def test_an_embedding_models_context_limit_is_known_before_its_file_is_there(parts):
+    """Without the file the card showed the general ceiling (128K) for EmbeddingGemma 2; the catalog's own limit
+    (8192, both embedding models) holds instead, and caps whatever a header might claim."""
+    part = P.spec('embedding')
+    for item in part['models']:
+        assert P.context_max(part, item) == 8192

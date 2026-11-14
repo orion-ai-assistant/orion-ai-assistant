@@ -702,7 +702,11 @@ def context_max(part, model):
     """The model's own limit (from its file); a general ceiling while that is not known yet."""
     if model is None:
         return CONTEXT_FALLBACK
-    return (model_meta(part, model) or {}).get('context') or CONTEXT_FALLBACK
+    # The catalog may say what the model was trained for (EmbeddingGemma 2: 8192): it holds before the file is
+    # downloaded (no header yet, the general ceiling would show "128K") and caps a header that claims more.
+    known = model.get('context_max')
+    found = (model_meta(part, model) or {}).get('context')
+    return min(value for value in (known, found) if value) if known or found else CONTEXT_FALLBACK
 
 
 EXTRAS = {(True, True): ('Görsel ve ses anlama', 'Resimleri ve sesleri anlar.'),

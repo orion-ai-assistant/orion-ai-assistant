@@ -201,6 +201,7 @@
           ],
           "query_prefix": "Query: ",
           "document_prefix": "Document: ",
+          "context_max": 8192,
           "vector_space": "jina-v5-omni-nano",
           "recommended": true
         },
@@ -226,6 +227,7 @@
           ],
           "query_prefix": "Query: ",
           "document_prefix": "Document: ",
+          "context_max": 8192,
           "vector_space": "jina-v5-omni-nano"
         },
         {
@@ -251,6 +253,7 @@
           ],
           "query_prefix": "task: search result | query: ",
           "document_prefix": "title: none | text: ",
+          "context_max": 8192,
           "vector_space": "embeddinggemma-2"
         }
       ],
