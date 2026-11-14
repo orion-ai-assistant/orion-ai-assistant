@@ -8,10 +8,12 @@
           "archives": [
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-cuda-12.4-x64.zip",
+              "sha256": "08f5c9951bee8193375473ae260d2f3b81535be7c542da5e1ac10929859c7615",
               "size": 319404332
             },
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/cudart-llama-bin-win-cuda-12.4-x64.zip",
+              "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
               "shared": true,
               "size": 391443627
             }
@@ -21,6 +23,7 @@
           "archives": [
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-vulkan-x64.zip",
+              "sha256": "1748d1377abfc802a679116e4e04b01c30b96a1aa285e7bbd06e3078c72a4919",
               "size": 38116588
             }
           ]
@@ -29,6 +32,7 @@
           "archives": [
             {
               "url": "https://github.com/ggerganov/llama.cpp/releases/download/b12378/llama-b12378-bin-win-cpu-x64.zip",
+              "sha256": "2bea6ad03073278b66dfb71791510327d6747ba77d4f20fb528ce357df892952",
               "size": 25122595
             }
           ]
