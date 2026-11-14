@@ -50,6 +50,11 @@ def install_windows():
         print("[OK] Portable PostgreSQL binaries extracted.")
     if not pg_dir.isascii():
         verify_unicode_runtime(pg_dir)
+    # pgvector for the memory. An installed Hub has it in its runtime layer already; a source checkout (and an
+    # older .local_db) gets it from the zip kept in git. The Hub creates the extension at its next start.
+    from services.shared import postgres_vector
+    if postgres_vector.ARCHIVE.is_file() and postgres_vector.install(pg_dir):
+        print(f"[OK] pgvector {postgres_vector.VERSION} added to the portable PostgreSQL.")
     from services.shared.runtime_layout import data_root
     data_dir = str(data_root(BASE_DIR) / '.local_db/postgres/data')
     if not os.path.exists(os.path.join(data_dir, "PG_VERSION")):

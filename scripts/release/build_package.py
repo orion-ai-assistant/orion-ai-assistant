@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from services.shared.release_packages import RUNTIME_REFERENCE, archive_name, extract_zip, sha256, validate_release
 from services.shared.windows_postgres import provision_runtime, verify_unicode_runtime, ARCHIVE_SHA256
+from services.shared import postgres_vector
 from python_runtime import install_site_hook
 import build_cache
 import zip_layers
@@ -161,6 +162,8 @@ def build_runtime(kind, args, destination):
     pg = destination / ('.local_db/postgres' if kind == 'hub' else 'tools/pgsql')
     provision_runtime(args.postgres, pg)
     verify_unicode_runtime(pg)
+    if kind == 'hub':
+        postgres_vector.install(pg)  # pgvector for the memory (scripts/release/build_pgvector.py)
     if kind == 'router':
         (destination / 'tools/pgsql.ready').touch()
         media = pin['ffmpeg']
@@ -192,7 +195,8 @@ def runtime_key(kind, args):
         ('lock', build_cache.text_digest(lock)), ('recipe', RUNTIME_RECIPE),
         ('recipe-code', hashlib.sha256(inspect.getsource(build_runtime).encode()).hexdigest()),
         ('python-runtime', build_cache.text_digest(HERE / 'python_runtime.py')),
-        ('postgres-code', build_cache.text_digest(ROOT / 'services/shared/windows_postgres.py')))
+        ('postgres-code', build_cache.text_digest(ROOT / 'services/shared/windows_postgres.py')),
+        *((('pgvector', postgres_vector.ARCHIVE_SHA256),) if kind == 'hub' else ()))
 
 
 def prepare_runtime(kind, args, timings, scratch_parent):

@@ -700,3 +700,36 @@ Sıra önerisi yukarıdan aşağıya.
   ses dosyası) de saklanmalı, yoksa model değişince yeniden gömülemez. Model değişince: aynı `vector_space` (Jina görsel ↔ Jina
   ses) yeniden gömme gerektirmez; farklıysa arka planda tüm kayıtlar yeni modelle yeniden gömülür, bitene kadar arama eski uzayda
   sürer, sonra geçilir. Ses/görsel kayıtlar için yeni modelin ek dosyası olmalı (Gemma 2 tek dosya, Jina ya görsel ya ses).
+
+## Hafıza vektörleri: pgvector (2026-11-14)
+
+- **Nerede:** Hub'ın kendi PostgreSQL'i (EDB `postgresql-16.15-1-windows-x64-binaries.zip`, `windows_postgres.py`;
+  geliştirici `.local_db/postgres` hâlâ 16.3). Eklenti: pgvector **0.8.7**. Router'ın PostgreSQL'ine konmadı.
+- **Kaynak:** pgvector Windows ikilisi yayınlamıyor (GitHub sürümlerinde dosya yok, EDB zipinde de yok), bu yüzden
+  `scripts/release/build_pgvector.py` derler: `v0.8.7` etiket arşivi (SHA-256 `cac0b10c…0bea85`, commit `f37c13f6…`)
+  sabitlenmiş PG 16.15 zipinin `include/` ve `postgres.lib`'iyle, VS 2022 `cl` 19.42 ve `nmake /F Makefile.win`.
+  `/Brepro` ve `/d1trimfile` ile iki derleme bayt bayt aynı, DLL'de bilgisayarın yolu/kullanıcı adı yok. Çıktı git'te:
+  `scripts/release/pgvector/pgvector-0.8.7-pg16-windows-x64.zip` (150 KB, SHA-256 `6b36eed9…5414b8`; dosya hash'leri
+  `pgvector.json`'da). İçinde `lib/vector.dll`, `share/extension/vector.control`, `vector--0.8.7.sql`, lisans.
+  Yeniden derleme yalnızca pgvector ya da PostgreSQL ana sürümü değişince; sonra `postgres_vector.ARCHIVE_SHA256`.
+- **Pakete giriş:** `build_package.py` zipi Hub runtime katmanının `.local_db/postgres`'ine açar (hash denetimli);
+  hash runtime anahtarında, yani bir sonraki yayında yeni bir Hub runtime katmanı iner. Kaynak checkout'ta
+  `python local_db_setup.py` aynı dosyaları mevcut `.local_db/postgres`'e ekler (çalışan sunucuya da eklenebilir).
+- **Etkinleştirme:** `vector.control` `trusted` değil, eklentiyi yalnız süper kullanıcı kurar. `run_local.py`,
+  `postgres_auth.secure()`'dan sonra admin rolüyle uygulama veritabanında `CREATE EXTENSION IF NOT EXISTS vector`
+  çalıştırır (kurulu sürüm eskiyse `ALTER EXTENSION vector UPDATE`). `orion` rolü (süper kullanıcı değil) tipi,
+  `<=>` ve HNSW'yi kendi tablolarında kullanır. Dosyalar yoksa ya da komut başarısızsa
+  `[!] pgvector ...; the Hub runs without vector search` yazar, Hub açılmaya devam eder (`services/shared/postgres_vector.py`).
+- **Doğrulandı (bu bilgisayarda, atılabilir kümede; gerçek veriye dokunulmadı):** 16.15 (paketteki gibi hazırlanmış runtime)
+  ve 16.3 (geliştirici runtime'ının kopyası) ile: parolalı kurulum + admin ile eklenti, `orion` rolüyle
+  `vector(768)` tablo, 6 satır, `ORDER BY embedding <=> $1`, `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)
+  WHERE vector_space = 'embeddinggemma-2'`; `SET enable_seqscan = off` ile planda `Index Scan using <kısmi indeks>`;
+  tablo silindi, küme kaldırıldı. Hub'ın kendisi bu dalla henüz başlatılmadı.
+- **Şema için not:** sorgu `WHERE vector_space = $1 ORDER BY embedding <=> $2 LIMIT k` biçiminde olursa o uzayın kısmi
+  HNSW indeksini kullanır; her `vector_space` için bir kısmi indeks. İki model de 768 boyutlu; ileride başka boyutlu
+  model gelirse sütun boyutsuz `vector` olup indeks `((embedding::vector(N)) vector_cosine_ops)` ifadesiyle kurulabilir
+  (denenmedi).
+- **macOS/Linux (yapılmadı):** Orion orada sistem PostgreSQL'ini kullanıyor (Homebrew `postgresql@16`, APT). Linux'ta
+  PGDG deposunun `postgresql-16-pgvector` paketi, macOS'ta kaynaktan `make && make install` (`PG_CONFIG` o PostgreSQL'in)
+  ya da Homebrew `pgvector` formülü (hangi `postgresql@` sürümüne bağlı olduğu doğrulanmadı). Taşınabilir PostgreSQL
+  gelirse aynı tarif: `make` ile `vector.so`/`vector.dylib`, `postgres_vector.FILES` platforma göre.

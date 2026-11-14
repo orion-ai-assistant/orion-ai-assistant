@@ -1,0 +1,18 @@
+{
+  "pgvector": "0.8.7",
+  "source_url": "https://github.com/pgvector/pgvector/archive/refs/tags/v0.8.7.tar.gz",
+  "source_sha256": "cac0b10c360f05b2d521200105ba3697e773d4cd3731f5a915a7e37ebe0bea85",
+  "source_commit": "f37c13f68b57d2c3472b2214fbcff699d6d34876",
+  "postgres": "16.15-1",
+  "postgres_archive_sha256": "25e6fcdfb8caec38691bf461125e7564508760666f7b8e5dc6a5f0818f58f81e",
+  "compiler": "MSVC cl 19.42.34435 x64",
+  "flags": "Makefile.win defaults (/O2 /fp:fast, x64 baseline) + /Brepro /d1trimfile",
+  "archive": "pgvector-0.8.7-pg16-windows-x64.zip",
+  "archive_sha256": "6b36eed9ea24a9447d8d61007c4b7bea5a4c8555a9f51e50226743bdca5414b8",
+  "files": {
+    "lib/vector.dll": "072fefe04715c229080e945930f6ad3148c3f2fdb79e29e5a1e68175f313f88a",
+    "share/extension/vector.control": "9f7d0fcada5e68aa41adf9d5b3ab3fd43c83f2edd462c391a0f715d72a9941ec",
+    "share/extension/vector--0.8.7.sql": "a4ceca5931cb614b40bec09ce6994a57058513d9af612c15b1458a338134609d",
+    "pgvector-license.txt": "6bba9ebeb73e27477463b05e5ef1bf303bccbddb3db9bbc95905d351604d6a87"
+  }
+}
