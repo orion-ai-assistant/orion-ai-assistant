@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 SETUP_MESSAGE = "Hafıza için Bileşenler'de embedding bileşenini kur ve aç."
 NO_VECTOR_MESSAGE = "Hafıza kullanılamıyor: veritabanında pgvector (vector eklentisi) yok."
 LIMIT = 5
+SCHEMA_LOCK = 51730201  # Its own number: 51730102-51730104 belong to the media tables and their migration.
 
 
 class MemoryUnavailable(Exception):
@@ -30,7 +31,7 @@ async def ensure_memory_table(conn) -> None:
     try:
         if not await conn.fetchval("select 1 from pg_extension where extname = 'vector'"):
             raise MemoryUnavailable(NO_VECTOR_MESSAGE)
-        await conn.execute("select pg_advisory_lock(51730102)")
+        await conn.execute("select pg_advisory_lock($1)", SCHEMA_LOCK)
         try:
             await conn.execute("""
                 create table if not exists orion_memory (
@@ -45,7 +46,7 @@ async def ensure_memory_table(conn) -> None:
                 )""")
             await conn.execute("create index if not exists idx_orion_memory_user on orion_memory (user_id, vector_space)")
         finally:
-            await conn.execute("select pg_advisory_unlock(51730102)")
+            await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
     except MemoryUnavailable:
         raise
     except Exception as exc:
