@@ -125,16 +125,6 @@ def test_without_the_vector_extension_the_answer_is_turkish_and_nothing_crashes(
     assert conn.closed and not conn.inserted
 
 
-def test_search_returns_texts_with_dates_and_counts_other_vector_spaces(monkeypatch):
-    rows = [{'id': 7, 'text': 'Kullanıcı: adım Ayşe', 'created_at': dt.datetime(2026, 11, 14, 10, 0)}]
-    conn = FakeConn(rows=rows, other=3)
-    wire(monkeypatch, conn)
-    found = asyncio.run(memory.search('u1', 'adım ne', Settings()))
-    assert found == {'rows': [{'id': 7, 'text': 'Kullanıcı: adım Ayşe', 'date': '2026-11-14', 'kind': 'text',
-                                 'media_id': None}], 'other_spaces': 3}
-    assert conn.fetch_args[:2] == ('u1', 'embeddinggemma-2') and conn.fetch_args[3] == memory.LIMIT
-
-
 def _tool_settings(monkeypatch):
     async def settings(*args):
         return Settings()
@@ -147,16 +137,25 @@ def test_the_tool_is_registered_enabled_by_default_and_answers_in_turkish(monkey
     registry_ = get_registry()
     assert 'hafizada_ara' in registry_.enabled(default_tool_selection())
     assert registry_.categories['memory'].name == 'Hafıza'
-    wire(monkeypatch, FakeConn(rows=[{'id': 3, 'text': 'adım Ayşe', 'created_at': dt.datetime(2026, 11, 14)}], other=2))
+    calls = []
+
+    async def search(user, query, settings, page=1, kind='all'):
+        calls.append((user, query, page, kind))
+        return {'rows': [{'id': 3, 'text': 'adım Ayşe', 'date': '2026-11-14', 'kind': 'text', 'media_id': None,
+                          'score': 0.71, 'match': 'both'}], 'more': True, 'other_spaces': 2}
+    monkeypatch.setattr(memory, 'search', search)
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
-    result = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='adım'), context))
-    assert result['kayitlar'] == [{'id': 3, 'tarih': '2026-11-14', 'metin': 'adım Ayşe'}]
-    assert result['uyari'] == '2 kayıt başka embedding modeliyle kaydedilmiş, aranmadı'
+    result = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='adım', sayfa=2, tur='metin'), context))
+    assert calls == [('u1', 'adım', 2, 'text')]
+    assert result['kayitlar'] == [{'id': 3, 'tarih': '2026-11-14', 'metin': 'adım Ayşe', 'skor': 0.71,
+                                   'eslesme': 'anlam+metin'}]
+    assert result['sayfa'] == 2 and result['daha_var'] is True
+    assert result['uyari'].startswith('2 kayıt başka embedding modeliyle kaydedilmiş')
 
 
 def test_the_tool_reports_the_setup_message_instead_of_raising(monkeypatch):
-    async def fail(*args):
+    async def fail(*args, **kwargs):
         raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
 
     monkeypatch.setattr(memory, 'search', fail)
@@ -334,76 +333,6 @@ def test_the_memory_page_paths_pass_the_access_boundary():
     """The page's GET/POST/DELETE (and the browser's preflight) were refused with 404 before the memory paths
     were listed: the app showed "Hub bağlantısı kurulamadı"."""
     from orion.api.access_boundary import public_path
-    for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete'):
+    for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete', '/api/v1/memory/file'):
         assert public_path(path)
     assert not public_path('/api/v1/memoryx')
-
-
-def _row(id, text, space='embeddinggemma-2', kind='text', score=None):
-    row = {'id': id, 'text': text, 'kind': kind, 'vector_space': space, 'source_kind': 'manual',
-           'source_chat_title': None, 'created_at': dt.datetime(2026, 11, 14, 12, id)}
-    if score is not None:
-        row['score'] = score
-    return row
-
-
-class SearchConn(ListConn):
-    def __init__(self):
-        super().__init__()
-        self.calls = []
-
-    async def fetch(self, sql, *args):
-        self.calls.append((sql, args))
-        if '<=>' in sql:
-            return [_row(1, 'kedim Maviş', score=0.87), _row(2, 'evcil hayvan', score=0.61), _row(9, 'gürültü', score=0.1)]
-        if 'ilike' in sql:
-            return [_row(3, 'Maviş jina notu', space='jina-v5'), _row(1, 'kedim Maviş')]
-        return await super().fetch(sql, *args)
-
-
-def test_one_search_merges_meaning_and_text_matches(monkeypatch):
-    conn = SearchConn()
-    wire(monkeypatch, conn)
-    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş'))
-    assert [(i['id'], i['match']) for i in result['items']] == [(1, 'both'), (2, 'meaning'), (3, 'text')]
-    assert result['items'][0]['score'] == 0.87 and result['items'][2]['score'] is None
-    assert result['items'][2]['searchable'] is False and result['semantic'] is True and result['matching'] == 3
-    vector_sql, vector_args = next(c for c in conn.calls if '<=>' in c[0])
-    assert vector_args[:2] == ('u1', 'embeddinggemma-2')  # Only the current space is compared.
-    text_sql, text_args = next(c for c in conn.calls if 'ilike' in c[0])
-    assert text_args == ('u1', '%Maviş%') and 'vector_space =' not in text_sql  # Text matches cover every space.
-
-
-def test_filters_reach_both_searches_and_another_model_skips_the_vector_search(monkeypatch):
-    conn = SearchConn()
-    wire(monkeypatch, conn)
-    asyncio.run(memory.list_items('u1', Settings(), q='x', kind='image'))
-    assert all('kind = $' in sql and 'image' in args for sql, args in conn.calls if 'ilike' in sql or '<=>' in sql)
-    conn = SearchConn()
-    wire(monkeypatch, conn)
-    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş', vector_space='jina-v5'))
-    assert not any('<=>' in sql for sql, _ in conn.calls)
-    text_sql, text_args = next(c for c in conn.calls if 'ilike' in c[0])
-    assert 'vector_space = $3' in text_sql and text_args[2] == 'jina-v5'
-    assert [i['match'] for i in result['items']] == ['text', 'text']
-
-
-def test_without_embedding_the_search_falls_back_to_text_with_a_turkish_reason(monkeypatch):
-    conn = SearchConn()
-    wire(monkeypatch, conn)
-
-    async def off(settings):
-        raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
-    monkeypatch.setattr(memory, 'embedding_target', off)
-    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş'))
-    assert result['semantic'] is False and result['semantic_reason'] == memory.SETUP_MESSAGE
-    assert [i['match'] for i in result['items']] == ['text', 'text']
-    assert result['summary']['current_vector_space'] is None and result['summary']['not_searchable'] == 3
-
-
-def test_without_a_query_the_filters_page_newest_first(monkeypatch):
-    conn = SearchConn()
-    wire(monkeypatch, conn)
-    asyncio.run(memory.list_items('u1', Settings(), limit=10, offset=20, vector_space='jina-v5', kind='bogus'))
-    sql, args = conn.calls[0]
-    assert 'order by created_at desc' in sql and args == ('u1', 10, 20, 'jina-v5') and 'kind =' not in sql

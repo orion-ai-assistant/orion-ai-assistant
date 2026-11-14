@@ -167,6 +167,7 @@ class ToolConversation:
             cancelled = False
             google_failure = None
             google_direct_result = None
+            round_media = []
             for call in calls:
                 function = call["function"]
                 name, arguments = function["name"], function["arguments"]
@@ -176,6 +177,7 @@ class ToolConversation:
                 self.activity.append(item)
                 yield "tool_call", json.dumps(item)
                 google_preview = None
+                media_refs = None
                 try:
                     if google_failure:
                         raise ValueError("Google AI Mode failed; further web calls were skipped")
@@ -202,6 +204,8 @@ class ToolConversation:
                         google_direct_result = result
                     else:
                         result = await execute_tool(registry.tools[name], arguments, context)
+                        # Media a tool opened for the model (hafizadaki_medyayi_ac): references, never in the JSON.
+                        media_refs = result.pop('_medya', None) if isinstance(result, dict) else None
                     if name == 'google_ai_mode' and settings.google_ai_direct_stream and not (
                             result.get('status') in ('ok', 'partial') and result.get('answer')):
                         google_failure = google_failure_message(result) + ' normal web aramasına geçilmedi.'
@@ -235,9 +239,17 @@ class ToolConversation:
                     self.failed_tools.add(name)
                 result_message = {"role": "tool", "tool_call_id": call["id"],
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
+                if media_refs and item['status'] == 'completed':
+                    # Kept with the chat: model_history shows them again on every later turn.
+                    result_message["media_refs"] = media_refs
+                    round_media.extend(media_refs)
                 messages.append(result_message)
                 self.transcript.append(result_message)
                 yield "tool_result", json.dumps(item)
+            if round_media:
+                from orion.kernel.media_store import hydrate_model_media
+                from orion.worker.services.tool_history import media_message
+                messages.extend(await hydrate_model_media(context.chat_id, [media_message(round_media)]))
             if google_direct_result and google_direct_result.get('status') in ('ok', 'partial') and google_direct_result.get('answer'):
                 self.final_content = google_direct_text(google_direct_result['answer'], google_direct_result)
                 self.direct_tool_call_id = next(

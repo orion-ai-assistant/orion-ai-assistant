@@ -7,6 +7,7 @@ embedding model (`vector_space`) are never compared with the current one, only c
 from __future__ import annotations
 
 import logging
+import re
 
 from orion.kernel import registry
 from orion.kernel.chat_search import message_text
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 SETUP_MESSAGE = "Hafıza için Bileşenler'de embedding bileşenini kur ve aç."
 NO_VECTOR_MESSAGE = "Hafıza kullanılamıyor: veritabanında pgvector (vector eklentisi) yok."
-LIMIT = 5
 SCHEMA_LOCK = 51730201  # Its own number: 51730102-51730104 belong to the media tables and their migration.
 
 
@@ -24,6 +24,7 @@ class MemoryUnavailable(Exception):
 
 
 _table_ready = False
+_trgm = False  # pg_trgm is there: near spellings are found by the database, else by Python.
 
 
 async def ensure_memory_table(conn) -> None:
@@ -58,7 +59,21 @@ async def ensure_memory_table(conn) -> None:
     except Exception as exc:
         logger.warning("Memory table could not be prepared: %s", exc)
         raise MemoryUnavailable(NO_VECTOR_MESSAGE) from exc
+    await _enable_trigrams(conn)
     _table_ready = True
+
+
+async def _enable_trigrams(conn) -> None:
+    """pg_trgm ships with PostgreSQL and is a trusted extension, so the Hub's own role may create it. Without it the
+    near-spelling search runs in Python."""
+    global _trgm
+    try:
+        if not await conn.fetchval("select 1 from pg_extension where extname = 'pg_trgm'"):
+            await conn.execute("create extension if not exists pg_trgm")
+        _trgm = True
+    except Exception as exc:
+        logger.info("pg_trgm unavailable, near spellings are matched in Python: %s", exc)
+        _trgm = False
 
 
 async def _connect():
@@ -218,9 +233,13 @@ async def _read_chat_media(chat_id: str, media_id: str) -> tuple[str, bytes]:
 
 async def _media_rows(item: dict, chat_id: str, target) -> list[tuple[str, list[float], float | None]]:
     """(label, vector, seconds) per row of one image or audio file: one image, one row per <=60 s of audio."""
+    mime, raw = await _read_chat_media(chat_id, item["media_id"])
+    return await _rows_of(item, mime, raw, target)
+
+
+async def _rows_of(item: dict, mime: str, raw: bytes, target) -> list[tuple[str, list[float], float | None]]:
     import asyncio
     from orion.worker.services.router import audio_part, image_part
-    mime, raw = await _read_chat_media(chat_id, item["media_id"])
     tail = f" — {item['text']}" if item["text"] else ""
     if item["kind"] == "image":
         return [((item["name"] or "Görsel") + tail, await _embed_media([image_part(raw, mime)], target), None)]
@@ -346,6 +365,107 @@ async def add_note(user_id: str, text: str, settings, source_kind: str = "manual
         await conn.close()
 
 
+TEXT_FILE_TYPES = (".txt", ".md", ".markdown")
+MAX_TEXT_FILE = 2 * 1024 * 1024
+
+
+def file_kind(name: str, mime: str) -> str | None:
+    """'image', 'audio' or 'text' (a .txt/.md file) for a file added on the memory page; None for anything else."""
+    mime, name = (mime or "").lower(), (name or "").lower()
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("text/") or name.endswith(TEXT_FILE_TYPES):
+        return "text"
+    return None
+
+
+def file_refusal(kind: str, support: dict) -> str:
+    sense, label = ("görselleri", "Görsel") if kind == "image" else ("sesi", "Ses")
+    if support["has_extra"] and kind in support["extra_kinds"] and not support["extra_on"]:
+        return (f"Dosya eklenmedi: {support['model']} modelinin ek dosyası kapalı. "
+                "Görsel/ses için modelin ek dosyasını aç (Bileşenler → Hafıza).")
+    return f"Dosya eklenmedi: {support['model']} {sense} anlamıyor. {label} için EmbeddingGemma 2'yi ek dosyasıyla seç."
+
+
+async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> dict:
+    """A file the user adds on the memory page. A text file (.txt/.md): one row per chunk. An image or audio: as a
+    chat save stores it (one copy per sha256 linked to each row; the same file in the same space is skipped).
+    {"added": new rows, "warnings": [...]}; ValueError with a Turkish sentence for a file that cannot be added."""
+    import hashlib
+    from orion.kernel.media_store import MAX_MEDIA_BYTES, hold_media, link_media
+    from orion.worker.services.router import chunk_text
+    kind = file_kind(name, mime)
+    if kind is None:
+        raise ValueError("Yalnız görsel, ses ve metin (.txt, .md) dosyaları eklenebilir.")
+    if not raw:
+        raise ValueError("Dosya boş.")
+    name = " ".join((name or "").split())[:200]
+    if kind == "text":
+        if len(raw) > MAX_TEXT_FILE:
+            raise ValueError("Metin dosyası çok büyük: en fazla 2 MB olabilir.")
+        text = raw.decode("utf-8-sig", errors="replace").strip()
+        if not text:
+            raise ValueError("Dosyada metin yok.")
+    elif len(raw) > MAX_MEDIA_BYTES:
+        raise ValueError("Dosya çok büyük: en fazla 64 MB olabilir.")
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        target, space, local = await embedding_target(settings)
+        if kind == "text":
+            rows = []
+            for piece in chunk_text(text) or [text]:
+                for vector in await _embed(piece, target, "document", local):
+                    rows.append((user_id, piece, space, _vector(vector), name or None))
+            added = await _insert_new(conn, rows, "file")
+            return {"added": added, "warnings": [] if added else ["Bu metin hafızada zaten var."]}
+        support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
+        if not support[kind]:
+            raise ValueError(file_refusal(kind, support))
+        mime = mime.lower()
+        media_id = hashlib.sha256(raw).hexdigest()
+        if await conn.fetchval("select 1 from orion_memory where user_id = $1 and vector_space = $2 "
+                               "and media_id = $3 limit 1", user_id, space, media_id):
+            return {"added": 0, "warnings": ["Bu dosya hafızada zaten var."]}
+        item = {"kind": kind, "media_id": media_id, "mime": mime, "name": name, "text": ""}
+        try:
+            rows = await _rows_of(item, mime, raw, target)
+        except Exception as exc:
+            logger.warning("Memory could not embed the file %s: %s", name, exc)
+            raise ValueError("Embedding modeli bu dosyayı işleyemedi.") from exc
+        async with conn.transaction():
+            await hold_media(conn, media_id, mime, raw)
+            for label, vector, seconds in rows:
+                row_id = await conn.fetchval(MEDIA_INSERT_SQL, user_id, label[:1000], space, _vector(vector), "file",
+                                             name or None, kind, media_id, mime, seconds)
+                await link_media(media_id, "memory", str(row_id), conn=conn)
+        return {"added": len(rows), "warnings": []}
+    finally:
+        await conn.close()
+
+
+async def chat_model_media(settings) -> dict:
+    """{"image": bool, "audio": bool}: what the chat model can be shown. The local model by its extra file
+    (mmproj) and what the file says; a cloud model (or a model group) is taken to see images but not hear audio,
+    since an OpenAI-compatible API does not say."""
+    from orion.kernel.router_models import get_model_provider
+    try:
+        provider = await get_model_provider(settings.router_model_group, "chat")
+    except Exception:
+        provider = None
+    if provider == "local":
+        from services.shared import local_parts
+        try:
+            support = local_parts.part_media("llm")
+            return {"image": bool(support["image"]), "audio": bool(support["audio"])}
+        except Exception as exc:
+            logger.warning("Chat model media support unknown: %s", exc)
+            return {"image": False, "audio": False}
+    return {"image": True, "audio": False}
+
+
 async def current_space(settings) -> str | None:
     try:
         return (await embedding_target(settings))[1]
@@ -354,10 +474,50 @@ async def current_space(settings) -> str | None:
 
 
 KINDS = ("text", "image", "audio")
-MIN_SCORE = 0.45  # Below this a vector neighbour is noise, not a match by meaning.
-TEXT_CAP = 500
+PAGE = 10  # The tool's page: results 1-10, 11-20, ...
+TEXT_CAP = 100  # Text matches taken per search.
+FUZZY_MIN = 0.45  # pg_trgm word similarity from which a near spelling counts ("selam nabe" ~ "selam naber").
+FUZZY_MIN_PY = 0.6  # The same for the Python fallback (its measure is a little more lenient).
+FALLBACK_ROWS = 5000  # Rows the Python fallback compares, newest first.
+TEXT_BONUS = 0.5  # The tool ranks a text match this much above its meaning score (good text matches: 0.5-0.75).
+_TR_UPPER, _TR_LOWER = "İIÇŞĞÖÜ", "iıçşğöü"
+_TR_LETTERS, _TR_ASCII = "çğıöşüâîû", "cgiosuaiu"
+# Turkish case folding that does not depend on the database's locale (a C-locale lower() knows only ASCII, and
+# pg_trgm there splits words at ç, ş, ı...): the Turkish capitals to small letters, those to ASCII, lower() then.
+# "nasilsin" so finds "nasılsın" too.
+FOLD_SQL = f"lower(translate(translate(text, '{_TR_UPPER}', '{_TR_LOWER}'), '{_TR_LETTERS}', '{_TR_ASCII}'))"
+_FOLD = str.maketrans(_TR_UPPER + _TR_LETTERS, _TR_LOWER.translate(str.maketrans(_TR_LETTERS, _TR_ASCII)) + _TR_ASCII)
 _COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
             "media_seconds")
+
+
+def fold(text: str) -> str:
+    """Turkish lower case without Turkish letters: İ/I/ı→i, Ş/ş→s..., then lower() for the rest."""
+    return text.translate(_FOLD).lower()
+
+
+def _trigrams(text: str) -> set[str]:
+    grams = set()
+    for word in re.findall(r"\w+", text):
+        padded = f"  {word} "
+        grams.update(padded[i:i + 3] for i in range(len(padded) - 2))
+    return grams
+
+
+def word_similarity(query: str, text: str) -> float:
+    """The share of the query's trigrams found in the best run of as many words of the text: a light stand-in for
+    pg_trgm's word_similarity on a database without the extension. Both are folded already."""
+    wanted = _trigrams(query)
+    if not wanted:
+        return 0.0
+    words = re.findall(r"\w+", text)
+    size = max(1, len(re.findall(r"\w+", query)))
+    best = 0.0
+    for start in range(max(1, len(words) - size + 1)):
+        best = max(best, len(wanted & _trigrams(" ".join(words[start:start + size]))) / len(wanted))
+        if best == 1.0:
+            break
+    return best
 
 
 def _filters(vector_space: str, kind: str, first: int) -> tuple[str, list]:
@@ -372,7 +532,57 @@ def _filters(vector_space: str, kind: str, first: int) -> tuple[str, list]:
     return sql, args
 
 
-def _item(r, space, score=None, match=None) -> dict:
+def _score_sql(params: list, space, vector) -> str:
+    """The meaning score of a row of the current space (null for other spaces or without a query vector)."""
+    if vector is None:
+        return "null::float8"
+    params += [space, vector]
+    return f"case when vector_space = ${len(params) - 1} then 1 - (embedding <=> ${len(params)}::vector) end"
+
+
+async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, space=None, vector=None) -> list[dict]:
+    """This user's rows whose text has `q` (Turkish case folding) or a near spelling of it, best first. Each row has
+    'tmatch' ('text' for a substring, 'similar' for a near spelling), 'tscore' (1 for a substring) and 'score'
+    (its meaning score in the current space, else None)."""
+    folded = fold(q)
+    like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    params = [user_id, like] + ([folded] if _trgm else [])
+    score = _score_sql(params, space, vector)
+    extra, args = _filters(vector_space, kind, len(params) + 1)
+    params += args
+    if _trgm:
+        rows = await conn.fetch(
+            f"select {_COLUMNS}, {score} as score, case when {FOLD_SQL} like $2 then 1.0 "
+            f"else word_similarity($3, {FOLD_SQL}) end as tscore from orion_memory where user_id = $1 "
+            f"and ({FOLD_SQL} like $2 or word_similarity($3, {FOLD_SQL}) >= {FUZZY_MIN}){extra} "
+            f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP}", *params)
+        return [{**dict(r), "tmatch": "text" if float(r["tscore"]) >= 1 else "similar"} for r in rows]
+    rows = [{**dict(r), "tscore": 1.0, "tmatch": "text"} for r in await conn.fetch(
+        f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and {FOLD_SQL} like $2"
+        f"{extra} order by created_at desc, id desc limit {TEXT_CAP}", *params)]
+    if len(rows) >= TEXT_CAP:
+        return rows
+    extra, args = _filters(vector_space, kind, 3)
+    near = []
+    for r in await conn.fetch(
+            f"select id, {FOLD_SQL} as folded from orion_memory where user_id = $1 and not ({FOLD_SQL} like $2)"
+            f"{extra} order by created_at desc, id desc limit {FALLBACK_ROWS}", user_id, like, *args):
+        similarity = word_similarity(folded, r["folded"])
+        if similarity >= FUZZY_MIN_PY:
+            near.append((similarity, r["id"]))
+    near = sorted(near, reverse=True)[:TEXT_CAP - len(rows)]
+    if near:
+        params = [user_id, [row_id for _, row_id in near]]
+        score = _score_sql(params, space, vector)
+        found = {r["id"]: dict(r) for r in await conn.fetch(
+            f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and id = any($2::bigint[])",
+            *params)}
+        rows += [{**found[row_id], "tscore": similarity, "tmatch": "similar"}
+                 for similarity, row_id in near if row_id in found]
+    return rows
+
+
+def _item(r, space, score=None, match=None, text_score=None) -> dict:
     item = {"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
             "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
             "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space}
@@ -383,6 +593,8 @@ def _item(r, space, score=None, match=None) -> dict:
     if match:
         item["match"] = match
         item["score"] = None if score is None else round(float(score), 4)
+        if text_score is not None and match == "similar":
+            item["text_score"] = round(float(text_score), 3)
     return item
 
 
@@ -398,10 +610,22 @@ async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str |
         return space, None, str(exc)
 
 
+async def _nearest(conn, user_id, space, vector, kind, count, offset=0) -> list[dict]:
+    """The `count` rows of the current space nearest the query vector, from `offset`. No threshold: an image's score
+    against a text is low (0.2-0.4) even when it is the right one, so only the order counts."""
+    extra, args = _filters("all", kind, 6)
+    return [dict(r) for r in await conn.fetch(
+        f"select {_COLUMNS}, 1 - (embedding <=> $3::vector) as score from orion_memory "
+        f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector, id limit $4 offset $5",
+        user_id, space, vector, count, offset, *args)]
+
+
 async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offset: int = 0,
                      vector_space: str = "all", kind: str = "all") -> dict:
-    """A page of this user's rows and a summary of all of them. Without `q`: newest first. With `q`: matches by
-    meaning (current vector space, best score first) then plain-text-only matches; each says its `match`."""
+    """A page of this user's rows and a summary of all of them. Without `q`: newest first. With `q`: the `limit`
+    rows nearest by meaning (current vector space, best first, no threshold), then the text matches among the rest
+    (substring, then near spellings); each says its `match` (meaning, both, text, similar); `more` says whether
+    more rows by meaning follow."""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
@@ -412,26 +636,23 @@ async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offse
     else:
         space = await current_space(settings)
     conn = await _connect()
+    more = False
     try:
         await ensure_memory_table(conn)
         if q:
             meaning = []
-            if vector is not None and vector_space in ("all", space):
-                extra, args = _filters("all", kind, 4)
-                meaning = await conn.fetch(
-                    f"select {_COLUMNS}, 1 - (embedding <=> $3::vector) as score from orion_memory "
-                    f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit {TEXT_CAP}",
-                    user_id, space, vector, *args)
-                meaning = [r for r in meaning if float(r["score"]) >= MIN_SCORE]
-            extra, args = _filters(vector_space, kind, 3)
-            texts = await conn.fetch(
-                f"select {_COLUMNS} from orion_memory where user_id = $1 and text ilike $2{extra} "
-                f"order by created_at desc, id desc limit {TEXT_CAP}", user_id, f"%{q}%", *args)
+            searchable = vector is not None and vector_space in ("all", space)
+            if searchable:
+                meaning = await _nearest(conn, user_id, space, vector, kind, limit + 1, offset)
+                more, meaning = len(meaning) > limit, meaning[:limit]
+            texts = await _text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
+                                     vector if searchable else None)
             text_ids = {r["id"] for r in texts}
             meaning_ids = {r["id"] for r in meaning}
             merged = [_item(r, space, r["score"], "both" if r["id"] in text_ids else "meaning") for r in meaning]
-            merged += [_item(r, space, None, "text") for r in texts if r["id"] not in meaning_ids]
-            items, matching = merged[offset:offset + limit], len(merged)
+            merged += [_item(r, space, r["score"], r["tmatch"], r["tscore"]) for r in texts
+                       if r["id"] not in meaning_ids]
+            items, matching = merged, len(merged)
         else:
             extra, args = _filters(vector_space, kind, 4)
             rows = await conn.fetch(
@@ -457,6 +678,7 @@ async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offse
     }
     if q:
         result["semantic"] = semantic
+        result["more"] = more
         if reason:
             result["semantic_reason"] = reason
     return result
@@ -483,21 +705,89 @@ async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows]
 
 
-async def search(user_id: str, query: str, settings) -> dict:
-    """The closest saved texts of this user in the current vector space (plus a count of other spaces)."""
+def _ranked(meaning: list[dict], texts: list[dict]) -> list[dict]:
+    """Meaning and text matches in one order: the meaning score, a substring match TEXT_BONUS higher, a near
+    spelling 80 % of that (pg_trgm's word similarity of a real typo is only ~0.4-0.6); rows of another space have
+    only their text match."""
+    pool = {r["id"]: {**r, "tmatch": None, "tscore": 0.0} for r in meaning}
+    for r in texts:
+        known = pool.get(r["id"], {})
+        pool[r["id"]] = {**r, "score": r["score"] if r["score"] is not None else known.get("score")}
+
+    def rank(r):
+        bonus = {"text": TEXT_BONUS, "similar": 0.8 * TEXT_BONUS}.get(r["tmatch"], 0.0)
+        return (float(r["score"]) if r["score"] is not None else 0.0) + bonus + 0.01 * float(r["tscore"])
+    return sorted(pool.values(), key=lambda r: (-rank(r), -r["id"]))
+
+
+async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all") -> dict:
+    """One page (PAGE rows, best first, no threshold) of this user's memory for the `hafizada_ara` tool. With a
+    query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
+    order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
+    query = (query or "").strip()
+    kind = kind if kind in KINDS else "all"
+    page = max(1, int(page))
+    start = (page - 1) * PAGE
+    if query:
+        space, vector, reason = await _query_vector(query, settings)
+    else:
+        space, vector, reason = await current_space(settings), None, None
     conn = await _connect()
     try:
         await ensure_memory_table(conn)
-        target, space, local = await embedding_target(settings)
-        vector = (await _embed(query, target, "query", local))[0]
-        rows = await conn.fetch(
-            "select id, text, created_at, kind, media_id from orion_memory where user_id = $1 and vector_space = $2 "
-            "order by embedding <=> $3::vector limit $4", user_id, space, _vector(vector), LIMIT)
+        if query:
+            meaning = await _nearest(conn, user_id, space, vector, kind, start + PAGE + 1) if vector else []
+            texts = await _text_rows(conn, user_id, query, "all", kind, space, vector)
+            ranked = _ranked(meaning, texts)
+        else:
+            extra, args = _filters("all", kind, 4)
+            ranked = [None] * start + [{**dict(r), "score": None, "tmatch": None} for r in await conn.fetch(
+                f"select {_COLUMNS} from orion_memory where user_id = $1{extra} order by created_at desc, id desc "
+                f"limit $2 offset $3", user_id, PAGE + 1, start, *args)]
         other = await conn.fetchval(
-            "select count(*) from orion_memory where user_id = $1 and vector_space <> $2", user_id, space)
-        return {"rows": [{"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat(),
-                          "kind": r.get("kind") or "text", "media_id": r.get("media_id")} for r in rows],
-                "other_spaces": int(other or 0)}
+            "select count(*) from orion_memory where user_id = $1 and vector_space <> $2", user_id, space) if space else 0
+    finally:
+        await conn.close()
+    rows = []
+    for r in ranked[start:start + PAGE]:
+        # Every row of the space has a meaning score (no threshold), so a text match is what the label says.
+        match = (r["tmatch"] or "meaning") if query else None
+        rows.append({"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat(),
+                     "kind": r.get("kind") or "text", "media_id": r.get("media_id"),
+                     "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match})
+    result = {"rows": rows, "more": len(ranked) > start + PAGE, "other_spaces": int(other or 0)}
+    if query and reason:
+        result["reason"] = reason
+    return result
+
+
+async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]) -> list[dict]:
+    """This user's rows among `ids`, in that order. The file of each image/audio row whose kind is in `kinds` is
+    linked to the chat (owner 'chat'), so the chat's history can hand it to the model on every later turn and the
+    cleaner keeps it while a message names it; such rows say `opened`."""
+    from orion.kernel.media_store import link_media
+    ids = [int(i) for i in ids][:3]
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        rows = {r["id"]: dict(r) for r in await conn.fetch(
+            "select id, text, kind, media_id, media_mime from orion_memory where user_id = $1 "
+            "and id = any($2::bigint[])", user_id, ids)}
+        found, seen = [], set()
+        for row_id in ids:
+            row = rows.get(row_id)
+            if row is None or row_id in seen:
+                continue
+            seen.add(row_id)
+            row["opened"] = False
+            if row["media_id"] and row["kind"] in kinds:
+                try:
+                    await link_media(row["media_id"], "chat", chat_id, conn=conn)
+                    row["opened"] = True
+                except LookupError:
+                    row["missing"] = True
+            found.append(row)
+        return found
     finally:
         await conn.close()
 

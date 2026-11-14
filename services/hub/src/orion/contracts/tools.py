@@ -41,4 +41,5 @@ def default_tool_selection() -> ToolSelection:
     # The memory tools are the exception: they only touch what the user chose to save, so they are on from the start.
     return ToolSelection(categories={"datetime": True, "memory": True},
                          functions={"get_current_time": True, "hafizada_ara": True,
-                                    "hafizaya_ekle": True, "hafizadan_sil": True})
+                                    "hafizaya_ekle": True, "hafizadan_sil": True,
+                                    "hafizadaki_medyayi_ac": True})

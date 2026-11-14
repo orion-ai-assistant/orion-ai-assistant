@@ -121,6 +121,29 @@ async def add_memory_note(payload: MemoryNote, request: Request, current_user: s
     return {"added": added}
 
 
+class MemoryFile(BaseModel):
+    name: str = Field(default="", max_length=300)
+    data: str = Field(default="", max_length=90 * 1024 * 1024)  # A data URL: base64 of at most 64 MB.
+
+
+@router.post("/api/v1/memory/file")
+async def add_memory_file(payload: MemoryFile, request: Request, current_user: str = Depends(get_current_user)):
+    """An image, audio or text (.txt/.md) file the user adds on the memory page, sent as a data URL."""
+    from orion.kernel import memory
+    from orion.kernel.media_store import decode_data_url
+    try:
+        mime, raw = decode_data_url(payload.data)
+    except Exception as exc:
+        raise HTTPException(400, "Dosya okunamadı.") from exc
+    try:
+        return await memory.add_file(current_user, payload.name, mime, raw,
+                                     await get_runtime_settings(request.app.state.redis, current_user))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @router.delete("/api/v1/memory/{item_id}")
 async def delete_memory_item(item_id: int, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory
