@@ -178,19 +178,88 @@ async def current_space(settings) -> str | None:
         return None
 
 
-async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offset: int = 0) -> dict:
-    """A page of this user's rows (newest first, optional plain-text filter) and a summary of all of them."""
-    space = await current_space(settings)
+KINDS = ("text", "image", "audio")
+MIN_SCORE = 0.45  # Below this a vector neighbour is noise, not a match by meaning.
+TEXT_CAP = 500
+_COLUMNS = "id, text, kind, vector_space, source_kind, source_chat_title, created_at"
+
+
+def _filters(vector_space: str, kind: str, first: int) -> tuple[str, list]:
+    """SQL conditions (after the user's) for the page's model and kind filters, numbered from `first`."""
+    sql, args = "", []
+    if vector_space and vector_space != "all":
+        args.append(vector_space)
+        sql += f" and vector_space = ${first + len(args) - 1}"
+    if kind and kind != "all":
+        args.append(kind)
+        sql += f" and kind = ${first + len(args) - 1}"
+    return sql, args
+
+
+def _item(r, space, score=None, match=None) -> dict:
+    item = {"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
+            "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
+            "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space}
+    if match:
+        item["match"] = match
+        item["score"] = None if score is None else round(float(score), 4)
+    return item
+
+
+async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str | None]:
+    """(current vector space, query vector, reason when the search by meaning is off)."""
+    try:
+        target, space, local = await embedding_target(settings)
+    except MemoryUnavailable as exc:
+        return None, None, str(exc)
+    try:
+        return space, _vector((await _embed(q, target, "query", local))[0]), None
+    except MemoryUnavailable as exc:
+        return space, None, str(exc)
+
+
+async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offset: int = 0,
+                     vector_space: str = "all", kind: str = "all") -> dict:
+    """A page of this user's rows and a summary of all of them. Without `q`: newest first. With `q`: matches by
+    meaning (current vector space, best score first) then plain-text-only matches; each says its `match`."""
+    q = (q or "").strip()
+    kind = kind if kind in KINDS else "all"
+    vector_space = vector_space or "all"
+    semantic, reason, vector = None, None, None
+    if q:
+        space, vector, reason = await _query_vector(q, settings)
+        semantic = vector is not None
+    else:
+        space = await current_space(settings)
     conn = await _connect()
     try:
         await ensure_memory_table(conn)
-        pattern = f"%{q.strip()}%" if q and q.strip() else None
-        rows = await conn.fetch(
-            "select id, text, kind, vector_space, source_kind, source_chat_title, created_at from orion_memory "
-            "where user_id = $1 and ($2::text is null or text ilike $2) order by created_at desc, id desc "
-            "limit $3 offset $4", user_id, pattern, limit, offset)
-        matching = await conn.fetchval(
-            "select count(*) from orion_memory where user_id = $1 and ($2::text is null or text ilike $2)", user_id, pattern)
+        if q:
+            meaning = []
+            if vector is not None and vector_space in ("all", space):
+                extra, args = _filters("all", kind, 4)
+                meaning = await conn.fetch(
+                    f"select {_COLUMNS}, 1 - (embedding <=> $3::vector) as score from orion_memory "
+                    f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit {TEXT_CAP}",
+                    user_id, space, vector, *args)
+                meaning = [r for r in meaning if float(r["score"]) >= MIN_SCORE]
+            extra, args = _filters(vector_space, kind, 3)
+            texts = await conn.fetch(
+                f"select {_COLUMNS} from orion_memory where user_id = $1 and text ilike $2{extra} "
+                f"order by created_at desc, id desc limit {TEXT_CAP}", user_id, f"%{q}%", *args)
+            text_ids = {r["id"] for r in texts}
+            meaning_ids = {r["id"] for r in meaning}
+            merged = [_item(r, space, r["score"], "both" if r["id"] in text_ids else "meaning") for r in meaning]
+            merged += [_item(r, space, None, "text") for r in texts if r["id"] not in meaning_ids]
+            items, matching = merged[offset:offset + limit], len(merged)
+        else:
+            extra, args = _filters(vector_space, kind, 4)
+            rows = await conn.fetch(
+                f"select {_COLUMNS} from orion_memory where user_id = $1{extra} order by created_at desc, id desc "
+                f"limit $2 offset $3", user_id, limit, offset, *args)
+            extra, args = _filters(vector_space, kind, 2)
+            matching = await conn.fetchval(f"select count(*) from orion_memory where user_id = $1{extra}", user_id, *args)
+            items = [_item(r, space) for r in rows]
         spaces = await conn.fetch(
             "select vector_space as key, count(*) as n from orion_memory where user_id = $1 group by vector_space", user_id)
         kinds = await conn.fetch(
@@ -198,14 +267,19 @@ async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offse
     finally:
         await conn.close()
     per_space = {r["key"]: int(r["n"]) for r in spaces}
-    return {
-        "items": [{"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
-                   "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
-                   "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space} for r in rows],
+    total = sum(per_space.values())
+    result = {
+        "items": items,
         "matching": int(matching or 0),
-        "summary": {"total": sum(per_space.values()), "per_vector_space": per_space,
-                    "per_kind": {r["key"]: int(r["n"]) for r in kinds}, "current_vector_space": space},
+        "summary": {"total": total, "per_vector_space": per_space,
+                    "per_kind": {r["key"]: int(r["n"]) for r in kinds}, "current_vector_space": space,
+                    "not_searchable": total - per_space.get(space, 0) if space else total},
     }
+    if q:
+        result["semantic"] = semantic
+        if reason:
+            result["semantic_reason"] = reason
+    return result
 
 
 async def delete_items(user_id: str, ids: list[int]) -> list[dict]:

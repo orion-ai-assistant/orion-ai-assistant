@@ -97,12 +97,13 @@ class MemoryDelete(BaseModel):
 
 
 @router.get("/api/v1/memory")
-async def list_memory(request: Request, q: str = "", limit: int = 50, offset: int = 0,
-                      current_user: str = Depends(get_current_user)):
+async def list_memory(request: Request, q: str = "", limit: int = 50, offset: int = 0, vector_space: str = "all",
+                      kind: str = "all", current_user: str = Depends(get_current_user)):
     from orion.kernel import memory
     try:
         return await memory.list_items(current_user, await get_runtime_settings(request.app.state.redis, current_user),
-                                       q[:200], max(1, min(limit, 200)), max(0, offset))
+                                       q[:200], max(1, min(limit, 200)), max(0, offset),
+                                       vector_space[:100], kind[:20])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 

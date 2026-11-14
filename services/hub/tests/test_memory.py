@@ -282,10 +282,12 @@ class ListConn(FakeConn):
 def test_the_list_marks_rows_of_another_space_and_summarises(monkeypatch):
     conn = ListConn(other=1)
     wire(monkeypatch, conn)
-    result = asyncio.run(memory.list_items('u1', Settings(), q='ay', limit=10))
+    result = asyncio.run(memory.list_items('u1', Settings(), limit=10))
     assert result['items'][0]['searchable'] is False and result['items'][0]['id'] == 1
     assert result['summary'] == {'total': 3, 'per_vector_space': {'embeddinggemma-2': 2, 'jina-v5': 1},
-                                 'per_kind': {'text': 3}, 'current_vector_space': 'embeddinggemma-2'}
+                                 'per_kind': {'text': 3}, 'current_vector_space': 'embeddinggemma-2',
+                                 'not_searchable': 1}
+    assert 'semantic' not in result and 'match' not in result['items'][0]
     assert conn.fetch_args[0] == 'u1'
 
 
@@ -323,3 +325,73 @@ def test_the_memory_page_paths_pass_the_access_boundary():
     for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete'):
         assert public_path(path)
     assert not public_path('/api/v1/memoryx')
+
+
+def _row(id, text, space='embeddinggemma-2', kind='text', score=None):
+    row = {'id': id, 'text': text, 'kind': kind, 'vector_space': space, 'source_kind': 'manual',
+           'source_chat_title': None, 'created_at': dt.datetime(2026, 11, 14, 12, id)}
+    if score is not None:
+        row['score'] = score
+    return row
+
+
+class SearchConn(ListConn):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    async def fetch(self, sql, *args):
+        self.calls.append((sql, args))
+        if '<=>' in sql:
+            return [_row(1, 'kedim Maviş', score=0.87), _row(2, 'evcil hayvan', score=0.61), _row(9, 'gürültü', score=0.1)]
+        if 'ilike' in sql:
+            return [_row(3, 'Maviş jina notu', space='jina-v5'), _row(1, 'kedim Maviş')]
+        return await super().fetch(sql, *args)
+
+
+def test_one_search_merges_meaning_and_text_matches(monkeypatch):
+    conn = SearchConn()
+    wire(monkeypatch, conn)
+    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş'))
+    assert [(i['id'], i['match']) for i in result['items']] == [(1, 'both'), (2, 'meaning'), (3, 'text')]
+    assert result['items'][0]['score'] == 0.87 and result['items'][2]['score'] is None
+    assert result['items'][2]['searchable'] is False and result['semantic'] is True and result['matching'] == 3
+    vector_sql, vector_args = next(c for c in conn.calls if '<=>' in c[0])
+    assert vector_args[:2] == ('u1', 'embeddinggemma-2')  # Only the current space is compared.
+    text_sql, text_args = next(c for c in conn.calls if 'ilike' in c[0])
+    assert text_args == ('u1', '%Maviş%') and 'vector_space =' not in text_sql  # Text matches cover every space.
+
+
+def test_filters_reach_both_searches_and_another_model_skips_the_vector_search(monkeypatch):
+    conn = SearchConn()
+    wire(monkeypatch, conn)
+    asyncio.run(memory.list_items('u1', Settings(), q='x', kind='image'))
+    assert all('kind = $' in sql and 'image' in args for sql, args in conn.calls if 'ilike' in sql or '<=>' in sql)
+    conn = SearchConn()
+    wire(monkeypatch, conn)
+    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş', vector_space='jina-v5'))
+    assert not any('<=>' in sql for sql, _ in conn.calls)
+    text_sql, text_args = next(c for c in conn.calls if 'ilike' in c[0])
+    assert 'vector_space = $3' in text_sql and text_args[2] == 'jina-v5'
+    assert [i['match'] for i in result['items']] == ['text', 'text']
+
+
+def test_without_embedding_the_search_falls_back_to_text_with_a_turkish_reason(monkeypatch):
+    conn = SearchConn()
+    wire(monkeypatch, conn)
+
+    async def off(settings):
+        raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
+    monkeypatch.setattr(memory, 'embedding_target', off)
+    result = asyncio.run(memory.list_items('u1', Settings(), q='Maviş'))
+    assert result['semantic'] is False and result['semantic_reason'] == memory.SETUP_MESSAGE
+    assert [i['match'] for i in result['items']] == ['text', 'text']
+    assert result['summary']['current_vector_space'] is None and result['summary']['not_searchable'] == 3
+
+
+def test_without_a_query_the_filters_page_newest_first(monkeypatch):
+    conn = SearchConn()
+    wire(monkeypatch, conn)
+    asyncio.run(memory.list_items('u1', Settings(), limit=10, offset=20, vector_space='jina-v5', kind='bogus'))
+    sql, args = conn.calls[0]
+    assert 'order by created_at desc' in sql and args == ('u1', 10, 20, 'jina-v5') and 'kind =' not in sql
