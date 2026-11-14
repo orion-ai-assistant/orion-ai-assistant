@@ -48,7 +48,7 @@ class PgCase(unittest.IsolatedAsyncioTestCase):
         try:
             await registry._ensure_tables(conn)
             await media_store.ensure_table(conn)
-            await conn.execute('truncate orion_chats cascade')
+            await conn.execute('truncate orion_chats, orion_media cascade')
             await conn.execute("insert into orion_chats(id,user_id) values('chat','alice')")
         finally:
             await conn.close()
@@ -343,7 +343,7 @@ class MediaMigrationTests(PgCase):
         conn = await self.connection()
         try:
             changed = await media_migration._migrate_message(conn, 'chat', message)
-            stored = await conn.fetchval('select count(*) from orion_chat_media where chat_id = $1', 'chat')
+            stored = await conn.fetchval("select count(*) from orion_media_links where owner_kind = 'chat' and owner_id = $1", 'chat')
             return changed, stored
         finally:
             await conn.close()
@@ -417,7 +417,7 @@ class MediaMigrationTests(PgCase):
         conn = await self.connection()
         try:
             rows = await conn.fetch('select content_json from orion_chat_messages order by id')
-            self.assertEqual(await conn.fetchval('select count(*) from orion_chat_media'), 1)
+            self.assertEqual(await conn.fetchval('select count(*) from orion_media'), 1)
         finally:
             await conn.close()
         stored = [json.loads(row['content_json']) for row in rows]

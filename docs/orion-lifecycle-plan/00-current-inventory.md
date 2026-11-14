@@ -19,7 +19,7 @@
 | Sahip / veri | Mevcut yerel konum / otorite | Docker veya diğer ayrım |
 | --- | --- | --- |
 | Hub kod/çalışma ortamı | `H/services/hub/src`, `H/services/hub/.venv`; installer `H/installer/.venv`; PostgreSQL runtime `H/.local_db/postgres/bin`, Redis `H/.local_db/redis` | Compose image/build; kod güncellemesiyle veri volume'ları ayrı |
-| Hub hesap, ayar, sohbet, geçmiş, medya | PostgreSQL `H/.local_db/postgres/data`; `orion.kernel.registry`, `media_store` tabloları, bağlantı `services/shared/environment.py`. Medya `orion_chat_media` içinde DB verisidir. | `services/hub/docker-compose.yml`: `postgres_data:/var/lib/postgresql/data` |
+| Hub hesap, ayar, sohbet, geçmiş, medya | PostgreSQL `H/.local_db/postgres/data`; `orion.kernel.registry`, `media_store` tabloları, bağlantı `services/shared/environment.py`. Medya `orion_media` (dosya başına tek kopya) + `orion_media_links` içinde DB verisidir; eski `orion_chat_media` taşındı, sonraki sürümde kalkar. | `services/hub/docker-compose.yml`: `postgres_data:/var/lib/postgresql/data` |
 | Hub Redis / kuyruk | `H/.local_db/redis`, `dump.rdb`; iş/kuyruk verisi gelişigüzel cache sayılmamalı | `redis_data:/data` |
 | Hub servis/başlangıç ayarları | `H/services/.env.global`, `.env.global.local`, servis `.env` / `.env.install`, manifestler ve `.enabled`; `installer/app/config.py` | Compose env dosyaları; sırlar rapora kopyalanmadı |
 | Hub kimlik/güven/cihaz eşleştirmeleri | `ORION_SECURITY_DIR` veya `H/files/security`: `hub-id`, `hub-key.pem`, `hub-cert.pem`, `devices.sqlite3`, `native-bootstrap-token`; legacy mdns UUID `services/hub/data/mdns-id` veya `ORION_MDNS_ID_FILE` | Ortak `hub_security:/app/security`; farklı listener'lar aynı kimliği paylaşır |

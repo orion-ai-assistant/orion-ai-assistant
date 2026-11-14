@@ -245,11 +245,13 @@ async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
                               current_user: str = Depends(get_current_user)):
     import re
     from orion.kernel.media_store import read_media, read_media_metadata
-    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    # Allowed only through a chat of this user that links the file. Another user's chat, a chat that is not
+    # there, a file the chat does not link and a hash nobody stored are the same 404: whether a file exists
+    # somewhere is never revealed.
     if not re.fullmatch(r'[0-9a-f]{64}', media_id):
         raise HTTPException(404, 'Media not found')
     try:
-        mime, total = await read_media_metadata(chat_id, media_id)
+        mime, total = await read_media_metadata(chat_id, media_id, user_id=current_user)
     except LookupError as exc:
         raise HTTPException(404, 'Media not found') from exc
     except RuntimeError as exc:
@@ -291,7 +293,7 @@ async def chat_media_endpoint(chat_id: str, media_id: str, request: Request,
         try:
             async with activity.lease(request.app.state.redis, 'transfer', ttl=30,
                                       remote=getattr(request.app.state, 'mobile', False) or not is_desktop_peer(request.scope)):
-                _, raw = await read_media(chat_id, media_id, offset=start, length=length)
+                _, raw = await read_media(chat_id, media_id, offset=start, length=length, user_id=current_user)
         except LookupError as exc:
             raise HTTPException(404, 'Media not found') from exc
         except RuntimeError as exc:

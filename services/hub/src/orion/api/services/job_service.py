@@ -401,6 +401,13 @@ async def index_chat_search(redis: Redis | None = None) -> None:
     import asyncio
     from orion.kernel.registry import index_message_turns, index_unsearchable_messages
     try:
+        # First: media of older versions moves to the shared store before a device asks for it. Otherwise the
+        # first media read or write of each process does it.
+        from orion.kernel.media_store import prepare
+        await prepare()
+    except Exception:
+        logger.exception("The media store could not be prepared at start")
+    try:
         while await index_unsearchable_messages():
             await asyncio.sleep(0.05)
         while await index_message_turns():
