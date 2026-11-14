@@ -83,7 +83,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         try:
             await registry._ensure_tables(conn)
             await media_store.ensure_table(conn)
-            await conn.execute('truncate orion_chats cascade')
+            await conn.execute('truncate orion_chats, orion_media cascade')
             await conn.execute("insert into orion_chats(id,user_id) values('chat','alice'),('other','bob')")
         finally:
             await conn.close()
@@ -95,7 +95,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
     async def count(self):
         conn = await registry._connect()
         try:
-            return await conn.fetchval('select count(*) from orion_chat_media')
+            return await conn.fetchval('select count(*) from orion_media')
         finally:
             await conn.close()
 
@@ -205,31 +205,29 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         def request(method='GET', headers=()):
             app = SimpleNamespace(state=SimpleNamespace(redis=Mock()))
             return Request(dict(type='http', method=method, headers=headers, app=app))
-        with patch.object(routes, 'ensure_chat_access', AsyncMock(side_effect=HTTPException(403))), \
-             patch.object(media_store, 'read_media', AsyncMock()) as read, \
-             patch.object(media_store, 'read_media_metadata', AsyncMock()) as metadata:
-            with self.assertRaises(HTTPException):
+        with patch.object(media_store, 'read_media', AsyncMock()) as read:
+            with self.assertRaises(HTTPException) as refused:
                 await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'bob')
+            self.assertEqual(refused.exception.status_code, 404)
             read.assert_not_called()
-            metadata.assert_not_called()
-        with patch.object(routes, 'ensure_chat_access', AsyncMock()):
-            full = await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'alice')
-            with patch.object(media_store, 'read_media', AsyncMock(wraps=media_store.read_media)) as read:
-                part = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=2-5')]), 'alice')
-                read.assert_awaited_once_with('chat', ref['media_id'], offset=2, length=4)
-            with patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('Payload must not be read'))) as read:
-                head = await routes.chat_media_endpoint('chat', ref['media_id'], request('HEAD', [(b'range', b'bytes=2-5')]), 'alice')
-                invalid = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=10-')]), 'alice')
-                read.assert_not_called()
-            for value, expected_status, expected_body in [
-                (b'bytes=-3', 206, b'789'), (b'bytes=7-', 206, b'789'),
-                (b'bytes=8-99999999999999999999999999999', 206, b'89'),
-                (b'bytes=99999999999999999999999-', 416, b''),
-                (b'bytes=-0', 416, b''), (b'bytes=5-2', 416, b''),
-                (b'bytes=0-1,4-5', 200, b'0123456789'), (b'invalid', 200, b'0123456789'),
-            ]:
-                response = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', value)]), 'alice')
-                self.assertEqual((response.status_code, response.body), (expected_status, expected_body))
+        # Access is the media query itself: a chat of this user that links the file.
+        full = await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'alice')
+        with patch.object(media_store, 'read_media', AsyncMock(wraps=media_store.read_media)) as read:
+            part = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=2-5')]), 'alice')
+            read.assert_awaited_once_with('chat', ref['media_id'], offset=2, length=4, user_id='alice')
+        with patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('Payload must not be read'))) as read:
+            head = await routes.chat_media_endpoint('chat', ref['media_id'], request('HEAD', [(b'range', b'bytes=2-5')]), 'alice')
+            invalid = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', b'bytes=10-')]), 'alice')
+            read.assert_not_called()
+        for value, expected_status, expected_body in [
+            (b'bytes=-3', 206, b'789'), (b'bytes=7-', 206, b'789'),
+            (b'bytes=8-99999999999999999999999999999', 206, b'89'),
+            (b'bytes=99999999999999999999999-', 416, b''),
+            (b'bytes=-0', 416, b''), (b'bytes=5-2', 416, b''),
+            (b'bytes=0-1,4-5', 200, b'0123456789'), (b'invalid', 200, b'0123456789'),
+        ]:
+            response = await routes.chat_media_endpoint('chat', ref['media_id'], request(headers=[(b'range', value)]), 'alice')
+            self.assertEqual((response.status_code, response.body), (expected_status, expected_body))
         self.assertEqual(full.body, b'0123456789')
         self.assertEqual(part.body, b'2345')
         self.assertEqual(part.status_code, 206)
@@ -240,7 +238,7 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(full.headers['cache-control'], 'private, max-age=2592000, immutable')
         self.assertEqual(full.headers['etag'], f'"{ref["media_id"]}"')
         self.assertEqual(part.headers['etag'], full.headers['etag'])
-        with patch.object(routes, 'ensure_chat_access', AsyncMock()),                 patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('304 reads no bytes'))):
+        with patch.object(media_store, 'read_media', AsyncMock(side_effect=AssertionError('304 reads no bytes'))):
             for tags in (full.headers['etag'], 'W/"x", ' + full.headers['etag']):
                 same = await routes.chat_media_endpoint(
                     'chat', ref['media_id'], request(headers=[(b'if-none-match', tags.encode())]), 'alice')
@@ -252,18 +250,19 @@ class ChatMediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(other.status_code, 200)
 
     async def test_media_of_another_owner_is_refused_before_a_304(self):
+        ref = (await media_store.store_attachments('chat', 'alice', [self.attachment()]))[0]
         def request():
             app = SimpleNamespace(state=SimpleNamespace(redis=Mock()))
-            return Request(dict(type='http', method='GET', headers=[(b'if-none-match', b'"' + b'a' * 64 + b'"')], app=app))
-        with patch.object(routes, 'ensure_chat_access', AsyncMock(side_effect=HTTPException(403))):
-            with self.assertRaises(HTTPException) as raised:
-                await routes.chat_media_endpoint('chat', 'a' * 64, request(), 'bob')
-        self.assertEqual(raised.exception.status_code, 403)
+            tag = f'"{ref["media_id"]}"'.encode()
+            return Request(dict(type='http', method='GET', headers=[(b'if-none-match', tag)], app=app))
+        with self.assertRaises(HTTPException) as raised:
+            await routes.chat_media_endpoint('chat', ref['media_id'], request(), 'bob')
+        self.assertEqual(raised.exception.status_code, 404)
 
     async def age_media(self, *, hours=72):
         conn = await registry._connect()
         try:
-            await conn.execute("update orion_chat_media set last_used_at=now()-$1::int * interval '1 hour'", hours)
+            await conn.execute("update orion_media_links set last_used_at=now()-$1::int * interval '1 hour'", hours)
         finally:
             await conn.close()
 

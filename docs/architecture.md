@@ -4,8 +4,31 @@ Project architecture documentation for Orion AI Assistant.
 
 ## Veri ve bellek (2026-11-13)
 
-- **PostgreSQL tek kayıttır.** Sohbetler, mesajlar, medya (`orion_chat_media`) orada. Redis yalnız canlı durum
+- **PostgreSQL tek kayıttır.** Sohbetler, mesajlar, medya orada. Redis yalnız canlı durum
   tutar (akan yanıt, kilitler, bildirimler); sohbet geçmişinin Redis kopyası yoktur.
+
+## Medya: dosya başına tek kopya + bağlantılar (2026-11-14)
+
+- `orion_media(id = SHA-256, mime_type, size, data bytea STORAGE EXTERNAL, created_at)`: her dosya bir kez.
+  `orion_media_links(media_id, owner_kind, owner_id, created_at, last_used_at)`: dosyayı kim kullanıyor.
+  Şimdilik `owner_kind = 'chat'` (sohbet kimliği); bellek gelince `'memory'`. Aynı foto iki sohbette tek kopyadır.
+- Sohbet silinince yalnız onun bağlantıları gider (bağlantıdaki `chat_id` → `orion_chats` cascade). Dosya son
+  bağlantısıyla gider: `orion_media_links` üzerindeki tetikleyici aynı işlemde dosyaları id sırasıyla kilitler,
+  bağlantı kalmadıysa siler. Yazanlar da dosyayı (paylaşımlı kilit) id sırasıyla tutar; aynı dosyayı o anda
+  bağlayan bir yazma ya dosyayı yaşatır ya da yeniden yazar, boşa düşen bağlantı olmaz. Bağlantısı olan dosya
+  doğrudan silinemez (yabancı anahtar).
+- Erişim yalnız bağlantı üzerinden: `/api/v1/chats/{chat}/media/{id}` (URL aynı kaldı, uygulama ona göre önbellekler)
+  dosyayı ancak kullanıcının kendi sohbeti onu bağlıyorsa verir. Başkasının sohbeti, olmayan sohbet, sohbetin
+  bağlamadığı dosya, kimsenin saklamadığı hash: hepsi aynı 404. Bir hash'in var olup olmadığı belli olmaz.
+- Yetim temizliği (saatlik, 48 saat, meşgul sohbet atlanır) sohbet bağlantılarını siler; başka türden (bellek)
+  bir bağlantı dosyayı yaşatır. Bellek özelliği için `media_store.link_media(...)`, `unlink_media(...)` hazır.
+- Eski `orion_chat_media` (sohbet başına kopya) her süreçte ilk medya erişiminden önce bir kez taşınır
+  (`media_migration.migrate_chat_media_table`): satır taşındığı işlemde `migrated_at` alır, yarıda kalırsa
+  kaldığı yerden sürer, biten taşıma sonradan silinen bir bağlantıyı geri getirmez; danışma kilidiyle tek süreç
+  taşır, diğerleri bekler. Eski tablo şimdilik duruyor; sonraki bir sürüm `legacy_chat_media_gaps() == 0`
+  doğrulayıp kaldırır. Bu PC'deki kurulu Hub'da (2026-11-14): 322 satır → 319 dosya + 322 bağlantı, 46,72 →
+  46,13 MB (0,6 MB kazanç), eksik 0. Yedek: `%LOCALAPPDATA%\Orion\backups\hub-media-links-2026-11-14\`
+  (`orion-hub-full.dump`, `orion_chat_media.dump`; `pg_restore` ile).
 - Listeler ve geçmiş sayfa sayfa okunur (anahtar sırasıyla sayfalama, geçmiş pencereleri); istemci medyayı
   önbelleğe alır (medya yanıtları değişmez, uzun süre önbelleklenir).
 - Hub'ın PostgreSQL'i (port 5445) ve Router'ınki (port 5433) **küçük bellekle** başlar:

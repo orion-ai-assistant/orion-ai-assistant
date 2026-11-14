@@ -1029,10 +1029,11 @@ async def delete_failed_turn_db(chat_id: str, key: str, *, delete_empty: bool,
             if media_ids:
                 from orion.kernel.media_store import ensure_table
                 await ensure_table(conn)
-                await conn.execute('''delete from orion_chat_media m where m.chat_id=$1
-                    and m.id=any($2::text[]) and not exists (
+                # The chat's links go; a file goes with its last link (trigger in media_store).
+                await conn.execute('''delete from orion_media_links l where l.owner_kind='chat' and l.owner_id=$1
+                    and l.media_id=any($2::text[]) and not exists (
                         select 1 from orion_chat_messages msg
-                        where msg.chat_id=m.chat_id and strpos(msg.content_json,m.id)>0)''',
+                        where msg.chat_id=$1 and strpos(msg.content_json,l.media_id)>0)''',
                     chat_id, list(media_ids))
             if delete_empty:
                 result = await conn.execute('''delete from orion_chats where id=$1
