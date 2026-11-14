@@ -45,7 +45,7 @@ def parts(tmp_path, monkeypatch):
     return tmp_path / 'Parts'
 
 
-def fake_engine(home, hardware='cuda'):
+def fake_engine(home, hardware='vulkan'):  # The local LLM and embedding start on Vulkan.
     folder = P.engine_dir('llama.cpp', hardware) / 'nested'
     folder.mkdir(parents=True)
     (folder / ('llama-server.exe' if os.name == 'nt' else 'llama-server')).write_bytes(b'')
@@ -208,7 +208,7 @@ def test_an_old_driver_without_compute_cap_still_lists_its_cards():
 
 
 def test_the_whole_model_goes_to_the_card_and_settings_stay_inside_their_limits(parts, monkeypatch):
-    fake_engine(parts)
+    fake_engine(parts, 'cuda')
     llm = P.spec('llm')
     gemma = P.model_spec(llm, 'gemma-4-e2b-it-q3-k-s')
     on_card, _, _ = P.command(llm, gemma, {**P.default_settings(llm, gemma, TWO_CARDS), 'hardware': 'cuda'})
@@ -268,7 +268,9 @@ def test_the_engine_command_follows_the_part_model_and_settings(parts):
     fake_engine(parts)
     embedding = P.spec('embedding')
     model = P.model_spec(embedding, 'jina-v5-omni-nano')
-    argv, env, port = P.command(embedding, model, {**P.default_settings(embedding, model, TWO_CARDS), 'gpu': '1'})
+    fake_engine(parts, 'cuda')
+    argv, env, port = P.command(embedding, model, {**P.default_settings(embedding, model, TWO_CARDS), 'gpu': '1',
+                                                    'hardware': 'cuda'})
     assert port == 8086 and '--embedding' in argv and argv[-2:] == ['--pooling', 'last']
     assert argv[argv.index('-ngl') + 1] == str(P.ALL_LAYERS) and env['CUDA_VISIBLE_DEVICES'] == '1'
     assert argv[argv.index('--host') + 1] == '127.0.0.1'  # Never on the network.
@@ -762,7 +764,7 @@ def test_the_model_file_tells_its_limits_vector_size_and_what_its_extra_understa
 
 
 def test_a_choice_is_only_saved_until_uygula(parts, monkeypatch):
-    fake_engine(parts)  # CUDA only: the processor's engine is not here.
+    fake_engine(parts, 'cuda')  # CUDA only: the processor's engine is not here.
     monkeypatch.setattr(P, 'downloaded', lambda part, model, settings=None: True)
     monkeypatch.setattr(P, '_alive', lambda pid: True)
     P.write_part_config('llm', enabled=True, model='miniplm-qwen-200m', settings={'hardware': 'cuda'})
@@ -1265,7 +1267,7 @@ def test_the_embedding_catalog_models_and_their_memory(parts):
     their video memory was measured (the extra file adds its own share)."""
     part = P.spec('embedding')
     models = {item['id']: item for item in part['models']}
-    assert set(models) == {'jina-v5-omni-nano', 'jina-v5-omni-nano-audio', 'embeddinggemma-2'}
+    assert set(models) == {'jina-v5-omni-nano', 'embeddinggemma-2'}
     assert all(item['files'][0].endswith('Q8_0.gguf') and item['mmproj'] for item in models.values())
     assert models['jina-v5-omni-nano']['query_prefix'] == 'Query: '
     assert models['embeddinggemma-2']['args'] == ['--pooling', 'mean']
@@ -1309,19 +1311,17 @@ def test_the_embedding_profile_gives_context_and_the_selected_models_prefixes(pa
     assert gemma['document_prefix'] == 'title: none | text: '
 
 
-def test_jina_has_a_sound_variant_that_shares_its_vector_space(parts):
-    """llama-server takes one extra file, so Jina's sound file is its own catalog entry: the same model weights
-    (so vectors stay compatible and a model switch between the two needs no re-embedding), its own folder (deleting
-    one never removes the other's files) and its own measured memory (the sound file adds ~1.3 GB)."""
+def test_jinas_sound_entry_is_retired_and_embedding_has_no_memory_mode(parts):
+    """Jina's sound entry is gone (llama-server takes one extra file; EmbeddingGemma 2 understands both): a saved
+    choice falls back to Jina. Embedding runs whole on the card (no memory mode, a saved one is ignored), and
+    the local LLM and embedding start on Vulkan."""
     part = P.spec('embedding')
-    models = {item['id']: item for item in part['models']}
-    vision, sound = models['jina-v5-omni-nano'], models['jina-v5-omni-nano-audio']
-    assert vision['files'] == sound['files'] and vision['sha256'][vision['files'][0]] == sound['sha256'][sound['files'][0]]
-    assert vision['vector_space'] == sound['vector_space'] == 'jina-v5-omni-nano'
-    assert vision['folder'] != sound['folder'] and 'audio' in sound['mmproj']
-    assert not sound.get('mmproj_off_by_default')  # Choosing this entry is the decision to download the sound file.
-    assert P.memory_facts(part, sound, None)['vision_mb'] == 1295
-    assert models['embeddinggemma-2']['vector_space'] == 'embeddinggemma-2'
+    assert P.effective(part, TWO_CARDS, {'embedding': {'model': 'jina-v5-omni-nano-audio'}})[0]['id'] == 'jina-v5-omni-nano'
+    model, settings = P.effective(part, TWO_CARDS, {'embedding': {'settings': {'vram_mode': 'low'}}})
+    assert 'vram_mode' not in settings
+    assert 'vram_mode' not in {field['key'] for field in P.advanced(part, TWO_CARDS, model)}
+    assert P.clean_settings(part, {'vram_mode': 'low'}, TWO_CARDS, model) == {}
+    assert part['hardware'][0] == 'vulkan' and P.spec('llm')['hardware'][0] == 'vulkan'
 
 
 def test_an_embedding_models_context_limit_is_known_before_its_file_is_there(parts):

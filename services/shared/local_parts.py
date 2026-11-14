@@ -476,7 +476,7 @@ def default_settings(part, model, hw):
     if part.get('runner') == 'python':
         return {'hardware': hardware_id, 'gpu': 'all', **({'vram_mode': 'balanced'} if part['id'] == 'tts' else {})}
     settings = {'hardware': hardware_id, 'gpu': 'all', 'context_size': part.get('context_size', 8192), 'parallel': 1,
-                'vram_mode': 'balanced'}
+                **({} if part['id'] == 'embedding' else {'vram_mode': 'balanced'})}
     if any(item.get('mmproj') for item in part.get('models', [])):
         settings['vision'] = True
     return settings
@@ -636,9 +636,6 @@ HARDWARE_DELTA_MB = {'llama': {'vulkan': -120}, 'whisper': {'cuda': 120}}
 MEASURED_EMBEDDING_MB = {
     'jina-v5-omni-nano': {'by_context': {512: 158, 1024: 193, 2048: 241, 4096: 374, 8192: 684},
                           'delta': {'cuda': 102}, 'vision_mb': 355},
-    # The sound file (1.2 GB) measured on Vulkan at context 2048 after a spoken sentence: 1528 against 233 MB.
-    'jina-v5-omni-nano-audio': {'by_context': {512: 158, 1024: 193, 2048: 241, 4096: 374, 8192: 684},
-                                'delta': {'cuda': 102}, 'vision_mb': 1295},
     'embeddinggemma-2': {'by_context': {512: 276, 1024: 358, 2048: 536, 4096: 915, 8192: 1432},
                          'delta': {'cuda': -36}, 'vision_mb': 1085},
 }
@@ -1139,7 +1136,10 @@ def advanced(part, hw, model=None):
         {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8,
          'hint': 'Kaç isteğe aynı anda yanıt verir. Her biri bellek ister.'},
     ]
-    fields.append(vram_field(part))
+    if part['id'] != 'embedding':
+        # An embedding model is small (0.2-0.3 GB) and has no KV cache: its memory is the compute buffer the
+        # context sets, so it always runs whole on the card and has no memory mode.
+        fields.append(vram_field(part))
     if any(item.get('mmproj') for item in part.get('models', [])):
         # Shown on the model's tile (model panel), kept with the other settings.
         fields.append({'key': 'vision', 'label': 'Görsel desteği (mmproj)', 'type': 'bool'})
@@ -1158,6 +1158,8 @@ def clean_settings(part, values, hw, model=None):
             if (key == 'vram_mode' and part.get('runner') == 'python' and part['id'] == 'tts' and model is not None
                     and for_model(part, model).get('engine') != 'voxcpm2-gguf'):
                 continue
+            if key == 'vram_mode' and part['id'] == 'embedding':
+                continue  # An older client's value: embedding has no memory mode any more.
             raise PartError(f'Bilinmeyen ayar: {key}')
         if field['type'] == 'bool':
             if not isinstance(value, bool):
@@ -1202,6 +1204,8 @@ def effective(part, hw, config=None):
     if 'vision' in settings and model is not None:
         # Each model keeps its own: the extra file is on unless that model's was turned off.
         settings['vision'] = model['id'] not in _vision_off(config, part)
+    if part['id'] == 'embedding':
+        settings.pop('vram_mode', None)  # Saved before embedding lost its memory mode: all layers on the card.
     settings.pop('gpu_layers', None)  # An older setting: the whole model goes to the card now.
     settings.pop('compute_type', None)  # Speech's on faster-whisper; a ggml model carries its own precision.
     if 'context_size' in settings:
