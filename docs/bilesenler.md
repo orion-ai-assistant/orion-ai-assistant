@@ -668,4 +668,11 @@ Sıra önerisi yukarıdan aşağıya.
 - **Ön ekler** (katalogda `query_prefix`/`document_prefix`, embedding'i çağıran kod ekler; yanlışsa hata vermez, skor
   düşer): Gemma 2 sorgu `task: search result | query: `, doküman `title: none | text: `; Jina sorgu `Query: `, doküman
   `Document: ` (Omni kartında ayrıca yazmıyor, text-nano kartından; doğrulanmadı). Gemma 2 için float16 kullanma (NaN).
-- **Doğrulanmadı:** görsel/ses embedding'i llama-server üzerinden (`<__media__>` istemi "Failed to tokenize prompt" verdi).
+- **Görsel embedding** (ek dosya/mmproj açıkken): istek `POST /v1/embeddings`, gövde
+  `{"input":[{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]}]}` (parçalar `input`
+  içinde bir seviye daha derinde; eski `/embedding` yolu medyayı sessizce yok sayıp yalnız metin vektörü döndürür, bu
+  yüzden önceki testte iki farklı resim aynı vektörü vermişti). Hub'da `generate_embeddings` artık düz metin ya da
+  `image_part()`/`audio_part()` parça listesi alır; Router `input`'u olduğu gibi iletir. Llama.cpp b12378 Vulkan'da
+  ölçüm (224 px kırmızı/mavi/yeşil/çizgili): Gemma 2'de resimler birbirinden farklı (cos 0,79–0,90) ve dört metin
+  ("kırmızı/mavi/yeşil kare", "çizgili desen") doğru resmi buldu; Jina'da resimler farklı ama metinden resme eşleşme
+  zayıf (kırmızı doğru, mavi/yeşil kıl payı, çizgili yanlış). Ses embedding'i denenmedi.

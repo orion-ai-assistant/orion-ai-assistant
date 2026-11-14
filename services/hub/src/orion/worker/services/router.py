@@ -14,6 +14,7 @@ Session Management:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -380,8 +381,34 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
 #  Embedding
 # ---------------------------------------------------------------------------
 
-async def generate_embeddings(text: str, settings: RuntimeSettings) -> list[float]:
-    """Metin gömme (embedding) isteğini seçilen sağlayıcıya yönlendirir."""
+def image_part(data: bytes, mime: str = "image/png") -> dict[str, Any]:
+    """One image as an embedding content part (llama-server with an mmproj)."""
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
+
+
+def audio_part(data: bytes, fmt: str = "wav") -> dict[str, Any]:
+    """One audio clip as an embedding content part (needs an audio mmproj)."""
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"type": "input_audio", "input_audio": {"data": encoded, "format": fmt}}
+
+
+def embedding_input(content: "str | list[dict[str, Any]]") -> "str | list[dict[str, Any]]":
+    """Request `input`: text stays a string, content parts nest one level
+    deeper ({"content": [...]}). llama-server rejects parts placed directly
+    in `input` and ignores media in the old /embedding route."""
+    if isinstance(content, str):
+        return content
+    return [{"content": list(content)}]
+
+
+async def generate_embeddings(
+    text: "str | list[dict[str, Any]]", settings: RuntimeSettings
+) -> list[float]:
+    """Metin gömme (embedding) isteğini seçilen sağlayıcıya yönlendirir.
+
+    `text` may also be a list of content parts (text/image_url/input_audio
+    dicts, see image_part/audio_part) for multimodal embedding models."""
     session = await get_session()
 
     urls = _router_urls("/v1/embeddings")
@@ -392,7 +419,7 @@ async def generate_embeddings(text: str, settings: RuntimeSettings) -> list[floa
         "Content-Type": "application/json",
     }
     payload = {
-        "input": text,
+        "input": embedding_input(text),
         "model": settings.router_model_group,
     }
     timeout = _request_timeout(settings.embed_timeout_seconds)
