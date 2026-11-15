@@ -627,7 +627,8 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
         item = card(g, rows, space, active)
         thumb = next((p["id"] for p in item["parts"] if p["kind"] == "image" and p.get("media")), None)
         nodes.append({"group_id": g, "kind": item["kind"], "counts": item["counts"], "label": _label(item)[:80],
-                      "thumb": thumb, "created_at": item["created_at"], "part_count": item["part_count"]})
+                      "thumb": thumb, "created_at": item["created_at"], "part_count": item["part_count"],
+                      "source_kind": item["source_kind"]})
     pairs: dict[tuple[str, str], float] = {}
     for e in edges:
         key = (min(e["a"], e["b"]), max(e["a"], e["b"]))
