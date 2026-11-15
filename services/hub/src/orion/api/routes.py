@@ -267,7 +267,7 @@ class MemoryFile(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)  # A data URL: base64 of at most 64 MB.
     group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
-    caption: str = Field(default="", max_length=1000)  # What the user wrote about the file.
+    caption: str = Field(default="", max_length=4000)  # What the user wrote about the file.
 
 
 @router.post("/api/v1/memory/file")

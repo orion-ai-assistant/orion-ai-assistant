@@ -689,7 +689,7 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
     if not raw:
         raise ValueError("Dosya boş.")
     name = " ".join((name or "").split())[:200]
-    caption = " ".join((caption or "").split())[:300]
+    caption = (caption or "").strip()[:4000]  # Its own lines kept: a long caption reads as written.
     if kind == "text":
         text = text_of_file(raw)
         import asyncio
