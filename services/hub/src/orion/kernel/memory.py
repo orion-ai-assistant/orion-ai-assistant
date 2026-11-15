@@ -755,6 +755,8 @@ async def current_space(settings) -> str | None:
 
 
 KINDS = ("text", "image", "audio", "video")
+MAX_QUERY_CHARS = 2000  # A pasted passage searches by its first 2000 characters (about 500 tokens: one query).
+TEXT_MATCH_CHARS = 200  # Longer queries match by meaning only: a word-for-word match of a passage means little.
 PAGE = 10  # The tool's page: results 1-10, 11-20, ...
 TEXT_CAP = 100  # Text matches taken per search.
 FUZZY_MIN = 0.45  # pg_trgm word similarity from which a near spelling counts ("selam nabe" ~ "selam naber").

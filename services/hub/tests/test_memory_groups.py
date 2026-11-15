@@ -464,3 +464,14 @@ def test_fuse_ranks_puts_a_memory_close_to_every_input_first_and_keeps_its_best_
     ranked = mg.merge_matches(fused, [], keep_order=True)
     assert [e['group'] for e in ranked] == [r['group_id'] for r in fused]
     assert ranked[0]['strength'] == 'strong'
+
+
+def test_a_long_pasted_query_is_cut_not_refused_and_matches_by_meaning_only():
+    from orion.api import routes
+    from orion.kernel import memory_groups as mg
+    long = 'çadır ' * 2000
+    body = routes.MemorySearch(inputs=[{'text': long}], q=long)
+    assert len(body.q) == len(long)
+    parts = [{'id': 1, 'kind': 'text', 'text': long, 'whole': False}]
+    found = mg.score_parts(parts, {1: 0.4}, long)
+    assert found['parts'][1]['match'] == 'meaning'

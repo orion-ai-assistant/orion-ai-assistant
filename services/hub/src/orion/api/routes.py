@@ -104,11 +104,14 @@ async def list_memory(request: Request, q: str = "", limit: int = 20, offset: in
     """A page of memories: cards of the rows saved together (memory_groups.list_groups)."""
     from orion.kernel import memory, memory_groups
     try:
-        return await memory_groups.list_groups(
-            current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:200],
+        found = await memory_groups.list_groups(
+            current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
             max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
+    if len(q.strip()) > memory.MAX_QUERY_CHARS:
+        found["query_cut"] = memory.MAX_QUERY_CHARS  # The page says the passage was searched by its beginning.
+    return found
 
 
 @router.get("/api/v1/memory/groups/{group_id}")
@@ -249,7 +252,7 @@ async def add_memory_file(payload: MemoryFile, request: Request, current_user: s
 class MemorySearchInput(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)
-    text: str = Field(default="", max_length=200)
+    text: str = Field(default="", max_length=20000)  # Cut to memory.MAX_QUERY_CHARS.
 
 
 class MemorySearch(BaseModel):
@@ -268,7 +271,7 @@ class MemorySearch(BaseModel):
     # ranked on its own and fused (memory_groups.fuse_ranks).
     inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
     vectors: list[list[float]] = Field(default_factory=list, max_length=8)
-    q: str = Field(default="", max_length=200)  # The texts, for the words' own matches.
+    q: str = Field(default="", max_length=20000)  # The texts, for the words' own matches (cut like `text`).
     mode: str = Field(default="together", max_length=20)
 
 
@@ -325,7 +328,8 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
         else:
             for one in payload.inputs:
                 if one.text.strip():
-                    space, vector, reason = await memory._query_vector(one.text.strip(), settings)
+                    space, vector, reason = await memory._query_vector(one.text.strip()[:memory.MAX_QUERY_CHARS],
+                                                                       settings)
                     if vector is None:
                         raise HTTPException(503, reason or "Anlamla arama kapalı.")
                     kind = "query"
@@ -341,20 +345,22 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             raise HTTPException(400, "Aranacak bir şey yok.")
         combined = mean_vector(vectors)
         found = await memory_groups.list_groups(
-            current_user, settings, payload.q, max(1, min(payload.limit, 100)), max(0, payload.offset),
+            current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
             payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
             vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
+    if len(payload.q.strip()) > memory.MAX_QUERY_CHARS:
+        found["query_cut"] = memory.MAX_QUERY_CHARS
     found["query"] = {"vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
                       "vector_space": space, "kinds": kinds, "mode": mode}
     return found
 
 
 class MemoryMatch(BaseModel):
-    q: str = Field(default="", max_length=200)
+    q: str = Field(default="", max_length=20000)
     vector: list[float] | None = Field(default=None, max_length=4096)
     vector_space: str = Field(default="", max_length=100)
 
@@ -373,7 +379,7 @@ async def memory_group_match(group_id: str, payload: MemoryMatch, request: Reque
     try:
         found = await memory_groups.part_scores(
             current_user, group_id[:64], await get_runtime_settings(request.app.state.redis, current_user),
-            payload.q, vector, payload.vector_space or None)
+            payload.q[:memory.MAX_QUERY_CHARS], vector, payload.vector_space or None)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if found is None:
