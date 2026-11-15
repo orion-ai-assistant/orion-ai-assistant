@@ -104,7 +104,7 @@ class ToolConversation:
         self.rounds = 0
         self.research_used = False
         self.failed_tools = set()
-        self.opened_memory = set()  # Memory ids whose media this turn already attached (no second copy).
+        self.opened_memory = set()  # Files (sha256) this turn already attached for the model (no second copy).
 
     async def stream(self, messages, settings, stop_checker, stream_fn):
         registry = get_registry()
@@ -246,8 +246,11 @@ class ToolConversation:
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
                 if media_refs and item['status'] == 'completed':
                     # Opened again in this same turn: already attached above, not a second copy.
-                    fresh = [ref for ref in media_refs if ref.get('memory_id') not in self.opened_memory]
-                    repeated = sorted({ref.get('memory_id') for ref in media_refs} - {r.get('memory_id') for r in fresh})
+                    # Keyed by content (sha256): the same bytes under another memory row are the same file.
+                    def key(ref):
+                        return ref.get('source') or ref.get('media_id')
+                    fresh = [ref for ref in media_refs if key(ref) not in self.opened_memory]
+                    repeated = sorted({ref.get('memory_id') for ref in media_refs if key(ref) in self.opened_memory})
                     if repeated and isinstance(item.get('result'), dict):
                         item['result']['zaten_acik'] = [
                             *item['result'].get('zaten_acik', []),
@@ -256,7 +259,7 @@ class ToolConversation:
                             if shown.get('memory_id') in repeated:
                                 shown['already'] = True
                         result_message["content"] = json.dumps(item["result"], ensure_ascii=False)
-                    self.opened_memory.update(ref.get('memory_id') for ref in fresh)
+                    self.opened_memory.update(key(ref) for ref in fresh)
                     media_refs = fresh
                 if media_refs and item['status'] == 'completed':
                     # Kept with the chat: model_history shows them again on every later turn.

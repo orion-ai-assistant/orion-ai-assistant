@@ -1251,28 +1251,31 @@ def _sliced(row: dict) -> bool:
         float(row["span_start"]) > 0 or float(row["span_end"]) < float(row.get("media_seconds") or 0) - 0.5)
 
 
-def opened_in_chat(messages: list[dict]) -> dict[int, int]:
-    """{memory id: turn} of the memory media already opened in a chat (hafizadaki_medyayi_ac's tool messages keep
-    them as `media_refs`); the turn counts the user's messages from 1. The first opening wins."""
-    opened: dict[int, int] = {}
+def opened_in_chat(messages: list[dict]) -> dict[str, int]:
+    """{file sha256: turn} of the memory media still in a chat's history (hafizadaki_medyayi_ac's tool messages
+    keep them as `media_refs`; a video's frames name their file in `source`). Keyed by content: the same bytes under
+    any memory row are the same file, a changed file is a new one, and a file no longer in the history (compacted)
+    is not listed. The turn counts the user's messages from 1; the first opening wins."""
+    opened: dict[str, int] = {}
     turn = 0
     for message in messages:
         if message.get("role") == "user":
             turn += 1
         if message.get("role") == "tool" and isinstance(message.get("media_refs"), list):
             for ref in message["media_refs"]:
-                if ref.get("memory_id") is not None:
-                    opened.setdefault(int(ref["memory_id"]), max(turn, 1))
+                for key in (ref.get("media_id"), ref.get("source")):
+                    if key:
+                        opened.setdefault(str(key), max(turn, 1))
     return opened
 
 
 async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str],
-                     already: dict[int, int] | None = None) -> list[dict]:
+                     already: dict[str, int] | None = None) -> list[dict]:
     """This user's rows among `ids`, in that order. The file of each image/audio row whose kind is in `kinds` is
     linked to the chat (owner 'chat'), so the chat's history can hand it to the model on every later turn and the
     cleaner keeps it while a message names it; such rows say `opened` and list their `media`
     ([{"kind", "media_id", "mime"}]). A video row (or a piece of a long audio) is opened as what it holds: a few
-    frames and its sound, stored as files of their own (segment_media). A row in `already` ({id: turn}, opened
+    frames and its sound, stored as files of their own (segment_media). A row whose file is in `already` ({sha256: turn}, opened
     earlier in this chat) is not attached again: it says `already` (that turn)."""
     import asyncio
     import hashlib
@@ -1291,8 +1294,8 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
                 continue
             seen.add(row_id)
             row["opened"] = False
-            if already and row_id in already and row["media_id"]:
-                row["already"] = already[row_id]
+            if already and row["media_id"] and row["media_id"] in already:
+                row["already"] = already[row["media_id"]]
                 found.append(row)
                 continue
             wanted = bool(kinds & {"image", "audio"}) if row["kind"] == "video" else row["kind"] in kinds

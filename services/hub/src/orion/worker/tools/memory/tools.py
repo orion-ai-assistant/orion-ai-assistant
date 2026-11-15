@@ -200,7 +200,8 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
             opened.append(entry)
             attachments.append(attachment_of(row, context.chat_id))
             for m in shown:
-                media.append({"memory_id": row["id"], "kind": m["kind"], "media_id": m["media_id"],
+                media.append({"memory_id": row["id"], "source": row["media_id"], "kind": m["kind"],
+                              "media_id": m["media_id"],
                               "mime_type": m["mime"], "label": row["text"][:300]})
         elif not row["media_id"]:
             closed.append({**entry, "neden": "Bu kayıt metin; içeriği yukarıda."})
