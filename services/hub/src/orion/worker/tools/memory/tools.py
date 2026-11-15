@@ -4,26 +4,33 @@ from pydantic import Field
 
 from .._base import ToolContext, ToolInput
 
-KINDS = {"hepsi": "all", "metin": "text", "görsel": "image", "ses": "audio"}
-KIND_LABELS = {"image": "görsel", "audio": "ses kaydı"}
+KINDS = {"hepsi": "all", "metin": "text", "görsel": "image", "ses": "audio", "video": "video"}
+KIND_LABELS = {"image": "görsel", "audio": "ses kaydı", "video": "video"}
+TRACKS = {"frames": "görüntü", "audio": "ses", "both": "birlikte"}
 MATCH_LABELS = {"meaning": "anlam", "both": "anlam+metin", "text": "metin", "similar": "benzer yazım"}
 GROUP_NOTE = ("'birlikte_kaydedilenler' aynı anda kaydedilen diğer parçalardır (ör. bir görselin yanındaki konuşma); "
-              "'ayni_kayittan' o id'li sonuçla birlikte kaydedildiğini söyler; 'dosya'/'parca' uzun bir dosyanın "
-              "kaçıncı parçası olduğunu söyler. Tamamı ya da kaydedildiği sohbet "
-              "gerekirse hafiza_baglami aracını kaydın id'siyle çağır.")
-MEDIA_NOTE = ("Görsel/ses kayıtlarında şimdilik etiketini ve tarihini görüyorsun. İçeriğine bakman gerekirse "
-              "hafizadaki_medyayi_ac aracını bu kayıtların id'leriyle çağır (bir seferde en fazla 3).")
+              "'ayni_kayittan' o id'li sonuçla birlikte kaydedildiğini söyler; 'parca' uzun bir metnin, sesin ya da "
+              "videonun kaçıncı parçası olduğunu, 'zaman' o parçanın dakikasını söyler. Önceki/sonraki parçalar "
+              "için hafiza_baglami'yı komsu=1-3 ile, tamamı ya da kaydedildiği sohbet için kaydın id'siyle çağır.")
+MEDIA_NOTE = ("Görsel/ses/video kayıtlarında şimdilik etiketini ve tarihini görüyorsun. İçeriğine bakman gerekirse "
+              "hafizadaki_medyayi_ac aracını bu kayıtların id'leriyle çağır (bir seferde en fazla 3); bir video "
+              "parçası birkaç kare ve o parçanın sesiyle açılır.")
 
 
 class MemoryInput(ToolInput):
     sorgu: str = Field(default="", max_length=500,
                        description="Aranacak şey, kısa bir cümle (ör. 'kullanıcının adı'). Boş bırakılırsa 'tur' "
                                    "türündeki en yeni kayıtlar listelenir.")
-    tur: Literal["hepsi", "metin", "görsel", "ses"] = Field(
-        default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses ya da hepsi")
+    tur: Literal["hepsi", "metin", "görsel", "ses", "video"] = Field(
+        default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses, video ya da hepsi")
     sayfa: int = Field(default=1, ge=1, le=100,
                        description="Sonuç sayfası: 1 = en iyi 1-10, 2 = 11-20... İlk sayfada yoksa ve 'daha_var' "
                                    "true ise sonraki sayfaya bak.")
+
+
+def _clock(seconds: float) -> str:
+    from orion.kernel.memory import clock
+    return clock(seconds)
 
 
 def _row(row: dict, seen: dict | None = None) -> dict:
@@ -37,6 +44,19 @@ def _row(row: dict, seen: dict | None = None) -> dict:
         item["skor"] = row["score"]
     if row.get("match"):
         item["eslesme"] = MATCH_LABELS.get(row["match"], row["match"])
+    if row.get("track") in TRACKS:
+        item["iz"] = TRACKS[row["track"]]
+    if row.get("span"):
+        item["zaman"] = f"{_clock(row['span'][0])}–{_clock(row['span'][1])}"
+    pieces = row.get("group") or {}
+    if row.get("whole"):
+        item["tamami"] = True  # The item's whole vector matched and none of its pieces is on this page.
+        if pieces.get("pieces"):
+            item["parca_sayisi"] = pieces["pieces"]
+    elif (pieces.get("pieces") or 0) > 1:
+        item["parca"] = f"{pieces['piece']}/{pieces['pieces']}"
+        if row.get("via_whole"):
+            item["eslesme_notu"] = "kaydın tamamı da eşleşti; en iyi eşleşen parçası bu"
     group = row.get("group")
     if group and group["parts"] > 1:
         first = None if seen is None else seen.setdefault(group["key"], row["id"])
@@ -44,7 +64,7 @@ def _row(row: dict, seen: dict | None = None) -> dict:
             item["ayni_kayittan"] = first  # Saved with that result above: its list says what else is there.
         elif group["source_kind"] == "file" and kind == "text":
             item["dosya"] = group["title"] or ""
-            item["parca"] = f"{group['index']}/{group['parts']}"
+            item.setdefault("parca", f"{group['index']}/{group['parts']}")
         else:
             item["birlikte_kaydedilenler"] = [
                 {"id": other["id"], "tur": KIND_LABELS.get(other["kind"], "metin"), "ozet": other["text"]}
@@ -95,7 +115,8 @@ class MemoryDeleteInput(ToolInput):
 
 class MemoryOpenInput(ToolInput):
     idler: list[int] = Field(min_length=1, max_length=3,
-                             description="Açılacak görsel/ses kayıtlarının id'leri (hafizada_ara sonucundaki 'id'), en fazla 3")
+                             description="Açılacak görsel/ses/video kayıtlarının id'leri (hafizada_ara sonucundaki "
+                                         "'id'), en fazla 3. Bir video parçası birkaç kare ve sesiyle açılır.")
 
 
 async def hafizaya_ekle(args: MemoryAddInput, context: ToolContext) -> dict:
@@ -138,15 +159,23 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
     for row in rows:
         entry = {"id": row["id"], "tur": KIND_LABELS.get(row["kind"], "metin"), "etiket": row["text"]}
         if row["opened"]:
+            shown = row.get("media") or []
+            if row["kind"] == "video" or len(shown) > 1:
+                entry["acilan"] = ", ".join(
+                    f"{sum(1 for m in shown if m['kind'] == k)} {'kare' if k == 'image' else 'ses'}"
+                    for k in ("image", "audio") if any(m["kind"] == k for m in shown))
             opened.append(entry)
-            media.append({"memory_id": row["id"], "kind": row["kind"], "media_id": row["media_id"],
-                          "mime_type": row["media_mime"], "label": row["text"][:300]})
+            for m in shown:
+                media.append({"memory_id": row["id"], "kind": m["kind"], "media_id": m["media_id"],
+                              "mime_type": m["mime"], "label": row["text"][:300]})
         elif not row["media_id"]:
             closed.append({**entry, "neden": "Bu kayıt metin; içeriği yukarıda."})
         elif row.get("missing"):
             closed.append({**entry, "neden": "Dosyası artık yok; yalnız etiketi var."})
+        elif row.get("failed"):
+            closed.append({**entry, "neden": "Dosya açılamadı; yalnız etiketi var."})
         else:
-            sense = "görselleri göremiyor" if row["kind"] == "image" else "sesi dinleyemiyor"
+            sense = "sesi dinleyemiyor" if row["kind"] == "audio" else "görselleri göremiyor"
             closed.append({**entry, "neden": f"Şu anki sohbet modeli {sense}; yalnız etiketi var."})
     result = {}
     if opened:
@@ -171,6 +200,25 @@ class MemoryContextInput(ToolInput):
     baslangic: int = Field(default=1, ge=1, le=1000,
                            description="Uzun bir kaydın kaçıncı parçasından devam edilsin (önceki sonuçta 'kalan' "
                                        "varsa)")
+    komsu: int = Field(default=0, ge=0, le=5,
+                       description="0: kaydın tamamı. 1-5: yalnız bu parça ve önceki/sonraki bu kadar parça (uzun bir "
+                                   "metin, ses ya da videonun eşleşen yerinin çevresi)")
+
+
+def _context_part(part: dict) -> dict:
+    item = {"id": part["id"], "sira": part["index"], "tur": KIND_LABELS.get(part["kind"], "metin"),
+            ("metin" if part["kind"] == "text" else "etiket"): part["text"]}
+    if part.get("pieces"):
+        item["parca"] = f"{part['piece']}/{part['pieces']}"
+    if part.get("span_start") is not None:
+        item["zaman"] = f"{_clock(part['span_start'])}–{_clock(part['span_end'])}"
+    if part.get("track") in TRACKS:
+        item["iz"] = TRACKS[part["track"]]
+    if part.get("caption"):
+        item["aciklama"] = part["caption"]
+    if part.get("asked"):
+        item["sorulan"] = True
+    return item
 
 
 CHAT_STATES = {
@@ -192,16 +240,16 @@ async def hafiza_baglami(args: MemoryContextInput, context: ToolContext) -> dict
         found = await memory_groups.memory_context(
             context.user_id, args.id, await get_runtime_settings(None, context.user_id), with_chat=args.sohbet,
             count=args.mesaj_sayisi, where="start" if args.sohbet_konumu == "bas" else "around",
-            start=args.baslangic - 1)
+            start=args.baslangic - 1, neighbours=args.komsu)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
     if found is None:
         return {"hata": "Bu id ile hafızada kayıt yok."}
     result = {"id": args.id, "kaynak": SOURCES.get(found["source_kind"], found["source_kind"]),
               "tarih": found["date"], "parca_sayisi": found["part_count"],
-              "parcalar": [{"id": part["id"], "sira": part["index"], "tur": KIND_LABELS.get(part["kind"], "metin"),
-                            ("metin" if part["kind"] == "text" else "etiket"): part["text"]}
-                           for part in found["parts"]]}
+              "parcalar": [_context_part(part) for part in found["parts"]]}
+    if found.get("neighbours"):
+        result["kapsam"] = f"yalnız {args.id} ve önceki/sonraki {found['neighbours']} parça"
     if found["title"]:
         result["dosya" if found["source_kind"] == "file" else "sohbet_basligi"] = found["title"]
     if found["rest"]:

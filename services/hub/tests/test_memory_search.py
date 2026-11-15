@@ -378,7 +378,7 @@ class MemorySearchTests(PostgresMemoryCase):
     async def test_files_the_model_cannot_take_are_refused_in_turkish(self):
         with self.assertRaisesRegex(ValueError, 'sesi anlamıyor'):
             await self.add_file('ses.ogg', 'audio/ogg', b'OggS....', support=JINA)
-        with self.assertRaisesRegex(ValueError, 'Yalnız görsel, ses ve metin'):
+        with self.assertRaisesRegex(ValueError, 'Yalnız görsel, ses, video ve metin'):
             await self.add_file('belge.pdf', 'application/pdf', b'%PDF')
         with self.assertRaises(routes.HTTPException) as error:
             await routes.add_memory_file(routes.MemoryFile(name='x.png', data='bozuk'), None, 'alice')
@@ -390,7 +390,7 @@ def test_the_open_media_tool_is_on_by_default_and_its_schema_pages():
     tools = get_registry()
     assert 'hafizadaki_medyayi_ac' in tools.enabled(default_tool_selection())
     schema = tools.tools['hafizada_ara'].schema()['function']['parameters']['properties']
-    assert {'sorgu', 'tur', 'sayfa'} <= schema.keys() and schema['tur']['enum'] == ['hepsi', 'metin', 'görsel', 'ses']
+    assert {'sorgu', 'tur', 'sayfa'} <= schema.keys() and schema['tur']['enum'] == ['hepsi', 'metin', 'görsel', 'ses', 'video']
     assert tools.tools['hafizadaki_medyayi_ac'].schema()['function']['parameters']['properties']['idler']['maxItems'] == 3
 
 
