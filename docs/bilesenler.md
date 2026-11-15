@@ -856,8 +856,10 @@ Sonuçlar:
   durum `orion_memory_media_jobs`'ta, bölüm başına nabız, `cancel`): tüm satırlar en sonda tek işlemde yazılır, yarıda kalan iş
   hiçbir şey bırakmaz. Dosya iş sürerken kendi bağıyla ('memory', "job:<id>") tutulur. Sınırlar: 64 MB (medya deposu), 30 dk.
   `GET /api/v1/memory/media-jobs`, `POST /api/v1/memory/media-jobs/{id}/cancel`. Sohbet kaydındaki videolar da aynı işle.
-  Ölçülen süre (testteki 70 sn klip): çözme + 4 parça < 2 sn; gerçek bir 10 dk videoda Gemma ~30 parça × ~0,8 sn ≈ 25 sn +
-  çözme.
+  Ölçülen (çalışan Jina sunucusu, 2048 bağlam, Router'sız; 3 dk 1280×720 30 fps H.264 + ses, 5,7 MB): PyAV ile 180 kare
+  (448 px JPEG, ~3 KB) + 180 sn ses **4,8 sn**'de çözüldü; tek kare isteği `usage` 277 token → pencere başına 7 kare (istek
+  1933 token, sınırın altında); 9 bölüm **2,6 sn** (0,29 sn/bölüm). Gemma'da 25 kare/bölüm ~0,8 sn. 30 dk'lık bir video
+  böylece ~1 dk çözme + ~1-2 dk gömme.
 - `GET /api/v1/memory/{id}/frame?at=` video satırından JPEG kare (küçük resimler; varsayılan parçanın başı).
 
 ### Araçlar
