@@ -169,12 +169,11 @@ def test_the_tool_is_registered_enabled_by_default_and_answers_in_plain_words(mo
     context = ToolContext('u1', 'c', 't', None)
     result = asyncio.run(memory_tools.search_memory(memory_tools.MemorySearchInput(
         queries=[memory_tools.MemoryQuery(text='adım')], page=2, kind='text'), context))
-    assert calls == [('u1', [{'text': 'adım', 'id': None, 'like': True}], 'together', 'text', 'all', 10, 10)]
+    assert calls == [('u1', [{'text': 'adım', 'id': None, 'keyword': '', 'like': True}], 'together', 'text', 'all', 10, 10)]
     row = result['results'][0]
-    assert (row['id'], row['kind'], row['text'], row['score'], row['score_from'], row['above_average']) ==         (3, 'text', 'adım Ayşe', 0.71, '"adım"', 0.25)
-    assert row['why'] == 'its words contain the query ("adım"); meaning similarity 71%; 25 points above this '                          "search's average score"
+    assert row == {'id': 3, 'kind': 'text', 'date': row['date'], 'label': 'adım Ayşe', 'score': 71,
+                   'query': '"adım"', 'match': 'text'}  # Lean: no verdicts, no long sentences.
     assert result['page'] == 2 and result['more'] is True
-    assert result['other_models'].startswith('2 memories were saved with another embedding model')
 
 
 def test_the_tool_reports_the_setup_message_instead_of_raising(monkeypatch):

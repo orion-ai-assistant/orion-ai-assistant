@@ -159,8 +159,8 @@ class MemorySearchTests(PostgresMemoryCase):
         await self.add('başkasının notu', score=1.0, user='bob')
         first = await self.tool(sorgu='uzay gemisi')
         self.assertEqual([row['id'] for row in first['results']], ids[:10])
-        self.assertEqual(first['results'][0]['score'], 1.0)
-        self.assertEqual(first['results'][0]['matched_by'], 'meaning')
+        self.assertEqual(first['results'][0]['score'], 100)
+        self.assertEqual(first['results'][0]['match'], 'meaning')
         self.assertTrue(first['more'])
         second = await self.tool(sorgu='uzay gemisi', page=2)
         self.assertEqual([row['id'] for row in second['results']], ids[10:20])
@@ -175,7 +175,7 @@ class MemorySearchTests(PostgresMemoryCase):
         found = await self.tool(sorgu='kalp')
         self.assertEqual(found['results'][0]['id'], heart)
         self.assertEqual(found['results'][0]['kind'], 'image')
-        self.assertIn('open_memory_files', found['media_note'])
+        self.assertIn('open_memory_files', found['note'])
         page = await memory_groups.list_groups('alice', self.settings, q='kalp', limit=10)
         self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (heart, 'meaning'))
 
@@ -184,10 +184,10 @@ class MemorySearchTests(PostgresMemoryCase):
         await self.add('metin', minute=10)
         found = await self.tool(kind='image')
         self.assertEqual([row['id'] for row in found['results']], images[::-1])
-        self.assertEqual(found['order'], 'Newest first.')
+        self.assertTrue(found['note'].startswith('Newest first.'))
         self.assertFalse(found['more'])
         only = await self.tool(sorgu='foto', kind='text')
-        self.assertEqual([row.get('text') for row in only['results']], ['metin'])
+        self.assertEqual([row.get('label') for row in only['results']], ['metin'])
 
     async def check_near_spellings(self):
         # Minutes apart: five notes, five memories (the group backfill joins notes seconds apart).
@@ -197,13 +197,13 @@ class MemorySearchTests(PostgresMemoryCase):
         light = await self.add('IŞIK yandı', score=0.3, axis=5, minute=4)
         await self.add('Bugün hava çok güzel', score=0.6, axis=6, minute=5)
         found = await self.tool(sorgu='selam nabe')  # A partial word: a plain substring.
-        self.assertEqual((found['results'][0]['id'], found['results'][0]['matched_by']), (hello, 'words'))
+        self.assertEqual((found['results'][0]['id'], found['results'][0]['match']), (hello, 'text'))
         typo = await self.tool(sorgu='selam nabr nasilsin')
-        self.assertEqual((typo['results'][0]['id'], typo['results'][0]['matched_by']), (hello, 'similar spelling'))
+        self.assertEqual((typo['results'][0]['id'], typo['results'][0]['match']), (hello, 'spelling'))
         merhba = await self.tool(sorgu='merhba')
         self.assertEqual(merhba['results'][0]['id'], merhaba, merhba)
         exact = await self.tool(sorgu='İSTANBUL')
-        self.assertEqual((exact['results'][0]['id'], exact['results'][0]['matched_by']), (city, 'words'))
+        self.assertEqual((exact['results'][0]['id'], exact['results'][0]['match']), (city, 'text'))
         self.assertEqual((await self.tool(sorgu='ışık'))['results'][0]['id'], light)
         page = await memory_groups.list_groups('alice', self.settings, q='selam nabr nasilsin', limit=1)
         self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (hello, 'similar'))
@@ -257,12 +257,11 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertNotIn(cat, ids)  # Its own memory would match itself first.
         self.assertNotIn(both, ids)  # Contains "köpek".
         self.assertIn(other, ids)
-        self.assertEqual(found['results'][0]['score_from'], f'id {cat}')
-        self.assertIn(f'similar to id {cat}', found['results'][0]['why'])
-        self.assertIn('left out', found['left_out'])
+        self.assertEqual(found['results'][0]['query'], f'id {cat}')
+        self.assertIn(both, [e['id'] for e in found['left_out']] + [None])
         # Separate (OR): each result names the query its score came from.
         each = await self.tool(queries=[{'id': cat}, {'text': 'deniz'}], mode='separate')
-        by_id = {row['id']: row['score_from'] for row in each['results']}
+        by_id = {row['id']: row['query'] for row in each['results']}
         self.assertEqual((by_id[twin], by_id[other]), (f'id {cat}', '"deniz"'))
         self.assertIn('no memory with id 999999', (await self.tool(queries=[{'id': 999999}]))['error'])
         self.assertIn('like=true', (await self.tool(queries=[{'text': 'köpek', 'like': False}]))['error'])
@@ -331,11 +330,14 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertEqual((jobs[0]['state'], jobs[0]['done']), ('done', jobs[0]['total']))
         rows = await self.add_rows()
         self.assertEqual(len(rows), jobs[0]['total'])
-        detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, limit=10,
-                                                  around=rows[20])
-        self.assertEqual((detail['parts_total'], len(detail['parts'])), (len(rows), 10))
-        self.assertIn(rows[20], [p['id'] for p in detail['parts']])
-        self.assertEqual(detail['parts_offset'], [p['id'] for p in detail['parts']][0] - rows[0])
+        detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, around=[rows[20]])
+        shown = [p['id'] for p in detail['parts']]
+        # A preview: the beginning and the asked piece with its neighbours, never the whole text.
+        self.assertEqual(shown, rows[:3] + rows[19:22])
+        self.assertEqual(list(detail['long_items'].values()), [len(rows)])
+        page = await memory_groups.group_detail('alice', added['group_id'], self.settings, offset=10, limit=5,
+                                                item_id=detail['parts'][0]['item_id'])
+        self.assertEqual(([p['id'] for p in page['parts']], page['total']), (rows[10:15], len(rows)))
 
     async def test_the_whole_memory_score_is_against_the_mean_of_all_its_pieces(self):
         a = await self.add('bir', score=1.0, axis=2, group='g')
@@ -345,6 +347,14 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertEqual(found['best'], a)
         # mean = (e0 + e3) / 2: its cosine with e0 is 1/sqrt(2).
         self.assertAlmostEqual(found['all_score'], 2 ** -0.5, places=3)
+
+    async def test_a_keyword_query_matches_exact_words_only(self):
+        hit = await self.add('Pamuk süt içti', score=0.1, axis=2, group='a', minute=1)
+        await self.add('çok benzer anlam', score=0.99, axis=3, group='b', minute=2)
+        found = await self.tool(queries=[{'keyword': 'süt'}])
+        self.assertEqual([r['id'] for r in found['results']], [hit])
+        out = await self.tool(queries=[{'text': 'x'}, {'keyword': 'süt', 'like': False}])
+        self.assertNotIn(hit, [r['id'] for r in out['results']])
 
     async def add_rows(self):
         conn = await registry._connect()

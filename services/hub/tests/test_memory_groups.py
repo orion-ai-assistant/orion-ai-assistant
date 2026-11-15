@@ -128,10 +128,10 @@ class MemoryGroupTests(PostgresMemoryCase):
                                 queries=[memory_tools.MemoryQuery(text='kalp resmi')])
         rows = {row['id']: row for row in found['results']}
         # One result per memory, shown by its best part (here the text, its words are spelled like the query).
-        self.assertEqual((rows[text]['memory_has'], rows[text]['matched_by']), ('1 text, 1 image', 'similar spelling'))
+        self.assertEqual((rows[text]['memory_has'], rows[text]['match']), ('1 text, 1 image', 'spelling'))
         self.assertNotIn(image, rows)
-        self.assertEqual(rows[chunk]['file'], 'notlar.md')
-        self.assertIn('memory_context', found['context_note'])
+        self.assertTrue(rows[chunk]['label'].startswith('notlar.md: '))
+        self.assertIn('memory_context', found['note'])
 
     async def chat(self, *messages, assistant=True):
         await sql("update orion_chats set assistant = $1 where id = 'chat'", assistant)

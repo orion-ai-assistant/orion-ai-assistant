@@ -9,16 +9,7 @@ from .._base import ToolContext, ToolInput
 KINDS = ("all", "text", "image", "audio", "video")
 KIND_NAMES = {"text": "text", "image": "image", "audio": "audio recording", "video": "video"}
 TRACKS = {"frames": "picture", "audio": "sound", "both": "picture and sound"}
-MATCH_WORDS = {"meaning": "by meaning", "text": "its words contain the query",
-               "similar": "its words are spelled like the query"}
-MATCHED_BY = {"meaning": "meaning", "text": "words", "similar": "similar spelling"}
 PAGE_SIZE = 10
-CONTEXT_NOTE = ("A result is one memory (things saved together); 'id' is its best-matching part. 'part' says which "
-                "piece of a long text, audio or video it is, 'time' that piece's minutes. memory_context reads the "
-                "parts around it (neighbours=1-3), the whole memory, or the chat it was saved from.")
-MEDIA_NOTE = ("Of an image, audio or video you see only its label and date here. open_memory_files with these ids "
-              "(up to 3) shows you the file and puts it in front of the user; a video part opens as a few frames "
-              "and its sound.")
 
 
 class MemoryQuery(ToolInput):
@@ -29,6 +20,8 @@ class MemoryQuery(ToolInput):
                            description="Instead of text: the id of a memory part from an earlier result. Its own "
                                        "vector is the query, so you find memories like that image, audio, video or "
                                        "text (its own memory is not listed).")
+    keyword: str = Field(default="", max_length=200,
+                         description="Instead of text: an exact word or phrase the memory must contain (no meaning).")
     like: bool = Field(default=True,
                        description="true: results should be like this. false: memories like this (or, for a text, "
                                    "containing it) are left out.")
@@ -69,108 +62,78 @@ def _date(value) -> str | None:
         return value
 
 
-def _points(above: float) -> str:
-    points = round(above * 100)
-    if points >= 0:
-        return f"{points} points above this search's average score"
-    return f"{-points} points below this search's average score"
+MATCH = {"meaning": "meaning", "text": "text", "similar": "spelling"}
+NOTE = ("Compare scores between results, not against a fixed number. open_memory_files shows media (and gives "
+        "the user the file); memory_context reads the parts around a part.")
 
 
 def _result(card: dict, labels: list[str], words: str) -> dict:
-    """One memory as the chat model reads it: its best part (id, text or label), the score, which query gave it and
-    how far it stands above the search's average, in plain words."""
+    """One memory as the chat model reads it, lean: its best part (id, label), the score as a percent, the query
+    that gave it and how it matched."""
     best = card.get("best_part") or {}
     kind = best.get("kind") or ("text" if card.get("text") else card.get("kind", "text"))
     row_id = best.get("id") or card.get("matched_part") or card.get("text_part")
     if row_id is None and card.get("parts"):
         row_id = card["parts"][0]["id"]
     item = {"id": row_id, "kind": KIND_NAMES.get(kind, kind), "date": _date(card.get("created_at"))}
-    text = best.get("text") if best else None
-    if text is None:
-        text = card.get("text") if kind == "text" else next(
+    label = best.get("text") if best else None
+    if label is None:
+        label = card.get("text") if kind == "text" else next(
             (p["text"] for p in card.get("parts") or [] if p["id"] == row_id), None)
-    if text is not None:
-        item["text" if kind == "text" else "label"] = text
-    if (best.get("pieces") or 0) > 1:
-        item["part"] = f"{best['piece']} of {best['pieces']}"
-    if best.get("span_start") is not None:
-        item["time"] = f"{_clock(best['span_start'])}–{_clock(best['span_end'])}"
-    if best.get("track") in TRACKS:
-        item["track"] = TRACKS[best["track"]]
-    if card.get("source_kind") == "file" and card.get("title"):
-        item["file"] = card["title"]
+    if card.get("source_kind") == "file" and card.get("title") and kind == "text":
+        label = f"{card['title']}: {label or ''}"
+    if label is not None:
+        item["label"] = label
     if card.get("score") is not None:
-        item["score"] = round(float(card["score"]), 3)
         match = card.get("match") or "meaning"
+        item["score"] = round(float(card["score"]) * 100)
         if card.get("via"):
-            source = card["via"]
+            item["query"] = card["via"]
         elif match != "meaning" and words:
-            source = json.dumps(words[:60], ensure_ascii=False)
+            item["query"] = json.dumps(words[:60], ensure_ascii=False)
         elif len(labels) == 1:
-            source = labels[0]
+            item["query"] = labels[0]
         else:
-            source = "all queries together"
-        item["score_from"] = source
-        item["matched_by"] = MATCHED_BY.get(match, "meaning")
-        why = f"{round(float(card['score']) * 100)}% similar to {source} {MATCH_WORDS.get(match, 'by meaning')}"
-        if match != "meaning":
-            why = (f"{MATCH_WORDS[match]} ({source}); meaning similarity {round(float(card['score']) * 100)}%")
-        if card.get("above") is not None:
-            item["above_average"] = round(float(card["above"]), 3)
-            why += f"; {_points(float(card['above']))}"
-        item["why"] = why
+            item["query"] = "all together"
+        item["match"] = MATCH.get(match, "meaning")
     counts = card.get("counts") or {}
     if card.get("part_count", 1) > 1:
         item["memory_has"] = ", ".join(f"{n} {KIND_NAMES.get(k, k)}{'s' if n > 1 and k != 'audio' else ''}"
                                        for k, n in counts.items())
-        if card.get("matched_parts", 0) > 1:
-            item["parts_matched"] = card["matched_parts"]
+    if (best.get("pieces") or 0) > 1:
+        item["part"] = f"{best['piece']} of {best['pieces']}"
+    if best.get("span_start") is not None:
+        item["time"] = f"{_clock(best['span_start'])}–{_clock(best['span_end'])}"
+    if (card.get("matched_parts") or 0) > 1:
+        item["parts_matched"] = card["matched_parts"]
     return item
-
 
 
 async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
     from orion.kernel import memory, memory_groups
     from orion.kernel.config import get_runtime_settings
-    queries = [{"text": q.text, "id": q.id, "like": q.like} for q in args.queries
-               if q.id is not None or q.text.strip()]
+    queries = [{"text": q.text, "id": q.id, "keyword": q.keyword, "like": q.like} for q in args.queries
+               if q.id is not None or q.text.strip() or q.keyword.strip()]
     size = args.page_size
     try:
         found = await memory_groups.search_queries(
             context.user_id, await get_runtime_settings(None, context.user_id), queries,
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
             vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size)
-    except memory.MemoryUnavailable as exc:
-        return {"error": str(exc)}
-    except memory_groups.QueryError as exc:
+    except (memory.MemoryUnavailable, memory_groups.QueryError) as exc:
         return {"error": str(exc)}
     labels = found.get("labels") or []
-    words = ", ".join(q["text"].strip() for q in queries if q["like"] and q["id"] is None)
+    words = ", ".join(q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None)
     results = [_result(card, labels, words) for card in found["groups"]]
     result = {"page": args.page, "results": results, "more": found["more"]}
-    searching = any(q["like"] for q in queries)
-    if searching and results:
-        result["order"] = ("Best first. 'score' is the meaning similarity (0-1; image/audio against text is often "
-                           "0.2-0.4, so compare results, not the number alone). 'score_from' names the query that "
-                           "gave it; 'above_average' is how far it stands above what this search scores on average "
-                           "against all memories. A memory whose words contain a text query ranks higher.")
-        result["matching"] = found.get("matching")
-    elif not searching:
-        result["order"] = "Newest first."
-    if any(r["kind"] != "text" for r in results):
-        result["media_note"] = MEDIA_NOTE
-    if any(r.get("memory_has") or r.get("part") for r in results):
-        result["context_note"] = CONTEXT_NOTE
-    if found.get("exclude_terms") or found.get("excluded"):
-        result["left_out"] = f"{found.get('excluded', 0)} memories like the like=false queries were left out"
-    if not results:
+    if results:
+        result["note"] = NOTE if any(q["like"] for q in queries) else "Newest first. " + NOTE
+    else:
         result["note"] = "No memories on this page." if args.page > 1 else "No memories for this search."
+    if found.get("excluded_list"):
+        result["left_out"] = found["excluded_list"]
     if found.get("semantic_reason"):
-        result["meaning_search_off"] = f"Only word matches: {found['semantic_reason']}"
-    other = (found.get("summary") or {}).get("not_searchable") or 0
-    if searching and other:
-        result["other_models"] = (f"{other} memories were saved with another embedding model: they are found only "
-                                  "by their words" + (" (model='all')" if args.model.strip() == "active" else ""))
+        result["meaning_search_off"] = found["semantic_reason"]
     return result
 
 

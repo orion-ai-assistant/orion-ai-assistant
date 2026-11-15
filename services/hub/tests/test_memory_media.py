@@ -314,10 +314,10 @@ def test_the_tool_gives_label_kind_and_date_and_says_how_to_open_media(monkeypat
     found = asyncio.run(memory_tools.search_memory(memory_tools.MemorySearchInput(
         queries=[memory_tools.MemoryQuery(text='kedinin fotoğrafı')]), ToolContext('u1', 'c', 't', None)))
     first = found['results'][0]
-    assert (first['id'], first['kind'], first['label'], first['score'], first['score_from']) ==         (3, 'image', 'kedi.jpg — Kedimin fotoğrafı', 0.31, '"kedinin fotoğrafı"')
+    assert (first['id'], first['kind'], first['label'], first['score'], first['query']) ==         (3, 'image', 'kedi.jpg — Kedimin fotoğrafı', 31, '"kedinin fotoğrafı"')
     assert first['date'].startswith('2026-11-14')
-    assert found['results'][1]['text'] == 'Kullanıcı: adım Ayşe'
-    assert 'open_memory_files' in found['media_note']
+    assert found['results'][1]['label'] == 'Kullanıcı: adım Ayşe'
+    assert 'open_memory_files' in found['note']
 
 
 def test_the_catalog_says_what_each_extra_file_takes(monkeypatch):

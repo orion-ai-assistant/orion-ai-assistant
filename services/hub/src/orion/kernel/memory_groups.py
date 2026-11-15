@@ -353,7 +353,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
                       mode: str = "together", input_labels: list[str] | None = None,
                       exclude: list[str] | None = None, exclude_vectors: list[str] | None = None,
-                      leave_out: set[str] | None = None) -> dict:
+                      leave_out: set[str] | None = None, only_groups: set[str] | None = None,
+                      meaning: bool = True) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
@@ -362,7 +363,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
     mode "each": several inputs searched one by one and fused as OR (fuse_inputs; `input_labels` name them); the cards' scores are each part's best
     score against any input. ("together" is the caller's one combined vector in `vector`.) `leave_out`: memories
-    never listed (the memory a search by one of its own parts started from)."""
+    never listed (the memory a search by one of its own parts started from). `only_groups`: only these memories
+    (a keyword's). `meaning` False: words only (a keyword search)."""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
@@ -375,10 +377,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     searching = bool(q) or vector is not None
     if vector is not None:
         space = vector_space_of_query or await memory.current_space(settings)
-    elif q:
+    elif q and meaning:
         space, vector, reason = await memory._query_vector(q, settings)
     else:
         space = await memory.current_space(settings)
+    if q and not meaning and vector is None:
+        reason = None
     if vector_space == "active":  # The page's default: whichever model is active now.
         vector_space = space or "all"
     prefer = vector_space if vector_space != "all" else space
@@ -412,13 +416,16 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             each = bool(vectors and len(vectors) > 1 and mode == "each")
             ranked = merge_matches(meaning, texts, keep_order=each)
-            excluded = 0
+            excluded, dropped = 0, []
             if leave_out:
                 ranked = [e for e in ranked if e["group"] not in leave_out]
+            if only_groups is not None:
+                ranked = [e for e in ranked if e["group"] in only_groups]
             if excluding:
                 out = await mf.excluded_groups(conn, user_id, space if searchable else None, negatives, settings,
                                                negative_vectors)
                 kept = [e for e in ranked if e["group"] not in out]
+                dropped = [e for e in ranked if e["group"] in out][:10]
                 excluded, ranked = len(ranked) - len(kept), kept
             # A neutral cue: how far each score is above this query's typical score against every memory.
             stats = None
@@ -489,6 +496,9 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     if searching and excluding:
         result["excluded"] = excluded
         result["exclude_terms"] = negatives
+        # What a "benzemesin" input took out, briefly (the best of them).
+        result["excluded_list"] = [{"id": e["row"]["id"], "label": " ".join(e["row"]["text"].split())[:80]}
+                                   for e in dropped]
     if searching:
         result["semantic"] = vector is not None
         if reason:
@@ -575,14 +585,37 @@ async def _summary(conn, user_id: str, space) -> dict:
     return summary
 
 
-DETAIL_PARTS = 60  # Parts per detail page: a payload and rendering cap (a 600k-character file has >1000 parts).
+DETAIL_PARTS = 60  # Parts per page of one long item read in the viewer (a payload cap).
+LONG_ITEM = 12  # An item of more pieces shows as a preview in the panel (a rendering choice, not a quality one).
+PREVIEW_PIECES = 3  # A long item's first pieces in the preview.
+
+
+def preview_parts(parts: list[dict], around: list[int]) -> tuple[list[dict], dict[str, int]]:
+    """The panel's parts: every part of short items; of a long item (more than LONG_ITEM pieces) its first
+    PREVIEW_PIECES and each `around` piece (a search's matches) with one neighbour each side. Returns (parts,
+    {item_id: its piece count} of the long items)."""
+    by_item: dict[str, list[int]] = {}
+    for index, p in enumerate(parts):
+        by_item.setdefault(p["item_id"], []).append(index)
+    keep, long_items = set(), {}
+    wanted = set(around)
+    for item_id, indexes in by_item.items():
+        if len(indexes) <= LONG_ITEM:
+            keep.update(indexes)
+            continue
+        long_items[item_id] = len(indexes)
+        keep.update(indexes[:PREVIEW_PIECES])
+        for k, index in enumerate(indexes):
+            if parts[index]["id"] in wanted:
+                keep.update(indexes[max(0, k - 1):k + 2])
+    return [p for i, p in enumerate(parts) if i in keep], long_items
 
 
 async def group_detail(user_id: str, group: str, settings, offset: int = 0, limit: int = DETAIL_PARTS,
-                       around: int | None = None) -> dict | None:
-    """The memory for the detail panel: a window of its parts (full text, the spaces they are in) and its source
-    chat. `around`: the window holds that part (a search's best part), else it starts at `offset`. The answer says
-    `parts_total` and `parts_offset` (the window's first part's place, from 0)."""
+                       around: list[int] | None = None, item_id: str | None = None) -> dict | None:
+    """The memory for the detail panel: its parts (full text, the spaces they are in), a long item only as a
+    preview (preview_parts; `long_items` says how many pieces each has), and its source chat. With `item_id`: a page
+    of that item's pieces from `offset` ({"item_id", "parts", "total", "offset"}) for the viewer's lazy text."""
     space = await memory.current_space(settings)
     conn = await memory._connect()
     try:
@@ -592,13 +625,14 @@ async def group_detail(user_id: str, group: str, settings, offset: int = 0, limi
             return None
         item = card(group, rows, space, space, full=True)
         parts = item["parts"]
-        limit = max(1, min(int(limit), 500))
-        if around is not None:
-            at = next((i for i, p in enumerate(parts) if p["id"] == around), None)
-            if at is not None:
-                offset = at - limit // 3
-        offset = max(0, min(int(offset), max(0, len(parts) - limit)))
-        item.update(parts=parts[offset:offset + limit], parts_total=len(parts), parts_offset=offset)
+        if item_id is not None:
+            pieces = [p for p in parts if p["item_id"] == item_id]
+            limit = max(1, min(int(limit), 500))
+            offset = max(0, int(offset))
+            return {"item_id": item_id, "parts": pieces[offset:offset + limit], "total": len(pieces),
+                    "offset": offset}
+        shown, long_items = preview_parts(parts, list(around or []))
+        item.update(parts=shown, parts_total=len(parts), long_items=long_items)
         chat_id = item.pop("source_chat_id")
         item["source_chat"] = None
         if chat_id:
@@ -943,12 +977,37 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
     (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`)."""
     import json
     from orion.kernel.memory_pieces import mean_vector
+    keywords = [q for q in queries if (q.get("keyword") or "").strip()]
+    queries = [q for q in queries if not (q.get("keyword") or "").strip()]
     likes = [q for q in queries if q.get("like", True)]
     unlikes = [q for q in queries if not q.get("like", True)]
+    only, out_words = None, set()
+    if keywords:
+        from orion.kernel import memory_filters as mf
+        conn = await memory._connect()
+        try:
+            await memory.ensure_memory_table(conn)
+            for k in keywords:
+                found_groups = await mf.keyword_groups(conn, user_id, k["keyword"].strip()[:200])
+                if k.get("like", True):
+                    only = found_groups if only is None else only & found_groups
+                else:
+                    out_words |= found_groups
+        finally:
+            await conn.close()
+    if keywords and not likes:
+        # Keywords alone: their exact matches, by their words (no meaning).
+        words = " ".join(k["keyword"].strip() for k in keywords if k.get("like", True))
+        found = await list_groups(user_id, settings, words[:200], limit, offset, vector_space, kind,
+                                  leave_out=out_words, only_groups=only if only is not None else None,
+                                  meaning=False, exclude=[q["text"].strip()[:200] for q in unlikes
+                                                          if (q.get("text") or "").strip()])
+        found["labels"] = []
+        return found
     if unlikes and not likes:
         raise QueryError("Add at least one query with like=true: like=false only leaves memories out of a search.")
     space = await memory.current_space(settings)
-    leave_out: set[str] = set()
+    leave_out: set[str] = set(out_words)
     exclude, exclude_vectors = [], []
 
     async def of_id(row_id: int) -> dict:
@@ -968,7 +1027,8 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
     texts = [q["text"].strip()[:memory.MAX_QUERY_CHARS] for q in likes
              if q.get("id") is None and (q.get("text") or "").strip()]
     words = ", ".join(texts)
-    common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors)
+    common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors,
+                  only_groups=only)
     if not likes:
         found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind)
         found["labels"] = []
