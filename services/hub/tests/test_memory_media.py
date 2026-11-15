@@ -293,7 +293,7 @@ def test_the_media_path_passes_the_access_boundary():
 
 
 def test_the_tool_gives_label_kind_and_date_and_says_how_to_open_media(monkeypatch):
-    async def search(user, query, settings, page=1, kind='all', exclude=None):
+    async def search(user, query, settings, page=1, kind='all', exclude=None, also=None):
         return {'rows': [{'id': 3, 'text': 'kedi.jpg — Kedimin fotoğrafı', 'kind': 'image', 'media_id': IMG,
                           'date': '2026-11-14', 'score': 0.31, 'match': 'meaning'},
                          {'id': 4, 'text': 'Kullanıcı: adım Ayşe', 'kind': 'text', 'media_id': None,

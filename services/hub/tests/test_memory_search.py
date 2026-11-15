@@ -268,6 +268,10 @@ class MemorySearchTests(PostgresMemoryCase):
         result = await self.open_tool([row, voice, foreign])
         self.assertEqual([entry['id'] for entry in result['acilanlar']], [row])
         self.assertEqual(result['_medya'][0]['media_id'], media_id)
+        # The user sees the file under the turn: a reference with a usable name, never bytes.
+        shown = result['_ekler'][0]
+        self.assertEqual((shown['media_id'], shown['mime_type'], shown['memory_id']), (media_id, 'image/png', row))
+        self.assertTrue(shown['name'].endswith('.png'))
         self.assertIn('dinleyemiyor', result['acilamayanlar'][0]['neden'])
         self.assertEqual(result['bulunamayanlar'], [foreign])
         self.assertIn('metin', (await self.open_tool([text]))['acilamayanlar'][0]['neden'])
@@ -276,7 +280,8 @@ class MemorySearchTests(PostgresMemoryCase):
         call = {'id': 'c1', 'type': 'function',
                 'function': {'name': 'hafizadaki_medyayi_ac', 'arguments': json.dumps({'idler': [row]})}}
         tool_message = {'role': 'tool', 'tool_call_id': 'c1', 'media_refs': result['_medya'],
-                        'content': json.dumps({k: v for k, v in result.items() if k != '_medya'}, ensure_ascii=False)}
+                        'content': json.dumps({k: v for k, v in result.items() if k not in ('_medya', '_ekler')},
+                                              ensure_ascii=False)}
         history = [{'role': 'user', 'content': 'kalp fotoğrafında ne vardı?'},
                    {'role': 'assistant', 'content': None, 'tool_calls': [call]}, tool_message,
                    {'role': 'assistant', 'content': 'Kırmızı bir kare.'}]

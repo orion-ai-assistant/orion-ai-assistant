@@ -23,6 +23,9 @@ class MemoryInput(ToolInput):
                                    "türündeki en yeni kayıtlar listelenir.")
     tur: Literal["hepsi", "metin", "görsel", "ses", "video"] = Field(
         default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses, video ya da hepsi")
+    ek_sorgular: list[str] = Field(default_factory=list, max_length=4,
+                                   description="İsteğe bağlı: 'sorgu' ile birlikte aranacak başka kısa metinler; "
+                                               "hepsinin ortak anlamına yakın kayıtlar gelir.")
     haric: list[str] = Field(default_factory=list, max_length=5,
                              description="Bunlara yakın ya da bunları içeren kayıtlar sonuçtan çıkarılır "
                                          "(ör. ['köpek']).")
@@ -85,7 +88,8 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
     query = args.sorgu.strip()
     try:
         found = await memory.search(context.user_id, query, await get_runtime_settings(None, context.user_id),
-                                    page=args.sayfa, kind=KINDS[args.tur], exclude=args.haric)
+                                    page=args.sayfa, kind=KINDS[args.tur], exclude=args.haric,
+                                    also=args.ek_sorgular)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
     seen: dict = {}
@@ -150,6 +154,20 @@ async def hafizadan_sil(args: MemoryDeleteInput, context: ToolContext) -> dict:
             "talimat": "Kullanıcıya neyi sildiğini kısaca söyle."}
 
 
+def attachment_of(row: dict, chat_id: str) -> dict:
+    """An opened memory file as the chat shows a user's attachment: {media_id, mime_type, name, memory_id}, a
+    reference to the one stored copy (linked to the chat; `media_path` loads it as a user's attachment), never its
+    bytes."""
+    import mimetypes
+    named = (row.get("text") or "").split(" — ")[0].strip()
+    if not named or "." not in named[-6:] or len(named) > 120:
+        ext = mimetypes.guess_extension(row.get("media_mime") or "") or ""
+        named = f"{KIND_LABELS.get(row['kind'], 'Dosya').capitalize()} {row['id']}{ext}"
+    from orion.kernel.media_store import media_path
+    return {"media_id": row["media_id"], "mime_type": row.get("media_mime") or "application/octet-stream",
+            "name": named, "memory_id": row["id"], "media_path": media_path(chat_id, row["media_id"])}
+
+
 async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> dict:
     """Shows memory images/audio to the model. A tool message cannot carry media on OpenAI-compatible APIs, so the
     files go in `_medya`: the tool runner keeps them on the tool message as references and hands them to the
@@ -163,7 +181,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
         rows = await memory.open_media(context.user_id, context.chat_id, args.idler, kinds)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
-    opened, closed, media = [], [], []
+    opened, closed, media, attachments = [], [], [], []
     for row in rows:
         entry = {"id": row["id"], "tur": KIND_LABELS.get(row["kind"], "metin"), "etiket": row["text"]}
         if row["opened"]:
@@ -173,6 +191,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
                     f"{sum(1 for m in shown if m['kind'] == k)} {'kare' if k == 'image' else 'ses'}"
                     for k in ("image", "audio") if any(m["kind"] == k for m in shown))
             opened.append(entry)
+            attachments.append(attachment_of(row, context.chat_id))
             for m in shown:
                 media.append({"memory_id": row["id"], "kind": m["kind"], "media_id": m["media_id"],
                               "mime_type": m["mime"], "label": row["text"][:300]})
@@ -191,6 +210,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
         result["not"] = ("Açılan dosyalar bu sonuçtan hemen sonra gelen kullanıcı mesajında (onu kullanıcı yazmadı, "
                          "araç ekledi) ve sohbette kalır. Onlara bakarak cevap ver.")
         result["_medya"] = media
+        result["_ekler"] = attachments  # The tool runner shows them to the user under this turn.
     if closed:
         result["acilamayanlar"] = closed
     missing = [i for i in dict.fromkeys(args.idler) if i not in {row["id"] for row in rows}]

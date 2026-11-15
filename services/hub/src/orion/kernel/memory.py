@@ -1137,7 +1137,7 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
 
 
 async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all",
-                 exclude: list[str] | None = None) -> dict:
+                 exclude: list[str] | None = None, also: list[str] | None = None) -> dict:
     """One page (PAGE rows, best first, no threshold) of this user's memory for the `hafizada_ara` tool. With a
     query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
     order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
@@ -1150,6 +1150,17 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
     excluded, stats = 0, None
     if query:
         space, vector, reason = await _query_vector(query, settings)
+        extra = [t.strip()[:MAX_QUERY_CHARS] for t in also or [] if t.strip()][:4]
+        if vector is not None and extra:
+            # Several texts searched together: the normalized mean of their query vectors (as the page does).
+            import json
+            from orion.kernel.memory_pieces import mean_vector
+            vectors = [json.loads(vector)]
+            for text in extra:
+                _, more, _ = await _query_vector(text, settings)
+                if more is not None:
+                    vectors.append(json.loads(more))
+            vector = _vector(mean_vector(vectors))
     else:
         space, vector, reason = await current_space(settings), None, None
     conn = await _connect()
@@ -1272,6 +1283,8 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
                     await link_media(row["media_id"], "chat", chat_id, conn=conn)
                     row["media"] = [{"kind": row["kind"], "media_id": row["media_id"], "mime": row["media_mime"]}]
                 else:
+                    # The whole file stays reachable from the chat too: the user sees it under the turn.
+                    await link_media(row["media_id"], "chat", chat_id, conn=conn)
                     stored = await conn.fetchrow("select data from orion_media where id = $1", row["media_id"])
                     if stored is None:
                         raise LookupError(row["media_id"])
