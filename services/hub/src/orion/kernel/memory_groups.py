@@ -280,6 +280,8 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
     is close to its memory's best (STRONG share of the best part's score, and not weak for its kind: WEAK_SCORE).
     `parts` are the memory's rows in one space each (prefer_space), whole vectors included; the best part is a
     piece (an item's whole vector ranks the memory but is not a part)."""
+    if len(q or "") > memory.TEXT_MATCH_CHARS:  # A pasted passage: meaning only (list_groups does the same).
+        q = ""
     found, best, best_rank, whole = {}, None, None, None
     pieces = [p for p in parts if not p.get("whole")]
     for p in parts:
@@ -376,7 +378,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                     f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
                     f"limit {offset + limit + 1}", *params)]
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
-                                            vector if searchable else None) if q else []
+                                            vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             ranked = merge_matches(meaning, texts, keep_order=bool(vectors and len(vectors) > 1 and mode == "each"))
             more = len(ranked) > offset + limit
             picked = ranked[offset:offset + limit]
