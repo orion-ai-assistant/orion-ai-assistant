@@ -293,22 +293,31 @@ def test_the_media_path_passes_the_access_boundary():
 
 
 def test_the_tool_gives_label_kind_and_date_and_says_how_to_open_media(monkeypatch):
-    async def search(user, query, settings, page=1, kind='all', exclude=None, also=None):
-        return {'rows': [{'id': 3, 'text': 'kedi.jpg — Kedimin fotoğrafı', 'kind': 'image', 'media_id': IMG,
-                          'date': '2026-11-14', 'score': 0.31, 'match': 'meaning'},
-                         {'id': 4, 'text': 'Kullanıcı: adım Ayşe', 'kind': 'text', 'media_id': None,
-                          'date': '2026-11-13', 'score': 0.2, 'match': 'meaning'}], 'more': False, 'other_spaces': 0}
+    from orion.kernel import memory_groups
+
+    async def search(user, settings, queries, **kwargs):
+        return {'groups': [
+            {'group_id': 'a', 'created_at': '2026-11-14T10:00:00+00:00', 'kind': 'image', 'counts': {'image': 1},
+             'part_count': 1, 'parts': [{'id': 3, 'kind': 'image', 'text': 'kedi.jpg — Kedimin fotoğrafı'}],
+             'score': 0.31, 'match': 'meaning', 'matched_part': 3,
+             'best_part': {'id': 3, 'kind': 'image', 'text': 'kedi.jpg — Kedimin fotoğrafı', 'piece': 1,
+                           'pieces': 1}},
+            {'group_id': 'b', 'created_at': '2026-11-13T10:00:00+00:00', 'kind': 'text', 'counts': {'text': 1},
+             'part_count': 1, 'text': 'Kullanıcı: adım Ayşe', 'score': 0.2, 'match': 'meaning', 'matched_part': 4,
+             'best_part': {'id': 4, 'kind': 'text', 'text': 'Kullanıcı: adım Ayşe', 'piece': 1, 'pieces': 1}}],
+            'more': False, 'summary': {}, 'labels': ['"kedinin fotoğrafı"']}
 
     async def settings(*args):
         return object()
-    monkeypatch.setattr(memory, 'search', search)
+    monkeypatch.setattr(memory_groups, 'search_queries', search)
     monkeypatch.setattr('orion.kernel.config.get_runtime_settings', settings)
-    found = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='kedinin fotoğrafı'),
-                                                 ToolContext('u1', 'c', 't', None)))
-    assert found['kayitlar'][0] == {'id': 3, 'tarih': '2026-11-14', 'tur': 'görsel',
-                                    'etiket': 'kedi.jpg — Kedimin fotoğrafı', 'skor': 0.31, 'eslesme': 'anlam'}
-    assert found['kayitlar'][1]['metin'] == 'Kullanıcı: adım Ayşe'
-    assert 'hafizadaki_medyayi_ac' in found['medya_notu'] and 'göremezsin' not in found['medya_notu']
+    found = asyncio.run(memory_tools.search_memory(memory_tools.MemorySearchInput(
+        queries=[memory_tools.MemoryQuery(text='kedinin fotoğrafı')]), ToolContext('u1', 'c', 't', None)))
+    first = found['results'][0]
+    assert (first['id'], first['kind'], first['label'], first['score'], first['score_from']) ==         (3, 'image', 'kedi.jpg — Kedimin fotoğrafı', 0.31, '"kedinin fotoğrafı"')
+    assert first['date'].startswith('2026-11-14')
+    assert found['results'][1]['text'] == 'Kullanıcı: adım Ayşe'
+    assert 'open_memory_files' in found['media_note']
 
 
 def test_the_catalog_says_what_each_extra_file_takes(monkeypatch):

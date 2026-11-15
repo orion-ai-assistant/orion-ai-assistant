@@ -875,3 +875,24 @@ Sonuçlar:
 - `hafizadaki_medyayi_ac`: video satırı birkaç kare (parçada 4, tamamında 6; 640 px) + parçanın sesi (sohbet modeli
   duyuyorsa; tamamında ilk 120 sn), çok parçalı sesin bir parçası yalnız kendi aralığı olarak açılır. Bunlar sohbete bağlı
   ayrı dosyalar olarak saklanır.
+
+### Hafıza araçları İngilizce (2026-11-15)
+
+Araç id'leri, açıklamaları ve alanları İngilizce: `search_memory`, `add_memory`, `delete_memory`, `open_memory_files`,
+`memory_context` (eski `hafizada_ara`... adları yukarıdaki notlarda geçer). Kayıtlı araç seçimleri eski id'leri taşır:
+`contracts.tools.RENAMED_TOOLS` onları yeni id'lere çevirir (açık/kapalı tercihi korunur). Eski sohbetlerin geçmişindeki
+eski adlı araç çağrıları olduğu gibi gönderilir; yeniden çağrılabilir takma ad yok.
+
+- `search_memory` sayfanın aramasıdır (`memory_groups.search_queries` → `list_groups`): `queries` = metin ya da bir hafıza
+  parçasının `id`'si (o satırın vektörü, dosya bırakmak gibi; kendi hafızası listelenmez), `like` true/false;
+  `mode` together/separate (separate = sayfadaki "Ayrı", OR füzyonu); `kind`, `model` (all/active), `page`, `page_size`.
+  Sonuç bir hafıza başına bir satır, en iyi parçasıyla: `id`, metin/etiket, `part`, `time`, `score`, `score_from`
+  (puanı veren sorgu: `"kuş"` ya da `id 41`), `matched_by`, `above_average` ve hepsini düz cümleyle söyleyen `why`.
+- `open_memory_files`: görsel/ses/video ve metin belgeleri (dosyadan eklenen .txt/.md, notlar, sohbet metni) açar; her biri
+  kullanıcıya turun altında ek kartı olarak gösterilir (`_show_user` → etkinlik `media`, `media_path`). Metin hafızası,
+  parçaları birleştirilip (parçalar tam paragraf olduğundan kaydedilen metnin kendisi) `orion_media`'ya tek kopya yazılır
+  ve sohbete bağlanır; model metni alır (≤ `GROUP_TEXT_CAP` ise tamamı, değilse istenen parça ±2 ve devam yolu). Modelin
+  göremediği medya da kullanıcıya gösterilir. `media_refs` içinde `kind: "file"` olanlar modele mesaj olarak gitmez, yalnız
+  "bu sohbette açıldı" (sha256) kaydıdır.
+- Sayfa: "Ayrı" kartlarında `via` artık girdinin adı (`"kuş"`, dosya adı; `routes.input_name`), sonraki sayfa `labels`
+  ile geri gönderilir. Kartların `best_part`'ı parçanın metnini de taşır (harita ipucu en iyi parçayı adlandırır).

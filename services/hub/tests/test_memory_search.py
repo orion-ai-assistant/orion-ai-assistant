@@ -147,45 +147,47 @@ class PostgresMemoryCase(unittest.IsolatedAsyncioTestCase):
 
 class MemorySearchTests(PostgresMemoryCase):
 
-    async def tool(self, **kwargs):
+    async def tool(self, sorgu='', queries=(), **kwargs):
+        queries = [memory_tools.MemoryQuery(**q) for q in queries] or (
+            [memory_tools.MemoryQuery(text=sorgu)] if sorgu else [])
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
-            return await memory_tools.hafizada_ara(memory_tools.MemoryInput(**kwargs), ToolContext('alice', 'chat', 't', None))
+            return await memory_tools.search_memory(memory_tools.MemorySearchInput(queries=queries, **kwargs),
+                                                    ToolContext('alice', 'chat', 't', None))
 
     async def test_the_tool_pages_ten_best_first_with_scores_and_says_when_more_follow(self):
         ids = [await self.add(f'not numara {k}', score=1 - k * 0.03, axis=1 + k) for k in range(25)]
         await self.add('başkasının notu', score=1.0, user='bob')
         first = await self.tool(sorgu='uzay gemisi')
-        self.assertEqual([row['id'] for row in first['kayitlar']], ids[:10])
-        self.assertEqual(first['kayitlar'][0]['skor'], 1.0)
-        self.assertEqual(first['kayitlar'][0]['eslesme'], 'anlam')
-        self.assertTrue(first['daha_var'])
-        second = await self.tool(sorgu='uzay gemisi', sayfa=2)
-        self.assertEqual([row['id'] for row in second['kayitlar']], ids[10:20])
-        last = await self.tool(sorgu='uzay gemisi', sayfa=3)
-        self.assertEqual([row['id'] for row in last['kayitlar']], ids[20:])
-        self.assertFalse(last['daha_var'])
+        self.assertEqual([row['id'] for row in first['results']], ids[:10])
+        self.assertEqual(first['results'][0]['score'], 1.0)
+        self.assertEqual(first['results'][0]['matched_by'], 'meaning')
+        self.assertTrue(first['more'])
+        second = await self.tool(sorgu='uzay gemisi', page=2)
+        self.assertEqual([row['id'] for row in second['results']], ids[10:20])
+        last = await self.tool(sorgu='uzay gemisi', page=3)
+        self.assertEqual([row['id'] for row in last['results']], ids[20:])
+        self.assertFalse(last['more'])
 
     async def test_a_low_media_score_is_not_dropped(self):
         """Text-to-image cosine is 0.2-0.4 for a real match (no threshold any more)."""
         heart = await self.add('IMG_2041.jpg', score=0.32, kind='image', media_id='a' * 64)
         await self.add('Bugün hava güzel', score=0.07)
         found = await self.tool(sorgu='kalp')
-        self.assertEqual(found['kayitlar'][0]['id'], heart)
-        self.assertEqual(found['kayitlar'][0]['tur'], 'görsel')
-        self.assertIn('hafizadaki_medyayi_ac', found['medya_notu'])
-        self.assertNotIn('göremezsin', found['medya_notu'])
+        self.assertEqual(found['results'][0]['id'], heart)
+        self.assertEqual(found['results'][0]['kind'], 'image')
+        self.assertIn('open_memory_files', found['media_note'])
         page = await memory_groups.list_groups('alice', self.settings, q='kalp', limit=10)
         self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (heart, 'meaning'))
 
     async def test_tur_without_a_query_lists_the_newest_of_that_kind(self):
         images = [await self.add(f'foto {k}.jpg', kind='image', minute=k, media_id=f'{k}' * 64) for k in range(3)]
         await self.add('metin', minute=10)
-        found = await self.tool(tur='görsel')
-        self.assertEqual([row['id'] for row in found['kayitlar']], images[::-1])
-        self.assertEqual(found['siralama'], 'En yeni kayıt önce.')
-        self.assertFalse(found['daha_var'])
-        only = await self.tool(sorgu='foto', tur='metin')
-        self.assertEqual([row.get('metin') for row in only['kayitlar']], ['metin'])
+        found = await self.tool(kind='image')
+        self.assertEqual([row['id'] for row in found['results']], images[::-1])
+        self.assertEqual(found['order'], 'Newest first.')
+        self.assertFalse(found['more'])
+        only = await self.tool(sorgu='foto', kind='text')
+        self.assertEqual([row.get('text') for row in only['results']], ['metin'])
 
     async def check_near_spellings(self):
         # Minutes apart: five notes, five memories (the group backfill joins notes seconds apart).
@@ -195,14 +197,14 @@ class MemorySearchTests(PostgresMemoryCase):
         light = await self.add('IŞIK yandı', score=0.3, axis=5, minute=4)
         await self.add('Bugün hava çok güzel', score=0.6, axis=6, minute=5)
         found = await self.tool(sorgu='selam nabe')  # A partial word: a plain substring.
-        self.assertEqual((found['kayitlar'][0]['id'], found['kayitlar'][0]['eslesme']), (hello, 'metin'))
+        self.assertEqual((found['results'][0]['id'], found['results'][0]['matched_by']), (hello, 'words'))
         typo = await self.tool(sorgu='selam nabr nasilsin')
-        self.assertEqual((typo['kayitlar'][0]['id'], typo['kayitlar'][0]['eslesme']), (hello, 'benzer yazım'))
+        self.assertEqual((typo['results'][0]['id'], typo['results'][0]['matched_by']), (hello, 'similar spelling'))
         merhba = await self.tool(sorgu='merhba')
-        self.assertEqual(merhba['kayitlar'][0]['id'], merhaba, merhba)
+        self.assertEqual(merhba['results'][0]['id'], merhaba, merhba)
         exact = await self.tool(sorgu='İSTANBUL')
-        self.assertEqual((exact['kayitlar'][0]['id'], exact['kayitlar'][0]['eslesme']), (city, 'metin'))
-        self.assertEqual((await self.tool(sorgu='ışık'))['kayitlar'][0]['id'], light)
+        self.assertEqual((exact['results'][0]['id'], exact['results'][0]['matched_by']), (city, 'words'))
+        self.assertEqual((await self.tool(sorgu='ışık'))['results'][0]['id'], light)
         page = await memory_groups.list_groups('alice', self.settings, q='selam nabr nasilsin', limit=1)
         self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (hello, 'similar'))
         self.assertTrue(page['more'])
@@ -238,8 +240,81 @@ class MemorySearchTests(PostgresMemoryCase):
             found = await self.tool(sorgu='maviş')
         self.assertEqual((page['semantic'], page['semantic_reason']), (False, memory.SETUP_MESSAGE))
         self.assertEqual({g['matched_part'] for g in page['groups']}, {other, mine})
-        self.assertEqual({row['id'] for row in found['kayitlar']}, {other, mine})
-        self.assertIn(memory.SETUP_MESSAGE, found['uyari_anlam'])
+        self.assertEqual({row['id'] for row in found['results']}, {other, mine})
+        self.assertIn(memory.SETUP_MESSAGE, found['meaning_search_off'])
+
+    async def test_the_tool_searches_by_a_memory_id_and_leaves_out_an_unliked_text(self):
+        """'Like the cat photo (id X) but not a dog': the id's own vector is the query, its own memory is not
+        listed, and a memory containing the unliked word is left out."""
+        cat = await self.add('kedi.png — Pamuk', kind='image', axis=5, group='cat', minute=1, media_id='1' * 64)
+        twin = await self.add('kedi2.png — Pamuk yine', score=0.2, kind='image', axis=5, group='twin', minute=2,
+                              media_id='2' * 64)
+        both = await self.add('kedi ve köpek.png', kind='image', axis=5, group='both', minute=3, media_id='3' * 64)
+        other = await self.add('deniz kenarı', score=0.9, axis=7, group='sea', minute=4)
+        found = await self.tool(queries=[{'id': cat}, {'text': 'köpek', 'like': False}])
+        ids = [row['id'] for row in found['results']]
+        self.assertEqual(ids[0], twin)
+        self.assertNotIn(cat, ids)  # Its own memory would match itself first.
+        self.assertNotIn(both, ids)  # Contains "köpek".
+        self.assertIn(other, ids)
+        self.assertEqual(found['results'][0]['score_from'], f'id {cat}')
+        self.assertIn(f'similar to id {cat}', found['results'][0]['why'])
+        self.assertIn('left out', found['left_out'])
+        # Separate (OR): each result names the query its score came from.
+        each = await self.tool(queries=[{'id': cat}, {'text': 'deniz'}], mode='separate')
+        by_id = {row['id']: row['score_from'] for row in each['results']}
+        self.assertEqual((by_id[twin], by_id[other]), (f'id {cat}', '"deniz"'))
+        self.assertIn('no memory with id 999999', (await self.tool(queries=[{'id': 999999}]))['error'])
+        self.assertIn('like=true', (await self.tool(queries=[{'text': 'köpek', 'like': False}]))['error'])
+
+    async def test_opening_a_text_file_memory_gives_the_user_the_file_and_the_model_its_text(self):
+        """The live failure: 'show it in the chat' for a .txt memory was refused as 'not media'."""
+        story = 'Martılar bir süre peşlerinden geldi.\n\nYunuslar göründü, üç tane.'
+        await self.add_file('hikaye.txt', 'text/plain', story.encode())
+        row = (await self.add_rows())[0]
+        result = await self.open_tool([row])
+        opened = result['opened'][0]
+        self.assertEqual((opened['name'], opened['text']), ('hikaye.txt', story))
+        shown = result['_show_user'][0]
+        self.assertEqual((shown['name'], shown['mime_type'], shown['memory_id']), ('hikaye.txt', 'text/plain', row))
+        self.assertTrue(shown['media_path'].endswith(shown['media_id']))
+        self.assertEqual(await media_store.read_media('chat', shown['media_id']), ('text/plain', story.encode()))
+        ref = result['_model_media'][0]
+        self.assertEqual((ref['kind'], ref['media_id']), ('file', shown['media_id']))
+        # Kept in the history only to know it was opened: no media message for the model, and not attached again.
+        history = [{'role': 'user', 'content': 'aç'},
+                   {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c1', 'type': 'function', 'function': {
+                       'name': 'open_memory_files', 'arguments': json.dumps({'ids': [row]})}}]},
+                   {'role': 'tool', 'tool_call_id': 'c1', 'media_refs': [ref], 'content': '{}'},
+                   {'role': 'assistant', 'content': 'Açtım.'}]
+        self.assertEqual([m['role'] for m in model_history(history, 40)], ['user', 'assistant', 'tool', 'assistant'])
+        with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
+            again = await self.open_tool([row])
+        self.assertEqual(again['already_open'][0]['message'], 1)
+        self.assertTrue(again['_show_user'][0]['already'])
+        self.assertNotIn('_model_media', again)
+
+    async def test_a_long_text_memory_opens_around_the_asked_part(self):
+        paragraphs = [f'Bölüm {k}: ' + ' '.join([f'kelime{k}'] * 400) for k in range(12)]
+        await self.add_file('uzun.md', 'text/markdown', '\n\n'.join(paragraphs).encode())
+        rows = await self.add_rows()
+        self.assertGreater(len(rows), 6)
+        result = await self.open_tool([rows[5]])
+        opened = result['opened'][0]
+        self.assertNotIn('text', opened)
+        self.assertEqual([p['id'] for p in opened['parts']], rows[3:8])
+        self.assertIn('memory_context', opened['more'])
+        shown = result['_show_user'][0]
+        self.assertEqual((shown['name'], shown['mime_type']), ('uzun.md', 'text/markdown'))
+        _, raw = await media_store.read_media('chat', shown['media_id'])
+        self.assertEqual(raw.decode().count('Bölüm '), 12)  # The user gets the whole file.
+
+    async def add_rows(self):
+        conn = await registry._connect()
+        try:
+            return [r['id'] for r in await conn.fetch('select id from orion_memory where not whole order by id')]
+        finally:
+            await conn.close()
 
     async def stored_image(self, user='alice'):
         raw = png()
@@ -257,8 +332,8 @@ class MemorySearchTests(PostgresMemoryCase):
     async def open_tool(self, ids, can=None):
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)), \
                 patch.object(memory, 'chat_model_media', AsyncMock(return_value=can or {'image': True, 'audio': False})):
-            return await memory_tools.hafizadaki_medyayi_ac(memory_tools.MemoryOpenInput(idler=ids),
-                                                            ToolContext('alice', 'chat', 't', None))
+            return await memory_tools.open_memory_files(memory_tools.MemoryOpenInput(ids=ids),
+                                                        ToolContext('alice', 'chat', 't', None))
 
     async def test_a_file_opened_earlier_in_the_chat_is_not_attached_again(self):
         row, media_id, raw = await self.stored_image()
@@ -269,17 +344,17 @@ class MemorySearchTests(PostgresMemoryCase):
                    {'role': 'user', 'content': 'bak tekrar'}]
         with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
             result = await self.open_tool([row])
-        self.assertNotIn('_medya', result)
-        self.assertEqual(result['zaten_acik'][0]['mesaj'], 1)
-        self.assertTrue(result['_ekler'][0]['already'])
+        self.assertNotIn('_model_media', result)
+        self.assertEqual(result['already_open'][0]['message'], 1)
+        self.assertTrue(result['_show_user'][0]['already'])
         self.assertEqual(memory.opened_in_chat(history), {media_id: 1})
         # The same bytes under another memory row: not attached either. Gone from the history: attached again.
         other = await self.add('kopya', kind='image', media_id=media_id)
         with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
-            self.assertIn('zaten_acik', await self.open_tool([other]))
+            self.assertIn('already_open', await self.open_tool([other]))
         with patch.object(memory, '_chat_messages', AsyncMock(return_value=([history[0]], [1]))):
             fresh = await self.open_tool([row])
-        self.assertEqual(fresh['_medya'][0]['media_id'], media_id)
+        self.assertEqual(fresh['_model_media'][0]['media_id'], media_id)
 
     async def test_opening_media_links_the_file_to_the_chat_and_the_history_keeps_showing_it(self):
         row, media_id, raw = await self.stored_image()
@@ -287,21 +362,21 @@ class MemorySearchTests(PostgresMemoryCase):
         foreign, _, _ = await self.stored_image(user='bob')
         text = await self.add('düz metin')
         result = await self.open_tool([row, voice, foreign])
-        self.assertEqual([entry['id'] for entry in result['acilanlar']], [row])
-        self.assertEqual(result['_medya'][0]['media_id'], media_id)
+        self.assertEqual([entry['id'] for entry in result['opened']], [row])
+        self.assertEqual(result['_model_media'][0]['media_id'], media_id)
         # The user sees the file under the turn: a reference with a usable name, never bytes.
-        shown = result['_ekler'][0]
+        shown = result['_show_user'][0]
         self.assertEqual((shown['media_id'], shown['mime_type'], shown['memory_id']), (media_id, 'image/png', row))
         self.assertTrue(shown['name'].endswith('.png'))
-        self.assertIn('dinleyemiyor', result['acilamayanlar'][0]['neden'])
-        self.assertEqual(result['bulunamayanlar'], [foreign])
-        self.assertIn('metin', (await self.open_tool([text]))['acilamayanlar'][0]['neden'])
+        self.assertIn('gone', result['not_opened'][0]['reason'])  # Its file was never stored.
+        self.assertEqual(result['not_found'], [foreign])
+        self.assertEqual((await self.open_tool([text]))['opened'][0]['text'], 'düz metin')
         self.assertEqual(await media_store.read_media('chat', media_id), ('image/png', raw))
 
         call = {'id': 'c1', 'type': 'function',
-                'function': {'name': 'hafizadaki_medyayi_ac', 'arguments': json.dumps({'idler': [row]})}}
-        tool_message = {'role': 'tool', 'tool_call_id': 'c1', 'media_refs': result['_medya'],
-                        'content': json.dumps({k: v for k, v in result.items() if k not in ('_medya', '_ekler')},
+                'function': {'name': 'open_memory_files', 'arguments': json.dumps({'ids': [row]})}}
+        tool_message = {'role': 'tool', 'tool_call_id': 'c1', 'media_refs': result['_model_media'],
+                        'content': json.dumps({k: v for k, v in result.items() if k not in ('_model_media', '_show_user')},
                                               ensure_ascii=False)}
         history = [{'role': 'user', 'content': 'kalp fotoğrafında ne vardı?'},
                    {'role': 'assistant', 'content': None, 'tool_calls': [call]}, tool_message,
@@ -320,8 +395,9 @@ class MemorySearchTests(PostgresMemoryCase):
     async def test_a_chat_model_without_vision_gets_the_label(self):
         row, _, _ = await self.stored_image()
         result = await self.open_tool([row], can={'image': False, 'audio': False})
-        self.assertNotIn('_medya', result)
-        self.assertIn('göremiyor', result['acilamayanlar'][0]['neden'])
+        self.assertNotIn('image', [m['kind'] for m in result.get('_model_media', [])])
+        self.assertIn('cannot see images', result['opened'][0]['note'])
+        self.assertEqual(result['_show_user'][0]['memory_id'], row)  # The user still gets the file.
 
     async def test_a_gone_memory_file_does_not_fail_the_turn(self):
         messages = [{'role': 'user', 'content': [{'type': 'hub_media', 'attachment': {
@@ -332,27 +408,27 @@ class MemorySearchTests(PostgresMemoryCase):
     async def test_the_tool_loop_shows_the_media_right_after_the_tool_results(self):
         row, media_id, raw = await self.stored_image()
         conversation = ToolConversation(SimpleNamespace(user_id='alice', chat_id='chat', turn_id='t'),
-                                        ['hafizadaki_medyayi_ac'])
+                                        ['open_memory_files'])
         requests = []
 
         async def stream(messages, settings, **kwargs):
             requests.append(json.loads(json.dumps(messages)))
             if len(requests) == 1:
                 yield 'tool_calls', json.dumps([{'id': 'c1', 'type': 'function', 'function': {
-                    'name': 'hafizadaki_medyayi_ac', 'arguments': json.dumps({'idler': [row]})}}])
+                    'name': 'open_memory_files', 'arguments': json.dumps({'ids': [row]})}}])
             else:
                 yield 'content', 'Kırmızı bir kare.'
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)), \
                 patch.object(memory, 'chat_model_media', AsyncMock(return_value={'image': True, 'audio': False})):
             _ = [event async for event in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), stream)]
         self.assertEqual([m['role'] for m in requests[1]], ['assistant', 'tool', 'user'])
-        self.assertNotIn('"_medya"', requests[1][1]['content'])
+        self.assertNotIn('"_model_media"', requests[1][1]['content'])
         self.assertEqual(requests[1][2]['content'][-1]['image_url']['url'],
                          'data:image/png;base64,' + base64.b64encode(raw).decode())
         stored = conversation.transcript[1]
         self.assertEqual(stored['media_refs'][0]['media_id'], media_id)  # A reference, never base64.
         self.assertNotIn('base64', json.dumps(conversation.transcript))
-        self.assertNotIn('"_medya"', json.dumps(conversation.activity))
+        self.assertNotIn('"_model_media"', json.dumps(conversation.activity))
 
     async def add_file(self, name, mime, raw, support=GEMMA, group=None):
         self.embedded = getattr(self, 'embedded', 0)
@@ -429,10 +505,15 @@ class MemorySearchTests(PostgresMemoryCase):
 def test_the_open_media_tool_is_on_by_default_and_its_schema_pages():
     from orion.contracts.tools import default_tool_selection
     tools = get_registry()
-    assert 'hafizadaki_medyayi_ac' in tools.enabled(default_tool_selection())
-    schema = tools.tools['hafizada_ara'].schema()['function']['parameters']['properties']
-    assert {'sorgu', 'tur', 'sayfa'} <= schema.keys() and schema['tur']['enum'] == ['hepsi', 'metin', 'görsel', 'ses', 'video']
-    assert tools.tools['hafizadaki_medyayi_ac'].schema()['function']['parameters']['properties']['idler']['maxItems'] == 3
+    assert 'open_memory_files' in tools.enabled(default_tool_selection())
+    schema = tools.tools['search_memory'].schema()['function']['parameters']['properties']
+    assert {'queries', 'mode', 'kind', 'model', 'page', 'page_size'} <= schema.keys()
+    assert schema['kind']['enum'] == ['all', 'text', 'image', 'audio', 'video']
+    assert schema['mode']['enum'] == ['together', 'separate']
+    query = schema['queries']['items']  # Inlined: no $ref for providers that take none.
+    assert {'text', 'id', 'like'} <= query['properties'].keys()
+    assert '$ref' not in json.dumps(tools.tools['search_memory'].schema())
+    assert tools.tools['open_memory_files'].schema()['function']['parameters']['properties']['ids']['maxItems'] == 3
 
 
 def test_python_word_similarity_finds_partial_words_and_typos():

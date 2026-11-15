@@ -124,14 +124,14 @@ class MemoryGroupTests(PostgresMemoryCase):
         await self.add('uzun dosya ilk parça', score=0.0, group='g2', source='file', title='notlar.md', axis=8)
         chunk = await self.add('uzun dosya ikinci parça', score=0.5, group='g2', source='file', title='notlar.md',
                                axis=7)
-        found = await self.tool(memory_tools.hafizada_ara, memory_tools.MemoryInput, sorgu='kalp resmi')
-        rows = {row['id']: row for row in found['kayitlar']}
-        self.assertEqual(rows[image]['birlikte_kaydedilenler'],
-                         [{'id': text, 'tur': 'metin', 'ozet': 'Kullanıcı: kalpli resim Asistan: kırmızı bir kalp'}])
-        self.assertEqual(rows[text]['ayni_kayittan'], image)  # Its group is told once, at the image.
-        self.assertNotIn('birlikte_kaydedilenler', rows[text])
-        self.assertEqual((rows[chunk]['dosya'], rows[chunk]['parca']), ('notlar.md', '2/2'))
-        self.assertIn('hafiza_baglami', found['grup_notu'])
+        found = await self.tool(memory_tools.search_memory, memory_tools.MemorySearchInput,
+                                queries=[memory_tools.MemoryQuery(text='kalp resmi')])
+        rows = {row['id']: row for row in found['results']}
+        # One result per memory, shown by its best part (here the text, its words are spelled like the query).
+        self.assertEqual((rows[text]['memory_has'], rows[text]['matched_by']), ('1 text, 1 image', 'similar spelling'))
+        self.assertNotIn(image, rows)
+        self.assertEqual(rows[chunk]['file'], 'notlar.md')
+        self.assertIn('memory_context', found['context_note'])
 
     async def chat(self, *messages, assistant=True):
         await sql("update orion_chats set assistant = $1 where id = 'chat'", assistant)
@@ -147,36 +147,36 @@ class MemoryGroupTests(PostgresMemoryCase):
         text = await self.add('Kullanıcı: mesaj 6\n\nAsistan: mesaj 7', group='g1', source='chat_save',
                               chat='chat', message=ids[6])
         image, _ = await self.image('g1', chat='chat', message=ids[6])
-        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=image, sohbet=True,
-                                 mesaj_sayisi=4)
-        self.assertEqual([p['id'] for p in result['parcalar']], [text, image])
-        self.assertEqual(result['parcalar'][0]['metin'], 'Kullanıcı: mesaj 6\n\nAsistan: mesaj 7')
-        messages = result['sohbet']['mesajlar']
-        self.assertEqual([m['metin'] for m in messages], ['mesaj 4', 'mesaj 5', 'mesaj 6', 'mesaj 7'])
-        self.assertEqual([m.get('kaydedilen', False) for m in messages], [False, False, True, False])
-        start = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True,
-                                mesaj_sayisi=2, sohbet_konumu='bas')
-        self.assertEqual([m['metin'] for m in start['sohbet']['mesajlar']], ['mesaj 0', 'mesaj 1'])
+        result = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=image, chat=True,
+                                 message_count=4)
+        self.assertEqual([p['id'] for p in result['parts']], [text, image])
+        self.assertEqual(result['parts'][0]['text'], 'Kullanıcı: mesaj 6\n\nAsistan: mesaj 7')
+        messages = result['chat']['messages']
+        self.assertEqual([m['text'] for m in messages], ['mesaj 4', 'mesaj 5', 'mesaj 6', 'mesaj 7'])
+        self.assertEqual([m.get('saved', False) for m in messages], [False, False, True, False])
+        start = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=text, chat=True,
+                                message_count=2, chat_position='start')
+        self.assertEqual([m['text'] for m in start['chat']['messages']], ['mesaj 0', 'mesaj 1'])
         await sql('delete from orion_chat_messages where id = $1', ids[6])
-        cleared = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True)
-        self.assertIn('temizlenmiş', cleared['sohbet_durumu'])
+        cleared = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=text, chat=True)
+        self.assertIn('cleared', cleared['chat_state'])
         await sql("delete from orion_chats where id = 'chat'")
-        gone = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True)
-        self.assertIn('silinmiş', gone['sohbet_durumu'])
-        self.assertIn('kayıt yok', (await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput,
-                                                    id=999999))['hata'])
+        gone = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=text, chat=True)
+        self.assertIn('deleted', gone['chat_state'])
+        self.assertIn('no memory', (await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput,
+                                                    id=999999))['error'])
 
     async def test_an_old_chat_save_finds_its_chat_by_its_text_and_remembers_it(self):
         ids = await self.chat(('user', 'eski kayıt sorusu burada'), ('assistant', 'eski cevap'))
         # Saved after its messages, as a save always is (the helper's dates start in the past).
         old = await self.add('Kullanıcı: eski kayıt sorusu burada\n\nAsistan: eski cevap', group='g1',
                              source='chat_save', minute=60 * 24 * 366 * 2)
-        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=old, sohbet=True)
-        self.assertEqual([m['metin'] for m in result['sohbet']['mesajlar']], ['eski kayıt sorusu burada', 'eski cevap'])
+        result = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=old, chat=True)
+        self.assertEqual([m['text'] for m in result['chat']['messages']], ['eski kayıt sorusu burada', 'eski cevap'])
         self.assertEqual(await sql('select source_message_id from orion_memory where id = $1', old), ids[0])
         note = await self.add('elle eklenen not', group='g2')
-        unknown = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=note, sohbet=True)
-        self.assertIn('bilinmiyor', unknown['sohbet_durumu'])
+        unknown = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=note, chat=True)
+        self.assertIn('not known', unknown['chat_state'])
 
     async def test_a_chat_save_stores_its_group_chat_and_the_message_each_chunk_starts_with(self):
         ids = await self.chat(('user', 'Benim adım Ayşe.'), ('assistant', 'Memnun oldum.'))
@@ -195,18 +195,20 @@ class MemoryGroupTests(PostgresMemoryCase):
 
     def test_new_memory_tools_come_on_with_their_group_but_an_unchecked_one_stays_off(self):
         tools = get_registry()
+        # Saved under the tools' old Turkish ids: the choices carry over to the new ids.
         saved = ToolSelection(categories={'memory': True}, functions={'hafizada_ara': True, 'hafizadan_sil': False})
+        self.assertEqual(saved.functions, {'search_memory': True, 'delete_memory': False})
         enabled = tools.enabled(saved)
-        self.assertIn('hafizadaki_medyayi_ac', enabled)
-        self.assertIn('hafiza_baglami', enabled)
-        self.assertNotIn('hafizadan_sil', enabled)
+        self.assertIn('open_memory_files', enabled)
+        self.assertIn('memory_context', enabled)
+        self.assertNotIn('delete_memory', enabled)
         complete = tools.complete(saved)
-        self.assertEqual((complete.functions['hafiza_baglami'], complete.functions['hafizadan_sil']), (True, False))
+        self.assertEqual((complete.functions['memory_context'], complete.functions['delete_memory']), (True, False))
         self.assertEqual(tools.enabled(ToolSelection(categories={'memory': False}, functions={})), [])
         self.assertEqual(tools.enabled(ToolSelection(categories={'browser': True}, functions={})), [])  # Not default-on.
         masked = routes._mask_settings_for_client(SimpleNamespace(
             tool_selection=saved, router_api_key='', model_copy=lambda update: update))
-        self.assertTrue(masked['tool_selection'].functions['hafizadaki_medyayi_ac'])
+        self.assertTrue(masked['tool_selection'].functions['open_memory_files'])
 
     # --- map ----------------------------------------------------------------------------------------------------
 
@@ -320,10 +322,10 @@ class MemoryGroupTests(PostgresMemoryCase):
 
     async def test_tools_give_the_local_date_and_time(self):
         row = await self.add('adım Ayşe', score=0.7, group='g1')
-        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=row)
+        result = await self.tool(memory_tools.memory_context, memory_tools.MemoryContextInput, id=row)
         stamp = await sql('select created_at from orion_memory where id = $1', row)
-        self.assertEqual(result['tarih'], memory.local_time(stamp))
-        self.assertRegex(result['tarih'], r'^2026-1[01]-\d\d \d\d:\d\d \(UTC[+-]\d\d:\d\d\)$')
+        self.assertEqual(result['date'], memory.local_time(stamp))
+        self.assertRegex(result['date'], r'^2026-1[01]-\d\d \d\d:\d\d \(UTC[+-]\d\d:\d\d\)$')
 
     # --- move ---------------------------------------------------------------------------------------------------
 
@@ -471,6 +473,10 @@ def test_an_unrelated_input_never_demotes_a_strong_single_input_match():
     # The noise of each input stays out of the strong ones (Pamuk does stand out for the picture: it may show).
     assert not [e for e in ranked if e['group'].startswith('m') and e['strength'] != 'weak']
     assert routes.input_labels(['image', 'image', 'query'], 3) == ['görsel 1', 'görsel 2', 'metin']
+    # Named when the name is known: a text in quotes, a file by its name ("Ayrı" cards say which input it was).
+    assert routes.input_labels(['image', 'query'], 2, ['kus.png', '"kuş"']) == ['kus.png', '"kuş"']
+    assert routes.input_name(routes.MemorySearchInput(text='  kuş  ')) == '"kuş"'
+    assert routes.input_name(routes.MemorySearchInput(name='kedi.jpg', data='x')) == 'kedi.jpg'
 
 
 def test_a_long_pasted_query_is_cut_not_refused_and_matches_by_meaning_only():
