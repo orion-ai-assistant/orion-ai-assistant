@@ -221,12 +221,13 @@ class MemoryFile(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)  # A data URL: base64 of at most 64 MB.
     group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
+    caption: str = Field(default="", max_length=1000)  # What the user wrote about the file.
 
 
 @router.post("/api/v1/memory/file")
 async def add_memory_file(payload: MemoryFile, request: Request, current_user: str = Depends(get_current_user)):
-    """An image, audio or text (.txt/.md) file the user adds on the memory page, sent as a data URL: a new memory,
-    or a part of the memory `group_id`."""
+    """An image, audio, video or text (.txt/.md) file the user adds on the memory page, sent as a data URL: a new
+    memory, or a part of the memory `group_id`. A video is embedded in the background: the answer has its "job"."""
     from orion.kernel import memory
     from orion.kernel.media_store import decode_data_url
     try:
@@ -236,13 +237,136 @@ async def add_memory_file(payload: MemoryFile, request: Request, current_user: s
     try:
         return await memory.add_file(current_user, payload.name, mime, raw,
                                      await get_runtime_settings(request.app.state.redis, current_user),
-                                     group=payload.group_id or None)
+                                     group=payload.group_id or None, caption=payload.caption)
     except LookupError as exc:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+class MemorySearch(BaseModel):
+    """A search with a file (a data URL: image, audio, video or .txt/.md) or with the query vector an earlier
+    search by file answered with (the next page, without sending the file again)."""
+    name: str = Field(default="", max_length=300)
+    data: str = Field(default="", max_length=90 * 1024 * 1024)
+    vector: list[float] | None = Field(default=None, max_length=4096)
+    vector_space: str = Field(default="", max_length=100)  # The query vector's space.
+    filter_space: str = Field(default="active", max_length=100)  # The page's model filter.
+    kind: str = Field(default="all", max_length=20)
+    limit: int = 20
+    offset: int = 0
+
+
+@router.post("/api/v1/memory/search")
+async def search_memory_by_file(payload: MemorySearch, request: Request, current_user: str = Depends(get_current_user)):
+    """Memories like a file (memory.file_query_vector), as GET /api/v1/memory answers a text search, with the query
+    vector and its space for the next page and for the detail's part scores."""
+    from orion.kernel import memory, memory_groups
+    from orion.kernel.media_store import decode_data_url
+    settings = await get_runtime_settings(request.app.state.redis, current_user)
+    try:
+        if payload.vector:
+            if len(payload.vector) != 768:
+                raise HTTPException(400, "Arama vektörü geçersiz.")
+            space, vector, kind = payload.vector_space or await memory.current_space(settings), \
+                memory._vector(payload.vector), None
+        else:
+            try:
+                mime, raw = decode_data_url(payload.data)
+            except Exception as exc:
+                raise HTTPException(400, "Dosya okunamadı.") from exc
+            space, vector, kind = await memory.file_query_vector(payload.name, mime, raw, settings)
+        found = await memory_groups.list_groups(
+            current_user, settings, "", max(1, min(payload.limit, 100)), max(0, payload.offset),
+            payload.filter_space[:100], payload.kind[:20], vector=vector, vector_space_of_query=space)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    import json
+    found["query"] = {"vector": [round(v, 6) for v in json.loads(vector)], "vector_space": space, "kind": kind,
+                      "name": payload.name[:200]}
+    return found
+
+
+class MemoryMatch(BaseModel):
+    q: str = Field(default="", max_length=200)
+    vector: list[float] | None = Field(default=None, max_length=4096)
+    vector_space: str = Field(default="", max_length=100)
+
+
+@router.post("/api/v1/memory/groups/{group_id}/match")
+async def memory_group_match(group_id: str, payload: MemoryMatch, request: Request,
+                             current_user: str = Depends(get_current_user)):
+    """Each part's own score and match in one memory for the page's search (memory_groups.part_scores):
+    {"parts": {id: {"score", "match", "matched", "best"}}, "best", "best_part", "matched", "whole_score"}."""
+    from orion.kernel import memory, memory_groups
+    vector = None
+    if payload.vector:
+        if len(payload.vector) != 768:
+            raise HTTPException(400, "Arama vektörü geçersiz.")
+        vector = memory._vector(payload.vector)
+    try:
+        found = await memory_groups.part_scores(
+            current_user, group_id[:64], await get_runtime_settings(request.app.state.redis, current_user),
+            payload.q, vector, payload.vector_space or None)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.")
+    return found
+
+
+@router.get("/api/v1/memory/media-jobs")
+async def memory_media_jobs(current_user: str = Depends(get_current_user)):
+    """Videos being embedded in the background and those that ended in the last minutes (memory_media_jobs)."""
+    from orion.kernel import memory, memory_media_jobs as jobs
+    try:
+        return {"jobs": await jobs.jobs(current_user)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/media-jobs/{job_id}/cancel")
+async def memory_media_job_cancel(job_id: str, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_media_jobs as jobs
+    try:
+        if not await jobs.cancel(current_user, job_id[:64]):
+            raise HTTPException(404, "İş bulunamadı.")
+        return {"jobs": await jobs.jobs(current_user)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.get("/api/v1/memory/{item_id}/frame")
+async def memory_item_frame(item_id: int, request: Request, at: float | None = None,
+                            current_user: str = Depends(get_current_user)):
+    """A JPEG frame of a memory video at `at` seconds (default: the row's segment start, a whole video's first
+    second): the page's thumbnails. Same 404s as the media."""
+    import asyncio
+    from orion.kernel import memory, memory_pieces
+    try:
+        mime, raw, media_id = await memory.read_item_media(current_user, item_id)
+        span = await memory.item_span(current_user, item_id)
+    except LookupError as exc:
+        raise HTTPException(404, 'Media not found') from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if not mime.lower().startswith("video/"):
+        raise HTTPException(404, 'Media not found')
+    second = max(0.0, float(at if at is not None else (span[0] + min(1.0, (span[1] - span[0]) / 2) if span else 1.0)))
+    etag = f'"{media_id}-{second:.2f}"'
+    headers = {'Cache-Control': 'private, max-age=2592000, immutable', 'ETag': etag,
+               'X-Content-Type-Options': 'nosniff'}
+    if etag in [tag.strip() for tag in request.headers.get('if-none-match', '').split(',')]:
+        return Response(status_code=304, headers=headers)
+    try:
+        frame = await asyncio.to_thread(memory_pieces.frame_at, raw, second)
+    except Exception as exc:
+        raise HTTPException(404, 'Media not found') from exc
+    return Response(content=frame, media_type="image/jpeg", headers=headers)
 
 
 @router.delete("/api/v1/memory/{item_id}")

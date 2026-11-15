@@ -25,8 +25,10 @@ _tasks: set[asyncio.Task] = set()
 
 COPY_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, media_id, "
-    "media_mime, media_seconds, group_id, copied_from, source_chat_id, source_message_id, created_at) "
-    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) returning id")
+    "media_mime, media_seconds, group_id, copied_from, source_chat_id, source_message_id, created_at, item_id, whole, "
+    "span_start, span_end, track, caption, item_order) "
+    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, "
+    "$22) returning id")
 _HAS_COPY = ("exists (select 1 from orion_memory c where c.user_id = r.user_id and c.vector_space = $3 "
              "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))")
 
@@ -106,8 +108,32 @@ async def _read_media(conn, media_id: str) -> tuple[str, bytes] | None:
     return (row["mime_type"], bytes(row["data"])) if row else None
 
 
+def _window(row: dict, window: float, total: float) -> tuple[float, float]:
+    """The window a timed piece was embedded with: its core and CONTEXT_SHARE of `window` on each side."""
+    from orion.kernel.memory_pieces import CONTEXT_SHARE
+    start, end = float(row["span_start"]), float(row["span_end"])
+    if end - start >= total - 0.01:
+        return 0.0, total
+    context = window * CONTEXT_SHARE
+    return max(0.0, start - context), min(total, end + context)
+
+
+def _decode(raw: bytes, rows: list[dict], context: int | None) -> dict:
+    """What re-embedding one audio or video file's rows needs, decoded once (in a thread)."""
+    from orion.kernel import memory_pieces as mp
+    from orion.kernel import memory_media_jobs
+    if rows[0]["kind"] == "video":
+        return memory_media_jobs.plan(raw, mp.video_info(raw), context)
+    if all(r.get("span_start") is None for r in rows):
+        return {"pieces": memory.audio_pieces(raw)[0]}
+    pcm = mp.decode_pcm(raw)
+    return {"pcm": pcm, "seconds": len(pcm) / (mp.SAMPLE_RATE * 2)}
+
+
 async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | None]:
-    """A vector for each row of one image or audio file (an audio row is one <=60 s piece, in row order)."""
+    """A vector for each row of one image, audio or video file (its pieces, in row order), embedded as it was
+    stored: an audio piece with its window, a video segment with its window's frames or sound."""
+    from orion.kernel import memory_pieces as mp
     from orion.worker.services.router import audio_part, image_part
     stored = await _read_media(conn, rows[0]["media_id"])
     if stored is None:
@@ -116,15 +142,61 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
     if rows[0]["kind"] == "image":
         vector = await memory._embed_media([image_part(raw, rows[0].get("media_mime") or mime)], target)
         return [vector] + [None] * (len(rows) - 1)
-    pieces, _ = await asyncio.to_thread(memory.audio_pieces, raw)
-    return [await memory._embed_media([audio_part(pieces[i], "wav")], target) if i < len(pieces) else None
-            for i in range(len(rows))]
+    context = memory.embedding_context()
+    decoded = await asyncio.to_thread(_decode, raw, rows, context)
+    if "pieces" in decoded:  # Audio stored before overlapping pieces: one row per <=60 s, in order.
+        pieces = decoded["pieces"]
+        return [await memory._embed_media([audio_part(pieces[i], "wav")], target) if i < len(pieces) else None
+                for i in range(len(rows))]
+    total = float(decoded["seconds"])
+    vectors = []
+    if rows[0]["kind"] == "audio":
+        size = mp.audio_window(context)
+        for r in rows:
+            start, end = _window(r, size, total) if r.get("span_start") is not None else (0.0, total)
+            wav = mp.wav_bytes(mp.pcm_slice(decoded["pcm"], start, end))
+            vectors.append(await memory._embed_media([audio_part(wav, "wav")], target))
+        return vectors
+    count = None
+    for r in rows:
+        start, end = _window(r, mp.VIDEO_WINDOW, total)
+        span = mp.Span(float(r["span_start"]), float(r["span_end"]), start, end)
+        if r.get("track") == "audio":
+            pcm = mp.pcm_slice(decoded["pcm"], start, end)
+            vectors.append(await memory._embed_media([audio_part(mp.wav_bytes(pcm), "wav")], target)
+                           if len(pcm) >= mp.SAMPLE_RATE // 5 else None)
+            continue
+        if count is None:
+            from orion.kernel.memory_media_jobs import frame_cost
+            count = mp.frames_per_window(context, await frame_cost(decoded["frames"][0], target))
+        frames = mp.window_frames(decoded["times"], decoded["frames"], span, count)
+        vectors.append(await memory._embed_media([image_part(f, "image/jpeg") for f in frames], target))
+    return vectors
+
+
+def text_windows(rows: list[dict]) -> dict[int, str]:
+    """The window each text piece of an item was embedded with: its core and the end/start of its neighbours."""
+    from orion.kernel import memory_pieces as mp
+    windows, items = {}, {}
+    for r in rows:
+        if r["kind"] == "text" and r.get("item_id") and not r.get("whole"):
+            items.setdefault(r["item_id"], []).append(r)
+    for members in items.values():
+        members.sort(key=memory.order_key)
+        for index, r in enumerate(members):
+            before = mp._tail(members[index - 1]["text"], mp.TEXT_CONTEXT_TOKENS) if index else ""
+            after = mp._head(members[index + 1]["text"], mp.TEXT_CONTEXT_TOKENS) if index + 1 < len(members) else ""
+            windows[r["id"]] = "\n\n".join(part for part in (before, r["text"], after) if part)
+    return windows
 
 
 def _work(rows: list[dict]) -> list[list[dict]]:
-    """Units of work in save order: one text row, or all rows of one file in one group (audio pieces)."""
+    """Units of work in save order: one text row, or all rows of one file in one group (audio pieces, a video's
+    segments). Whole vectors are not copied: they are made again from the copied pieces (rebuild_wholes)."""
     units, media = [], {}
     for r in rows:
+        if r.get("whole"):
+            continue
         if r["kind"] == "text" or not r.get("media_id"):
             units.append([r])
             continue
@@ -136,26 +208,64 @@ def _work(rows: list[dict]) -> list[list[dict]]:
     return units
 
 
+async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> int:
+    """The whole vectors of `items` in `space`, from their pieces there, for the tracks that have one in another
+    space and none here yet (memory.refresh_wholes keeps them right after). Returns how many were made."""
+    from orion.kernel.media_store import link_media
+    from orion.kernel.memory_pieces import mean_vector
+    if not items:
+        return 0
+    rows = [dict(r) for r in await conn.fetch(
+        "select id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
+        "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, track, caption, "
+        "item_order, embedding::text as v from orion_memory where user_id = $1 and item_id = any($2::text[])",
+        user_id, items)]
+    made = 0
+    for item in items:
+        mine = [r for r in rows if r["item_id"] == item]
+        for track in {r["track"] for r in mine}:
+            here = [r for r in mine if r["track"] == track and r["vector_space"] == space]
+            source = next((r for r in mine if r["track"] == track and r["whole"] and r["vector_space"] != space), None)
+            pieces = [r for r in here if not r["whole"]]
+            if source is None or any(r["whole"] for r in here) or len(pieces) < 2:
+                continue
+            vector = mean_vector([memory._parse_vector(p["v"]) for p in pieces])
+            new_id = await conn.fetchval(
+                COPY_SQL, user_id, source["text"], space, memory._vector(vector), source["source_kind"],
+                source["source_chat_title"], source["kind"], source["media_id"], source["media_mime"],
+                source["media_seconds"], source["group_id"], source["copied_from"] or source["id"],
+                source["source_chat_id"], source["source_message_id"], source["created_at"], item, True, None, None,
+                track, source["caption"], source["item_order"])
+            if source["media_id"]:
+                await link_media(source["media_id"], "memory", str(new_id), conn=conn)
+            made += 1
+    return made
+
+
 async def run(user_id: str, source: str, space: str, target, local: bool, support: dict, settings) -> None:
     from orion.kernel.media_store import link_media
     conn = await memory._connect()
     counts = {"done": 0, "copied": 0, "failed": 0}
     unsupported: dict[str, int] = {}
     state, message = "done", None
+    items: set[str] = set()
     try:
         await memory.ensure_memory_table(conn)
         columns = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
-                   "media_seconds, group_id, copied_from, source_chat_id, source_message_id")
+                   "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, "
+                   "span_start, span_end, track, caption, item_order")
         rows = [dict(r) for r in await conn.fetch(
             f"select {columns} from orion_memory r where user_id = $1 and vector_space = $2 and not {_HAS_COPY} "
             "order by id", user_id, source, space)]
+        windows = text_windows(rows)
         existing = await conn.fetchval(
             f"select count(distinct {CONTENT_KEY}) from orion_memory r where user_id = $1 and vector_space = $2 "
-            f"and {_HAS_COPY}", user_id, source, space)
+            f"and {_HAS_COPY} and not whole", user_id, source, space)
+        work = _work(rows)
         await conn.execute("update orion_memory_jobs set total = $2, existing = $3, updated_at = now() "
-                           "where user_id = $1", user_id, len(rows), int(existing or 0))
+                           "where user_id = $1", user_id, sum(len(unit) for unit in work), int(existing or 0))
         seen: set[int] = set()  # One copy per content even when the source space holds two of it.
-        for step, unit in enumerate(_work(rows)):
+        for step, unit in enumerate(work):
             if step and step % SPACE_CHECK_EVERY == 0 and await memory.current_space(settings) != space:
                 state, message = "failed", "Etkin embedding modeli değişti; aktarım durdu."
                 break
@@ -167,7 +277,8 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
             elif fresh:
                 try:
                     if kind == "text":
-                        vectors = [(fresh[0], v) for v in await memory._embed(fresh[0]["text"], target, "document", local)]
+                        text = windows.get(fresh[0]["id"], fresh[0]["text"])
+                        vectors = [(fresh[0], v) for v in (await memory._embed(text, target, "document", local))[:1]]
                     else:
                         vectors = [(r, v) for r, v in zip(fresh, await _media_vectors(conn, fresh, target)) if v]
                     async with conn.transaction():
@@ -180,9 +291,12 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
                                 COPY_SQL, user_id, r["text"], space, memory._vector(vector), r["source_kind"],
                                 r["source_chat_title"], r["kind"], r["media_id"], r["media_mime"], r["media_seconds"],
                                 group, r["copied_from"] or r["id"], r["source_chat_id"], r["source_message_id"],
-                                r["created_at"])
+                                r["created_at"], r["item_id"], False, r["span_start"], r["span_end"], r["track"],
+                                r["caption"], r["item_order"])
                             if r["media_id"]:
                                 await link_media(r["media_id"], "memory", str(new_id), conn=conn)
+                            if r["item_id"]:
+                                items.add(r["item_id"])
                     copied = len({id(r) for r, _ in vectors})
                     counts["copied"] += copied
                     counts["failed"] += len(fresh) - copied
@@ -209,6 +323,12 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
         state, message = "failed", f"Aktarım durdu: {exc}"
     finally:
         try:
+            if items and state != "interrupted":
+                try:
+                    async with conn.transaction():
+                        await rebuild_wholes(conn, user_id, space, sorted(items))
+                except Exception as exc:
+                    logger.warning("Memory move: whole vectors not rebuilt: %s", exc)
             await conn.execute(
                 "update orion_memory_jobs set state = $2, message = $3, done = $4, copied = $5, failed = $6, "
                 "unsupported = $7::jsonb, updated_at = now(), finished_at = now() where user_id = $1",

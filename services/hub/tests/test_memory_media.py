@@ -122,7 +122,8 @@ def wire(monkeypatch, conn, support, audio=None, history=HISTORY):
     monkeypatch.setattr(memory, '_embed', embed)
     monkeypatch.setattr(memory, '_embed_media', embed_media)
     monkeypatch.setattr(memory, '_read_chat_media', read)
-    monkeypatch.setattr(memory, 'media_support', lambda local, name: support)
+    monkeypatch.setattr(memory, 'media_support', lambda local, name: {**support, 'video': support['image']})
+    monkeypatch.setattr(memory, 'embedding_context', lambda: 2048)
     monkeypatch.setattr(media_store, 'link_media', link)
     async def chat_messages(chat_id):
         found = await messages(chat_id)
@@ -147,23 +148,30 @@ def test_gemma_saves_text_image_and_voice_and_links_each_row_to_the_memory(monke
     conn = Conn()
     embedded = wire(monkeypatch, conn, GEMMA)
     result = asyncio.run(memory.save_chat('u1', 'c1', 'Kedi', object()))
-    assert result == {'saved': 3, 'skipped': {}, 'warnings': []}
+    assert {k: result[k] for k in ('saved', 'skipped', 'warnings', 'jobs')} == {
+        'saved': 3, 'skipped': {}, 'warnings': [], 'jobs': []}
     assert embedded == ['image_url', 'input_audio']
-    image, voice = conn.rows
+    text, image, voice = conn.rows
     assert image[6:9] == ('image', IMG, 'image/jpeg') and image[1] == 'kedi.jpg — Kedimin fotoğrafı'
     assert voice[6:8] == ('audio', VOICE) and voice[1] == 'Ses kaydı 0:02 — dinle' and voice[9] == pytest.approx(2, abs=0.05)
-    assert conn.links == [(IMG, 'memory', '101'), (VOICE, 'memory', '102')]
-    text_group = conn.texts[0][5]
-    assert image[10] == voice[10] == text_group and image[11] == 'c1'  # One save, one memory, its chat.
+    assert image[18] == 'Kedimin fotoğrafı' and voice[18] == 'dinle'  # What the user wrote with the file.
+    assert conn.links == [(IMG, 'memory', '102'), (VOICE, 'memory', '103')]
+    assert image[10] == voice[10] == text[10] == result['group_id'] and image[11] == 'c1'  # One save, one memory.
+    assert len({text[13], image[13], voice[13]}) == 3  # Three items, each its own.
 
 
-def test_a_long_voice_note_becomes_one_row_per_minute_with_the_same_media(monkeypatch):
+def test_a_long_voice_note_becomes_overlapping_pieces_and_a_whole_vector_with_the_same_media(monkeypatch):
     conn = Conn()
     wire(monkeypatch, conn, GEMMA, audio=tone(130), history=[HISTORY[1]])
-    assert asyncio.run(memory.save_chat('u1', 'c1', '', object()))['saved'] == 5  # 1 text + 1 image + 3 audio pieces
+    # 1 text + 1 image + 4 audio pieces (40 s cores in 60 s windows) + the audio's whole vector.
+    assert asyncio.run(memory.save_chat('u1', 'c1', '', object()))['saved'] == 7
     audio = [row for row in conn.rows if row[6] == 'audio']
-    assert [row[1] for row in audio] == [f'Ses kaydı 2:10 parça {i}/3 — dinle' for i in (1, 2, 3)]
-    assert len({link[2] for link in conn.links if link[0] == VOICE}) == 3
+    assert [row[1] for row in audio] == ['Ses kaydı 2:10 0:00–0:40 — dinle', 'Ses kaydı 2:10 0:40–1:20 — dinle',
+                                         'Ses kaydı 2:10 1:20–2:00 — dinle', 'Ses kaydı 2:10 2:00–2:10 — dinle',
+                                         'Ses kaydı 2:10 — dinle']
+    assert [(row[15], row[16]) for row in audio[:4]] == [(0, 40), (40, 80), (80, 120), (120, pytest.approx(130, abs=0.1))]
+    assert [row[14] for row in audio] == [False] * 4 + [True] and len({row[13] for row in audio}) == 1
+    assert len({link[2] for link in conn.links if link[0] == VOICE}) == 5
 
 
 def test_jina_skips_voice_notes_with_a_clear_warning(monkeypatch):
@@ -173,14 +181,15 @@ def test_jina_skips_voice_notes_with_a_clear_warning(monkeypatch):
     assert result['saved'] == 2 and result['skipped'] == {'audio': 1}
     assert result['warnings'] == ["Sohbette 1 ses kaydı var ama Jina Embeddings v5 Omni Nano sesi anlamıyor; "
                                   "sesler kaydedilmedi. Ses için EmbeddingGemma 2'yi ek dosyasıyla seç."]
-    assert [row[6] for row in conn.rows] == ['image']
+    assert [row[6] for row in conn.rows] == ['text', 'image']
 
 
 def test_an_extra_file_that_is_off_says_where_to_turn_it_on(monkeypatch):
     conn = Conn()
     wire(monkeypatch, conn, GEMMA_OFF)
     result = asyncio.run(memory.save_chat('u1', 'c1', '', object()))
-    assert result['skipped'] == {'image': 1, 'audio': 1} and not conn.rows and result['saved'] == 1
+    assert result['skipped'] == {'image': 1, 'audio': 1} and [r[6] for r in conn.rows] == ['text']
+    assert result['saved'] == 1
     assert all('ek dosyası kapalı' in w and 'Bileşenler → Hafıza' in w for w in result['warnings'])
 
 
@@ -194,7 +203,7 @@ def test_media_already_saved_in_this_space_is_not_saved_again(monkeypatch):
     conn = Conn(existing_media={IMG, VOICE})
     embedded = wire(monkeypatch, conn, GEMMA)
     assert asyncio.run(memory.save_chat('u1', 'c1', '', object()))['saved'] == 1
-    assert not embedded and not conn.rows
+    assert not embedded and [r[6] for r in conn.rows] == ['text']
 
 
 def test_a_media_the_model_fails_on_is_a_warning_not_a_lost_save(monkeypatch):

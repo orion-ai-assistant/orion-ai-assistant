@@ -428,6 +428,13 @@ async def generate_embeddings(
 
     `text` may also be a list of content parts (text/image_url/input_audio
     dicts, see image_part/audio_part) for multimodal embedding models."""
+    return (await generate_embeddings_usage(text, settings))[0]
+
+
+async def generate_embeddings_usage(
+    text: "str | list[dict[str, Any]]", settings: RuntimeSettings
+) -> tuple[list[float], int | None]:
+    """generate_embeddings and the tokens the server says the input took (None when it does not say)."""
     session = await get_session()
 
     urls = _router_urls("/v1/embeddings")
@@ -453,7 +460,8 @@ async def generate_embeddings(
             elements = data.get("data") or []
             if not elements or "embedding" not in elements[0]:
                 raise ValueError("Embedding response missing embedding data")
-            return elements[0]["embedding"]
+            tokens = (data.get("usage") or {}).get("prompt_tokens")
+            return elements[0]["embedding"], int(tokens) if isinstance(tokens, (int, float)) and tokens > 0 else None
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             last_error = e
             continue

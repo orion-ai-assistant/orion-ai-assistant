@@ -21,6 +21,9 @@ class FakeConn:
     async def fetchval(self, sql, *args):
         if 'pg_extension' in sql:
             return 1 if self.extension else None
+        if sql.startswith('insert into orion_memory'):  # memory.ROW_SQL: (user, text, space, vector, source, ...).
+            self.inserted.append(args)
+            return len(self.inserted)
         if sql.startswith('select 1 from orion_memory'):
             return 1 if (args[2], args[1]) in self.existing else None
         return self.other
@@ -99,9 +102,12 @@ def test_chat_text_keeps_only_what_the_user_and_the_assistant_said():
 def test_save_chat_stores_one_row_per_chunk_with_its_own_text_and_vector_space(monkeypatch):
     conn = FakeConn()
     wire(monkeypatch, conn)
-    assert asyncio.run(memory.save_chat('u1', 'c1', 'Tanışma', Settings())) == {'saved': 1, 'skipped': {}, 'warnings': []}
-    user, text, space, vector, title, group, chat, message, source = conn.inserted[0]
-    assert source == 'chat_save'
+    saved = asyncio.run(memory.save_chat('u1', 'c1', 'Tanışma', Settings()))
+    assert {k: saved[k] for k in ('saved', 'skipped', 'warnings', 'jobs')} == {
+        'saved': 1, 'skipped': {}, 'warnings': [], 'jobs': []}
+    (user, text, space, vector, source, title, kind, _, _, _, group, chat, message, item, whole,
+     *_rest) = conn.inserted[0]
+    assert (source, kind, whole) == ('chat_save', 'text', False) and saved['group_id'] == group and len(item) == 32
     assert len(group) == 32 and (chat, message) == ('c1', 2)  # Message 2: the first one the chunk holds.
     assert (user, space, title) == ('u1', 'embeddinggemma-2', 'Tanışma')
     assert 'Benim adım Ayşe.' in text and 'gizli' not in text
@@ -254,7 +260,6 @@ def test_saving_twice_skips_texts_already_in_the_same_space(monkeypatch):
     conn.existing.add((conn.inserted[0][1], 'embeddinggemma-2'))
     conn.inserted.clear()
     assert asyncio.run(memory.save_chat('u1', 'c1', '', Settings()))['saved'] == 0 and not conn.inserted
-    assert 'not exists' in memory.INSERT_SQL
 
 
 def test_the_kind_column_is_added_idempotently(monkeypatch):
@@ -268,7 +273,7 @@ def test_a_note_is_embedded_and_stored_as_manual(monkeypatch):
     conn = FakeConn()
     wire(monkeypatch, conn)
     assert asyncio.run(memory.add_note('u1', '  Kızımın adı Elif. ', Settings())) == 1
-    assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][8] == 'manual'
+    assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][4] == 'manual'
 
 
 @pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * 4001, '4000')])
@@ -293,7 +298,8 @@ class ListConn(FakeConn):
             return [{'key': 'text', 'n': 3}]
         if sql.startswith('delete'):
             self.deleted_args = args
-            return [{'id': 5, 'text': 'eski', 'media_id': None, 'group_id': 'g', 'content_key': 5}] if 5 in args[1] else []
+            return [{'id': 5, 'text': 'eski', 'media_id': None, 'group_id': 'g', 'content_key': 5, 'item_id': None,
+                     'whole': False}] if 5 in args[1] else []
         return [{'id': 1, 'text': 'a', 'kind': 'text', 'vector_space': 'jina-v5', 'source_kind': 'manual',
                  'source_chat_title': None, 'created_at': dt.datetime(2026, 11, 14)}]
 
@@ -318,7 +324,7 @@ def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeyp
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
     added = asyncio.run(memory_tools.hafizaya_ekle(memory_tools.MemoryAddInput(metin='Doğum günüm 3 Mart.'), context))
-    assert added == {'eklendi': 'Doğum günüm 3 Mart.'} and conn.inserted[0][8] == 'assistant'
+    assert added == {'eklendi': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
     gone = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[5]), context))
     assert gone['silinenler'] == [{'id': 5, 'metin': 'eski'}]
     nothing = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[9]), context))
@@ -329,6 +335,7 @@ def test_the_memory_page_paths_pass_the_access_boundary():
     """The page's GET/POST/DELETE (and the browser's preflight) were refused with 404 before the memory paths
     were listed: the app showed "Hub bağlantısı kurulamadı"."""
     from orion.api.access_boundary import public_path
-    for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete', '/api/v1/memory/file'):
+    for path in ('/api/v1/memory', '/api/v1/memory/12', '/api/v1/memory/delete', '/api/v1/memory/file',
+                 '/api/v1/memory/search', '/api/v1/memory/media-jobs', '/api/v1/memory/12/frame'):
         assert public_path(path)
     assert not public_path('/api/v1/memoryx')
