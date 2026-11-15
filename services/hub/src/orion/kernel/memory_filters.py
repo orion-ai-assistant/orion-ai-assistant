@@ -44,6 +44,18 @@ async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = 
     return {r["g"]: float(r["s"]) for r in rows}
 
 
+async def keyword_groups(conn, user_id: str, keyword: str) -> set[str]:
+    """The memories whose text or caption contains `keyword` (Turkish folding, a plain substring: no meaning)."""
+    from orion.kernel.memory_groups import GROUP_KEY
+    folded = memory.fold(keyword)
+    if not folded:
+        return set()
+    like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    return {r["g"] for r in await conn.fetch(
+        f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
+        f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like)}
+
+
 async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
                           vectors: list[str] | None = None) -> set[str]:
     """The memories a search leaves out for its "benzemesin" inputs: close to one by meaning (z >= EXCLUDE_Z against

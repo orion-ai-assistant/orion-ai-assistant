@@ -98,6 +98,29 @@ class MemoryDelete(BaseModel):
     group_ids: list[str] = Field(default_factory=list, max_length=200)  # Whole memories.
 
 
+_searches: dict = {}
+
+
+async def latest_search(key: str, work):
+    """Run a memory search as the only one of `key` (a user): a newer search cancels the one still running (its
+    embedding and queries stop; the older request answers 409, which the page ignores: the latest wins)."""
+    import asyncio
+    old = _searches.get(key)
+    if old is not None and not old.done():
+        old.cancel()
+    task = asyncio.ensure_future(work)
+    _searches[key] = task
+    try:
+        return await task
+    except asyncio.CancelledError:
+        if task.cancelled() and _searches.get(key) is not task:
+            raise HTTPException(409, "Daha yeni bir arama başladı.")
+        raise
+    finally:
+        if _searches.get(key) is task:
+            _searches.pop(key, None)
+
+
 @router.get("/api/v1/memory")
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", exclude: list[str] = Query(default=[]),
@@ -105,10 +128,11 @@ async def list_memory(request: Request, q: str = "", limit: int = 20, offset: in
     """A page of memories: cards of the rows saved together (memory_groups.list_groups)."""
     from orion.kernel import memory, memory_groups
     try:
-        found = await memory_groups.list_groups(
+        work = memory_groups.list_groups(
             current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
             max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20],
             exclude=[t[:200] for t in exclude[:5]])
+        found = await (latest_search(current_user, work) if q.strip() else work)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     windows = await query_note(q)
@@ -306,7 +330,7 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
     from orion.kernel.media_store import decode_data_url
     settings = await get_runtime_settings(request.app.state.redis, current_user)
     if payload.inputs or payload.vectors:
-        return await _search_memory_multi(payload, settings, current_user)
+        return await latest_search(current_user, _search_memory_multi(payload, settings, current_user))
     try:
         if payload.vector:
             if len(payload.vector) != 768:

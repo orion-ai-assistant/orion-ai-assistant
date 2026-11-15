@@ -353,7 +353,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
                       mode: str = "together", input_labels: list[str] | None = None,
                       exclude: list[str] | None = None, exclude_vectors: list[str] | None = None,
-                      leave_out: set[str] | None = None) -> dict:
+                      leave_out: set[str] | None = None, only_groups: set[str] | None = None,
+                      meaning: bool = True) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
@@ -362,7 +363,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
     mode "each": several inputs searched one by one and fused as OR (fuse_inputs; `input_labels` name them); the cards' scores are each part's best
     score against any input. ("together" is the caller's one combined vector in `vector`.) `leave_out`: memories
-    never listed (the memory a search by one of its own parts started from)."""
+    never listed (the memory a search by one of its own parts started from). `only_groups`: only these memories
+    (a keyword's). `meaning` False: words only (a keyword search)."""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
@@ -375,10 +377,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     searching = bool(q) or vector is not None
     if vector is not None:
         space = vector_space_of_query or await memory.current_space(settings)
-    elif q:
+    elif q and meaning:
         space, vector, reason = await memory._query_vector(q, settings)
     else:
         space = await memory.current_space(settings)
+    if q and not meaning and vector is None:
+        reason = None
     if vector_space == "active":  # The page's default: whichever model is active now.
         vector_space = space or "all"
     prefer = vector_space if vector_space != "all" else space
@@ -412,13 +416,16 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             each = bool(vectors and len(vectors) > 1 and mode == "each")
             ranked = merge_matches(meaning, texts, keep_order=each)
-            excluded = 0
+            excluded, dropped = 0, []
             if leave_out:
                 ranked = [e for e in ranked if e["group"] not in leave_out]
+            if only_groups is not None:
+                ranked = [e for e in ranked if e["group"] in only_groups]
             if excluding:
                 out = await mf.excluded_groups(conn, user_id, space if searchable else None, negatives, settings,
                                                negative_vectors)
                 kept = [e for e in ranked if e["group"] not in out]
+                dropped = [e for e in ranked if e["group"] in out][:10]
                 excluded, ranked = len(ranked) - len(kept), kept
             # A neutral cue: how far each score is above this query's typical score against every memory.
             stats = None
@@ -489,6 +496,9 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     if searching and excluding:
         result["excluded"] = excluded
         result["exclude_terms"] = negatives
+        # What a "benzemesin" input took out, briefly (the best of them).
+        result["excluded_list"] = [{"id": e["row"]["id"], "label": " ".join(e["row"]["text"].split())[:80]}
+                                   for e in dropped]
     if searching:
         result["semantic"] = vector is not None
         if reason:
@@ -943,12 +953,37 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
     (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`)."""
     import json
     from orion.kernel.memory_pieces import mean_vector
+    keywords = [q for q in queries if (q.get("keyword") or "").strip()]
+    queries = [q for q in queries if not (q.get("keyword") or "").strip()]
     likes = [q for q in queries if q.get("like", True)]
     unlikes = [q for q in queries if not q.get("like", True)]
+    only, out_words = None, set()
+    if keywords:
+        from orion.kernel import memory_filters as mf
+        conn = await memory._connect()
+        try:
+            await memory.ensure_memory_table(conn)
+            for k in keywords:
+                found_groups = await mf.keyword_groups(conn, user_id, k["keyword"].strip()[:200])
+                if k.get("like", True):
+                    only = found_groups if only is None else only & found_groups
+                else:
+                    out_words |= found_groups
+        finally:
+            await conn.close()
+    if keywords and not likes:
+        # Keywords alone: their exact matches, by their words (no meaning).
+        words = " ".join(k["keyword"].strip() for k in keywords if k.get("like", True))
+        found = await list_groups(user_id, settings, words[:200], limit, offset, vector_space, kind,
+                                  leave_out=out_words, only_groups=only if only is not None else None,
+                                  meaning=False, exclude=[q["text"].strip()[:200] for q in unlikes
+                                                          if (q.get("text") or "").strip()])
+        found["labels"] = []
+        return found
     if unlikes and not likes:
         raise QueryError("Add at least one query with like=true: like=false only leaves memories out of a search.")
     space = await memory.current_space(settings)
-    leave_out: set[str] = set()
+    leave_out: set[str] = set(out_words)
     exclude, exclude_vectors = [], []
 
     async def of_id(row_id: int) -> dict:
@@ -968,7 +1003,8 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
     texts = [q["text"].strip()[:memory.MAX_QUERY_CHARS] for q in likes
              if q.get("id") is None and (q.get("text") or "").strip()]
     words = ", ".join(texts)
-    common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors)
+    common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors,
+                  only_groups=only)
     if not likes:
         found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind)
         found["labels"] = []

@@ -6,17 +6,11 @@ CATEGORY = Category(
     id="memory", name="Hafıza", description="Kullanıcının hafızaya kaydettiği geçmiş konuşmalar ve notlar.",
     tools=(Tool(id="search_memory", name="Hafızada ara",
                 description=(
-                    "Searches what the user saved to memory: chats, notes, text files, images, audio, video. If the "
-                    "user asks about something personal (their name, preferences, what you talked about, what they "
-                    "told or showed you) and you do not know it, do not guess: search first. Each query is a short "
-                    "text or the id of a memory part from an earlier result (to find memories like that image, "
-                    "recording or text), marked like=true (results should be like it) or like=false (leave out "
-                    "memories like it), e.g. 'like the cat photo (id 41) but not a dog'. Several liked queries: "
-                    "mode together (close to all of them) or separate (close to any one; each result names which). "
-                    "kind limits to text, image, audio or video; with no queries the newest memories of that kind "
-                    "come (e.g. 'what images are in my memory'). Results are pages, best first; each says its score, "
-                    "which query gave it and how far above the search's average it stands. If what you need is not "
-                    "on page 1 and 'more' is true, ask for page 2, 3..."),
+                    "Searches the user's memory (chats, notes, files, images, audio, video). Ask it before "
+                    "guessing anything personal. Each query is a text (by meaning), a keyword (exact words only) or "
+                    "an id from an earlier result (memories like that one); like=false leaves matching memories out. "
+                    "mode together = close to all liked queries, separate = close to any. Results are pages, best "
+                    "first; with no query, the newest (of kind)."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
            Tool(id="add_memory", name="Hafızaya ekle",
                 description=("Saves something to remember when the user says 'remember this', 'keep in mind', "
