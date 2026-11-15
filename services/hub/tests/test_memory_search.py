@@ -328,19 +328,23 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertNotIn('base64', json.dumps(conversation.transcript))
         self.assertNotIn('"_medya"', json.dumps(conversation.activity))
 
-    async def add_file(self, name, mime, raw, support=GEMMA):
+    async def add_file(self, name, mime, raw, support=GEMMA, group=None):
+        self.embedded = getattr(self, 'embedded', 0)
+
         async def target(settings):
             return settings, SPACE, True
 
         async def embed(text, settings, kind, local):
+            self.embedded += 1
             return [vec(0.5, 2)]
 
         async def embed_media(parts, target):
+            self.embedded += 1
             return vec(0.3, 3)
         with patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed), \
                 patch.object(memory, '_embed_media', embed_media), \
                 patch.object(memory, 'media_support', lambda local, name: support):
-            return await memory.add_file('alice', name, mime, raw, self.settings)
+            return await memory.add_file('alice', name, mime, raw, self.settings, group=group)
 
     async def rows(self):
         conn = await registry._connect()
@@ -358,20 +362,31 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertEqual({**result, 'group_id': None}, {'added': len(rows), 'group_id': None, 'warnings': []})
         self.assertTrue(all((r['kind'], r['source_kind'], r['source_chat_title']) == ('text', 'file', 'notlar.md')
                             for r in rows))
-        again = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'))
+        again = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'), group=result['group_id'])
         self.assertEqual(again['added'], 0)
+        # Into another memory: the same text relates them, with the vectors it has (nothing embedded again).
+        before = self.embedded
+        other = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'))
+        self.assertEqual((other['added'], self.embedded), (len(rows), before))
+        self.assertNotEqual(other['group_id'], result['group_id'])
 
     async def test_an_image_file_is_stored_once_and_a_second_add_is_skipped(self):
         raw = png()
         first = await self.add_file('kalp.png', 'image/png', raw)
         self.assertEqual((first['added'], first['warnings'], len(first['group_id'])), (1, [], 32))
-        self.assertEqual((await self.add_file('kopya.png', 'image/png', raw))['added'], 0)
+        same = await self.add_file('kopya.png', 'image/png', raw, group=first['group_id'])
+        self.assertEqual((same['added'], same['warnings']), (0, ['Bu dosya bu hafızada zaten var.']))
+        before = self.embedded
+        other = await self.add_file('kopya.png', 'image/png', raw)
+        self.assertEqual((other['added'], self.embedded, other.get('reused')), (1, before, True))
         rows = await self.rows()
-        self.assertEqual([(r['text'], r['kind'], r['source_kind']) for r in rows], [('kalp.png', 'image', 'file')])
+        self.assertEqual([(r['text'], r['kind'], r['source_kind']) for r in rows],
+                         [('kalp.png', 'image', 'file'), ('kalp.png', 'image', 'file')])
         conn = await registry._connect()
         try:
             self.assertEqual(await conn.fetchval('select count(*) from orion_media'), 1)
-            self.assertEqual(await conn.fetchval("select owner_kind from orion_media_links"), 'memory')
+            self.assertEqual(await conn.fetchval("select count(*) from orion_media_links where owner_kind = 'memory'"), 2)
+            self.assertEqual(await conn.fetchval('select count(distinct group_id) from orion_memory'), 2)
         finally:
             await conn.close()
 

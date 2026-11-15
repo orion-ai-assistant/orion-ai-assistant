@@ -246,6 +246,12 @@ async def add_memory_file(payload: MemoryFile, request: Request, current_user: s
         raise HTTPException(503, str(exc)) from exc
 
 
+class MemorySearchInput(BaseModel):
+    name: str = Field(default="", max_length=300)
+    data: str = Field(default="", max_length=90 * 1024 * 1024)
+    text: str = Field(default="", max_length=200)
+
+
 class MemorySearch(BaseModel):
     """A search with a file (a data URL: image, audio, video or .txt/.md) or with the query vector an earlier
     search by file answered with (the next page, without sending the file again)."""
@@ -257,6 +263,13 @@ class MemorySearch(BaseModel):
     kind: str = Field(default="all", max_length=20)
     limit: int = 20
     offset: int = 0
+    # Several inputs at once: files (name + data URL) and texts; `vectors` are the query vectors an earlier answer
+    # gave (the next page). mode "together": one query, the normalized mean of the inputs; "each": every input
+    # ranked on its own and fused (memory_groups.fuse_ranks).
+    inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
+    vectors: list[list[float]] = Field(default_factory=list, max_length=8)
+    q: str = Field(default="", max_length=200)  # The texts, for the words' own matches.
+    mode: str = Field(default="together", max_length=20)
 
 
 @router.post("/api/v1/memory/search")
@@ -266,6 +279,8 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
     from orion.kernel import memory, memory_groups
     from orion.kernel.media_store import decode_data_url
     settings = await get_runtime_settings(request.app.state.redis, current_user)
+    if payload.inputs or payload.vectors:
+        return await _search_memory_multi(payload, settings, current_user)
     try:
         if payload.vector:
             if len(payload.vector) != 768:
@@ -288,6 +303,53 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
     import json
     found["query"] = {"vector": [round(v, 6) for v in json.loads(vector)], "vector_space": space, "kind": kind,
                       "name": payload.name[:200]}
+    return found
+
+
+async def _search_memory_multi(payload: MemorySearch, settings, current_user: str) -> dict:
+    """Several files and texts at once: each becomes a query vector (memory.file_query_vector, a text as a query);
+    "together" searches with their normalized mean, "each" fuses each one's ranking. The answer's `query` has the
+    vectors (the next page sends them back) and the combined vector (the detail's part scores)."""
+    import json
+    from orion.kernel import memory, memory_groups
+    from orion.kernel.media_store import decode_data_url
+    from orion.kernel.memory_pieces import mean_vector
+    mode = payload.mode if payload.mode in ("together", "each") else "together"
+    try:
+        space, vectors, kinds = payload.vector_space or None, [], []
+        if payload.vectors:
+            if any(len(v) != 768 for v in payload.vectors):
+                raise HTTPException(400, "Arama vektörü geçersiz.")
+            vectors = [list(v) for v in payload.vectors]
+            space = space or await memory.current_space(settings)
+        else:
+            for one in payload.inputs:
+                if one.text.strip():
+                    space, vector, reason = await memory._query_vector(one.text.strip(), settings)
+                    if vector is None:
+                        raise HTTPException(503, reason or "Anlamla arama kapalı.")
+                    kind = "query"
+                else:
+                    try:
+                        mime, raw = decode_data_url(one.data)
+                    except Exception as exc:
+                        raise HTTPException(400, f"Dosya okunamadı: {one.name[:60]}") from exc
+                    space, vector, kind = await memory.file_query_vector(one.name, mime, raw, settings)
+                vectors.append(json.loads(vector))
+                kinds.append(kind)
+        if not vectors:
+            raise HTTPException(400, "Aranacak bir şey yok.")
+        combined = mean_vector(vectors)
+        found = await memory_groups.list_groups(
+            current_user, settings, payload.q, max(1, min(payload.limit, 100)), max(0, payload.offset),
+            payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
+            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    found["query"] = {"vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
+                      "vector_space": space, "kinds": kinds, "mode": mode}
     return found
 
 

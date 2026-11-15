@@ -28,6 +28,11 @@ class FakeConn:
             return 1 if (args[2], args[1]) in self.existing else None
         return self.other
 
+    async def fetchrow(self, sql, *args):  # A known text core: here in the same memory (left out).
+        if (args[2], args[1]) in self.existing:
+            return {'group_id': args[3], 'embedding': '[0.5]'}
+        return None
+
     async def execute(self, sql, *args):
         self.executed.append(sql)
 

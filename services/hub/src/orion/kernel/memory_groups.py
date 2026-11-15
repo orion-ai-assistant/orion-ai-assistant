@@ -106,6 +106,8 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part["track"] = r["track"]
     if r.get("caption"):
         part["caption"] = r["caption"]
+    if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.
+        part["created_at"] = r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
     if position and position[1] > 1:
         part.update(piece=position[0], pieces=position[1])
     if spaces is not None:
@@ -205,7 +207,29 @@ def _strength(entry: dict, top: float) -> str:
     return "strong" if share >= STRONG else "medium"
 
 
-def merge_matches(meaning: list[dict], texts: list[dict]) -> list[dict]:
+EACH_POOL = 200  # Memories taken per input before fusing (mode "each").
+RRF_K = 60  # Reciprocal-rank fusion's usual constant: a memory near the top of several inputs' lists wins.
+
+
+def fuse_ranks(lists: list[list[dict]]) -> list[dict]:
+    """Several inputs' best rows per memory fused by reciprocal rank (sum of 1 / (RRF_K + rank)): a memory close to
+    every input comes first, one close to a single input still shows. Raw similarities of different kinds (an
+    image's against a text's) are not comparable, ranks are. Each memory keeps its best-scoring row and that
+    score (what the card shows); `fused` is the order."""
+    pool: dict[str, dict] = {}
+    for rows in lists:
+        for rank, r in enumerate(rows, 1):
+            g = group_key(r)
+            entry = pool.get(g)
+            if entry is None:
+                pool[g] = entry = {**r, "fused": 0.0}
+            elif float(r["score"]) > float(entry["score"]):
+                entry.update({**r, "fused": entry["fused"]})
+            entry["fused"] += 1.0 / (RRF_K + rank)
+    return sorted(pool.values(), key=lambda e: (-e["fused"], -e["id"]))
+
+
+def merge_matches(meaning: list[dict], texts: list[dict], keep_order: bool = False) -> list[dict]:
     """Meaning and text matches per memory, best first: {"group", "row" (the part that matched), "score", "tmatch",
     "tscore", "match" (text, similar or meaning), "strength"}. A memory ranks by its best row (memory._ranked's
     measure): a piece, or an item's whole vector."""
@@ -222,6 +246,14 @@ def merge_matches(meaning: list[dict], texts: list[dict]) -> list[dict]:
         better = (order[r["tmatch"]], float(r["tscore"])) > (order.get(entry["tmatch"], 0), float(entry["tscore"]))
         if better:
             entry.update(tmatch=r["tmatch"], tscore=float(r["tscore"]), row=r)
+    if keep_order:  # Already fused (fuse_ranks): the order stands, strength by place.
+        ranked = list(pool.values())
+        top = max((float(e["row"].get("fused") or 0.0) for e in ranked), default=0.0)
+        for e in ranked:
+            share = float(e["row"].get("fused") or 0.0) / top if top > 0 else 0.0
+            e["match"] = e["tmatch"] or "meaning"
+            e["strength"] = "strong" if share >= STRONG else ("medium" if share >= WEAK else "weak")
+        return ranked
     ranked = sorted(pool.values(), key=lambda e: (-_rank(e), -e["row"]["id"]))
     top = _rank(ranked[0]) if ranked else 0.0
     for e in ranked:
@@ -293,13 +325,16 @@ def _in_space(rows: list[dict], space) -> list[dict]:
 
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
                       vector_space: str = "all", kind: str = "all", vector: str | None = None,
-                      vector_space_of_query: str | None = None) -> dict:
+                      vector_space_of_query: str | None = None, vectors: list[str] | None = None,
+                      mode: str = "together") -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
     (meaning, text, similar: what the words did; `score` says the meaning), `score`, `strength` (strong, medium,
     weak: next to the best result), `best_part` (the piece that matched best, its place and time) and
-    `matched_parts`. `vector` (with its space): a query vector already made (a search by file)."""
+    `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
+    mode "each": several inputs ranked one by one and fused (fuse_ranks); the cards' scores are each part's best
+    score against any input. ("together" is the caller's one combined vector in `vector`.)"""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
@@ -321,7 +356,18 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         if searching:
             searchable = vector is not None and vector_space in ("all", space)
             meaning = []
-            if searchable:
+            if searchable and vectors and len(vectors) > 1 and mode == "each":
+                lists = []
+                for one in vectors:
+                    params = [user_id, space, one]
+                    extra = _filters("all", kind, params)
+                    lists.append([dict(r) for r in await conn.fetch(
+                        f"select * from (select distinct on ({GROUP_KEY}) {_ROW}, 1 - (embedding <=> $3::vector) "
+                        f"as score from orion_memory where user_id = $1 and vector_space = $2{extra} "
+                        f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
+                        f"limit {EACH_POOL}", *params)])
+                meaning = fuse_ranks(lists)
+            elif searchable:
                 params = [user_id, space, vector]
                 extra = _filters("all", kind, params)
                 meaning = [dict(r) for r in await conn.fetch(
@@ -331,13 +377,17 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                     f"limit {offset + limit + 1}", *params)]
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q else []
-            ranked = merge_matches(meaning, texts)
+            ranked = merge_matches(meaning, texts, keep_order=bool(vectors and len(vectors) > 1 and mode == "each"))
             more = len(ranked) > offset + limit
             picked = ranked[offset:offset + limit]
             search = {e["group"]: e for e in picked}
             groups = [e["group"] for e in picked]
             matching = len(ranked)
-            if searchable:
+            if searchable and vectors and len(vectors) > 1 and mode == "each":
+                for one in vectors:
+                    for rid, value in (await _scores(conn, user_id, groups, space, one)).items():
+                        scores[rid] = max(scores.get(rid, -1.0), value)
+            elif searchable:
                 scores = await _scores(conn, user_id, groups, space, vector)
         else:
             params = [user_id]
@@ -579,7 +629,8 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
         item = card(g, rows, space, active)
         thumb = next((p["id"] for p in item["parts"] if p["kind"] == "image" and p.get("media")), None)
         nodes.append({"group_id": g, "kind": item["kind"], "counts": item["counts"], "label": _label(item)[:80],
-                      "thumb": thumb, "created_at": item["created_at"], "part_count": item["part_count"]})
+                      "thumb": thumb, "created_at": item["created_at"], "part_count": item["part_count"],
+                      "source_kind": item["source_kind"]})
     pairs: dict[tuple[str, str], float] = {}
     for e in edges:
         key = (min(e["a"], e["b"]), max(e["a"], e["b"]))

@@ -70,6 +70,9 @@ class Conn:
             return 100 + len(self.rows)
         return None
 
+    async def fetchrow(self, sql, *args):
+        return None
+
     async def execute(self, sql, *args):
         pass
 
@@ -318,3 +321,49 @@ def test_the_catalog_says_what_each_extra_file_takes(monkeypatch):
     assert gemma['image'] and gemma['audio'] and gemma['model'] == 'EmbeddingGemma 2'
     off = local_parts.embedding_media({'embedding': {'model': 'embeddinggemma-2'}}, hw)  # Off by default.
     assert off['has_extra'] and not off['extra_on'] and not off['image'] and not off['audio']
+
+
+class ReuseConn(Conn):
+    """A file already stored in another memory: its rows are copied, never embedded again."""
+    def __init__(self, in_group=False):
+        super().__init__()
+        self.in_group = in_group
+
+    async def fetchval(self, sql, *args):
+        if 'group_id = $2' in sql and 'media_id = $3' in sql:
+            return 1 if self.in_group else None
+        if 'select item_id' in sql:
+            return 'old-item'
+        return await super().fetchval(sql, *args)
+
+    async def fetch(self, sql, *args):
+        if 'item_id = $3' in sql:
+            return [{'text': 'kedi.jpg', 'embedding': '[0.1,0.2]', 'kind': 'image', 'media_mime': 'image/png',
+                     'media_seconds': None, 'whole': False, 'span_start': None, 'span_end': None, 'track': None}]
+        return []
+
+
+def test_a_file_already_in_another_memory_is_added_with_its_vector_and_one_media_copy(monkeypatch):
+    conn = ReuseConn()
+    embedded = wire(monkeypatch, conn, GEMMA)
+
+    async def join(conn, user_id, group):
+        return group or 'new-group'
+    monkeypatch.setattr(memory, 'join_group', join)
+    result = asyncio.run(memory.add_file('u1', 'kedi.png', 'image/png', b'png', SimpleNamespace(), group='g2',
+                                         caption='yeni'))
+    assert result['added'] == 1 and result['warnings'] == [] and embedded == []
+    row = conn.rows[0]
+    assert row[3] == '[0.1,0.2]' and row[10] == 'g2' and row[13] != 'old-item' and row[18] == 'yeni'
+    assert conn.links and conn.links[0][1] == 'memory'
+
+
+def test_the_same_file_twice_in_one_memory_is_skipped(monkeypatch):
+    conn = ReuseConn(in_group=True)
+    wire(monkeypatch, conn, GEMMA)
+
+    async def join(conn, user_id, group):
+        return group
+    monkeypatch.setattr(memory, 'join_group', join)
+    result = asyncio.run(memory.add_file('u1', 'kedi.png', 'image/png', b'png', SimpleNamespace(), group='g2'))
+    assert result['added'] == 0 and result['warnings'] == ['Bu dosya bu hafızada zaten var.'] and not conn.rows

@@ -461,18 +461,54 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
     return stored
 
 
+async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, name: str, caption: str,
+                     source_kind: str = "file", chat_id: str | None = None) -> int:
+    """The same file already in another of this user's memories (in this vector space): its rows (vectors, video
+    tracks, whole vectors) copied into `group` as a new item, nothing embedded again, the one media copy linked.
+    Returns rows copied, 0 when no memory has it (or a video is still being embedded)."""
+    from orion.kernel.media_store import link_media
+    source = await conn.fetchval(
+        "select item_id from orion_memory where user_id = $1 and vector_space = $2 and media_id = $3 "
+        "and item_id is not null order by id limit 1", user_id, space, media_id)
+    if not source:
+        return 0
+    rows = await conn.fetch(
+        "select text, embedding::text as embedding, kind, media_mime, media_seconds, whole, span_start, span_end, "
+        "track from orion_memory where user_id = $1 and vector_space = $2 and item_id = $3 and media_id = $4 "
+        "order by id", user_id, space, source, media_id)
+    item_id, order = new_group(), item_order()
+    for row in rows:
+        row_id = await conn.fetchval(
+            ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
+            row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
+            row["span_end"], row["track"], caption or None, order)
+        await link_media(media_id, "memory", str(row_id), conn=conn)
+    return len(rows)
+
+
 async def text_item_pieces(conn, user_id: str, space: str, text: str, target, local: bool,
-                           skip_known: bool = True) -> tuple[list[dict], int]:
-    """The pieces of a text (memory_pieces.text_pieces: each core embedded with its window); cores this user
-    already has in the space are left out. Returns (new pieces, cores left out)."""
+                           skip_known: bool = True, group: str | None = None) -> tuple[list[dict], int]:
+    """The pieces of a text (memory_pieces.text_pieces: each core embedded with its window). A core already in
+    the memory `group` is left out; one this user has in another memory takes that row's vector (not embedded
+    again, the text relates the two memories). Returns (pieces, cores left out)."""
+    import json
     from orion.kernel.memory_pieces import text_pieces
     pieces, known = [], 0
     for core, window in text_pieces(text):
-        if skip_known and await conn.fetchval(
-                "select 1 from orion_memory where user_id = $1 and vector_space = $2 and text = $3 "
-                "and media_id is null and not whole limit 1", user_id, space, core):
-            known += 1
-            continue
+        if skip_known:
+            row = await conn.fetchrow(
+                "select group_id, embedding::text as embedding from orion_memory where user_id = $1 "
+                "and vector_space = $2 and text = $3 and media_id is null and not whole "
+                "order by (group_id = $4) desc nulls last limit 1", user_id, space, core, group or "")
+            if row and group and row["group_id"] == group:
+                known += 1
+                continue
+            if row and group:
+                pieces.append({"text": core, "vector": json.loads(row["embedding"])})
+                continue
+            if row:
+                known += 1
+                continue
         for vector in await _embed(window, target, "document", local):
             pieces.append({"text": core, "vector": vector})
             break  # A window longer than the context is cut by embed_text; its first part stands for it.
@@ -494,8 +530,14 @@ async def _save_media(conn, user_id, chat_id, title, items, space, target, suppo
             warnings.append(skip_warning(kind, len(wanted), support))
             continue
         for item in wanted:
-            if await conn.fetchval("select 1 from orion_memory where user_id = $1 and vector_space = $2 "
-                                   "and media_id = $3 limit 1", user_id, space, item["media_id"]):
+            if await conn.fetchval("select 1 from orion_memory where user_id = $1 and group_id = $2 "
+                                   "and media_id = $3 limit 1", user_id, group, item["media_id"]):
+                continue
+            async with conn.transaction():
+                reused = await reuse_item(conn, user_id, space, group, item["media_id"], title,
+                                          item["text"] or "", "chat_save", chat_id)
+            if reused:
+                saved += reused
                 continue
             meta = {**item, "source_kind": "chat_save", "title": title, "chat_id": chat_id, "caption": item["text"],
                     "item_id": new_group(), "order": item_order()}
@@ -534,7 +576,7 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
         group = new_group()
         saved = 0
         if text.strip():
-            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local)
+            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
             if pieces:
                 for piece in pieces:
                     piece["message_id"] = chunk_anchor(piece["text"], paragraphs)
@@ -575,7 +617,7 @@ async def add_note_to(user_id: str, text: str, settings, source_kind: str = "man
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
         group = await join_group(conn, user_id, group)
-        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local)
+        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
         added = 0
         if pieces:
             async with conn.transaction():
@@ -647,21 +689,25 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
         target, space, local = await embedding_target(settings)
         group = await join_group(conn, user_id, group)
         if kind == "text":
-            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local)
+            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
             added = 0
             if pieces:
                 async with conn.transaction():
                     added = await insert_item(conn, user_id, space, group, {
                         "kind": "text", "source_kind": "file", "title": name, "caption": caption}, pieces)
-            return {"added": added, "group_id": group, "warnings": [] if added else ["Bu metin hafızada zaten var."]}
+            return {"added": added, "group_id": group, "warnings": [] if added else ["Bu metin bu hafızada zaten var."]}
         support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
         if not support[kind]:
             raise ValueError(file_refusal(kind, support))
         mime = mime.lower()
         media_id = hashlib.sha256(raw).hexdigest()
-        if await conn.fetchval("select 1 from orion_memory where user_id = $1 and vector_space = $2 "
-                               "and media_id = $3 limit 1", user_id, space, media_id):
-            return {"added": 0, "group_id": group, "warnings": ["Bu dosya hafızada zaten var."]}
+        if await conn.fetchval("select 1 from orion_memory where user_id = $1 and group_id = $2 "
+                               "and media_id = $3 limit 1", user_id, group, media_id):
+            return {"added": 0, "group_id": group, "warnings": ["Bu dosya bu hafızada zaten var."]}
+        async with conn.transaction():
+            reused = await reuse_item(conn, user_id, space, group, media_id, name, caption)
+        if reused:
+            return {"added": reused, "group_id": group, "warnings": [], "reused": True}
         item = {"kind": kind, "media_id": media_id, "mime": mime, "name": name, "text": caption, "caption": caption,
                 "source_kind": "file", "title": name, "item_id": new_group(), "order": item_order()}
         if kind == "video":

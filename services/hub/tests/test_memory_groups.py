@@ -449,3 +449,18 @@ def test_local_time_shows_the_pcs_clock_and_offset():
     offset = local.strftime('%z')
     assert memory.local_time(stamp) == f"{local:%Y-%m-%d %H:%M} (UTC{offset[:3]}:{offset[3:]})"
     assert memory.local_time(None) is None
+
+
+def test_fuse_ranks_puts_a_memory_close_to_every_input_first_and_keeps_its_best_score():
+    from orion.kernel import memory_groups as mg
+    row = lambda i, g, s: {'id': i, 'group_id': g, 'score': s}
+    image = [row(1, 'a', 0.40), row(2, 'b', 0.35), row(3, 'c', 0.30)]
+    text = [row(4, 'c', 0.80), row(5, 'd', 0.70), row(6, 'b', 0.60)]
+    fused = mg.fuse_ranks([image, text])
+    assert [r['group_id'] for r in fused][:2] in (['b', 'c'], ['c', 'b'])
+    assert {r['group_id'] for r in fused} == {'a', 'b', 'c', 'd'}
+    c = next(r for r in fused if r['group_id'] == 'c')
+    assert c['score'] == 0.80 and c['id'] == 4
+    ranked = mg.merge_matches(fused, [], keep_order=True)
+    assert [e['group'] for e in ranked] == [r['group_id'] for r in fused]
+    assert ranked[0]['strength'] == 'strong'
