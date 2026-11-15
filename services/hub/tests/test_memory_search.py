@@ -260,6 +260,27 @@ class MemorySearchTests(PostgresMemoryCase):
             return await memory_tools.hafizadaki_medyayi_ac(memory_tools.MemoryOpenInput(idler=ids),
                                                             ToolContext('alice', 'chat', 't', None))
 
+    async def test_a_file_opened_earlier_in_the_chat_is_not_attached_again(self):
+        row, media_id, raw = await self.stored_image()
+        history = [{'role': 'user', 'content': 'kalbe bak'},
+                   {'role': 'tool', 'tool_call_id': 'c0', 'content': '{}',
+                    'media_refs': [{'memory_id': row, 'media_id': media_id, 'kind': 'image'}]},
+                   {'role': 'assistant', 'content': 'Kırmızı.'},
+                   {'role': 'user', 'content': 'bak tekrar'}]
+        with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
+            result = await self.open_tool([row])
+        self.assertNotIn('_medya', result)
+        self.assertEqual(result['zaten_acik'][0]['mesaj'], 1)
+        self.assertTrue(result['_ekler'][0]['already'])
+        self.assertEqual(memory.opened_in_chat(history), {media_id: 1})
+        # The same bytes under another memory row: not attached either. Gone from the history: attached again.
+        other = await self.add('kopya', kind='image', media_id=media_id)
+        with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
+            self.assertIn('zaten_acik', await self.open_tool([other]))
+        with patch.object(memory, '_chat_messages', AsyncMock(return_value=([history[0]], [1]))):
+            fresh = await self.open_tool([row])
+        self.assertEqual(fresh['_medya'][0]['media_id'], media_id)
+
     async def test_opening_media_links_the_file_to_the_chat_and_the_history_keeps_showing_it(self):
         row, media_id, raw = await self.stored_image()
         voice = await self.add('Ses kaydı 0:05', kind='audio', media_id='b' * 64)
