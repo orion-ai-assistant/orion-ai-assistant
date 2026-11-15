@@ -9,8 +9,9 @@ counted once), so a question about the item as a whole finds it even when no sin
 Measured with llama.cpp b12378 (docs/bilesenler.md, "Video ve uzun kayıtlar"): a video frame of at most 448 px
 costs EmbeddingGemma 2 ~79 tokens and Jina v5 ~277; several images in one request give one vector close to the
 mean of the single ones (cos 0.94-0.99); audio is 25 tokens/s (Gemma; Jina takes no audio); frames and audio in one
-request give a vector that is mostly the frames (cos 0.98 to the frames alone, 0.73 to the audio alone), so a video
-segment's sound gets its own vector. No ffmpeg on an Orion PC: llama.cpp's own video input fails ("Failed to load
+request give one vector that is mostly the frames (cos 0.98 to the frames alone, 0.73 to the audio alone), so a video
+segment gets three vectors: its frames, its sound, and both together (the combined one, as many frames as fit beside
+the sound). No ffmpeg on an Orion PC: llama.cpp's own video input fails ("Failed to load
 image or audio file"), so the Hub decodes video itself with PyAV."""
 from __future__ import annotations
 
@@ -82,6 +83,16 @@ def frames_per_window(context_tokens: int | None, frame_tokens: int | None, wind
     cost = frame_tokens or FALLBACK_FRAME_TOKENS
     fit = (int(context_tokens or 2048) - TOKEN_MARGIN) // max(1, int(cost))
     return max(1, min(int(window * VIDEO_MAX_FPS), fit))
+
+
+def combined_frames(context_tokens: int | None, frame_tokens: int | None, audio_seconds: float,
+                    window: float = VIDEO_WINDOW) -> int:
+    """Frames that fit one request together with `audio_seconds` of sound (25 tokens/s): the segment's combined
+    (frames + sound) vector. 0 when not even one frame fits."""
+    room = int(context_tokens or 2048) - int(math.ceil(audio_seconds * AUDIO_TOKENS_PER_SECOND))
+    if room - TOKEN_MARGIN < int(frame_tokens or FALLBACK_FRAME_TOKENS):
+        return 0
+    return frames_per_window(room, frame_tokens, window)
 
 
 def frame_times(total: float, step: float) -> list[float]:

@@ -78,6 +78,12 @@ def test_the_window_and_frame_count_follow_the_context_and_the_measured_frame_co
     assert mp.frames_per_window(256, 277) == 1
 
 
+def test_frames_beside_the_sound_fit_the_context():
+    assert mp.combined_frames(2048, 79, 30) == 15  # 2048 - 750 sound - 64 margin = 1234 -> 15 frames.
+    assert mp.combined_frames(2048, 277, 30) == 4
+    assert mp.combined_frames(1024, 277, 30) == 0  # Not one frame beside 30 s of sound.
+
+
 def test_the_whole_vector_is_the_normalized_mean_of_the_unit_pieces():
     whole = mp.mean_vector([[3.0, 0.0], [0.0, 1.0]])
     assert whole == pytest.approx([math.sqrt(0.5), math.sqrt(0.5)])
@@ -197,16 +203,23 @@ class MemoryPiecesTests(PostgresMemoryCase):
         sound = [r for r in rows if r['track'] == 'audio' and not r['whole']]
         self.assertEqual([(r['span_start'], r['span_end']) for r in frames], [(0, 20), (20, 40), (40, 60), (60, 70)])
         self.assertEqual(len(sound), 4)
+        together = [r for r in rows if r['track'] == 'both' and not r['whole']]
+        self.assertEqual([(r['span_start'], r['span_end']) for r in together], [(0, 20), (20, 40), (40, 60), (60, 70)])
+        self.assertEqual(together[1]['text'], 'Video 1:10 (tatil.mp4) 0:20–0:40 görüntü+ses — denizde')
         self.assertEqual(sorted((r['track'], r['whole']) for r in rows if r['whole']),
-                         [('audio', True), ('frames', True)])
+                         [('audio', True), ('both', True), ('frames', True)])
         self.assertEqual({r['kind'] for r in rows}, {'video'})
         self.assertEqual(len({r['item_id'] for r in rows}), 1)
         self.assertEqual(frames[1]['text'], 'Video 1:10 (tatil.mp4) 0:20–0:40 görüntü — denizde')
         self.assertEqual(frames[1]['caption'], 'denizde')
         # 30 s windows at 2 fps hold <= 25 frames at Gemma's cost: one request per segment, 20-25 frames.
-        frame_requests = [r for r in self.requests if r[0] == 'image_url']
+        frame_requests = [r for r in self.requests if r[0] == 'image_url' and 'input_audio' not in r]
         self.assertEqual(len(frame_requests), 4)
         self.assertTrue(all(len(r) <= 25 for r in frame_requests) and len(frame_requests[1]) >= 20)
+        # Frames and 30 s of sound (750 tokens) in one request: as many frames as fit beside it, 15 at Gemma's cost.
+        combined = [r for r in self.requests if 'input_audio' in r and r[0] == 'image_url']
+        self.assertEqual([len(r) for r in combined], [16] * 4)
+        self.assertEqual(combined[0][-1], 'input_audio')
         conn = await registry._connect()
         try:  # The job's own link to the file is gone; each row keeps it.
             links = await conn.fetch('select owner_id from orion_media_links')
@@ -216,13 +229,28 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.assertEqual(len(links), len(rows))
         page = await memory_groups.list_groups('alice', self.settings)
         card = page['groups'][0]
-        self.assertEqual((card['counts'], card['part_count'], card['kind']), ({'video': 1}, 8, 'video'))
+        self.assertEqual((card['counts'], card['part_count'], card['kind']), ({'video': 1}, 12, 'video'))
         self.assertEqual([p['id'] for p in card['parts']], [frames[0]['id']])  # One preview: its first segment.
         detail = await memory_groups.group_detail('alice', card['group_id'], self.settings)
-        self.assertEqual(len(detail['parts']), 8)
+        self.assertEqual(len(detail['parts']), 12)
         self.assertEqual((detail['parts'][0]['piece'], detail['parts'][0]['pieces'], detail['parts'][0]['track']),
                          (1, 4, 'frames'))
         self.assertEqual(page['summary']['per_kind'], {'video': 1})
+
+    async def test_a_model_that_refuses_frames_and_sound_together_keeps_both_alone(self):
+        self.patches()
+        alone = memory._embed_media
+
+        async def picky(parts, target):
+            if len({p['type'] for p in parts}) > 1:
+                raise RuntimeError('500 mixed input')
+            return await alone(parts, target)
+        with patch.object(memory, '_embed_media', picky):
+            await memory.add_file('alice', 'v.mp4', 'video/mp4', clip(70, fps=2), self.settings)
+            await self.finish_jobs()
+        rows = await self.rows()
+        self.assertEqual({r['track'] for r in rows}, {'frames', 'audio'})
+        self.assertEqual((await memory_media_jobs.jobs('alice'))[0]['state'], 'done')
 
     async def test_a_video_too_long_or_not_a_video_is_refused(self):
         self.patches()

@@ -814,7 +814,11 @@ Sonuçlar:
 - Birkaç kare tek istekte tek vektör verir ve bu vektör karelerin ortalamasına çok yakındır: bir video parçası için **tek
   istek** yeter (her kare için ayrı istekten ucuz).
 - Ses ve kareler aynı istekte olunca vektör karelerin; bu yüzden bir video parçasının sesi **ayrı vektör** alır
-  (model sesi alıyorsa).
+  (model sesi alıyorsa). Kullanıcı isteğiyle bölüm başına **üç vektör** tutulur: görüntü, ses ve ikisi **birlikte**
+  (tek istek; sesin yanına sığan kadar kare). Gemma'da 2048 bağlamda ölçüldü: 15 kare (448 px) + 30 sn ses = 1946 token,
+  0,6 sn, tek vektör; 16 kare 2130 token → 500. Birleşik vektör karelerin vektörüne cos 0,995, sesinkine 0,662: aramada
+  çoğunlukla görüntüyle aynı yere düşer, ses ağırlığı küçüktür. Jina ses almadığı için onda birleşik iz yok; model
+  birleşik isteği reddederse iş görüntü + ses ile devam eder.
 - llama.cpp'nin kendi video yolu ffmpeg ister (PATH'te yok) → Hub videoyu kendisi PyAV ile çözer (zaten bağımlılık).
 - Bağlam artırılmadı: Orion embedding sunucusunu 2048 ile açar; Gemma'da 4096 +379 MB, Jina'da +133 MB VRAM ister ve
   sunucuyu yeniden başlatmak gerekirdi. Bunun yerine **parça penceresi sabit, kare sayısı bağlama göre**: bir pencerede
@@ -831,8 +835,8 @@ Sonuçlar:
   - Ses: pencere bağlamın aldığı kadar (25 token/sn, en çok 60 sn: 40 sn çekirdek + 10'ar sn bağlam).
   - Video: 30 sn pencere (20 sn çekirdek + 5'er sn); kareler en çok 448 px JPEG (daha küçüğü daha az token tutmuyor), tek
     ızgarada saniyede bir alınır (en çok 1800 kare; daha uzun video seyrek örneklenir), her pencere kendi aralığından eşit
-    aralıklı seçer. Parça başına bir **görüntü** vektörü (`track` 'frames') ve model sesi alıyorsa bir **ses** vektörü
-    (`track` 'audio').
+    aralıklı seçer. Parça başına bir **görüntü** vektörü (`track` 'frames') ve model sesi alıyorsa bir **ses**
+    (`track` 'audio') ve bir **birlikte** vektörü (`track` 'both': `combined_frames` kadar kare + pencerenin sesi).
 - Birden çok parçalı her öğe (ve videoda her iz) bir **tamamı** vektörü de alır (`whole` = true): parça vektörlerinin
   normalize ortalaması (her çekirdek bir kez sayılır). Bir parça silinince tamamı kalanların ortalamasına güncellenir, tek
   parça kalınca kalkar (`memory.refresh_wholes`). Tamamı vektörü parça değildir: sayfada/araçta parça olarak görünmez,
@@ -864,7 +868,8 @@ Sonuçlar:
 
 ### Araçlar
 
-- `hafizada_ara`: sonuç `parca` ("3/5"), `zaman` ("1:20–1:40"), `iz` (görüntü/ses), tamamı eşleşip en iyi parçası
+- `hafizada_ara`: sonuç `parca` ("3/5"), `zaman` ("1:20–1:40"), `iz` (görüntü/ses/birlikte; sayfa da kartta ve
+  ayrıntıda hangi izin eşleştiğini yazar), tamamı eşleşip en iyi parçası
   gösterilince `eslesme_notu`; `tur` artık `video` da alır.
 - `hafiza_baglami(komsu=1-5)`: yalnız o parça ve önceki/sonraki N parça (aynı öğe ve iz önce); 0 = hafızanın tamamı.
 - `hafizadaki_medyayi_ac`: video satırı birkaç kare (parçada 4, tamamında 6; 640 px) + parçanın sesi (sohbet modeli

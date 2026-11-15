@@ -9,7 +9,8 @@ whose heartbeat is older than STALE lost its process and shows as interrupted (r
 
 Per segment (memory_pieces: 30 s windows around 20 s cores) one request with the window's frames (as many as the
 context takes at the measured cost of one frame: one probe request) and, when the model hears, one with the
-window's sound. Both tracks get a whole-video vector."""
+window's sound, and one with both together (frames that fit beside the sound): three tracks ('frames', 'audio',
+'both'), each with its whole-video vector. A model that refuses the combined request keeps the other two."""
 from __future__ import annotations
 
 import asyncio
@@ -155,6 +156,7 @@ async def run(job_id: str, user_id: str, group: str, item: dict, raw: bytes, inf
         hear = bool(support.get("audio")) and len(decoded["pcm"]) >= mp.SAMPLE_RATE // 5
         cost = await frame_cost(decoded["frames"][0], target)
         count = mp.frames_per_window(memory.embedding_context(), cost)
+        both = mp.combined_frames(memory.embedding_context(), cost, mp.VIDEO_WINDOW) if hear else 0
         await conn.execute("update orion_memory_media_jobs set total = $2, updated_at = now() where id = $1",
                            job_id, len(segments))
         name = memory.media_name(item)
@@ -172,6 +174,20 @@ async def run(job_id: str, user_id: str, group: str, item: dict, raw: bytes, inf
                 pieces.append({"text": f"{base} {times} ses".replace("  ", " ") + tail,
                                "vector": await memory._embed_media([audio_part(wav, "wav")], target),
                                "span_start": span.start, "span_end": span.end, "track": "audio", "seconds": seconds})
+            if both:
+                try:
+                    together = [image_part(f, "image/jpeg") for f in
+                                mp.window_frames(decoded["times"], decoded["frames"], span, both)]
+                    pieces.append({"text": f"{base} {times} görüntü+ses".replace("  ", " ") + tail,
+                                   "vector": await memory._embed_media(together + [audio_part(wav, "wav")], target),
+                                   "span_start": span.start, "span_end": span.end, "track": "both",
+                                   "seconds": seconds})
+                except memory.MemoryUnavailable:
+                    raise
+                except Exception as exc:  # The model takes each alone but not both in one request: keep the two.
+                    logger.info("Memory video %s: no combined vector (%s)", job_id, exc)
+                    both = 0
+                    pieces = [p for p in pieces if p.get("track") != "both"]
             cancelled = await conn.fetchval("update orion_memory_media_jobs set done = $2, updated_at = now() "
                                             "where id = $1 returning cancel", job_id, index + 1)
             if cancelled:

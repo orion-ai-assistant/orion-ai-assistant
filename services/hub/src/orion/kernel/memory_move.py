@@ -161,6 +161,17 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
     for r in rows:
         start, end = _window(r, mp.VIDEO_WINDOW, total)
         span = mp.Span(float(r["span_start"]), float(r["span_end"]), start, end)
+        if r.get("track") == "both":
+            from orion.kernel.memory_media_jobs import frame_cost
+            pcm = mp.pcm_slice(decoded["pcm"], start, end)
+            fit = mp.combined_frames(context, await frame_cost(decoded["frames"][0], target), end - start)
+            if not fit or len(pcm) < mp.SAMPLE_RATE // 5:
+                vectors.append(None)
+                continue
+            frames = mp.window_frames(decoded["times"], decoded["frames"], span, fit)
+            vectors.append(await memory._embed_media([image_part(f, "image/jpeg") for f in frames]
+                                                     + [audio_part(mp.wav_bytes(pcm), "wav")], target))
+            continue
         if r.get("track") == "audio":
             pcm = mp.pcm_slice(decoded["pcm"], start, end)
             vectors.append(await memory._embed_media([audio_part(mp.wav_bytes(pcm), "wav")], target)

@@ -6,7 +6,7 @@ from .._base import ToolContext, ToolInput
 
 KINDS = {"hepsi": "all", "metin": "text", "görsel": "image", "ses": "audio", "video": "video"}
 KIND_LABELS = {"image": "görsel", "audio": "ses kaydı", "video": "video"}
-TRACKS = {"frames": "görüntü", "audio": "ses"}
+TRACKS = {"frames": "görüntü", "audio": "ses", "both": "birlikte"}
 MATCH_LABELS = {"meaning": "anlam", "both": "anlam+metin", "text": "metin", "similar": "benzer yazım"}
 GROUP_NOTE = ("'birlikte_kaydedilenler' aynı anda kaydedilen diğer parçalardır (ör. bir görselin yanındaki konuşma); "
               "'ayni_kayittan' o id'li sonuçla birlikte kaydedildiğini söyler; 'parca' uzun bir metnin, sesin ya da "
