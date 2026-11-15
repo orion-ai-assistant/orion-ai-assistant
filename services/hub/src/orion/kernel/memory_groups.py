@@ -106,6 +106,8 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part["track"] = r["track"]
     if r.get("caption"):
         part["caption"] = r["caption"]
+    if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.
+        part["created_at"] = r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
     if position and position[1] > 1:
         part.update(piece=position[0], pieces=position[1])
     if spaces is not None:
