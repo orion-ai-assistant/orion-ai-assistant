@@ -293,8 +293,9 @@ class MemorySearchTests(PostgresMemoryCase):
         projected = model_history(history, 40)
         self.assertEqual([m['role'] for m in projected], ['user', 'assistant', 'tool', 'user', 'assistant'])
         hydrated = await media_store.hydrate_model_media('chat', projected)
-        self.assertIn(f'<file_content>\n{story}\n</file_content>', json.dumps(hydrated[3], ensure_ascii=False)
-                      .encode().decode('unicode_escape').encode('latin-1').decode('utf-8'))
+        # Written exactly as a user's text attachment: the Router's log lists it by this header.
+        self.assertIn({'type': 'text', 'text': f'Ek 1 — Metin dosyası: hikaye.txt\n<file_content>\n{story}\n'
+                       '</file_content>'}, hydrated[3]['content'])
         with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
             again = await self.open_tool([row])
         self.assertEqual(again['already_open'][0]['message'], 1)

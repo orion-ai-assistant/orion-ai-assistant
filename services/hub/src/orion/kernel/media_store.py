@@ -383,8 +383,12 @@ async def hydrate_model_media(chat_id, messages):
                     if item.get('mime_type', '').startswith('text/'):
                         # A text document (a memory file opened by a tool): as a user's text attachment reaches it.
                         raw = base64.b64decode(item['data'].split(',', 1)[1])
-                        part = {'type': 'text', 'text': '<file_content>\n' + raw.decode('utf-8', 'replace')
-                                + '\n</file_content>'}
+                        # Exactly a user's text attachment part, so the Router's log lists it by name.
+                        attachment = part['attachment']
+                        name = ' '.join(str(attachment.get('name') or 'Dosya').splitlines())
+                        part = {'type': 'text', 'text': (
+                            f"Ek {attachment.get('index') or 1} — Metin dosyası: {name}\n"
+                            f"<file_content>\n{raw.decode('utf-8', 'replace')}\n</file_content>")}
                     else:
                         part = media_part(item['data'])
                 parts.append(part)

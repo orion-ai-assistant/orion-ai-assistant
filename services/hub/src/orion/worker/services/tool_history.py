@@ -138,8 +138,17 @@ def media_message(refs):
     same, so the prompt cache holds; the files are references, hydrated per request."""
     parts = [{"type": "text", "text": "Files opened from memory (the user did not write this; it is what "
                                       "open_memory_files opened):"}]
+    documents = 0
     for ref in refs:
-        label = {"image": "Image", "audio": "Audio", "document": "Text document"}.get(ref.get("kind"), "File")
+        if ref.get("kind") == "document":
+            # One part, exactly as a user's text attachment is written ("Ek N — Metin dosyası: name" and its
+            # <file_content>), so the Router's log lists it by name: hydrate_model_media writes it.
+            documents += 1
+            parts.append({"type": "hub_media", "attachment": {
+                "media_id": ref["media_id"], "mime_type": ref.get("mime_type"), "memory_id": ref.get("memory_id"),
+                "name": ref.get("label") or "", "index": documents}})
+            continue
+        label = {"image": "Image", "audio": "Audio"}.get(ref.get("kind"), "File")
         parts.append({"type": "text", "text": f"Memory {ref.get('memory_id')} — {label}: {ref.get('label') or ''}"})
         parts.append({"type": "hub_media", "attachment": {
             "media_id": ref["media_id"], "mime_type": ref.get("mime_type"), "memory_id": ref.get("memory_id")}})
