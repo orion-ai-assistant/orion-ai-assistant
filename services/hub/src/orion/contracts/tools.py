@@ -42,4 +42,4 @@ def default_tool_selection() -> ToolSelection:
     return ToolSelection(categories={"datetime": True, "memory": True},
                          functions={"get_current_time": True, "hafizada_ara": True,
                                     "hafizaya_ekle": True, "hafizadan_sil": True,
-                                    "hafizadaki_medyayi_ac": True})
+                                    "hafizadaki_medyayi_ac": True, "hafiza_baglami": True})

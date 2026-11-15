@@ -36,9 +36,18 @@ class ToolRegistry:
             raise ValueError(f"Unknown tools/categories: {', '.join(sorted(unknown))}")
         return selection
 
+    def complete(self, selection: ToolSelection) -> ToolSelection:
+        """The selection with the default-on tools it never mentions filled in as on, so the tools page shows
+        what `enabled` uses (a tool added after the selection was saved comes on with its group)."""
+        missing = {tool.id: True for tool in self.tools.values()
+                   if tool.default_on and tool.id not in selection.functions}
+        if not missing:
+            return selection
+        return ToolSelection(categories=dict(selection.categories), functions={**selection.functions, **missing})
+
     def enabled(self, selection: ToolSelection) -> list[str]:
         enabled = [tool.id for cat in self.categories.values() if selection.categories.get(cat.id, False)
-                   for tool in cat.tools if selection.functions.get(tool.id, False)]
+                   for tool in cat.tools if selection.functions.get(tool.id, tool.default_on)]
         if set(enabled) & {'youtube_control', 'ytmusic_control'}:
             enabled = [name for name in enabled if name not in ('youtube_control', 'ytmusic_control')]
             if 'media_control' not in enabled:

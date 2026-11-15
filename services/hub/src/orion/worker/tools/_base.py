@@ -27,6 +27,9 @@ class Tool:
     handler: Callable[[Any, ToolContext], Awaitable[Any]]
     timeout_seconds: float = 30
     requires_browser: bool = False
+    # On in a selection that never mentions it (one saved before the tool existed) while its group is on; a user
+    # who unchecked it has it saved as false. Only for tools that touch nothing but what the user chose to keep.
+    default_on: bool = False
 
     def schema(self) -> dict:
         return {"type": "function", "function": {

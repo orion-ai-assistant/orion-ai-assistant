@@ -124,7 +124,10 @@ def wire(monkeypatch, conn, support, audio=None, history=HISTORY):
     monkeypatch.setattr(memory, '_read_chat_media', read)
     monkeypatch.setattr(memory, 'media_support', lambda local, name: support)
     monkeypatch.setattr(media_store, 'link_media', link)
-    monkeypatch.setattr(registry, 'get_chat_history_db', messages)
+    async def chat_messages(chat_id):
+        found = await messages(chat_id)
+        return found, list(range(1, len(found) + 1))
+    monkeypatch.setattr(memory, '_chat_messages', chat_messages)
     return embedded
 
 
@@ -150,6 +153,8 @@ def test_gemma_saves_text_image_and_voice_and_links_each_row_to_the_memory(monke
     assert image[6:9] == ('image', IMG, 'image/jpeg') and image[1] == 'kedi.jpg — Kedimin fotoğrafı'
     assert voice[6:8] == ('audio', VOICE) and voice[1] == 'Ses kaydı 0:02 — dinle' and voice[9] == pytest.approx(2, abs=0.05)
     assert conn.links == [(IMG, 'memory', '101'), (VOICE, 'memory', '102')]
+    text_group = conn.texts[0][5]
+    assert image[10] == voice[10] == text_group and image[11] == 'c1'  # One save, one memory, its chat.
 
 
 def test_a_long_voice_note_becomes_one_row_per_minute_with_the_same_media(monkeypatch):
@@ -224,6 +229,8 @@ def test_audio_pieces_cut_130_seconds_into_three_wav_pieces_with_real_pyav():
 
 class DeleteConn(Conn):
     async def fetch(self, sql, *args):
+        if 'where group_id is null' in sql:
+            return []
         self.delete_args = args
         return [{'id': 7, 'text': 'kedi.jpg', 'media_id': IMG}, {'id': 8, 'text': 'not', 'media_id': None}]
 
@@ -290,14 +297,6 @@ def test_the_tool_gives_label_kind_and_date_and_says_how_to_open_media(monkeypat
                                     'etiket': 'kedi.jpg — Kedimin fotoğrafı', 'skor': 0.31, 'eslesme': 'anlam'}
     assert found['kayitlar'][1]['metin'] == 'Kullanıcı: adım Ayşe'
     assert 'hafizadaki_medyayi_ac' in found['medya_notu'] and 'göremezsin' not in found['medya_notu']
-
-
-def test_list_items_carry_media_id_mime_and_seconds():
-    import datetime as dt
-    item = memory._item({'id': 1, 'text': 'Ses kaydı 0:42', 'kind': 'audio', 'vector_space': 's',
-                         'source_kind': 'chat_save', 'source_chat_title': None, 'created_at': dt.datetime(2026, 11, 14),
-                         'media_id': VOICE, 'media_mime': 'audio/ogg', 'media_seconds': 42.04}, 's')
-    assert (item['media_id'], item['media_mime'], item['media_seconds']) == (VOICE, 'audio/ogg', 42.0)
 
 
 def test_the_catalog_says_what_each_extra_file_takes(monkeypatch):

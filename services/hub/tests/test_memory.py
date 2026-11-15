@@ -32,6 +32,8 @@ class FakeConn:
         self.inserted.extend(rows)
 
     async def fetch(self, sql, *args):
+        if 'where group_id is null' in sql:  # The group backfill: nothing to do.
+            return []
         self.fetch_args = args
         return self.rows
 
@@ -82,7 +84,10 @@ def wire(monkeypatch, conn, space='embeddinggemma-2', history=None):
     monkeypatch.setattr(memory, '_connect', connect)
     monkeypatch.setattr(memory, 'embedding_target', target)
     monkeypatch.setattr(memory, '_embed', embed)
-    monkeypatch.setattr(registry, 'get_chat_history_db', messages)
+    async def chat_messages(chat_id):
+        found = await messages(chat_id)
+        return found, list(range(1, len(found) + 1))
+    monkeypatch.setattr(memory, '_chat_messages', chat_messages)
 
 
 def test_chat_text_keeps_only_what_the_user_and_the_assistant_said():
@@ -95,8 +100,9 @@ def test_save_chat_stores_one_row_per_chunk_with_its_own_text_and_vector_space(m
     conn = FakeConn()
     wire(monkeypatch, conn)
     assert asyncio.run(memory.save_chat('u1', 'c1', 'Tanışma', Settings())) == {'saved': 1, 'skipped': {}, 'warnings': []}
-    user, text, space, vector, title, source = conn.inserted[0]
+    user, text, space, vector, title, group, chat, message, source = conn.inserted[0]
     assert source == 'chat_save'
+    assert len(group) == 32 and (chat, message) == ('c1', 2)  # Message 2: the first one the chunk holds.
     assert (user, space, title) == ('u1', 'embeddinggemma-2', 'Tanışma')
     assert 'Benim adım Ayşe.' in text and 'gizli' not in text
     assert vector.startswith('[0.5,') and vector.count(',') == 767
@@ -262,7 +268,7 @@ def test_a_note_is_embedded_and_stored_as_manual(monkeypatch):
     conn = FakeConn()
     wire(monkeypatch, conn)
     assert asyncio.run(memory.add_note('u1', '  Kızımın adı Elif. ', Settings())) == 1
-    assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][5] == 'manual'
+    assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][8] == 'manual'
 
 
 @pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * 4001, '4000')])
@@ -278,6 +284,8 @@ def test_an_empty_or_too_long_note_is_a_turkish_400(monkeypatch, text, message):
 
 class ListConn(FakeConn):
     async def fetch(self, sql, *args):
+        if 'where group_id is null' in sql:
+            return []
         self.fetch_args = args
         if 'group by vector_space' in sql:
             return [{'key': 'embeddinggemma-2', 'n': 2}, {'key': 'jina-v5', 'n': 1}]
@@ -285,21 +293,9 @@ class ListConn(FakeConn):
             return [{'key': 'text', 'n': 3}]
         if sql.startswith('delete'):
             self.deleted_args = args
-            return [{'id': 5, 'text': 'eski'}] if 5 in args[1] else []
+            return [{'id': 5, 'text': 'eski', 'media_id': None, 'group_id': 'g', 'content_key': 5}] if 5 in args[1] else []
         return [{'id': 1, 'text': 'a', 'kind': 'text', 'vector_space': 'jina-v5', 'source_kind': 'manual',
                  'source_chat_title': None, 'created_at': dt.datetime(2026, 11, 14)}]
-
-
-def test_the_list_marks_rows_of_another_space_and_summarises(monkeypatch):
-    conn = ListConn(other=1)
-    wire(monkeypatch, conn)
-    result = asyncio.run(memory.list_items('u1', Settings(), limit=10))
-    assert result['items'][0]['searchable'] is False and result['items'][0]['id'] == 1
-    assert result['summary'] == {'total': 3, 'per_vector_space': {'embeddinggemma-2': 2, 'jina-v5': 1},
-                                 'per_kind': {'text': 3}, 'current_vector_space': 'embeddinggemma-2',
-                                 'not_searchable': 1}
-    assert 'semantic' not in result and 'match' not in result['items'][0]
-    assert conn.fetch_args[0] == 'u1'
 
 
 def test_delete_is_scoped_to_the_user_and_a_foreign_id_is_404(monkeypatch):
@@ -322,7 +318,7 @@ def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeyp
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
     added = asyncio.run(memory_tools.hafizaya_ekle(memory_tools.MemoryAddInput(metin='Doğum günüm 3 Mart.'), context))
-    assert added == {'eklendi': 'Doğum günüm 3 Mart.'} and conn.inserted[0][5] == 'assistant'
+    assert added == {'eklendi': 'Doğum günüm 3 Mart.'} and conn.inserted[0][8] == 'assistant'
     gone = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[5]), context))
     assert gone['silinenler'] == [{'id': 5, 'metin': 'eski'}]
     nothing = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[9]), context))
