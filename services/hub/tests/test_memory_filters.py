@@ -4,19 +4,11 @@ import asyncio
 from orion.kernel import memory_filters as mf
 
 
-def test_negative_terms_are_parsed_and_a_dash_inside_a_word_stays():
-    assert mf.parse_query('kedi -köpek -"iki kelime" e-posta') == ('kedi e-posta', ['köpek', 'iki kelime'])
-    assert mf.parse_query('-köpek') == ('', ['köpek'])
-
-
-def test_a_match_must_stand_out_of_the_querys_own_scores():
+def test_the_typical_score_is_measured_from_the_querys_own_scores():
     flat = [0.30, 0.31, 0.29, 0.30, 0.32, 0.31, 0.30, 0.29, 0.33]
     stats = mf.calibrate(flat)
-    # A gun against cats and notes: the best is still in the noise.
-    assert mf.standing(max(flat), stats) < mf.NOISE_Z
-    clear = flat + [0.62]
-    stats = mf.calibrate(clear)
-    assert mf.standing(0.62, stats) >= mf.NOISE_Z
+    assert abs(stats[0] - 0.305) < 0.01
+    assert mf.standing(0.62, mf.calibrate(flat + [0.62])) >= mf.EXCLUDE_Z
     assert mf.calibrate(flat[:3]) is None  # Too few memories to tell.
 
 
@@ -40,3 +32,6 @@ def test_excluded_memories_are_close_to_the_term_or_contain_it(monkeypatch):
     conn = Conn({'not': 'kopegim cok tatli', 'm1': 'kedi'}, scores)
     out = asyncio.run(mf.excluded_groups(conn, 'u', 'space', ['köpeğim'], None))
     assert 'kopek_foto' in out and 'not' in out and 'm1' not in out
+    # A "benzemesin" file: its vector alone, no words to look for.
+    out = asyncio.run(mf.excluded_groups(conn, 'u', 'space', [], None, ['[0]']))
+    assert out == {'kopek_foto'}

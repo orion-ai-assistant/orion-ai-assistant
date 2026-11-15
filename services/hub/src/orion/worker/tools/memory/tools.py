@@ -25,7 +25,7 @@ class MemoryInput(ToolInput):
         default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses, video ya da hepsi")
     haric: list[str] = Field(default_factory=list, max_length=5,
                              description="Bunlara yakın ya da bunları içeren kayıtlar sonuçtan çıkarılır "
-                                         "(ör. ['köpek']). Sorguda '-köpek' yazmak da olur.")
+                                         "(ör. ['köpek']).")
     sayfa: int = Field(default=1, ge=1, le=100,
                        description="Sonuç sayfası: 1 = en iyi 1-10, 2 = 11-20... İlk sayfada yoksa ve 'daha_var' "
                                    "true ise sonraki sayfaya bak.")
@@ -47,8 +47,8 @@ def _row(row: dict, seen: dict | None = None) -> dict:
         item["skor"] = row["score"]
     if row.get("match"):
         item["eslesme"] = MATCH_LABELS.get(row["match"], row["match"])
-    if row.get("noise"):
-        item["zayif"] = True  # Only the nearest: not clearly closer than anything else in memory.
+    if row.get("above") is not None:
+        item["ortalamadan"] = row["above"]  # Score minus this query's typical score against all memories.
     if row.get("track") in TRACKS:
         item["iz"] = TRACKS[row["track"]]
     if row.get("span"):
@@ -92,7 +92,8 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
     result = {"sayfa": args.sayfa, "kayitlar": [_row(row, seen) for row in found["rows"]], "daha_var": found["more"]}
     if query and result["kayitlar"]:
         result["siralama"] = ("En iyi eşleşme önce. 'skor' anlam benzerliğidir (0-1); görsel/ses için 0.2-0.4 "
-                              "normaldir, sıraya bak. Metinde geçen kayıtlar öne alınır.")
+                              "normaldir, sıraya bak. 'ortalamadan': skorun bu sorgunun tüm kayıtlara verdiği "
+                              "ortalama skordan farkı (büyükse öne çıkıyor). Metinde geçen kayıtlar öne alınır.")
     elif not query:
         result["siralama"] = "En yeni kayıt önce."
     if any(row.get("kind", "text") != "text" for row in found["rows"]):
@@ -101,9 +102,6 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
         result["grup_notu"] = GROUP_NOTE
     if found.get("exclude_terms"):
         result["haric"] = {"terimler": found["exclude_terms"], "cikarilan": found["excluded"]}
-    if query and found["rows"] and all(row.get("noise") for row in found["rows"]):
-        result["not"] = ("Hafızada buna benzeyen bir şey yok: en yakın kayıtlar bile bu sorgunun her kayda verdiği "
-                         "skorların üstüne çıkmıyor. Kullanıcıya bulunamadı de.")
     if not result["kayitlar"]:
         result["not"] = "Bu sayfada kayıt yok." if args.sayfa > 1 else "Hafızada bu aramayla kayıt bulunamadı."
     if found.get("reason"):

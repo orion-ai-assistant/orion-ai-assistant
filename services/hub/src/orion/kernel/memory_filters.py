@@ -1,33 +1,22 @@
-"""Search honesty and exclusions, both measured against the query's own distribution (no fixed similarity number:
-an image's similarities against text sit at 0.2-0.4, a text's at 0.1-0.7, and every model has its own scale).
+"""Search measured against the query's own distribution (no fixed similarity number: an image's similarities against
+text sit at 0.2-0.4, a text's at 0.1-0.7, and every model has its own scale).
 
-- Noise: without a threshold the nearest memory always shows, even for a query nothing in memory resembles. A
-  memory is a match when its best similarity stands clearly above what this query scores against every memory of
-  the user (z = (score - mean) / spread >= NOISE_Z); below that it is "zayıf" and, when even the first one is,
-  the answer says nothing similar was found.
-- Negative terms: "-köpek", -"iki kelime" in the query (or `haric` in the tool) drop memories whose similarity to
-  that term stands clearly out of the term's own distribution (z >= EXCLUDE_Z) or whose text contains it.
+- Above average: how far a result's score stands above what this query scores against every memory of the user.
+  A neutral cue beside the score, never a verdict: results are neither hidden nor called "no match".
+- Exclusions ("benzemesin" inputs: texts or files): memories whose similarity to such an input stands clearly out
+  of that input's own distribution (z >= EXCLUDE_Z) are left out, and so are those whose text contains an
+  excluded text.
 """
 from __future__ import annotations
 
-import re
 import statistics
 
 from orion.kernel import memory
 
-NOISE_Z = 2.0  # Standing this many spreads above the query's mean against all memories: a real match.
-EXCLUDE_Z = 2.0  # The same for a negative term: close to it, out.
-MIN_POOL = 8  # Fewer memories than this: too few to tell a match from noise (nothing is marked).
+EXCLUDE_Z = 2.0  # Standing this many spreads above a "benzemesin" input's mean against all memories: out.
+MIN_POOL = 8  # Fewer memories than this: too few to measure (no cue, nothing left out by meaning).
 SPREAD_FLOOR = 0.02
 CAPTION_FOLD = memory.FOLD_SQL.replace("(text,", "(coalesce(caption, ''),")
-_NEGATIVE = re.compile(r'(?:(?<=\s)|^)-(?:"([^"]+)"|(\S+))')
-
-
-def parse_query(q: str) -> tuple[str, list[str]]:
-    """("kedi", ["köpek", "iki kelime"]) from 'kedi -köpek -"iki kelime"'. A dash inside a word stays."""
-    negatives = [(a or b).strip() for a, b in _NEGATIVE.findall(q or "")]
-    rest = " ".join(_NEGATIVE.sub(" ", q or "").split())
-    return rest, [n for n in negatives if n][:5]
 
 
 def calibrate(scores: list[float]) -> tuple[float, float] | None:
@@ -55,11 +44,14 @@ async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = 
     return {r["g"]: float(r["s"]) for r in rows}
 
 
-async def excluded_groups(conn, user_id: str, space, terms: list[str], settings) -> set[str]:
-    """The memories a search leaves out for its negative terms: close to a term by meaning (z >= EXCLUDE_Z against
-    the term's own distribution) or containing it in their text or caption."""
+async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
+                          vectors: list[str] | None = None) -> set[str]:
+    """The memories a search leaves out for its "benzemesin" inputs: close to one by meaning (z >= EXCLUDE_Z against
+    that input's own distribution: a text's query vector or a file's vector) or, for a text, containing it in their
+    text or caption."""
     from orion.kernel.memory_groups import GROUP_KEY
     out: set[str] = set()
+    found = list(vectors or [])
     for term in terms:
         folded = memory.fold(term)
         like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -67,11 +59,13 @@ async def excluded_groups(conn, user_id: str, space, terms: list[str], settings)
                 f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
                 f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like):
             out.add(r["g"])
-        if not space:
-            continue
-        _, vector, _ = await memory._query_vector(term, settings)
-        if vector is None:
-            continue
+        if space:
+            _, vector, _ = await memory._query_vector(term, settings)
+            if vector is not None:
+                found.append(vector)
+    if not space:
+        return out
+    for vector in found:
         scores = await group_scores(conn, user_id, space, vector)
         stats = calibrate(list(scores.values()))
         for g, s in scores.items():

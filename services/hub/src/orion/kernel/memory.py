@@ -1142,8 +1142,8 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
     query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
     order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
     from orion.kernel import memory_filters as mf
-    query, negatives = mf.parse_query((query or "").strip())
-    negatives = [*negatives, *(t.strip() for t in exclude or [] if t.strip())][:5]
+    query = (query or "").strip()
+    negatives = [t.strip() for t in exclude or [] if t.strip()][:5]
     kind = kind if kind in KINDS else "all"
     page = max(1, int(page))
     start = (page - 1) * PAGE
@@ -1193,7 +1193,8 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
                      "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match,
                      "group": groups.get(r["id"]), "whole": bool(r.get("whole")), "track": r.get("track"),
                      "via_whole": bool(r.get("via_whole")),
-                     "noise": bool(query and not r["tmatch"] and (mf.standing(r["score"], stats) or 99) < mf.NOISE_Z),
+                     "above": None if not query or stats is None or r["score"] is None
+                     else round(float(r["score"]) - stats[0], 3),
                      "span": None if r.get("span_start") is None else (float(r["span_start"]), float(r["span_end"]))})
     result = {"rows": rows, "more": len(ranked) > start + PAGE, "other_spaces": int(other or 0)}
     if negatives:
