@@ -154,15 +154,16 @@ async def query_note(q: str) -> dict | None:
 
 @router.get("/api/v1/memory/groups/{group_id}")
 async def memory_group(group_id: str, request: Request, offset: int = Query(0, ge=0),
-                       limit: int = Query(60, ge=1, le=500), around: int | None = Query(None),
+                       limit: int = Query(60, ge=1, le=500), around: list[int] = Query(default=[]),
+                       item: str | None = Query(None, max_length=64),
                        current_user: str = Depends(get_current_user)):
-    """One memory for the detail panel: a window of its parts (around a part, or from `offset`), the models it is
-    in, its source chat."""
+    """One memory for the detail panel (a long item as a preview with the `around` pieces), the models it is in,
+    its source chat; with `item`: a page of that item's pieces (the viewer's lazily loaded text)."""
     from orion.kernel import memory, memory_groups
     try:
         found = await memory_groups.group_detail(current_user, group_id[:64],
                                                  await get_runtime_settings(request.app.state.redis, current_user),
-                                                 offset, limit, around)
+                                                 offset, limit, around[:50], item)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if found is None:

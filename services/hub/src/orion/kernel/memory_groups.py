@@ -585,14 +585,37 @@ async def _summary(conn, user_id: str, space) -> dict:
     return summary
 
 
-DETAIL_PARTS = 60  # Parts per detail page: a payload and rendering cap (a 600k-character file has >1000 parts).
+DETAIL_PARTS = 60  # Parts per page of one long item read in the viewer (a payload cap).
+LONG_ITEM = 12  # An item of more pieces shows as a preview in the panel (a rendering choice, not a quality one).
+PREVIEW_PIECES = 3  # A long item's first pieces in the preview.
+
+
+def preview_parts(parts: list[dict], around: list[int]) -> tuple[list[dict], dict[str, int]]:
+    """The panel's parts: every part of short items; of a long item (more than LONG_ITEM pieces) its first
+    PREVIEW_PIECES and each `around` piece (a search's matches) with one neighbour each side. Returns (parts,
+    {item_id: its piece count} of the long items)."""
+    by_item: dict[str, list[int]] = {}
+    for index, p in enumerate(parts):
+        by_item.setdefault(p["item_id"], []).append(index)
+    keep, long_items = set(), {}
+    wanted = set(around)
+    for item_id, indexes in by_item.items():
+        if len(indexes) <= LONG_ITEM:
+            keep.update(indexes)
+            continue
+        long_items[item_id] = len(indexes)
+        keep.update(indexes[:PREVIEW_PIECES])
+        for k, index in enumerate(indexes):
+            if parts[index]["id"] in wanted:
+                keep.update(indexes[max(0, k - 1):k + 2])
+    return [p for i, p in enumerate(parts) if i in keep], long_items
 
 
 async def group_detail(user_id: str, group: str, settings, offset: int = 0, limit: int = DETAIL_PARTS,
-                       around: int | None = None) -> dict | None:
-    """The memory for the detail panel: a window of its parts (full text, the spaces they are in) and its source
-    chat. `around`: the window holds that part (a search's best part), else it starts at `offset`. The answer says
-    `parts_total` and `parts_offset` (the window's first part's place, from 0)."""
+                       around: list[int] | None = None, item_id: str | None = None) -> dict | None:
+    """The memory for the detail panel: its parts (full text, the spaces they are in), a long item only as a
+    preview (preview_parts; `long_items` says how many pieces each has), and its source chat. With `item_id`: a page
+    of that item's pieces from `offset` ({"item_id", "parts", "total", "offset"}) for the viewer's lazy text."""
     space = await memory.current_space(settings)
     conn = await memory._connect()
     try:
@@ -602,13 +625,14 @@ async def group_detail(user_id: str, group: str, settings, offset: int = 0, limi
             return None
         item = card(group, rows, space, space, full=True)
         parts = item["parts"]
-        limit = max(1, min(int(limit), 500))
-        if around is not None:
-            at = next((i for i, p in enumerate(parts) if p["id"] == around), None)
-            if at is not None:
-                offset = at - limit // 3
-        offset = max(0, min(int(offset), max(0, len(parts) - limit)))
-        item.update(parts=parts[offset:offset + limit], parts_total=len(parts), parts_offset=offset)
+        if item_id is not None:
+            pieces = [p for p in parts if p["item_id"] == item_id]
+            limit = max(1, min(int(limit), 500))
+            offset = max(0, int(offset))
+            return {"item_id": item_id, "parts": pieces[offset:offset + limit], "total": len(pieces),
+                    "offset": offset}
+        shown, long_items = preview_parts(parts, list(around or []))
+        item.update(parts=shown, parts_total=len(parts), long_items=long_items)
         chat_id = item.pop("source_chat_id")
         item["source_chat"] = None
         if chat_id:

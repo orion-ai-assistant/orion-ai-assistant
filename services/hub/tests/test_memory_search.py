@@ -330,11 +330,14 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertEqual((jobs[0]['state'], jobs[0]['done']), ('done', jobs[0]['total']))
         rows = await self.add_rows()
         self.assertEqual(len(rows), jobs[0]['total'])
-        detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, limit=10,
-                                                  around=rows[20])
-        self.assertEqual((detail['parts_total'], len(detail['parts'])), (len(rows), 10))
-        self.assertIn(rows[20], [p['id'] for p in detail['parts']])
-        self.assertEqual(detail['parts_offset'], [p['id'] for p in detail['parts']][0] - rows[0])
+        detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, around=[rows[20]])
+        shown = [p['id'] for p in detail['parts']]
+        # A preview: the beginning and the asked piece with its neighbours, never the whole text.
+        self.assertEqual(shown, rows[:3] + rows[19:22])
+        self.assertEqual(list(detail['long_items'].values()), [len(rows)])
+        page = await memory_groups.group_detail('alice', added['group_id'], self.settings, offset=10, limit=5,
+                                                item_id=detail['parts'][0]['item_id'])
+        self.assertEqual(([p['id'] for p in page['parts']], page['total']), (rows[10:15], len(rows)))
 
     async def test_the_whole_memory_score_is_against_the_mean_of_all_its_pieces(self):
         a = await self.add('bir', score=1.0, axis=2, group='g')
