@@ -23,6 +23,12 @@ class MemoryInput(ToolInput):
                                    "türündeki en yeni kayıtlar listelenir.")
     tur: Literal["hepsi", "metin", "görsel", "ses", "video"] = Field(
         default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses, video ya da hepsi")
+    ek_sorgular: list[str] = Field(default_factory=list, max_length=4,
+                                   description="İsteğe bağlı: 'sorgu' ile birlikte aranacak başka kısa metinler; "
+                                               "hepsinin ortak anlamına yakın kayıtlar gelir.")
+    haric: list[str] = Field(default_factory=list, max_length=5,
+                             description="Bunlara yakın ya da bunları içeren kayıtlar sonuçtan çıkarılır "
+                                         "(ör. ['köpek']).")
     sayfa: int = Field(default=1, ge=1, le=100,
                        description="Sonuç sayfası: 1 = en iyi 1-10, 2 = 11-20... İlk sayfada yoksa ve 'daha_var' "
                                    "true ise sonraki sayfaya bak.")
@@ -44,6 +50,8 @@ def _row(row: dict, seen: dict | None = None) -> dict:
         item["skor"] = row["score"]
     if row.get("match"):
         item["eslesme"] = MATCH_LABELS.get(row["match"], row["match"])
+    if row.get("above") is not None:
+        item["ortalamadan"] = row["above"]  # Score minus this query's typical score against all memories.
     if row.get("track") in TRACKS:
         item["iz"] = TRACKS[row["track"]]
     if row.get("span"):
@@ -80,20 +88,24 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
     query = args.sorgu.strip()
     try:
         found = await memory.search(context.user_id, query, await get_runtime_settings(None, context.user_id),
-                                    page=args.sayfa, kind=KINDS[args.tur])
+                                    page=args.sayfa, kind=KINDS[args.tur], exclude=args.haric,
+                                    also=args.ek_sorgular)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
     seen: dict = {}
     result = {"sayfa": args.sayfa, "kayitlar": [_row(row, seen) for row in found["rows"]], "daha_var": found["more"]}
     if query and result["kayitlar"]:
         result["siralama"] = ("En iyi eşleşme önce. 'skor' anlam benzerliğidir (0-1); görsel/ses için 0.2-0.4 "
-                              "normaldir, sıraya bak. Metinde geçen kayıtlar öne alınır.")
+                              "normaldir, sıraya bak. 'ortalamadan': skorun bu sorgunun tüm kayıtlara verdiği "
+                              "ortalama skordan farkı (büyükse öne çıkıyor). Metinde geçen kayıtlar öne alınır.")
     elif not query:
         result["siralama"] = "En yeni kayıt önce."
     if any(row.get("kind", "text") != "text" for row in found["rows"]):
         result["medya_notu"] = MEDIA_NOTE
     if any((row.get("group") or {}).get("parts", 1) > 1 for row in found["rows"]):
         result["grup_notu"] = GROUP_NOTE
+    if found.get("exclude_terms"):
+        result["haric"] = {"terimler": found["exclude_terms"], "cikarilan": found["excluded"]}
     if not result["kayitlar"]:
         result["not"] = "Bu sayfada kayıt yok." if args.sayfa > 1 else "Hafızada bu aramayla kayıt bulunamadı."
     if found.get("reason"):
@@ -142,6 +154,20 @@ async def hafizadan_sil(args: MemoryDeleteInput, context: ToolContext) -> dict:
             "talimat": "Kullanıcıya neyi sildiğini kısaca söyle."}
 
 
+def attachment_of(row: dict, chat_id: str) -> dict:
+    """An opened memory file as the chat shows a user's attachment: {media_id, mime_type, name, memory_id}, a
+    reference to the one stored copy (linked to the chat; `media_path` loads it as a user's attachment), never its
+    bytes."""
+    import mimetypes
+    named = (row.get("text") or "").split(" — ")[0].strip()
+    if not named or "." not in named[-6:] or len(named) > 120:
+        ext = mimetypes.guess_extension(row.get("media_mime") or "") or ""
+        named = f"{KIND_LABELS.get(row['kind'], 'Dosya').capitalize()} {row['id']}{ext}"
+    from orion.kernel.media_store import media_path
+    return {"media_id": row["media_id"], "mime_type": row.get("media_mime") or "application/octet-stream",
+            "name": named, "memory_id": row["id"], "media_path": media_path(chat_id, row["media_id"])}
+
+
 async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> dict:
     """Shows memory images/audio to the model. A tool message cannot carry media on OpenAI-compatible APIs, so the
     files go in `_medya`: the tool runner keeps them on the tool message as references and hands them to the
@@ -155,7 +181,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
         rows = await memory.open_media(context.user_id, context.chat_id, args.idler, kinds)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
-    opened, closed, media = [], [], []
+    opened, closed, media, attachments = [], [], [], []
     for row in rows:
         entry = {"id": row["id"], "tur": KIND_LABELS.get(row["kind"], "metin"), "etiket": row["text"]}
         if row["opened"]:
@@ -165,6 +191,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
                     f"{sum(1 for m in shown if m['kind'] == k)} {'kare' if k == 'image' else 'ses'}"
                     for k in ("image", "audio") if any(m["kind"] == k for m in shown))
             opened.append(entry)
+            attachments.append(attachment_of(row, context.chat_id))
             for m in shown:
                 media.append({"memory_id": row["id"], "kind": m["kind"], "media_id": m["media_id"],
                               "mime_type": m["mime"], "label": row["text"][:300]})
@@ -183,6 +210,7 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
         result["not"] = ("Açılan dosyalar bu sonuçtan hemen sonra gelen kullanıcı mesajında (onu kullanıcı yazmadı, "
                          "araç ekledi) ve sohbette kalır. Onlara bakarak cevap ver.")
         result["_medya"] = media
+        result["_ekler"] = attachments  # The tool runner shows them to the user under this turn.
     if closed:
         result["acilamayanlar"] = closed
     missing = [i for i in dict.fromkeys(args.idler) if i not in {row["id"] for row in rows}]

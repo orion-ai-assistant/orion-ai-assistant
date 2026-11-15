@@ -100,13 +100,15 @@ class MemoryDelete(BaseModel):
 
 @router.get("/api/v1/memory")
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
-                      kind: str = "all", current_user: str = Depends(get_current_user)):
+                      kind: str = "all", exclude: list[str] = Query(default=[]),
+                      current_user: str = Depends(get_current_user)):
     """A page of memories: cards of the rows saved together (memory_groups.list_groups)."""
     from orion.kernel import memory, memory_groups
     try:
         found = await memory_groups.list_groups(
             current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
-            max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20])
+            max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20],
+            exclude=[t[:200] for t in exclude[:5]])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if len(q.strip()) > memory.MAX_QUERY_CHARS:
@@ -253,6 +255,7 @@ class MemorySearchInput(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)
     text: str = Field(default="", max_length=20000)  # Cut to memory.MAX_QUERY_CHARS.
+    negative: bool = False  # "benzemesin": memories like this are left out.
 
 
 class MemorySearch(BaseModel):
@@ -268,11 +271,14 @@ class MemorySearch(BaseModel):
     offset: int = 0
     # Several inputs at once: files (name + data URL) and texts; `vectors` are the query vectors an earlier answer
     # gave (the next page). mode "together": one query, the normalized mean of the inputs; "each": every input
-    # ranked on its own and fused (memory_groups.fuse_ranks).
+    # ranked on its own and fused as OR (memory_groups.fuse_inputs).
     inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
     vectors: list[list[float]] = Field(default_factory=list, max_length=8)
     q: str = Field(default="", max_length=20000)  # The texts, for the words' own matches (cut like `text`).
     mode: str = Field(default="together", max_length=20)
+    kinds: list[str] = Field(default_factory=list, max_length=8)
+    exclude: list[str] = Field(default_factory=list, max_length=5)  # "benzemesin" texts (also as inputs).
+    exclude_vectors: list[list[float]] = Field(default_factory=list, max_length=5)  # "benzemesin" files, made.  # The inputs' kinds an earlier answer gave.
 
 
 @router.post("/api/v1/memory/search")
@@ -309,6 +315,15 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
     return found
 
 
+INPUT_LABELS = {"query": "metin", "text": "metin dosyası", "image": "görsel", "audio": "ses", "video": "video"}
+
+
+def input_labels(kinds: list[str], count: int) -> list[str]:
+    """What each search input is called on a card ("metin", "görsel"); two of a kind are numbered."""
+    names = [INPUT_LABELS.get(kinds[i], "girdi") if i < len(kinds) else "girdi" for i in range(count)]
+    return [f"{n} {names[:i + 1].count(n)}" if names.count(n) > 1 else n for i, n in enumerate(names)]
+
+
 async def _search_memory_multi(payload: MemorySearch, settings, current_user: str) -> dict:
     """Several files and texts at once: each becomes a query vector (memory.file_query_vector, a text as a query);
     "together" searches with their normalized mean, "each" fuses each one's ranking. The answer's `query` has the
@@ -320,16 +335,24 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
     mode = payload.mode if payload.mode in ("together", "each") else "together"
     try:
         space, vectors, kinds = payload.vector_space or None, [], []
+        exclude = [t[:200] for t in payload.exclude if t.strip()]
+        if any(len(v) != 768 for v in payload.exclude_vectors):
+            raise HTTPException(400, "Arama vektörü geçersiz.")
+        exclude_vectors = [list(v) for v in payload.exclude_vectors]
         if payload.vectors:
             if any(len(v) != 768 for v in payload.vectors):
                 raise HTTPException(400, "Arama vektörü geçersiz.")
             vectors = [list(v) for v in payload.vectors]
+            kinds = [k[:20] for k in payload.kinds][:len(vectors)]
             space = space or await memory.current_space(settings)
         else:
             for one in payload.inputs:
-                if one.text.strip():
-                    space, vector, reason = await memory._query_vector(one.text.strip()[:memory.MAX_QUERY_CHARS],
-                                                                       settings)
+                text = one.text.strip()[:memory.MAX_QUERY_CHARS]
+                if one.negative and text:
+                    exclude.append(text[:200])
+                    continue
+                if text:
+                    space, vector, reason = await memory._query_vector(text, settings)
                     if vector is None:
                         raise HTTPException(503, reason or "Anlamla arama kapalı.")
                     kind = "query"
@@ -339,22 +362,28 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
                     except Exception as exc:
                         raise HTTPException(400, f"Dosya okunamadı: {one.name[:60]}") from exc
                     space, vector, kind = await memory.file_query_vector(one.name, mime, raw, settings)
+                    if one.negative:
+                        exclude_vectors.append(json.loads(vector))
+                        continue
                 vectors.append(json.loads(vector))
                 kinds.append(kind)
         if not vectors:
-            raise HTTPException(400, "Aranacak bir şey yok.")
+            raise HTTPException(400, "Aranacak bir şey yok: en az bir \"benzesin\" metni ya da dosyası ekle.")
         combined = mean_vector(vectors)
         found = await memory_groups.list_groups(
             current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
             payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
-            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode)
+            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode,
+            input_labels=input_labels(kinds, len(vectors)), exclude=exclude,
+            exclude_vectors=[memory._vector(v) for v in exclude_vectors])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if len(payload.q.strip()) > memory.MAX_QUERY_CHARS:
         found["query_cut"] = memory.MAX_QUERY_CHARS
-    found["query"] = {"vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
+    found["query"] = {"exclude_vectors": [[round(v, 6) for v in one] for one in exclude_vectors],
+                      "vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
                       "vector_space": space, "kinds": kinds, "mode": mode}
     return found
 

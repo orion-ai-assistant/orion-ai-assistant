@@ -206,6 +206,10 @@ class ToolConversation:
                         result = await execute_tool(registry.tools[name], arguments, context)
                         # Media a tool opened for the model (hafizadaki_medyayi_ac): references, never in the JSON.
                         media_refs = result.pop('_medya', None) if isinstance(result, dict) else None
+                        # The files themselves for the user: shown under this turn like attachments (references).
+                        shown = result.pop('_ekler', None) if isinstance(result, dict) else None
+                        if shown:
+                            item['media'] = shown
                     if name == 'google_ai_mode' and settings.google_ai_direct_stream and not (
                             result.get('status') in ('ok', 'partial') and result.get('answer')):
                         google_failure = google_failure_message(result) + ' normal web aramasına geçilmedi.'

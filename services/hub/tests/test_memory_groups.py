@@ -451,19 +451,26 @@ def test_local_time_shows_the_pcs_clock_and_offset():
     assert memory.local_time(None) is None
 
 
-def test_fuse_ranks_puts_a_memory_close_to_every_input_first_and_keeps_its_best_score():
+def test_an_unrelated_input_never_demotes_a_strong_single_input_match():
+    from orion.api import routes
     from orion.kernel import memory_groups as mg
     row = lambda i, g, s: {'id': i, 'group_id': g, 'score': s}
-    image = [row(1, 'a', 0.40), row(2, 'b', 0.35), row(3, 'c', 0.30)]
-    text = [row(4, 'c', 0.80), row(5, 'd', 0.70), row(6, 'b', 0.60)]
-    fused = mg.fuse_ranks([image, text])
-    assert [r['group_id'] for r in fused][:2] in (['b', 'c'], ['c', 'b'])
-    assert {r['group_id'] for r in fused} == {'a', 'b', 'c', 'd'}
-    c = next(r for r in fused if r['group_id'] == 'c')
-    assert c['score'] == 0.80 and c['id'] == 4
+    names = [f'm{k}' for k in range(30)]
+    # An unrelated picture: everything a little alike, Pamuk on top by chance.
+    image = [row(100 + k, g, 0.48 if g == 'pamuk' else 0.40 + 0.002 * (k % 5)) for k, g in
+             enumerate(['pamuk'] + names + ['elif'])]
+    # "kahve": Elif's coffee break stands far out, the rest low.
+    text = [row(200 + k, g, 0.52 if g == 'elif' else 0.12 + 0.003 * (k % 7)) for k, g in
+            enumerate(['elif', 'pamuk'] + names)]
+    labels = routes.input_labels(['image', 'query'], 2)
+    assert labels == ['görsel', 'metin']
+    fused = mg.fuse_inputs([image, text], labels)
+    assert fused[0]['group_id'] == 'elif' and fused[0]['via'] == 'metin' and fused[0]['score'] == 0.52
     ranked = mg.merge_matches(fused, [], keep_order=True)
-    assert [e['group'] for e in ranked] == [r['group_id'] for r in fused]
-    assert ranked[0]['strength'] == 'strong'
+    assert ranked[0]['strength'] == 'strong' and ranked[0]['via'] == 'metin'
+    # The noise of each input stays out of the strong ones (Pamuk does stand out for the picture: it may show).
+    assert not [e for e in ranked if e['group'].startswith('m') and e['strength'] != 'weak']
+    assert routes.input_labels(['image', 'image', 'query'], 3) == ['görsel 1', 'görsel 2', 'metin']
 
 
 def test_a_long_pasted_query_is_cut_not_refused_and_matches_by_meaning_only():
