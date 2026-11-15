@@ -757,19 +757,36 @@ Sıra önerisi yukarıdan aşağıya.
 - **Kaynak:** yeni kayıtlar `source_chat_id` + `source_message_id` (parçanın başladığı mesajın satır id'si) taşır. Eski
   sohbet kayıtlarının kaynağı `hafiza_baglami` ilk istendiğinde dosya id'si + etiketteki metinle ya da metnin başıyla
   bulunur ve yazılır; bulunamazsa "bilinmiyor" denir (yanlış sohbet gösterilmez).
-- **Kopya:** başka modelin satırının etkin modeldeki kopyası aynı grupta, `copied_from` = asıl satır. `coalesce(copied_from, id)`
-  bir içeriğin tüm kopyalarında aynıdır: listede bir hafıza bir kez, parçası bir kez görünür (etkin modeldeki kopya öne
-  geçer); bir parçayı silmek kopyalarını da siler.
+- **Bir hafıza, bir ya da birkaç modelin vektörü:** aktarım bir parçanın etkin modeldeki vektörünü ayrı bir satır olarak
+  ekler (aynı grup, aynı metin/medya/tarih, `copied_from` = asıl satır; 768 boyutlu bir vektör ~3 KB). `coalesce(copied_from, id)`
+  bir içeriğin tüm satırlarında aynıdır: listede bir hafıza bir kez, parçası bir kez görünür (etkin modelin satırı öne geçer);
+  bir parçayı silmek tüm modellerdeki satırlarını siler. Arayüz "kopya" demez: ayrıntı paneli hafızanın hangi modellerle
+  aranabildiğini (`models`: model, etkin mi, kaç parçası) gösterir. Aktarımdan sonra silinecek bir şey yoktur; isteyen, liste
+  o modele süzülmüşken "<model> vektörlerini kaldır" ile etkin modelde de vektörü olan hafızalardan o modelinkini kaldırır
+  (önce `GET /api/v1/memory/vectors?vector_space=` hangi hafızaların o modeli kaybedeceğini listeler; yalnız o modelde olanlara
+  dokunulmaz).
 - **API:** `GET /api/v1/memory` artık `groups` (kart) döner (`limit` 1-100, `strength` strong/medium/weak, `match` text/similar/
-  meaning, `score`), `summary` içinde `movable`/`copied` (model başına) ve `job`. `GET /api/v1/memory/groups/{id}` ayrıntı,
-  `POST /api/v1/memory/delete` `ids` (parça) ve `group_ids` (hafıza) alır. Aktarım: `GET|POST /api/v1/memory/move`,
-  `POST /api/v1/memory/move/cancel`, `POST /api/v1/memory/move/cleanup` (eski kopyaları siler). Harita:
-  `GET /api/v1/memory/map?k=4&floor=0.3&limit=300`.
+  meaning, `score`; `vector_space=active` sayfanın varsayılanı, o anki etkin model; `all` tüm modeller), `summary` içinde
+  `movable`/`copied` (model başına parça) ve `job`. `GET /api/v1/memory/groups/{id}` ayrıntı (`models` dahil),
+  `POST /api/v1/memory/delete` `ids` (parça) ve `group_ids` (hafıza) alır. Ekleme: `POST /api/v1/memory` (not) ve
+  `POST /api/v1/memory/file` isteğe bağlı `group_id` alır ve `group_id` döner; sayfanın "Not ekle" bestecisi metni ve
+  dosyaları sırayla gönderir, ilk kaydedilen parçanın grubunu sonrakilere verir (tek hafıza), ayrıntıdaki "Ekle" aynı
+  yolla mevcut hafızaya ekler ("r<id>" grupsuz eski satıra önce grup verilir; başkasının grubu 404). Aktarım:
+  `GET|POST /api/v1/memory/move`, `POST /api/v1/memory/move/cancel`; `POST /api/v1/memory/vectors/remove` (eski adı
+  `/move/cleanup`) bir modelin vektörlerini kaldırır. Harita: `GET /api/v1/memory/map?k=5&limit=300&vector_space=`.
 - **Aktarım işi** (`kernel/memory_move.py`): durumu `orion_memory_jobs`'ta (PC ve telefon API'leri ayrı süreç); başlatan
   süreç asyncio görevi olarak yürütür, her satırda nabız ve `cancel` bakar; 90 sn nabızsız iş "interrupted" görünür,
   yeniden başlatınca kopyası olanları atlayarak sürer. Model değişirse (25 satırda bir bakılır) durur.
-- **Harita:** etkin modelin en yeni ≤300 hafızası; her hafızanın vektörü satırlarının ortalaması (`avg(embedding)`), her
-  düğümün en yakın k komşusu eşik üstündeyse kenar (pgvector, tek sorgu). Yerleşim Flutter'da hafif Fruchterman-Reingold.
+- **Harita:** bir modelin (varsayılan etkin model; başka model seçilebilir, hafızaları yalnız kendi aralarında karşılaştırılır)
+  en yeni ≤300 hafızası; her hafızanın vektörü satırlarının ortalaması (`avg(embedding)`), her düğümün en yakın k komşusu
+  eşik üstündeyse kenar (pgvector). Eşik elle verilmez: o modeldeki tüm çiftlerin ortalama benzerliği (`map_floor`,
+  en az 0,05; 3'ten az çiftte 0,05), yani tipik çiftten az benzeyenler bağlanmaz. Her kenarın `w`'si eşikte 0, modelin en
+  benzer çiftinde 1; Flutter çizginin kalınlığını/parlaklığını ve yayın boyunu (80-260) ondan alır. Yanıtta `floor` ve
+  `spread` (çift sayısı, ortalama, sd, en yüksek) da var. Dev veritabanında Jina: 55 çift, ortalama 0,24, sd 0,17.
+  Yerleşim Flutter'da canlı kuvvet düzeni (d3-force benzeri: itme + çakışmama + benzerliğe göre yay + merkeze hafif çekim,
+  soğuyan `alpha`); düğüm sürüklenebilir, diğerleri yer açar, bırakınca oturur ve oturunca kare çizilmez.
+- **Tarih:** araç sonuçlarındaki `tarih` (arama, `hafiza_baglami` ve kaynak sohbetin mesajları) PC'nin yerel saatiyle
+  tarih + saat + UTC farkıdır: `2026-11-15 14:51 (UTC+03:00)` (`memory.local_time`).
 - **Araçlar:** `hafizada_ara` sonuçları grubunu söyler (`birlikte_kaydedilenler`, aynı gruptan ikinci sonuçta
   `ayni_kayittan`, dosya parçasında `dosya`/`parca`). Yeni `hafiza_baglami`: grubun tamamı + istenirse kaynak sohbetin
   çevresi/başı (silinmiş/temizlenmiş ise söyler). `Tool.default_on`: kayıtlı araç seçimi bir aracı hiç anmıyorsa ve grubu

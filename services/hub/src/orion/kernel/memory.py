@@ -148,6 +148,36 @@ def new_group() -> str:
     return uuid.uuid4().hex
 
 
+def local_time(value) -> str | None:
+    """A stored time as this PC's local date and time with its UTC offset: '2026-11-15 14:51 (UTC+03:00)'."""
+    if value is None:
+        return None
+    local = value.astimezone()
+    offset = local.strftime("%z") or "+0000"
+    return f"{local:%Y-%m-%d %H:%M} (UTC{offset[:3]}:{offset[3:5]})"
+
+
+async def join_group(conn, user_id: str, group: str | None) -> str:
+    """The group new parts go into: a new memory, or this user's memory `group` (one saved before groups, "r<id>",
+    gets a group first). LookupError for a memory this user does not have."""
+    if not group:
+        return new_group()
+    group = str(group)[:64]
+    if group.startswith("r") and group[1:].isdigit():
+        row_id = int(group[1:])
+        if not await conn.fetchval("select 1 from orion_memory where user_id = $1 and id = $2 and group_id is null",
+                                   user_id, row_id):
+            raise LookupError(group)
+        fresh = new_group()
+        await conn.execute("update orion_memory set group_id = $3 where user_id = $1 and group_id is null "
+                           "and (id = $2 or copied_from = $2)", user_id, row_id, fresh)
+        return fresh
+    if not await conn.fetchval("select 1 from orion_memory where user_id = $1 and group_id = $2 limit 1",
+                               user_id, group):
+        raise LookupError(group)
+    return group
+
+
 CONTENT_KEY = "coalesce(copied_from, id)"
 
 
@@ -430,7 +460,14 @@ async def _insert_new(conn, rows, source_kind: str) -> int:
 
 
 async def add_note(user_id: str, text: str, settings, source_kind: str = "manual") -> int:
-    """Embed and store a text the user (or the assistant on the user's request) wants remembered."""
+    """Embed and store a text the user (or the assistant on the user's request) wants remembered; returns how many
+    rows were new."""
+    return (await add_note_to(user_id, text, settings, source_kind))["added"]
+
+
+async def add_note_to(user_id: str, text: str, settings, source_kind: str = "manual", group: str | None = None) -> dict:
+    """A note as a new memory, or a part added to the memory `group` (LookupError when this user has no such
+    memory). {"added": new rows, "group_id"}."""
     from orion.worker.services.router import chunk_text
     text = (text or "").strip()
     if not text:
@@ -441,11 +478,11 @@ async def add_note(user_id: str, text: str, settings, source_kind: str = "manual
     try:
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
-        rows, group = [], new_group()
+        rows, group = [], await join_group(conn, user_id, group)
         for piece in chunk_text(text) or [text]:
             for vector in await _embed(piece, target, "document", local):
                 rows.append((user_id, piece, space, _vector(vector), None, group, None, None))
-        return await _insert_new(conn, rows, source_kind)
+        return {"added": await _insert_new(conn, rows, source_kind), "group_id": group}
     finally:
         await conn.close()
 
@@ -474,10 +511,11 @@ def file_refusal(kind: str, support: dict) -> str:
     return f"Dosya eklenmedi: {support['model']} {sense} anlamıyor. {label} için EmbeddingGemma 2'yi ek dosyasıyla seç."
 
 
-async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> dict:
-    """A file the user adds on the memory page. A text file (.txt/.md): one row per chunk. An image or audio: as a
-    chat save stores it (one copy per sha256 linked to each row; the same file in the same space is skipped).
-    {"added": new rows, "warnings": [...]}; ValueError with a Turkish sentence for a file that cannot be added."""
+async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, group: str | None = None) -> dict:
+    """A file the user adds on the memory page, as a new memory or into the memory `group`. A text file (.txt/.md):
+    one row per chunk. An image or audio: as a chat save stores it (one copy per sha256 linked to each row; the same
+    file in the same space is skipped). {"added": new rows, "group_id", "warnings": [...]}; ValueError with a Turkish
+    sentence for a file that cannot be added, LookupError for a memory this user does not have."""
     import hashlib
     from orion.kernel.media_store import MAX_MEDIA_BYTES, hold_media, link_media
     from orion.worker.services.router import chunk_text
@@ -499,14 +537,14 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> 
     try:
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
-        group = new_group()
+        group = await join_group(conn, user_id, group)
         if kind == "text":
             rows = []
             for piece in chunk_text(text) or [text]:
                 for vector in await _embed(piece, target, "document", local):
                     rows.append((user_id, piece, space, _vector(vector), name or None, group, None, None))
             added = await _insert_new(conn, rows, "file")
-            return {"added": added, "warnings": [] if added else ["Bu metin hafızada zaten var."]}
+            return {"added": added, "group_id": group, "warnings": [] if added else ["Bu metin hafızada zaten var."]}
         support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
         if not support[kind]:
             raise ValueError(file_refusal(kind, support))
@@ -514,7 +552,7 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> 
         media_id = hashlib.sha256(raw).hexdigest()
         if await conn.fetchval("select 1 from orion_memory where user_id = $1 and vector_space = $2 "
                                "and media_id = $3 limit 1", user_id, space, media_id):
-            return {"added": 0, "warnings": ["Bu dosya hafızada zaten var."]}
+            return {"added": 0, "group_id": group, "warnings": ["Bu dosya hafızada zaten var."]}
         item = {"kind": kind, "media_id": media_id, "mime": mime, "name": name, "text": ""}
         try:
             rows = await _rows_of(item, mime, raw, target)
@@ -527,7 +565,7 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> 
                 row_id = await conn.fetchval(MEDIA_INSERT_SQL, user_id, label[:1000], space, _vector(vector), "file",
                                              name or None, kind, media_id, mime, seconds, group, None, None)
                 await link_media(media_id, "memory", str(row_id), conn=conn)
-        return {"added": len(rows), "warnings": []}
+        return {"added": len(rows), "group_id": group, "warnings": []}
     finally:
         await conn.close()
 
@@ -843,7 +881,7 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
     for r in page_rows:
         # Every row of the space has a meaning score (no threshold), so a text match is what the label says.
         match = (r["tmatch"] or "meaning") if query else None
-        rows.append({"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat(),
+        rows.append({"id": r["id"], "text": r["text"], "date": local_time(r["created_at"]),
                      "kind": r.get("kind") or "text", "media_id": r.get("media_id"),
                      "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match,
                      "group": groups.get(r["id"])})

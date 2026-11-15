@@ -119,6 +119,10 @@ def card(group: str, rows: list[dict], prefer, active, full: bool = False, match
         for r in rows:
             in_spaces.setdefault(content_key(r), []).append(r["vector_space"])
         item["parts"] = [_part(p, sorted(set(in_spaces[content_key(p)])), True) for p in parts]
+        # The models it can be searched with: one memory with vectors from one or more models, never "copies".
+        item["models"] = [{"space": s, "active": s == active,
+                           "parts": sum(1 for p in parts if s in in_spaces[content_key(p)])}
+                          for s in sorted(spaces, key=lambda s: (s != active, s))]
         chat = next((r for r in rows if r.get("source_chat_id")), None)
         item["source_chat_id"] = chat["source_chat_id"] if chat else None
         return item
@@ -196,7 +200,8 @@ def merge_matches(meaning: list[dict], texts: list[dict]) -> list[dict]:
 
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
                       vector_space: str = "all", kind: str = "all") -> dict:
-    """A page of this user's memories (cards) and a summary. Without `q`: newest first. With `q`: by their best
+    """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
+    active one's, "all": every model's). Without `q`: newest first. With `q`: by their best
     part's meaning score plus a text-match bonus (as the tool ranks), each with `match` (meaning, text, similar:
     what the words did; `score` says the meaning), `score` and `strength` (strong, medium, weak: next to the best result)."""
     q = (q or "").strip()
@@ -207,6 +212,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         space, vector, reason = await memory._query_vector(q, settings)
     else:
         space = await memory.current_space(settings)
+    if vector_space == "active":  # The page's default: whichever model is active now.
+        vector_space = space or "all"
     prefer = vector_space if vector_space != "all" else space
     conn = await memory._connect()
     more, search = False, {}
@@ -330,12 +337,13 @@ async def delete_groups(user_id: str, groups: list[str]) -> list[dict]:
 
 
 async def delete_copied(user_id: str, vector_space: str, settings) -> int:
-    """Delete the rows of another space that have a copy in the active one (after a move); returns how many."""
+    """Remove another model's vectors from the memories that have the active model's too (after a move); a memory
+    with only that model's vectors keeps them. Returns how many vectors (rows) went."""
     space = await memory.current_space(settings)
     if not space:
         raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
     if vector_space == space:
-        raise ValueError("Etkin modelin kayıtları bu yolla silinmez.")
+        raise ValueError("Etkin modelin vektörleri kaldırılamaz.")
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
@@ -351,10 +359,31 @@ async def delete_copied(user_id: str, vector_space: str, settings) -> int:
 
 # --- Map ------------------------------------------------------------------------------------------------------------
 
-async def map_graph(user_id: str, settings, k: int = 4, floor: float = 0.3, limit: int = MAP_NODES) -> dict:
-    """The newest `limit` memories of the active space as nodes and, per node, edges to its `k` nearest others
-    (cosine of the memories' mean vectors) at or above `floor`, all computed by pgvector."""
-    space = await memory.current_space(settings)
+MAP_MIN_SIM = 0.05  # A pair less similar than this is never linked, whatever the space's spread.
+
+
+def map_floor(mean: float | None, pairs: int) -> float:
+    """The similarity from which two memories of a space are linked: the space's typical pair (the mean of all its
+    pairs), so only pairs less alike than usual (unrelated) are dropped. Each model spreads its similarities
+    differently, so a fixed number would not do. Too few pairs to tell: MAP_MIN_SIM."""
+    if mean is None or pairs < 3:
+        return MAP_MIN_SIM
+    return max(MAP_MIN_SIM, float(mean))
+
+
+def _label(item: dict) -> str:
+    label = item.get("title") if item["source_kind"] == "file" else None
+    label = label or item.get("text") or next((p["text"] for p in item["parts"]), "") or ""
+    return " ".join(label.split())
+
+
+async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, vector_space: str = "") -> dict:
+    """The newest `limit` memories of a vector space (the active model's unless `vector_space` names another) as
+    nodes and, per node, edges to its `k` nearest others (cosine of the memories' mean vectors) at or above the
+    space's floor (map_floor), all computed by pgvector. Each edge's `w` places it between the floor (0) and the
+    space's most similar pair (1)."""
+    active = await memory.current_space(settings)
+    space = vector_space or active
     if not space:
         raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
     limit, k = max(1, min(int(limit), MAP_NODES)), max(1, min(int(k), 10))
@@ -366,10 +395,16 @@ async def map_graph(user_id: str, settings, k: int = 4, floor: float = 0.3, limi
         total = await conn.fetchval(f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1 "
                                     "and vector_space = $2", user_id, space)
         groups = [r["g"] for r in await conn.fetch(f"select g from ({picked}) p", user_id, space, limit)]
+        # Every pair once (<= 45k at 300 nodes): the space's own spread.
+        stats = await conn.fetchrow(
+            f"with p as materialized ({picked}) select avg(s) as mean, stddev_pop(s) as sd, max(s) as top, "
+            f"count(*) as n from (select 1 - (a.v <=> b.v) as s from p a join p b on a.g < b.g) t",
+            user_id, space, limit)
+        floor = map_floor(stats["mean"], int(stats["n"] or 0))
         edges = await conn.fetch(
             f"with p as materialized ({picked}) select a.g as a, n.g as b, n.sim from p a cross join lateral "
             f"(select b.g, 1 - (a.v <=> b.v) as sim from p b where b.g <> a.g order by a.v <=> b.v limit $4) n "
-            f"where n.sim >= $5", user_id, space, limit, k, float(floor))
+            f"where n.sim >= $5", user_id, space, limit, k, floor)
         members = await _group_rows(conn, user_id, groups)
     finally:
         await conn.close()
@@ -378,18 +413,61 @@ async def map_graph(user_id: str, settings, k: int = 4, floor: float = 0.3, limi
         rows = members.get(g)
         if not rows:
             continue
-        item = card(g, rows, space, space)
-        label = item.get("title") if item["source_kind"] == "file" else None
-        label = label or item.get("text") or next((p["text"] for p in item["parts"]), "") or ""
+        item = card(g, rows, space, active)
         thumb = next((p["id"] for p in item["parts"] if p["kind"] == "image" and p.get("media")), None)
-        nodes.append({"group_id": g, "kind": item["kind"], "counts": item["counts"], "label": " ".join(label.split())[:80],
+        nodes.append({"group_id": g, "kind": item["kind"], "counts": item["counts"], "label": _label(item)[:80],
                       "thumb": thumb, "created_at": item["created_at"], "part_count": item["part_count"]})
     pairs: dict[tuple[str, str], float] = {}
     for e in edges:
         key = (min(e["a"], e["b"]), max(e["a"], e["b"]))
-        pairs[key] = max(pairs.get(key, 0.0), round(float(e["sim"]), 4))
-    return {"space": space, "nodes": nodes, "total": int(total or 0), "capped": int(total or 0) > len(nodes),
-            "edges": [{"a": a, "b": b, "sim": sim} for (a, b), sim in sorted(pairs.items())]}
+        pairs[key] = max(pairs.get(key, -1.0), round(float(e["sim"]), 4))
+    top = float(stats["top"]) if stats["top"] is not None else 1.0
+    span = max(top - floor, 1e-6)
+
+    def rounded(value):
+        return None if value is None else round(float(value), 4)
+    return {"space": space, "active": space == active, "nodes": nodes, "total": int(total or 0),
+            "capped": int(total or 0) > len(nodes), "floor": round(floor, 4),
+            "spread": {"pairs": int(stats["n"] or 0), "mean": rounded(stats["mean"]), "sd": rounded(stats["sd"]),
+                       "max": rounded(stats["top"])},
+            "edges": [{"a": a, "b": b, "sim": sim, "w": round(min(1.0, max(0.0, (sim - floor) / span)), 3)}
+                      for (a, b), sim in sorted(pairs.items())]}
+
+
+async def space_vectors(user_id: str, vector_space: str, settings, sample: int = 50) -> dict:
+    """What removing `vector_space`'s vectors would do: the memories that also have the active model's vectors
+    lose `vector_space` (they stay, searchable with the active model); those with only its vectors keep them."""
+    space = await memory.current_space(settings)
+    if not space:
+        raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
+    if vector_space == space:
+        raise ValueError("Etkin modelin vektörleri kaldırılamaz.")
+    has_active = ("exists (select 1 from orion_memory c where c.user_id = r.user_id and c.vector_space = $3 "
+                  "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))")
+    conn = await memory._connect()
+    try:
+        await memory.ensure_memory_table(conn)
+        counts = await conn.fetchrow(
+            f"select count(distinct {GROUP_KEY}) filter (where {has_active}) as memories, "
+            f"count(*) filter (where {has_active}) as vectors, "
+            f"count(distinct {GROUP_KEY}) filter (where not {has_active}) as kept "
+            f"from orion_memory r where user_id = $1 and vector_space = $2", user_id, vector_space, space)
+        groups = [r["g"] for r in await conn.fetch(
+            f"select {GROUP_KEY} as g, max(created_at) as at from orion_memory r where user_id = $1 "
+            f"and vector_space = $2 and {has_active} group by 1 order by at desc limit $4",
+            user_id, vector_space, space, sample)]
+        members = await _group_rows(conn, user_id, groups)
+    finally:
+        await conn.close()
+    items = []
+    for g in groups:
+        rows = members.get(g)
+        if rows:
+            item = card(g, rows, space, space)
+            items.append({"group_id": g, "kind": item["kind"], "label": _label(item)[:120],
+                          "created_at": item["created_at"]})
+    return {"space": vector_space, "active": space, "memories": int(counts["memories"] or 0),
+            "vectors": int(counts["vectors"] or 0), "kept": int(counts["kept"] or 0), "items": items}
 
 
 # --- Context for the tools ------------------------------------------------------------------------------------------
@@ -450,7 +528,7 @@ def _readable(rows) -> list[dict]:
         text = message_text(message)
         if text:
             found.append({"id": r["id"], "role": message.get("role"), "text": text[:CHAT_TEXT_CAP],
-                          "date": r["created_at"].date().isoformat() if r["created_at"] else None})
+                          "date": memory.local_time(r["created_at"])})
     return found
 
 
@@ -517,7 +595,7 @@ async def memory_context(user_id: str, row_id: int, settings, with_chat: bool = 
             shown.append({**_part(part, full=True), "index": index + 1})
         result = {"group": group, "row": row, "parts": shown, "part_count": len(parts), "rest": rest,
                   "source_kind": rows[0]["source_kind"], "title": rows[0]["source_chat_title"],
-                  "date": min(r["created_at"] for r in rows).date().isoformat()}
+                  "date": memory.local_time(min(r["created_at"] for r in rows))}
         if with_chat:
             await registry._ensure_tables(conn)
             # A part saved with this row knows the chat when this one does not (an old row that was copied).

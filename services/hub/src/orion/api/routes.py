@@ -90,6 +90,7 @@ async def save_chat_to_memory(chat_id: str, request: Request, current_user: str 
 
 class MemoryNote(BaseModel):
     text: str = ""
+    group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
 
 
 class MemoryDelete(BaseModel):
@@ -125,13 +126,27 @@ async def memory_group(group_id: str, request: Request, current_user: str = Depe
 
 
 @router.get("/api/v1/memory/map")
-async def memory_map(request: Request, k: int = 4, floor: float = 0.3, limit: int = 300,
+async def memory_map(request: Request, k: int = 5, limit: int = 300, vector_space: str = "",
                      current_user: str = Depends(get_current_user)):
-    """The memories of the active model as a graph: each one's nearest neighbours above `floor` (pgvector)."""
+    """A model's memories (the active one's by default) as a graph: each one's nearest neighbours above the
+    space's own floor (pgvector)."""
     from orion.kernel import memory, memory_groups
     try:
         return await memory_groups.map_graph(current_user, await get_runtime_settings(request.app.state.redis, current_user),
-                                             k, max(-1.0, min(floor, 1.0)), limit)
+                                             k, limit, vector_space[:100])
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.get("/api/v1/memory/vectors")
+async def memory_space_vectors(request: Request, vector_space: str = "", current_user: str = Depends(get_current_user)):
+    """What removing another model's vectors would change (memory_groups.space_vectors)."""
+    from orion.kernel import memory, memory_groups
+    try:
+        return await memory_groups.space_vectors(current_user, vector_space[:100],
+                                                 await get_runtime_settings(request.app.state.redis, current_user))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -171,9 +186,10 @@ async def memory_move_cancel(current_user: str = Depends(get_current_user)):
         raise HTTPException(503, str(exc)) from exc
 
 
+@router.post("/api/v1/memory/vectors/remove")
 @router.post("/api/v1/memory/move/cleanup")
 async def memory_move_cleanup(payload: MemoryMove, request: Request, current_user: str = Depends(get_current_user)):
-    """Delete another model's rows that now have a copy in the active model."""
+    """Remove another model's vectors from the memories that have the active model's too."""
     from orion.kernel import memory, memory_groups
     try:
         return {"deleted": await memory_groups.delete_copied(
@@ -186,25 +202,31 @@ async def memory_move_cleanup(payload: MemoryMove, request: Request, current_use
 
 @router.post("/api/v1/memory")
 async def add_memory_note(payload: MemoryNote, request: Request, current_user: str = Depends(get_current_user)):
+    """A note as a new memory, or added to the memory `group_id`. {"added", "group_id"}: a staged note with files
+    passes the group on to the files' calls, so they are one memory."""
     from orion.kernel import memory
     try:
-        added = await memory.add_note(current_user, payload.text,
-                                      await get_runtime_settings(request.app.state.redis, current_user))
+        return await memory.add_note_to(current_user, payload.text,
+                                        await get_runtime_settings(request.app.state.redis, current_user),
+                                        group=payload.group_id or None)
+    except LookupError as exc:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"added": added}
 
 
 class MemoryFile(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)  # A data URL: base64 of at most 64 MB.
+    group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
 
 
 @router.post("/api/v1/memory/file")
 async def add_memory_file(payload: MemoryFile, request: Request, current_user: str = Depends(get_current_user)):
-    """An image, audio or text (.txt/.md) file the user adds on the memory page, sent as a data URL."""
+    """An image, audio or text (.txt/.md) file the user adds on the memory page, sent as a data URL: a new memory,
+    or a part of the memory `group_id`."""
     from orion.kernel import memory
     from orion.kernel.media_store import decode_data_url
     try:
@@ -213,7 +235,10 @@ async def add_memory_file(payload: MemoryFile, request: Request, current_user: s
         raise HTTPException(400, "Dosya okunamadı.") from exc
     try:
         return await memory.add_file(current_user, payload.name, mime, raw,
-                                     await get_runtime_settings(request.app.state.redis, current_user))
+                                     await get_runtime_settings(request.app.state.redis, current_user),
+                                     group=payload.group_id or None)
+    except LookupError as exc:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
