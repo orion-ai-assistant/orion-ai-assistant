@@ -129,7 +129,7 @@ def model_history(history, max_messages, slide=1, prior_turns=0):
 
 # What a memory file opened for the model is shown as; a "file" ref (a document, or media the model could not take)
 # only records that the file was opened in the chat.
-MODEL_MEDIA_KINDS = ("image", "audio")
+MODEL_MEDIA_KINDS = ("image", "audio", "document")
 
 
 def media_message(refs):
@@ -139,7 +139,7 @@ def media_message(refs):
     parts = [{"type": "text", "text": "Files opened from memory (the user did not write this; it is what "
                                       "open_memory_files opened):"}]
     for ref in refs:
-        label = "Image" if ref.get("kind") == "image" else "Audio"
+        label = {"image": "Image", "audio": "Audio", "document": "Text document"}.get(ref.get("kind"), "File")
         parts.append({"type": "text", "text": f"Memory {ref.get('memory_id')} — {label}: {ref.get('label') or ''}"})
         parts.append({"type": "hub_media", "attachment": {
             "media_id": ref["media_id"], "mime_type": ref.get("mime_type"), "memory_id": ref.get("memory_id")}})

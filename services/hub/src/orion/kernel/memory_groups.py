@@ -316,6 +316,21 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
             "whole_score": None if whole is None else round(float(whole), 4)}
 
 
+async def all_score(conn, user_id: str, group: str, space, vector) -> float | None:
+    """The memory's score over all its content: the query's cosine with the mean of every piece vector it has in
+    `space` (all items and tracks; whole vectors left out, they are means already). The mean's length does not change
+    a cosine, so this is the same as against the normalized mean, as stored whole vectors are made; pgvector
+    averages in the database, nothing is read out."""
+    if vector is None or not space:
+        return None
+    where = "group_id = $2" if not group.startswith("r") else "group_id is null and id = $2::text::bigint"
+    key = group if not group.startswith("r") else group[1:]
+    value = await conn.fetchval(
+        f"select 1 - (avg(embedding) <=> $3::vector) from orion_memory where user_id = $1 and vector_space = $4 "
+        f"and not whole and {where}", user_id, key, vector, space)
+    return None if value is None else float(value)
+
+
 async def _scores(conn, user_id: str, groups: list[str], space, vector) -> dict[int, float]:
     """The meaning score of every row of these memories in the space `space`."""
     if not groups or vector is None or not space:
@@ -518,10 +533,12 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
         if not rows:
             return None
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
+        whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
     finally:
         await conn.close()
     in_space = _in_space(rows, space)
     found = score_parts(in_space, scores, q)
+    found["all_score"] = None if whole_memory is None else round(whole_memory, 4)
     # The page shows each part once (the copy in the preferred space): its match is the match of its content.
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}
     found["parts"] = {str(r["id"]): by_content[content_key(r)] for r in rows
@@ -558,8 +575,14 @@ async def _summary(conn, user_id: str, space) -> dict:
     return summary
 
 
-async def group_detail(user_id: str, group: str, settings) -> dict | None:
-    """The whole memory for the detail panel: every part (full text, the spaces it is in) and its source chat."""
+DETAIL_PARTS = 60  # Parts per detail page: a payload and rendering cap (a 600k-character file has >1000 parts).
+
+
+async def group_detail(user_id: str, group: str, settings, offset: int = 0, limit: int = DETAIL_PARTS,
+                       around: int | None = None) -> dict | None:
+    """The memory for the detail panel: a window of its parts (full text, the spaces they are in) and its source
+    chat. `around`: the window holds that part (a search's best part), else it starts at `offset`. The answer says
+    `parts_total` and `parts_offset` (the window's first part's place, from 0)."""
     space = await memory.current_space(settings)
     conn = await memory._connect()
     try:
@@ -568,6 +591,14 @@ async def group_detail(user_id: str, group: str, settings) -> dict | None:
         if not rows:
             return None
         item = card(group, rows, space, space, full=True)
+        parts = item["parts"]
+        limit = max(1, min(int(limit), 500))
+        if around is not None:
+            at = next((i for i, p in enumerate(parts) if p["id"] == around), None)
+            if at is not None:
+                offset = at - limit // 3
+        offset = max(0, min(int(offset), max(0, len(parts) - limit)))
+        item.update(parts=parts[offset:offset + limit], parts_total=len(parts), parts_offset=offset)
         chat_id = item.pop("source_chat_id")
         item["source_chat"] = None
         if chat_id:
@@ -975,6 +1006,18 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
     return found
 
 
+def readable_name(text: str, words: int = 6, limit: int = 48) -> str:
+    """A file name from a text's first words ("Elif Kaya 34 yaşında İzmir Karşıyaka"): letters, digits and spaces
+    only, cut at a word."""
+    import re
+    name = ""
+    for word in re.sub(r"[^\w\s]", " ", text or "").split()[:words]:
+        if len(name) + len(word) + 1 > limit:
+            break
+        name = f"{name} {word}".strip()
+    return name
+
+
 async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     """The text item a memory row belongs to, as one document: {"name", "text" (its pieces joined in order: pieces
     are whole paragraphs, so this is the text that was saved), "pieces": [{"id", "text"}], "asked" (the row's place
@@ -1002,7 +1045,8 @@ async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     if row.get("source_kind") == "file" and title and "." in title[-6:]:
         name = title
     else:
-        name = f"Hafıza kaydı {row['id']}.txt"
+        name = readable_name(pieces[0]["text"]) or f"Hafıza kaydı {row['id']}"
+        name += ".txt"
     return {"name": name, "text": "\n\n".join(p["text"] for p in pieces),
             "pieces": [{"id": p["id"], "text": p["text"]} for p in pieces], "asked": asked,
             "source_kind": row.get("source_kind"), "title": title}

@@ -488,3 +488,29 @@ def test_a_long_pasted_query_is_cut_not_refused_and_matches_by_meaning_only():
     parts = [{'id': 1, 'kind': 'text', 'text': long, 'whole': False}]
     found = mg.score_parts(parts, {1: 0.4}, long)
     assert found['parts'][1]['match'] == 'meaning'
+
+
+
+def test_a_long_query_is_embedded_as_the_mean_of_its_windows_sampled_evenly(monkeypatch):
+    import asyncio
+    from orion.kernel import memory
+    seen = []
+
+    async def target(settings):
+        return None, 'space', True
+
+    async def embed(text, target, kind, local):
+        seen.append((text, kind))
+        return [[1.0] + [0.0] * 767]
+    monkeypatch.setattr(memory, 'embedding_target', target)
+    monkeypatch.setattr(memory, '_embed', embed)
+    memory._query_cache.clear()
+    passage = '\n\n'.join(f'Paragraf {k}: ' + ' '.join([f'kelime{k}'] * 300) for k in range(200))
+    windows, total = memory.query_windows(passage)
+    assert total > memory.QUERY_WINDOWS and len(windows) == memory.QUERY_WINDOWS
+    assert 'Paragraf 0' in windows[0] and any('Paragraf 19' in w for w in windows[-3:])  # Across the whole text.
+    space, vector, reason = asyncio.run(memory._query_vector(passage, None))
+    assert (space, reason, len(seen)) == ('space', None, memory.QUERY_WINDOWS)
+    assert {kind for _, kind in seen} == {'query'}
+    # Asked again (the detail's part scores): from the cache, nothing embedded.
+    assert asyncio.run(memory._query_vector(passage, None))[1] == vector and len(seen) == memory.QUERY_WINDOWS

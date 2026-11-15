@@ -275,17 +275,30 @@ async def _open_document(row_id: int, context: ToolContext, settings, earlier: d
     finally:
         await conn.close()
     pieces, asked = doc["pieces"], doc["asked"]
+    entry["parts"] = len(pieces)
+    sent, sent_sha = raw, sha
     if len(doc["text"]) <= memory_groups.GROUP_TEXT_CAP:
-        entry["text"] = doc["text"]
+        entry["you_get"] = "the whole text, in the message right after this result"
     else:
+        # Too long for the context at once: the asked part with two neighbours each side reaches the model; the
+        # user has the whole file.
         lo, hi = max(0, asked - 2), min(len(pieces), asked + 3)
-        entry["parts"] = [{"id": p["id"], "part": f"{i + 1} of {len(pieces)}", "text": p["text"]}
-                          for i, p in enumerate(pieces[lo:hi], lo)]
-        entry["more"] = (f"The document has {len(pieces)} parts; only parts {lo + 1}-{hi} (around the one asked) are "
-                         "here. To read on, call memory_context with the id of the first or last part shown and "
-                         "neighbours=3; the user has the whole file under this answer.")
+        sent = "\n\n".join(p["text"] for p in pieces[lo:hi]).encode("utf-8")
+        sent_sha = hashlib.sha256(sent).hexdigest()
+        conn = await memory._connect()
+        try:
+            async with conn.transaction():
+                await hold_media(conn, sent_sha, mime, sent)
+                await link_media(sent_sha, "chat", context.chat_id, conn=conn)
+        finally:
+            await conn.close()
+        entry["you_get"] = (f"parts {lo + 1}-{hi} of {len(pieces)} (around the one asked), in the message right "
+                            "after this result")
+        entry["read_more"] = (f"memory_context with id {pieces[lo]['id']} or {pieces[hi - 1]['id']} and "
+                              "neighbours=3 reads the parts before or after")
     return {"entry": entry, "attachment": attachment_of(row, context.chat_id),
-            "ref": {"memory_id": row_id, "kind": "file", "media_id": sha, "mime_type": mime}}
+            "ref": {"memory_id": row_id, "kind": "document", "media_id": sent_sha, "source": sha,
+                    "mime_type": mime, "label": doc["name"]}}
 
 
 async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict:
@@ -293,7 +306,8 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
     model: images/audio/video it can take go in `_model_media` (a tool message cannot carry media on
     OpenAI-compatible APIs: the tool runner keeps them on the tool message as references and hands them to the model
     in a user message right after it, on this and every later turn, see tool_history.media_message); a text memory
-    (a .txt/.md file, a note) comes back as its text."""
+    (a .txt/.md file, a note) reaches the model the same way, as a text attachment: the result holds only what was
+    opened (no file content), so the text is in the conversation once."""
     from orion.kernel import memory
     from orion.kernel.config import get_runtime_settings
     settings = await get_runtime_settings(None, context.user_id)
@@ -359,9 +373,9 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
     result = {}
     if opened:
         result["opened"] = opened
-        result["note"] = ("The user sees the opened files under your answer and can open them. Images/audio you can "
-                          "take come in the user message right after this result (the tool added it, not the user) "
-                          "and stay in the chat; a text's content is above. Answer from them.")
+        result["note"] = ("The user sees the opened files under your answer and can open them. What you can take "
+                          "(images, audio, texts) comes in the user message right after this result (the tool added "
+                          "it, not the user) and stays in the chat. Answer from it.")
     if again:
         result["already_open"] = again
     if media or refs:
