@@ -69,7 +69,6 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(processor, 'generate_chat_title', AsyncMock()))
             stack.enter_context(patch.object(processor, 'ToolConversation', return_value=conversation))
             stack.enter_context(patch('orion.worker.services.tts_stream.stream_tts', provider))
-            stack.enter_context(patch('orion.worker.services.tts_stream.RETRY_DELAY', 0))
             await asyncio.wait_for(processor.process_message(redis, '1-0', {}, 'test'), 2)
         self.assertEqual(events[-1]['type'], 'done')
         self.assertEqual(events[-1]['data']['status'], 'completed')
@@ -96,6 +95,6 @@ class WorkerSpeechTests(unittest.IsolatedAsyncioTestCase):
     async def test_tts_failure_does_not_fail_or_duplicate_the_text_response(self):
         events, requests = await self.run_turn(fail_audio=True)
         # The reply ended before the first part was asked for, so its short tail went with it. The part is asked for
-        # twice, then the speech ends and the text is untouched.
-        self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim? Sonraki.'] * 2)
+        # once; it fails, the speech ends and the text is untouched.
+        self.assertEqual(requests, ['Merhaba, nasıl yardımcı olabilirim? Sonraki.'])
         self.assertTrue(any(event['type'] == 'warning' for event in events))

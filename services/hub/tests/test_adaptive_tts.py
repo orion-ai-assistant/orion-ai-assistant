@@ -126,6 +126,29 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
     def context(self):
         return SimpleNamespace(voice=None, emit_audio_stream=AsyncMock(), emit_audio=AsyncMock(return_value={'saved': True}))
 
+    def names(self, context):
+        return [call.args[0] for call in context.emit_audio_stream.call_args_list]
+
+    async def test_audio_done_goes_out_before_the_recording_is_saved(self):
+        # The client's stop button waits for audio_done; saving the recording can take a while.
+        context = self.context()
+        order = []
+        async def stream_event(name, data):
+            order.append(name)
+        async def save(*args, **kwargs):
+            order.append('recording')
+            return {'saved': True}
+        context.emit_audio_stream = stream_event
+        context.emit_audio = save
+        async def provider(text, *_):
+            yield b'\x01\x02', PCM
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
+            speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
+            await speech.feed('İlk cümle burada. ')
+            await speech.finish()
+        self.assertEqual(order.count('audio_done'), 1)
+        self.assertLess(order.index('audio_done'), order.index('recording'))
+
     async def test_first_two_sentences_go_alone_then_ready_ones_together(self):
         context = self.context()
         first = asyncio.Event()
@@ -316,20 +339,19 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             await speech.finish()
         self.assertEqual(' '.join(requests), 'Merhaba. Devam.')
 
-    async def test_provider_down_keeps_the_text_and_stops_after_two_parts_in_a_row(self):
+    async def test_provider_down_keeps_the_text_and_asks_only_once(self):
         requests = []
         async def provider(text, *_):
             requests.append(text)
             raise RuntimeError('provider failed')
             yield
-        with patch('orion.worker.services.tts_stream.stream_tts', provider), \
-                patch('orion.worker.services.tts_stream.RETRY_DELAY', 0):
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(self.context(), None, AsyncMock(return_value=False), lambda: 10)
             speech.MAX_BATCH_SENTENCES = 1
             await speech.feed('İlk cümle burada. İkinci cümle burada. Üçüncü cümle burada. ')
             self.assertIsNone(await speech.finish())
-        # Each part is asked for twice; after two failed parts the third is not even tried.
-        self.assertEqual(requests, ['İlk cümle burada.'] * 2 + ['İkinci cümle burada.'] * 2)
+        # One try; the first failed part ends the speech and no later part is asked for.
+        self.assertEqual(requests, ['İlk cümle burada.'])
         self.assertIsInstance(speech.error, RuntimeError)
 
     async def test_stop_while_waiting_for_more_text_cancels_every_task(self):
@@ -361,14 +383,13 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         async def provider(text, *_):
             yield b'\x01\x02', PCM
             raise RuntimeError('transport failed')
-        with patch('orion.worker.services.tts_stream.stream_tts', provider), \
-                patch('orion.worker.services.tts_stream.RETRY_DELAY', 0):
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
             await speech.feed('İlk cümle burada. ')
             kept = await speech.finish()
         context.emit_audio.assert_awaited_once()
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
-        self.assertEqual(context.emit_audio_stream.call_args_list[-1].args[0], 'audio_done')
+        self.assertEqual(self.names(context)[-1], 'audio_done')
         # The part that did play is what the worker saves into the chat.
         self.assertEqual(kept, {'saved': True})
         self.assertIsInstance(speech.error, RuntimeError)
@@ -381,19 +402,18 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             if len(requests) in (2, 3):
                 raise RuntimeError('provider failed')
             yield b'' * 2400, PCM
-        with patch('orion.worker.services.tts_stream.stream_tts', provider), \
-                patch('orion.worker.services.tts_stream.RETRY_DELAY', 0):
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
             await speech.feed('Birinci cümle burada. ')
             await asyncio.sleep(0.05)  # the first part is asked for before the rest of the reply arrives
             await speech.feed('İkinci cümle de burada. Üçüncü cümle geliyor. ')
             kept = await speech.finish()
-        # The failed part was asked for twice; the next one still played and nothing was resynthesized.
-        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle de burada.', 'İkinci cümle de burada.',
-                                    'Üçüncü cümle geliyor.'])
+        # The failed part ends the speech: it is not asked for again and the next one is not asked for at all.
+        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle de burada.'])
         self.assertEqual(kept, {'saved': True})
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
         self.assertIn('Birinci cümle burada.', context.emit_audio.call_args.kwargs['text'])
+        self.assertNotIn('Üçüncü', context.emit_audio.call_args.kwargs['text'])
         self.assertEqual(context.emit_audio_stream.call_args_list[-1].args[1]['status'], 'failed')
         self.assertIsInstance(speech.error, RuntimeError)
 
@@ -411,8 +431,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
 
     async def speak(self, provider, text, context=None):
         context = context or self.context()
-        with patch('orion.worker.services.tts_stream.stream_tts', provider), \
-                patch('orion.worker.services.tts_stream.RETRY_DELAY', 0):
+        with patch('orion.worker.services.tts_stream.stream_tts', provider):
             speech = AdaptiveTts(context, None, AsyncMock(return_value=False), lambda: 10)
             speech.MAX_BATCH_SENTENCES = 1
             await speech.feed(text)
@@ -423,46 +442,19 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         return b''.join(base64.b64decode(c.args[1]['chunk'])
                         for c in context.emit_audio_stream.call_args_list if c.args[0] == 'audio_chunk')
 
-    async def test_part_that_fails_once_is_asked_for_again_and_the_reply_keeps_playing(self):
-        # The third part broke a few KB in, as in the joke that stopped after 17 seconds.
-        provider, requests = self.scripted({3: (b'', RuntimeError('connection lost'))})  # before any audio
-        speech, context, kept = await self.speak(
-            provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. Dördüncü cümle burada. ')
-        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.', 'Üçüncü cümle burada.',
-                                    'Üçüncü cümle burada.', 'Dördüncü cümle burada.'])
-        self.assertIsNone(speech.error)
-        self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'completed')
-        self.assertEqual(context.emit_audio.call_args.kwargs['text'],
-                         'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. Dördüncü cümle burada.')
-
-    async def test_part_that_fails_twice_is_skipped_but_the_next_sentences_are_still_sent(self):
+    async def test_part_that_fails_is_not_asked_for_again_and_no_later_part_is_sent(self):
         error = RuntimeError('connection lost')
-        provider, requests = self.scripted({2: (b'', error), 3: (b'', error)})
+        provider, requests = self.scripted({2: (b'', error)})
         speech, context, kept = await self.speak(
             provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. Dördüncü cümle burada. ')
-        self.assertEqual(requests[-1], 'Dördüncü cümle burada.')
-        self.assertIn('Üçüncü cümle burada.', requests)
+        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.'])
         text = context.emit_audio.call_args.kwargs['text']
-        self.assertNotIn('İkinci', text)
-        self.assertIn('Birinci cümle burada.', text)
-        self.assertIn('Üçüncü cümle burada.', text)
+        self.assertEqual(text, 'Birinci cümle burada.')
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
         self.assertEqual(kept, {'saved': True})
         self.assertIs(speech.error, error)
 
-    async def test_quota_error_is_not_asked_again_and_ends_the_speech(self):
-        class Quota(RuntimeError):
-            status = 429
-        provider, requests = self.scripted({2: (b'', Quota('quota'))})
-        speech, context, kept = await self.speak(
-            provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. ')
-        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.'])
-        self.assertEqual(kept, {'saved': True})
-        self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
-        self.assertEqual(getattr(speech.error, 'status', None), 429)
-
     async def test_failed_part_never_leaves_half_a_sample_in_the_audio(self):
-        # The broken first try ends on an odd byte; the second try must not be shifted by it.
         provider, requests = self.scripted({
             1: (b'\x01\x02\x03', RuntimeError('connection lost')),
             2: (b'\x04\x05\x06\x07', None),
@@ -470,21 +462,20 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
         speech, context, kept = await self.speak(provider, 'Birinci cümle burada. ')
         audio = self.relayed(context)
         self.assertEqual(audio, b'\x01\x02')  # the odd last byte of the broken part is dropped
-        self.assertEqual(requests, ['Birinci cümle burada.'])  # it had started playing: not asked for again
+        self.assertEqual(requests, ['Birinci cümle burada.'])  # not asked for again
 
-    async def test_part_that_breaks_after_it_started_is_not_played_twice(self):
+    async def test_part_that_breaks_after_it_started_keeps_what_was_heard_and_ends_the_speech(self):
         provider, requests = self.scripted({
             2: (b'\x05\x06' * 10, RuntimeError('connection lost')),
             3: (b'\x07\x08' * 10, None),
         })
         speech, context, kept = await self.speak(
             provider, 'Birinci cümle burada. İkinci cümle burada. Üçüncü cümle burada. ')
-        # The second part was partly heard, so it is not asked for again; the third still plays.
-        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.', 'Üçüncü cümle burada.'])
+        self.assertEqual(requests, ['Birinci cümle burada.', 'İkinci cümle burada.'])
         self.assertEqual(self.relayed(context).count(b'\x05\x06' * 10), 1)
         text = context.emit_audio.call_args.kwargs['text']
         self.assertIn('İkinci cümle burada.', text)
-        self.assertIn('Üçüncü cümle burada.', text)
+        self.assertNotIn('Üçüncü', text)
         self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'failed')
 
     async def test_odd_sized_network_chunks_are_realigned_across_a_part(self):
@@ -520,20 +511,6 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(released.is_set())
             self.assertTrue(speech.task.done())
 
-    async def test_part_answered_in_a_format_the_player_cannot_use_is_asked_for_again(self):
-        # The Router once labelled PCM that looked like an MP3 header as audio/mpeg; a second try is fine audio.
-        provider, requests = self.scripted({1: (b'compressed', None)})
-        formats = {1: {"format": "mp3"}}
-        scripted = provider
-        async def provider(text, *args):
-            number = len(requests) + 1
-            async for data, info in scripted(text, *args):
-                yield data, formats.get(number, info)
-        speech, context, kept = await self.speak(provider, 'İlk cümle burada. İkinci cümle burada. ')
-        self.assertEqual(requests, ['İlk cümle burada.', 'İlk cümle burada.', 'İkinci cümle burada.'])
-        self.assertIsNone(speech.error)
-        self.assertEqual(context.emit_audio.call_args.kwargs['status'], 'completed')
-
     async def test_provider_that_never_answers_in_pcm_ends_without_any_audio_event(self):
         context = self.context()
         requests = []
@@ -541,7 +518,7 @@ class AdaptiveTests(unittest.IsolatedAsyncioTestCase):
             requests.append(text)
             yield b'compressed', {"format": "mp3"}
         speech, context, kept = await self.speak(provider, 'İlk cümle burada. Devam ediyor burada. ', context)
-        self.assertEqual(len(requests), 4)  # two parts, asked twice each, then the speech ends
+        self.assertEqual(len(requests), 1)  # the first part fails once and the speech ends
         self.assertIsNotNone(speech.error)
         self.assertIsNone(kept)
         context.emit_audio_stream.assert_not_awaited()

@@ -10,12 +10,6 @@ from collections.abc import Awaitable, Callable
 from orion.worker.services.pcm_normalizer import PcmNormalizer
 from orion.worker.services.router import stream_tts
 
-# A speech part that fails is asked for once more after this pause; two parts in a row that fail
-# even then mean the service is down, and the rest of the reply stays text.
-PART_ATTEMPTS = 2
-RETRY_DELAY = 1.0
-MAX_FAILED_IN_A_ROW = 2
-
 
 def _batch_wav_pcm(data):
     """Normalize a completed sentence WAV to the existing playback PCM contract."""
@@ -63,7 +57,7 @@ async def relay_tts_batches(context, settings, should_stop: Callable[[], Awaitab
         pending = b""
         last_sentence = None
         texts = []
-        failed = []  # errors of the parts that could not be spoken even after a second try
+        failed = []  # the error of the part that could not be spoken (speech stops there)
 
         async def one_batch(batch, sentence_index):
             """Stream one sentence batch; whole PCM samples only, so a failed part never leaves half a sample."""
@@ -110,46 +104,46 @@ async def relay_tts_batches(context, settings, should_stop: Callable[[], Awaitab
                              (last_audio - first_audio) * 1000, size)
 
         async def audio_chunks():
-            failed_in_a_row = 0
             async for sentence_index, batch in batches:
                 spoken = False
-                hopeless = False
                 heard = 0  # pieces of this part that already reached the listener
-                for attempt in range(1, PART_ATTEMPTS + 1):
-                    try:
-                        async for item in one_batch(batch, sentence_index):
-                            heard += 1
-                            yield item
-                        spoken = True
-                        break
-                    except Exception as error:
-                        logging.warning("Speech part %s failed (attempt %d of %d, %d pieces already played): %r",
-                                        sentence_index, attempt, PART_ATTEMPTS, heard, error)
-                        # A quota or access error will not clear within a second; do not ask again.
-                        hopeless = getattr(error, "status", None) in (401, 403, 429)
-                        # A part that was already partly heard is not asked for again: its start would play twice.
-                        if heard or attempt == PART_ATTEMPTS or hopeless:
-                            failed.append(error)
-                            break
-                        await asyncio.sleep(RETRY_DELAY)
+                try:
+                    async for item in one_batch(batch, sentence_index):
+                        heard += 1
+                        yield item
+                    spoken = True
+                except Exception as error:
+                    # One try per part: a failure means the service has a problem right now.
+                    logging.warning("Speech part %s failed (%d pieces already played): %r",
+                                    sentence_index, heard, error)
+                    failed.append(error)
                 if spoken or heard:
                     texts.append(batch)
-                if spoken:
-                    failed_in_a_row = 0
-                else:
-                    failed_in_a_row += 1
                 if pcm_started:
                     # Lets a playing device flush what it has, also after a part that failed half way.
                     await context.emit_audio_stream("audio_batch_done", {
                         "sentence_index": sentence_index,
                         "chunk_count": sequence, "total_bytes": total,
                     })
-                if not spoken and (hopeless or failed_in_a_row >= MAX_FAILED_IN_A_ROW):
-                    return  # The service is not answering; the rest stays text.
+                if not spoken:
+                    return  # The rest of the reply stays text; no later part is even asked for.
 
         stream = audio_chunks()
         status = "failed"
+        stream_ended = False
+
+        async def end_stream(status):
+            """Tells the client the live audio is over, once. Sent before the recording is saved and
+            published: that takes a while, and the client's stop button stays up until it hears this."""
+            nonlocal stream_ended
+            if pcm_started and not stream_ended:
+                stream_ended = True
+                await context.emit_audio_stream("audio_done", {
+                    "status": status, "total_bytes": sum(map(len, relayed_chunks)), "chunk_count": sequence,
+                })
+
         async def recording(status):
+            await end_stream(status)
             if not info or not total:
                 return None
             audio = b"".join(relayed_chunks if pcm_started else chunks)
@@ -231,10 +225,7 @@ async def relay_tts_batches(context, settings, should_stop: Callable[[], Awaitab
             raise
         finally:
             await stream.aclose()
-            if pcm_started:
-                await context.emit_audio_stream("audio_done", {
-                    "status": status, "total_bytes": sum(map(len, relayed_chunks)), "chunk_count": sequence,
-                })
+            await end_stream(status)
 
     async def watch_stop():
         while not await should_stop():
