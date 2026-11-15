@@ -23,6 +23,9 @@ class MemoryInput(ToolInput):
                                    "türündeki en yeni kayıtlar listelenir.")
     tur: Literal["hepsi", "metin", "görsel", "ses", "video"] = Field(
         default="hepsi", description="Yalnız bu türdeki kayıtlar: metin, görsel, ses, video ya da hepsi")
+    haric: list[str] = Field(default_factory=list, max_length=5,
+                             description="Bunlara yakın ya da bunları içeren kayıtlar sonuçtan çıkarılır "
+                                         "(ör. ['köpek']). Sorguda '-köpek' yazmak da olur.")
     sayfa: int = Field(default=1, ge=1, le=100,
                        description="Sonuç sayfası: 1 = en iyi 1-10, 2 = 11-20... İlk sayfada yoksa ve 'daha_var' "
                                    "true ise sonraki sayfaya bak.")
@@ -44,6 +47,8 @@ def _row(row: dict, seen: dict | None = None) -> dict:
         item["skor"] = row["score"]
     if row.get("match"):
         item["eslesme"] = MATCH_LABELS.get(row["match"], row["match"])
+    if row.get("noise"):
+        item["zayif"] = True  # Only the nearest: not clearly closer than anything else in memory.
     if row.get("track") in TRACKS:
         item["iz"] = TRACKS[row["track"]]
     if row.get("span"):
@@ -80,7 +85,7 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
     query = args.sorgu.strip()
     try:
         found = await memory.search(context.user_id, query, await get_runtime_settings(None, context.user_id),
-                                    page=args.sayfa, kind=KINDS[args.tur])
+                                    page=args.sayfa, kind=KINDS[args.tur], exclude=args.haric)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
     seen: dict = {}
@@ -94,6 +99,11 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
         result["medya_notu"] = MEDIA_NOTE
     if any((row.get("group") or {}).get("parts", 1) > 1 for row in found["rows"]):
         result["grup_notu"] = GROUP_NOTE
+    if found.get("exclude_terms"):
+        result["haric"] = {"terimler": found["exclude_terms"], "cikarilan": found["excluded"]}
+    if query and found["rows"] and all(row.get("noise") for row in found["rows"]):
+        result["not"] = ("Hafızada buna benzeyen bir şey yok: en yakın kayıtlar bile bu sorgunun her kayda verdiği "
+                         "skorların üstüne çıkmıyor. Kullanıcıya bulunamadı de.")
     if not result["kayitlar"]:
         result["not"] = "Bu sayfada kayıt yok." if args.sayfa > 1 else "Hafızada bu aramayla kayıt bulunamadı."
     if found.get("reason"):

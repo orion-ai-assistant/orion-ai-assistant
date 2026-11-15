@@ -329,7 +329,9 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
     from orion.kernel.memory_pieces import mean_vector
     mode = payload.mode if payload.mode in ("together", "each") else "together"
     try:
+        from orion.kernel.memory_filters import parse_query
         space, vectors, kinds = payload.vector_space or None, [], []
+        exclude = []
         if payload.vectors:
             if any(len(v) != 768 for v in payload.vectors):
                 raise HTTPException(400, "Arama vektörü geçersiz.")
@@ -338,9 +340,12 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             space = space or await memory.current_space(settings)
         else:
             for one in payload.inputs:
-                if one.text.strip():
-                    space, vector, reason = await memory._query_vector(one.text.strip()[:memory.MAX_QUERY_CHARS],
-                                                                       settings)
+                text, negatives = parse_query(one.text.strip()[:memory.MAX_QUERY_CHARS])
+                exclude += negatives
+                if one.text.strip() and not text:
+                    continue  # Only negative terms: they filter, they are not searched for.
+                if text:
+                    space, vector, reason = await memory._query_vector(text, settings)
                     if vector is None:
                         raise HTTPException(503, reason or "Anlamla arama kapalı.")
                     kind = "query"
@@ -359,7 +364,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
             payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
             vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode,
-            input_labels=input_labels(kinds, len(vectors)))
+            input_labels=input_labels(kinds, len(vectors)), exclude=exclude)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:

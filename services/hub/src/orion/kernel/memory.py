@@ -1136,14 +1136,18 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
     return space, _vector(vector), kind
 
 
-async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all") -> dict:
+async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all",
+                 exclude: list[str] | None = None) -> dict:
     """One page (PAGE rows, best first, no threshold) of this user's memory for the `hafizada_ara` tool. With a
     query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
     order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
-    query = (query or "").strip()
+    from orion.kernel import memory_filters as mf
+    query, negatives = mf.parse_query((query or "").strip())
+    negatives = [*negatives, *(t.strip() for t in exclude or [] if t.strip())][:5]
     kind = kind if kind in KINDS else "all"
     page = max(1, int(page))
     start = (page - 1) * PAGE
+    excluded, stats = 0, None
     if query:
         space, vector, reason = await _query_vector(query, settings)
     else:
@@ -1152,9 +1156,15 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
     try:
         await ensure_memory_table(conn)
         if query:
-            meaning = await _nearest(conn, user_id, space, vector, kind, start + PAGE + 1) if vector else []
+            meaning = await _nearest(conn, user_id, space, vector, kind,
+                                     start + PAGE + 1 + (200 if negatives else 0)) if vector else []
             texts = await _text_rows(conn, user_id, query, "all", kind, space, vector)
             ranked = promote_pieces(_one_per_content(_ranked(meaning, texts)))
+            if negatives:
+                out = await mf.excluded_groups(conn, user_id, space, negatives, settings)
+                kept = [r for r in ranked if group_key(r) not in out]
+                excluded, ranked = len(ranked) - len(kept), kept
+            stats = mf.calibrate(list((await mf.group_scores(conn, user_id, space, vector, kind)).values()))                 if vector else None
         else:
             extra, args = _filters("all", kind, 4)
             params = [user_id, PAGE + 1, start, *args]
@@ -1183,8 +1193,11 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
                      "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match,
                      "group": groups.get(r["id"]), "whole": bool(r.get("whole")), "track": r.get("track"),
                      "via_whole": bool(r.get("via_whole")),
+                     "noise": bool(query and not r["tmatch"] and (mf.standing(r["score"], stats) or 99) < mf.NOISE_Z),
                      "span": None if r.get("span_start") is None else (float(r["span_start"]), float(r["span_end"]))})
     result = {"rows": rows, "more": len(ranked) > start + PAGE, "other_spaces": int(other or 0)}
+    if negatives:
+        result["excluded"], result["exclude_terms"] = excluded, negatives
     if query and reason:
         result["reason"] = reason
     return result

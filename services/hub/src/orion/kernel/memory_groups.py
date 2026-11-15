@@ -336,7 +336,8 @@ def _in_space(rows: list[dict], space) -> list[dict]:
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
                       vector_space: str = "all", kind: str = "all", vector: str | None = None,
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
-                      mode: str = "together", input_labels: list[str] | None = None) -> dict:
+                      mode: str = "together", input_labels: list[str] | None = None,
+                      exclude: list[str] | None = None) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
@@ -349,6 +350,9 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
     reason = None
+    from orion.kernel import memory_filters as mf
+    q, negatives = mf.parse_query(q)
+    negatives = [*negatives, *(t.strip() for t in exclude or [] if t.strip())][:5]
     searching = bool(q) or vector is not None
     if vector is not None:
         space = vector_space_of_query or await memory.current_space(settings)
@@ -384,10 +388,25 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                     f"select * from (select distinct on ({GROUP_KEY}) {_ROW}, 1 - (embedding <=> $3::vector) as score "
                     f"from orion_memory where user_id = $1 and vector_space = $2{extra} "
                     f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
-                    f"limit {offset + limit + 1}", *params)]
+                    f"limit {offset + limit + 1 + (EACH_POOL if negatives else 0)}", *params)]
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
-            ranked = merge_matches(meaning, texts, keep_order=bool(vectors and len(vectors) > 1 and mode == "each"))
+            each = bool(vectors and len(vectors) > 1 and mode == "each")
+            ranked = merge_matches(meaning, texts, keep_order=each)
+            excluded = 0
+            if negatives:
+                out = await mf.excluded_groups(conn, user_id, space if searchable else None, negatives, settings)
+                kept = [e for e in ranked if e["group"] not in out]
+                excluded, ranked = len(ranked) - len(kept), kept
+            # Honesty: a meaning match must stand out of this query's own scores against every memory.
+            stats = None
+            if searchable and not each:
+                stats = mf.calibrate(list((await mf.group_scores(conn, user_id, space, vector, kind)).values()))
+            for e in ranked:
+                z = float(e["row"].get("fused") or 0.0) if each else mf.standing(e["score"], stats)
+                e["noise"] = not e["tmatch"] and z is not None and z < mf.NOISE_Z
+                if e["noise"]:
+                    e["strength"] = "weak"
             more = len(ranked) > offset + limit
             picked = ranked[offset:offset + limit]
             search = {e["group"]: e for e in picked}
@@ -436,6 +455,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             item.update(match=entry["match"], strength=entry["strength"], matched_part=matched,
                         score=None if entry["score"] is None else round(float(entry["score"]), 4),
                         matched_parts=max(1, parts_match["matched"]), via_whole=bool(entry["row"].get("whole")))
+            if entry.get("noise"):
+                item["noise"] = True  # Nearest by meaning, but not above what this query scores anywhere.
             if entry.get("via"):
                 item["via"] = entry["via"]  # Which input it matched ("metin", "görsel"): its score is that one's.
             best = _best_part(rows, matched, prefer)
@@ -443,6 +464,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                 item["best_part"] = best
         cards.append(item)
     result = {"groups": cards, "matching": int(matching or 0), "more": more, "summary": summary}
+    if searching and negatives:
+        result["excluded"] = excluded
+        result["exclude_terms"] = negatives
+    if searching and offset == 0 and search:
+        first = search.get(groups[0]) if groups else None
+        result["no_match"] = bool(first and first.get("noise"))
     if searching:
         result["semantic"] = vector is not None
         if reason:

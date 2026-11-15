@@ -156,7 +156,7 @@ def test_the_tool_is_registered_enabled_by_default_and_answers_in_turkish(monkey
     assert registry_.categories['memory'].name == 'Hafıza'
     calls = []
 
-    async def search(user, query, settings, page=1, kind='all'):
+    async def search(user, query, settings, page=1, kind='all', exclude=None):
         calls.append((user, query, page, kind))
         return {'rows': [{'id': 3, 'text': 'adım Ayşe', 'date': '2026-11-14', 'kind': 'text', 'media_id': None,
                           'score': 0.71, 'match': 'both'}], 'more': True, 'other_spaces': 2}
