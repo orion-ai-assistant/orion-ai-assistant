@@ -104,6 +104,7 @@ class ToolConversation:
         self.rounds = 0
         self.research_used = False
         self.failed_tools = set()
+        self.opened_memory = set()  # Memory ids whose media this turn already attached (no second copy).
 
     async def stream(self, messages, settings, stop_checker, stream_fn):
         registry = get_registry()
@@ -243,6 +244,20 @@ class ToolConversation:
                     self.failed_tools.add(name)
                 result_message = {"role": "tool", "tool_call_id": call["id"],
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
+                if media_refs and item['status'] == 'completed':
+                    # Opened again in this same turn: already attached above, not a second copy.
+                    fresh = [ref for ref in media_refs if ref.get('memory_id') not in self.opened_memory]
+                    repeated = sorted({ref.get('memory_id') for ref in media_refs} - {r.get('memory_id') for r in fresh})
+                    if repeated and isinstance(item.get('result'), dict):
+                        item['result']['zaten_acik'] = [
+                            *item['result'].get('zaten_acik', []),
+                            *({"id": m, "not": "Bu dosya bu mesajda az önce açıldı; ona bak."} for m in repeated)]
+                        for shown in item.get('media') or []:
+                            if shown.get('memory_id') in repeated:
+                                shown['already'] = True
+                        result_message["content"] = json.dumps(item["result"], ensure_ascii=False)
+                    self.opened_memory.update(ref.get('memory_id') for ref in fresh)
+                    media_refs = fresh
                 if media_refs and item['status'] == 'completed':
                     # Kept with the chat: model_history shows them again on every later turn.
                     result_message["media_refs"] = media_refs

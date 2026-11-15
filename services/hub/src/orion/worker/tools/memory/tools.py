@@ -178,12 +178,19 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
     can = await memory.chat_model_media(settings)
     kinds = {kind for kind in ("image", "audio") if can[kind]}
     try:
-        rows = await memory.open_media(context.user_id, context.chat_id, args.idler, kinds)
+        # Opened earlier in this chat: it is in the conversation already (sent every turn), not attached again.
+        earlier = memory.opened_in_chat((await memory._chat_messages(context.chat_id))[0]) if context.chat_id else {}
+        rows = await memory.open_media(context.user_id, context.chat_id, args.idler, kinds, earlier)
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
-    opened, closed, media, attachments = [], [], [], []
+    opened, closed, media, attachments, again = [], [], [], [], []
     for row in rows:
         entry = {"id": row["id"], "tur": KIND_LABELS.get(row["kind"], "metin"), "etiket": row["text"]}
+        if row.get("already"):
+            again.append({**entry, "mesaj": row["already"],
+                          "not": f"Bu dosya sohbetin {row['already']}. mesajında zaten açıldı; oradaki dosyaya bak."})
+            attachments.append({**attachment_of(row, context.chat_id), "already": True})
+            continue
         if row["opened"]:
             shown = row.get("media") or []
             if row["kind"] == "video" or len(shown) > 1:
@@ -211,6 +218,9 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
                          "araç ekledi) ve sohbette kalır. Onlara bakarak cevap ver.")
         result["_medya"] = media
         result["_ekler"] = attachments  # The tool runner shows them to the user under this turn.
+    if again:
+        result["zaten_acik"] = again
+        result["_ekler"] = attachments  # Still shown under the turn, marked as already open.
     if closed:
         result["acilamayanlar"] = closed
     missing = [i for i in dict.fromkeys(args.idler) if i not in {row["id"] for row in rows}]
