@@ -210,23 +210,120 @@ class MemoryGroupTests(PostgresMemoryCase):
 
     # --- map ----------------------------------------------------------------------------------------------------
 
-    async def test_the_map_links_near_memories_above_the_floor(self):
+    async def test_the_map_links_pairs_above_the_spaces_own_floor_and_shows_another_model(self):
         await self.add('kedi', score=0.9, axis=1, group='a')
         await self.add('kedi maması', score=0.9, axis=2, group='b')
         await self.add('uzay', score=0.0, axis=3, group='c', minute=1)
         image, _ = await self.image('d', score=0.0, axis=4, minute=2)
         await self.add('eski model', space=OTHER, group='e')
-        graph = await memory_groups.map_graph('alice', self.settings, k=3, floor=0.5)
+        graph = await memory_groups.map_graph('alice', self.settings, k=3)
         self.assertEqual({n['group_id'] for n in graph['nodes']}, {'a', 'b', 'c', 'd'})
-        self.assertEqual([(e['a'], e['b']) for e in graph['edges']], [('a', 'b')])
+        # Six pairs: a-b 0.81, the rest 0: the floor is their mean, so only a-b is linked, at full strength.
+        self.assertEqual((graph['spread']['pairs'], graph['floor']), (6, 0.135))
+        self.assertEqual([(e['a'], e['b'], e['w']) for e in graph['edges']], [('a', 'b', 1.0)])
         self.assertAlmostEqual(graph['edges'][0]['sim'], 0.81, places=3)
+        self.assertTrue(graph['active'])
         self.assertEqual(next(n for n in graph['nodes'] if n['group_id'] == 'd')['thumb'], image)
         capped = await memory_groups.map_graph('alice', self.settings, limit=2)
         self.assertEqual((len(capped['nodes']), capped['total'], capped['capped']), (2, 4, True))
+        other = await memory_groups.map_graph('alice', self.settings, vector_space=OTHER)
+        self.assertEqual(([n['group_id'] for n in other['nodes']], other['active'], other['floor'], other['edges']),
+                         (['e'], False, memory_groups.MAP_MIN_SIM, []))
         with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
             via_route = await routes.memory_map(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None))),
-                                                k=3, floor=0.5, limit=300, current_user='alice')
+                                                k=3, limit=300, vector_space='', current_user='alice')
         self.assertEqual(len(via_route['nodes']), 4)
+
+    def test_the_map_floor_is_the_typical_pair_never_below_the_minimum(self):
+        self.assertEqual(memory_groups.map_floor(0.24, 55), 0.24)
+        self.assertEqual(memory_groups.map_floor(-0.1, 55), memory_groups.MAP_MIN_SIM)
+        self.assertEqual(memory_groups.map_floor(0.9, 1), memory_groups.MAP_MIN_SIM)  # Too few pairs to tell.
+        self.assertEqual(memory_groups.map_floor(None, 0), memory_groups.MAP_MIN_SIM)
+
+    # --- one memory, vectors of one or more models --------------------------------------------------------------
+
+    async def test_the_detail_lists_the_models_a_memory_is_searchable_with(self):
+        old = await self.add('Kullanıcı: kalp', space=OTHER, group='g1', source='chat_save')
+        await self.add('Kullanıcı: kalp', group='g1', source='chat_save', copied_from=old)
+        await self.add('sonra eklenen', group='g1')
+        detail = await memory_groups.group_detail('alice', 'g1', self.settings)
+        self.assertEqual(detail['part_count'], 2)
+        await self.add('yalnız eski modelde', space=OTHER, group='g2', minute=1)
+        active = await memory_groups.list_groups('alice', self.settings, vector_space='active')
+        self.assertEqual([c['group_id'] for c in active['groups']], ['g1'])
+        self.assertEqual(len((await memory_groups.list_groups('alice', self.settings))['groups']), 2)
+        self.assertEqual(detail['models'], [{'space': SPACE, 'active': True, 'parts': 2},
+                                            {'space': OTHER, 'active': False, 'parts': 1}])
+
+    async def test_removing_another_models_vectors_says_which_memories_lose_it_and_keeps_the_only_ones(self):
+        moved = await self.add('taşınmış', space=OTHER, group='g1')
+        await self.add('taşınmış', group='g1', copied_from=moved)
+        await self.add('yalnız eski modelde', space=OTHER, group='g2', minute=1)
+        preview = await memory_groups.space_vectors('alice', OTHER, self.settings)
+        self.assertEqual((preview['memories'], preview['vectors'], preview['kept']), (1, 1, 1))
+        self.assertEqual([(i['group_id'], i['label']) for i in preview['items']], [('g1', 'taşınmış')])
+        with self.assertRaisesRegex(ValueError, 'kaldırılamaz'):
+            await memory_groups.space_vectors('alice', SPACE, self.settings)
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
+            removed = await routes.memory_move_cleanup(
+                routes.MemoryMove(vector_space=OTHER),
+                SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None))), current_user='alice')
+        self.assertEqual(removed, {'deleted': 1})
+        left = await sql('select text, vector_space from orion_memory order by id', fetch=True)
+        self.assertEqual([(r['text'], r['vector_space']) for r in left],
+                         [('taşınmış', SPACE), ('yalnız eski modelde', OTHER)])
+
+    # --- adding parts to a memory ---------------------------------------------------------------------------------
+
+    def add_patches(self):
+        async def target(settings):
+            return settings, SPACE, True
+
+        async def embed(text, settings, kind, local):
+            return [vec(0.5, 2)]
+
+        async def embed_media(parts, target):
+            return vec(0.3, 3)
+        for guard in (patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed),
+                      patch.object(memory, '_embed_media', embed_media),
+                      patch.object(memory, 'media_support', lambda local, name: JINA)):
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    async def test_a_staged_note_and_files_become_one_memory_and_ekle_adds_to_an_existing_one(self):
+        self.add_patches()
+        note = await memory.add_note_to('alice', 'bugünkü notum', self.settings)
+        group = note['group_id']
+        image = await memory.add_file('alice', 'kalp.png', 'image/png', png(), self.settings, group=group)
+        text = await memory.add_file('alice', 'ek.md', 'text/markdown', 'ek dosya metni'.encode(), self.settings,
+                                     group=group)
+        self.assertEqual((note['added'], image['group_id'], text['group_id']), (1, group, group))
+        detail = await memory_groups.group_detail('alice', group, self.settings)
+        self.assertEqual((detail['part_count'], detail['counts']), (3, {'text': 2, 'image': 1}))
+        loose = await self.add('gruplanmadan önce', minute=5)
+        added = await memory.add_note_to('alice', 'sonradan eklenen', self.settings, group=f'r{loose}')
+        self.assertEqual(await sql('select group_id from orion_memory where id = $1', loose), added['group_id'])
+        with self.assertRaises(LookupError):
+            await memory.add_note_to('alice', 'başkasının', self.settings, group='yok')
+        await self.add('bob notu', user='bob', group='bobs')
+        with self.assertRaises(LookupError):
+            await memory.add_file('alice', 'x.md', 'text/markdown', b'x', self.settings, group='bobs')
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
+            via_route = await routes.add_memory_note(routes.MemoryNote(text='rotadan', group_id=group), request,
+                                                     current_user='alice')
+            self.assertEqual(via_route, {'added': 1, 'group_id': group})
+            with self.assertRaises(routes.HTTPException) as refused:
+                await routes.add_memory_note(routes.MemoryNote(text='x', group_id='bobs'), request,
+                                             current_user='alice')
+        self.assertEqual(refused.exception.status_code, 404)
+
+    async def test_tools_give_the_local_date_and_time(self):
+        row = await self.add('adım Ayşe', score=0.7, group='g1')
+        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=row)
+        stamp = await sql('select created_at from orion_memory where id = $1', row)
+        self.assertEqual(result['tarih'], memory.local_time(stamp))
+        self.assertRegex(result['tarih'], r'^2026-1[01]-\d\d \d\d:\d\d \(UTC[+-]\d\d:\d\d\)$')
 
     # --- move ---------------------------------------------------------------------------------------------------
 
@@ -344,3 +441,11 @@ def test_a_file_saved_alone_later_joins_the_chat_text_that_names_it():
                                       row(2, 'image', 'Home _ X.webp — bu ne', 9),
                                       row(3, 'image', 'baska.png — x', 20)])
     assert plan[1] == plan[2] != plan[3]
+
+
+def test_local_time_shows_the_pcs_clock_and_offset():
+    stamp = dt.datetime(2026, 11, 15, 11, 51, tzinfo=dt.timezone.utc)
+    local = stamp.astimezone()
+    offset = local.strftime('%z')
+    assert memory.local_time(stamp) == f"{local:%Y-%m-%d %H:%M} (UTC{offset[:3]}:{offset[3:]})"
+    assert memory.local_time(None) is None

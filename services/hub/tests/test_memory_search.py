@@ -355,7 +355,7 @@ class MemorySearchTests(PostgresMemoryCase):
         result = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'))
         rows = await self.rows()
         self.assertGreater(len(rows), 1)
-        self.assertEqual(result, {'added': len(rows), 'warnings': []})
+        self.assertEqual({**result, 'group_id': None}, {'added': len(rows), 'group_id': None, 'warnings': []})
         self.assertTrue(all((r['kind'], r['source_kind'], r['source_chat_title']) == ('text', 'file', 'notlar.md')
                             for r in rows))
         again = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'))
@@ -363,7 +363,8 @@ class MemorySearchTests(PostgresMemoryCase):
 
     async def test_an_image_file_is_stored_once_and_a_second_add_is_skipped(self):
         raw = png()
-        self.assertEqual(await self.add_file('kalp.png', 'image/png', raw), {'added': 1, 'warnings': []})
+        first = await self.add_file('kalp.png', 'image/png', raw)
+        self.assertEqual((first['added'], first['warnings'], len(first['group_id'])), (1, [], 32))
         self.assertEqual((await self.add_file('kopya.png', 'image/png', raw))['added'], 0)
         rows = await self.rows()
         self.assertEqual([(r['text'], r['kind'], r['source_kind']) for r in rows], [('kalp.png', 'image', 'file')])
