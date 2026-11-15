@@ -487,14 +487,22 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
 
 
 async def text_item_pieces(conn, user_id: str, space: str, text: str, target, local: bool,
-                           skip_known: bool = True, group: str | None = None) -> tuple[list[dict], int]:
+                           skip_known: bool = True, group: str | None = None, split: list | None = None,
+                           progress=None) -> tuple[list[dict], int]:
     """The pieces of a text (memory_pieces.text_pieces: each core embedded with its window). A core already in
     the memory `group` is left out; one this user has in another memory takes that row's vector (not embedded
-    again, the text relates the two memories). Returns (pieces, cores left out)."""
+    again, the text relates the two memories). Returns (pieces, cores left out). `split`: text_pieces(text) made
+    already (in a thread: a long text takes a moment). `progress(done, total)`: awaited after each piece; True stops
+    (the pieces so far are returned with `stopped`)."""
+    import asyncio
     import json
     from orion.kernel.memory_pieces import text_pieces
     pieces, known = [], 0
-    for core, window in text_pieces(text):
+    if split is None:
+        split = await asyncio.to_thread(text_pieces, text)
+    for index, (core, window) in enumerate(split):
+        if progress is not None and await progress(index, len(split)):
+            raise asyncio.CancelledError("stopped")
         if skip_known:
             row = await conn.fetchrow(
                 "select group_id, embedding::text as embedding from orion_memory where user_id = $1 "
@@ -629,6 +637,9 @@ async def add_note_to(user_id: str, text: str, settings, source_kind: str = "man
 
 
 TEXT_FILE_TYPES = (".txt", ".md", ".markdown")
+# A text file of more pieces than this is embedded as a background job (a request per piece: the page must not wait).
+# A latency choice, not a quality one: a few pieces answer within the request.
+TEXT_JOB_PIECES = 8
 MAX_TEXT_FILE = 2 * 1024 * 1024
 
 
@@ -681,6 +692,9 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
     caption = " ".join((caption or "").split())[:300]
     if kind == "text":
         text = text_of_file(raw)
+        import asyncio
+        from orion.kernel import memory_pieces as mp
+        split = await asyncio.to_thread(mp.text_pieces, text)
     elif len(raw) > MAX_MEDIA_BYTES:
         raise ValueError("Dosya çok büyük: en fazla 64 MB olabilir.")
     conn = await _connect()
@@ -688,8 +702,15 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
         group = await join_group(conn, user_id, group)
+        if kind == "text" and len(split) > TEXT_JOB_PIECES:
+            # Many pieces take a request each: embedded in the background with progress, the answer comes now.
+            from orion.kernel import memory_media_jobs
+            job = await memory_media_jobs.start_text(user_id, group, {
+                "kind": "text", "source_kind": "file", "title": name, "caption": caption, "name": name},
+                text, split, settings)
+            return {"added": 0, "group_id": group, "warnings": [], "job": job}
         if kind == "text":
-            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
+            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
             added = 0
             if pieces:
                 async with conn.transaction():
@@ -755,7 +776,9 @@ async def current_space(settings) -> str | None:
 
 
 KINDS = ("text", "image", "audio", "video")
-MAX_QUERY_CHARS = 2000  # A pasted passage searches by its first 2000 characters (about 500 tokens: one query).
+MAX_QUERY_CHARS = 1_000_000  # A request-size guard only: a pasted passage is searched whole (_query_vector).
+QUERY_WINDOWS = 48  # Windows of a long query embedded at most (a cost cap: more are sampled evenly over the text).
+QUERY_CACHE = 32  # Recent query vectors kept (the detail's part scores ask again with the same text)
 TEXT_MATCH_CHARS = 200  # Longer queries match by meaning only: a word-for-word match of a passage means little.
 PAGE = 10  # The tool's page: results 1-10, 11-20, ...
 TEXT_CAP = 100  # Text matches taken per search.
@@ -866,16 +889,50 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     return rows
 
 
+_query_cache: dict = {}
+
+
+def query_windows(q: str) -> tuple[list[str], int]:
+    """The windows a query is embedded as: one for a short query; a long passage is split as stored text is
+    (memory_pieces.text_pieces: cores with their overlapping windows), at most QUERY_WINDOWS of them taken evenly
+    across it. (windows, how many the text has)."""
+    from orion.kernel.memory_pieces import text_pieces
+    pieces = [window for _, window in text_pieces(q)] or [q]
+    total = len(pieces)
+    if total > QUERY_WINDOWS:
+        step = total / QUERY_WINDOWS
+        pieces = [pieces[int(k * step)] for k in range(QUERY_WINDOWS)]
+    return pieces, total
+
+
 async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str | None]:
-    """(current vector space, query vector, reason when the search by meaning is off)."""
+    """(current vector space, query vector, reason when the search by meaning is off). A long passage searches with
+    the normalized mean of its windows' vectors, the way a stored long text's whole vector is made; the last
+    QUERY_CACHE vectors are kept (the same text asked again, e.g. for a memory's part scores, is not embedded
+    again)."""
+    import asyncio
+    import hashlib
     try:
         target, space, local = await embedding_target(settings)
     except MemoryUnavailable as exc:
         return None, None, str(exc)
+    key = (space, hashlib.sha256(q.encode("utf-8", "replace")).hexdigest())
+    if key in _query_cache:
+        _query_cache[key] = _query_cache.pop(key)
+        return space, _query_cache[key], None
     try:
-        return space, _vector((await _embed(q, target, "query", local))[0]), None
+        windows, _ = await asyncio.to_thread(query_windows, q) if len(q) > TEXT_MATCH_CHARS else ([q], 1)
+        if len(windows) == 1:
+            vector = _vector((await _embed(windows[0], target, "query", local))[0])
+        else:
+            from orion.kernel.memory_pieces import mean_vector
+            vector = _vector(mean_vector([(await _embed(w, target, "query", local))[0] for w in windows]))
     except MemoryUnavailable as exc:
         return space, None, str(exc)
+    _query_cache[key] = vector
+    while len(_query_cache) > QUERY_CACHE:
+        _query_cache.pop(next(iter(_query_cache)))
+    return space, vector, None
 
 
 async def _nearest(conn, user_id, space, vector, kind, count, offset=0) -> list[dict]:

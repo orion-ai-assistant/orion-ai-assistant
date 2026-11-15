@@ -274,20 +274,28 @@ class MemorySearchTests(PostgresMemoryCase):
         row = (await self.add_rows())[0]
         result = await self.open_tool([row])
         opened = result['opened'][0]
-        self.assertEqual((opened['name'], opened['text']), ('hikaye.txt', story))
+        # Only what was opened: the text reaches the model once, as an attachment after the tool round.
+        self.assertEqual((opened['name'], opened['parts']), ('hikaye.txt', 1))
+        self.assertNotIn(story, json.dumps(result['opened'], ensure_ascii=False))
         shown = result['_show_user'][0]
         self.assertEqual((shown['name'], shown['mime_type'], shown['memory_id']), ('hikaye.txt', 'text/plain', row))
         self.assertTrue(shown['media_path'].endswith(shown['media_id']))
         self.assertEqual(await media_store.read_media('chat', shown['media_id']), ('text/plain', story.encode()))
         ref = result['_model_media'][0]
-        self.assertEqual((ref['kind'], ref['media_id']), ('file', shown['media_id']))
-        # Kept in the history only to know it was opened: no media message for the model, and not attached again.
+        self.assertEqual((ref['kind'], ref['media_id'], ref['source']), ('document', shown['media_id'],
+                                                                          shown['media_id']))
+        # The model gets it as a user's text attachment reaches it, and it is not attached again.
         history = [{'role': 'user', 'content': 'aç'},
                    {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'c1', 'type': 'function', 'function': {
                        'name': 'open_memory_files', 'arguments': json.dumps({'ids': [row]})}}]},
                    {'role': 'tool', 'tool_call_id': 'c1', 'media_refs': [ref], 'content': '{}'},
                    {'role': 'assistant', 'content': 'Açtım.'}]
-        self.assertEqual([m['role'] for m in model_history(history, 40)], ['user', 'assistant', 'tool', 'assistant'])
+        projected = model_history(history, 40)
+        self.assertEqual([m['role'] for m in projected], ['user', 'assistant', 'tool', 'user', 'assistant'])
+        hydrated = await media_store.hydrate_model_media('chat', projected)
+        # Written exactly as a user's text attachment: the Router's log lists it by this header.
+        self.assertIn({'type': 'text', 'text': f'Ek 1 — Metin dosyası: hikaye.txt\n<file_content>\n{story}\n'
+                       '</file_content>'}, hydrated[3]['content'])
         with patch.object(memory, '_chat_messages', AsyncMock(return_value=(history, [1, 2, 3, 4]))):
             again = await self.open_tool([row])
         self.assertEqual(again['already_open'][0]['message'], 1)
@@ -301,13 +309,42 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertGreater(len(rows), 6)
         result = await self.open_tool([rows[5]])
         opened = result['opened'][0]
-        self.assertNotIn('text', opened)
-        self.assertEqual([p['id'] for p in opened['parts']], rows[3:8])
-        self.assertIn('memory_context', opened['more'])
+        self.assertEqual(opened['parts'], len(rows))
+        self.assertIn('parts 4-8', opened['you_get'])
+        self.assertIn('memory_context', opened['read_more'])
+        sent = result['_model_media'][0]
+        _, window = await media_store.read_media('chat', sent['media_id'])
+        # The model gets the asked part and its neighbours, not the whole file.
+        _, whole = await media_store.read_media('chat', result['_show_user'][0]['media_id'])
+        self.assertLess(len(window), len(whole) / 2)
         shown = result['_show_user'][0]
         self.assertEqual((shown['name'], shown['mime_type']), ('uzun.md', 'text/markdown'))
         _, raw = await media_store.read_media('chat', shown['media_id'])
         self.assertEqual(raw.decode().count('Bölüm '), 12)  # The user gets the whole file.
+
+    async def test_a_long_text_file_is_a_background_job_and_the_detail_is_paged(self):
+        from orion.kernel import memory_media_jobs
+        paragraphs = [f'Bölüm {k}: ' + ' '.join([f'kelime{k}'] * 400) for k in range(30)]
+        added = await self.add_file('kitap.txt', 'text/plain', '\n\n'.join(paragraphs).encode())
+        self.assertEqual((added['added'], added['job']['kind'], added['job']['state']), (0, 'text', 'running'))
+        jobs = await memory_media_jobs.jobs('alice')
+        self.assertEqual((jobs[0]['state'], jobs[0]['done']), ('done', jobs[0]['total']))
+        rows = await self.add_rows()
+        self.assertEqual(len(rows), jobs[0]['total'])
+        detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, limit=10,
+                                                  around=rows[20])
+        self.assertEqual((detail['parts_total'], len(detail['parts'])), (len(rows), 10))
+        self.assertIn(rows[20], [p['id'] for p in detail['parts']])
+        self.assertEqual(detail['parts_offset'], [p['id'] for p in detail['parts']][0] - rows[0])
+
+    async def test_the_whole_memory_score_is_against_the_mean_of_all_its_pieces(self):
+        a = await self.add('bir', score=1.0, axis=2, group='g')
+        await self.add('iki', score=0.0, axis=3, group='g')
+        found = await memory_groups.part_scores('alice', 'g', self.settings, vector=memory._vector(self.query),
+                                                space=SPACE)
+        self.assertEqual(found['best'], a)
+        # mean = (e0 + e3) / 2: its cosine with e0 is 1/sqrt(2).
+        self.assertAlmostEqual(found['all_score'], 2 ** -0.5, places=3)
 
     async def add_rows(self):
         conn = await registry._connect()
@@ -370,7 +407,8 @@ class MemorySearchTests(PostgresMemoryCase):
         self.assertTrue(shown['name'].endswith('.png'))
         self.assertIn('gone', result['not_opened'][0]['reason'])  # Its file was never stored.
         self.assertEqual(result['not_found'], [foreign])
-        self.assertEqual((await self.open_tool([text]))['opened'][0]['text'], 'düz metin')
+        note = (await self.open_tool([text]))['opened'][0]
+        self.assertEqual((note['name'], note['parts']), ('düz metin.txt', 1))  # Named by its first words.
         self.assertEqual(await media_store.read_media('chat', media_id), ('image/png', raw))
 
         call = {'id': 'c1', 'type': 'function',
@@ -446,7 +484,11 @@ class MemorySearchTests(PostgresMemoryCase):
         with patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed), \
                 patch.object(memory, '_embed_media', embed_media), \
                 patch.object(memory, 'media_support', lambda local, name: support):
-            return await memory.add_file('alice', name, mime, raw, self.settings, group=group)
+            added = await memory.add_file('alice', name, mime, raw, self.settings, group=group)
+            # A long text is a background job: it runs while the embedding is patched.
+            from orion.kernel import memory_media_jobs
+            await asyncio.gather(*list(memory_media_jobs._tasks))
+            return added
 
     async def rows(self):
         conn = await registry._connect()
@@ -457,6 +499,9 @@ class MemorySearchTests(PostgresMemoryCase):
             await conn.close()
 
     async def test_a_long_text_file_becomes_one_row_per_chunk(self):
+        guard = patch.object(memory, 'TEXT_JOB_PIECES', 1000)  # Within the request here (the job: its own test).
+        guard.start()
+        self.addCleanup(guard.stop)
         text = '\n\n'.join(f'Paragraf {k}: ' + ' '.join(['kelime'] * 120) for k in range(12))
         result = await self.add_file('notlar.md', 'text/markdown', text.encode('utf-8'))
         rows = await self.rows()

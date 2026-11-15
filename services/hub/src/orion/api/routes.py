@@ -111,18 +111,34 @@ async def list_memory(request: Request, q: str = "", limit: int = 20, offset: in
             exclude=[t[:200] for t in exclude[:5]])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    if len(q.strip()) > memory.MAX_QUERY_CHARS:
-        found["query_cut"] = memory.MAX_QUERY_CHARS  # The page says the passage was searched by its beginning.
+    windows = await query_note(q)
+    if windows:
+        found["query_windows"] = windows  # The page says how a long passage was searched.
     return found
 
 
+async def query_note(q: str) -> dict | None:
+    """{"used", "total"} windows of a long passage query (memory.query_windows), None for a short query."""
+    import asyncio
+    from orion.kernel import memory
+    q = (q or "").strip()
+    if len(q) <= memory.TEXT_MATCH_CHARS:
+        return None
+    windows, total = await asyncio.to_thread(memory.query_windows, q)
+    return {"used": len(windows), "total": total} if total > 1 else None
+
+
 @router.get("/api/v1/memory/groups/{group_id}")
-async def memory_group(group_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    """One memory for the detail panel: every part, the models it is in, its source chat."""
+async def memory_group(group_id: str, request: Request, offset: int = Query(0, ge=0),
+                       limit: int = Query(60, ge=1, le=500), around: int | None = Query(None),
+                       current_user: str = Depends(get_current_user)):
+    """One memory for the detail panel: a window of its parts (around a part, or from `offset`), the models it is
+    in, its source chat."""
     from orion.kernel import memory, memory_groups
     try:
         found = await memory_groups.group_detail(current_user, group_id[:64],
-                                                 await get_runtime_settings(request.app.state.redis, current_user))
+                                                 await get_runtime_settings(request.app.state.redis, current_user),
+                                                 offset, limit, around)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if found is None:
@@ -254,7 +270,7 @@ async def add_memory_file(payload: MemoryFile, request: Request, current_user: s
 class MemorySearchInput(BaseModel):
     name: str = Field(default="", max_length=300)
     data: str = Field(default="", max_length=90 * 1024 * 1024)
-    text: str = Field(default="", max_length=20000)  # Cut to memory.MAX_QUERY_CHARS.
+    text: str = Field(default="", max_length=1_000_000)  # A long passage: searched by its windows' mean.
     negative: bool = False  # "benzemesin": memories like this are left out.
 
 
@@ -274,7 +290,7 @@ class MemorySearch(BaseModel):
     # ranked on its own and fused as OR (memory_groups.fuse_inputs).
     inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
     vectors: list[list[float]] = Field(default_factory=list, max_length=8)
-    q: str = Field(default="", max_length=20000)  # The texts, for the words' own matches (cut like `text`).
+    q: str = Field(default="", max_length=1_000_000)  # The texts, for the words' own matches.
     mode: str = Field(default="together", max_length=20)
     kinds: list[str] = Field(default_factory=list, max_length=8)
     exclude: list[str] = Field(default_factory=list, max_length=5)  # "benzemesin" texts (also as inputs).
@@ -395,8 +411,9 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    if len(payload.q.strip()) > memory.MAX_QUERY_CHARS:
-        found["query_cut"] = memory.MAX_QUERY_CHARS
+    windows = await query_note(payload.q)
+    if windows:
+        found["query_windows"] = windows
     found["query"] = {"exclude_vectors": [[round(v, 6) for v in one] for one in exclude_vectors],
                       "vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
                       "vector_space": space, "kinds": kinds, "mode": mode,
@@ -405,7 +422,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
 
 
 class MemoryMatch(BaseModel):
-    q: str = Field(default="", max_length=20000)
+    q: str = Field(default="", max_length=1_000_000)
     vector: list[float] | None = Field(default=None, max_length=4096)
     vector_space: str = Field(default="", max_length=100)
 

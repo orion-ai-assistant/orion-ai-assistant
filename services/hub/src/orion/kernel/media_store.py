@@ -380,7 +380,17 @@ async def hydrate_model_media(chat_id, messages):
                         # A memory file opened earlier whose link is gone: the turn goes on without it.
                         parts.append({'type': 'text', 'text': '(Bu dosya artık yok.)'})
                         continue
-                    part = media_part(item['data'])
+                    if item.get('mime_type', '').startswith('text/'):
+                        # A text document (a memory file opened by a tool): as a user's text attachment reaches it.
+                        raw = base64.b64decode(item['data'].split(',', 1)[1])
+                        # Exactly a user's text attachment part, so the Router's log lists it by name.
+                        attachment = part['attachment']
+                        name = ' '.join(str(attachment.get('name') or 'Dosya').splitlines())
+                        part = {'type': 'text', 'text': (
+                            f"Ek {attachment.get('index') or 1} — Metin dosyası: {name}\n"
+                            f"<file_content>\n{raw.decode('utf-8', 'replace')}\n</file_content>")}
+                    else:
+                        part = media_part(item['data'])
                 parts.append(part)
             message['content'] = parts
     return messages

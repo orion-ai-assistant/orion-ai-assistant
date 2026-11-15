@@ -512,16 +512,41 @@ def _cut_by_tokens(text: str, budget: float, boundaries: tuple[str, ...]) -> int
 _BOUNDARIES = ("\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", "; ", " ")
 
 
+def _costs(text: str) -> list[float]:
+    """Running estimated tokens: costs[i] = tokens of text[:i] (estimate_tokens without its +1 and rounding)."""
+    from itertools import accumulate
+    return [0.0, *accumulate(EMBED_TOKENS_PER_CJK_CHAR if _is_cjk(c) else EMBED_TOKENS_PER_CHAR for c in text)]
+
+
 def split_by_tokens(text: str, budget: float) -> list[str]:
-    """Pieces of at most `budget` estimated tokens, cut at a paragraph, line, sentence or word boundary."""
-    pieces: list[str] = []
+    """Pieces of at most `budget` estimated tokens, cut at a paragraph, line, sentence or word boundary. Linear in
+    the text's length (one running sum, cuts found by bisection): a 600k-character paragraph used to be re-measured
+    from its start for every piece (minutes of CPU on the event loop)."""
+    import bisect
     rest = text.strip()
-    while estimate_tokens(rest) > budget:
-        cut = _cut_by_tokens(rest, budget, _BOUNDARIES)
-        pieces.append(rest[:cut].strip())
-        rest = rest[cut:].strip()
-    if rest:
-        pieces.append(rest)
+    costs = _costs(rest)
+    pieces: list[str] = []
+    start, n = 0, len(rest)
+    while start < n and int(costs[n] - costs[start]) + 1 > budget:
+        # Up to the last character that still fits the budget (as _cut_by_tokens counts), from `start`.
+        end = bisect.bisect_right(costs, costs[start] + budget, lo=start + 1) - 1
+        end = min(max(end, start + 1), n)
+        cut = end
+        window = rest[start:end]
+        half = (end - start) // 2
+        for mark in _BOUNDARIES:
+            found = window.rfind(mark)
+            if found > half:
+                cut = start + found + len(mark)
+                break
+        piece = rest[start:cut].strip()
+        if piece:
+            pieces.append(piece)
+        start = cut
+        while start < n and rest[start].isspace():
+            start += 1
+    if start < n:
+        pieces.append(rest[start:].strip())
     return [piece for piece in pieces if piece]
 
 
@@ -536,15 +561,20 @@ def chunk_text(text: str, target_tokens: int = 400) -> list[str]:
     """Meaningful chunks of about `target_tokens`: whole paragraphs are packed together up to the target, a longer
     paragraph is split at sentences. Use this before embedding what memory stores."""
     chunks: list[str] = []
-    current = ""
+    current, current_tokens = "", 0
     for paragraph in (p.strip() for p in text.split("\n\n")):
         if not paragraph:
             continue
         for piece in split_by_tokens(paragraph, target_tokens):
-            if current and estimate_tokens(current) + estimate_tokens(piece) > target_tokens:
+            tokens = estimate_tokens(piece)
+            if current and current_tokens + tokens > target_tokens:
                 chunks.append(current)
                 current = ""
-            current = f"{current}\n\n{piece}" if current else piece
+            if current:
+                current = f"{current}\n\n{piece}"
+                current_tokens = estimate_tokens(current)  # Bounded: current stays under the target.
+            else:
+                current, current_tokens = piece, tokens
     if current:
         chunks.append(current)
     return chunks

@@ -217,3 +217,70 @@ async def run(job_id: str, user_id: str, group: str, item: dict, raw: bytes, inf
         finally:
             await conn.close()
     logger.info("Memory video job %s (%s): %s %s", job_id, item.get("name") or "", state, message or "")
+
+
+async def start_text(user_id: str, group: str, item: dict, text: str, split: list, settings) -> dict:
+    """Embed a long text file into the memory `group` in the background (memory.text_item_pieces, a request per
+    piece), with progress per piece and a stop; the rows are written at the end in one transaction."""
+    target, space, local = await memory.embedding_target(settings)
+    job_id = memory.new_group()
+    conn = await memory._connect()
+    try:
+        await memory.ensure_memory_table(conn)
+        await conn.execute(
+            "insert into orion_memory_media_jobs (id, user_id, group_id, item_id, name, kind, state, total) "
+            "values ($1, $2, $3, $4, $5, 'text', 'running', $6)", job_id, user_id, group, memory.new_group(),
+            item.get("name") or "", len(split))
+    finally:
+        await conn.close()
+    task = asyncio.create_task(run_text(job_id, user_id, group, item, text, split, target, space, local, settings),
+                               name=f"memory-text-{job_id}")
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return {"id": job_id, "group_id": group, "name": item.get("name") or "", "kind": "text", "state": "running",
+            "done": 0, "total": len(split), "message": None}
+
+
+async def run_text(job_id: str, user_id: str, group: str, item: dict, text: str, split: list, target, space: str,
+                   local: bool, settings=None) -> None:
+    conn = await memory._connect()
+    state, message = "done", None
+    try:
+        await memory.ensure_memory_table(conn)
+
+        async def progress(done: int, total: int) -> bool:
+            return bool(await conn.fetchval("update orion_memory_media_jobs set done = $2, updated_at = now() "
+                                            "where id = $1 returning cancel", job_id, done))
+        try:
+            pieces, _ = await memory.text_item_pieces(conn, user_id, space, text, target, local, group=group,
+                                                      split=split, progress=progress)
+        except asyncio.CancelledError as exc:
+            if str(exc) != "stopped":
+                raise
+            state, pieces = "cancelled", []
+        if state == "done":
+            await conn.execute("update orion_memory_media_jobs set done = total, updated_at = now() where id = $1",
+                               job_id)
+            if settings is not None and await memory.current_space(settings) not in (None, space):
+                raise memory.MemoryUnavailable("Etkin embedding modeli değişti; metin kaydedilmedi.")
+            stored = 0
+            if pieces:
+                async with conn.transaction():
+                    stored = await memory.insert_item(conn, user_id, space, group, item, pieces)
+            message = f"{stored} parça" if stored else "Bu metin bu hafızada zaten var."
+    except asyncio.CancelledError:
+        state = "interrupted"
+        raise
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        state, message = "failed", str(exc)
+    except Exception:
+        logger.exception("Memory text job %s failed", job_id)
+        state, message = "failed", "Embedding modeli bu metni işleyemedi."
+    finally:
+        try:
+            await conn.execute(
+                "update orion_memory_media_jobs set state = $2, message = $3, updated_at = now(), finished_at = now() "
+                "where id = $1", job_id, state, message)
+        finally:
+            await conn.close()
+    logger.info("Memory text job %s (%s): %s %s", job_id, item.get("name") or "", state, message or "")
