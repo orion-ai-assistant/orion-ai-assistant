@@ -7,6 +7,10 @@ from .._base import ToolContext, ToolInput
 KINDS = {"hepsi": "all", "metin": "text", "görsel": "image", "ses": "audio"}
 KIND_LABELS = {"image": "görsel", "audio": "ses kaydı"}
 MATCH_LABELS = {"meaning": "anlam", "both": "anlam+metin", "text": "metin", "similar": "benzer yazım"}
+GROUP_NOTE = ("'birlikte_kaydedilenler' aynı anda kaydedilen diğer parçalardır (ör. bir görselin yanındaki konuşma); "
+              "'ayni_kayittan' o id'li sonuçla birlikte kaydedildiğini söyler; 'dosya'/'parca' uzun bir dosyanın "
+              "kaçıncı parçası olduğunu söyler. Tamamı ya da kaydedildiği sohbet "
+              "gerekirse hafiza_baglami aracını kaydın id'siyle çağır.")
 MEDIA_NOTE = ("Görsel/ses kayıtlarında şimdilik etiketini ve tarihini görüyorsun. İçeriğine bakman gerekirse "
               "hafizadaki_medyayi_ac aracını bu kayıtların id'leriyle çağır (bir seferde en fazla 3).")
 
@@ -22,7 +26,7 @@ class MemoryInput(ToolInput):
                                    "true ise sonraki sayfaya bak.")
 
 
-def _row(row: dict) -> dict:
+def _row(row: dict, seen: dict | None = None) -> dict:
     kind = row.get("kind", "text")
     item = {"id": row["id"], "tarih": row["date"]}
     if kind in KIND_LABELS:
@@ -33,6 +37,20 @@ def _row(row: dict) -> dict:
         item["skor"] = row["score"]
     if row.get("match"):
         item["eslesme"] = MATCH_LABELS.get(row["match"], row["match"])
+    group = row.get("group")
+    if group and group["parts"] > 1:
+        first = None if seen is None else seen.setdefault(group["key"], row["id"])
+        if first not in (None, row["id"]):
+            item["ayni_kayittan"] = first  # Saved with that result above: its list says what else is there.
+        elif group["source_kind"] == "file" and kind == "text":
+            item["dosya"] = group["title"] or ""
+            item["parca"] = f"{group['index']}/{group['parts']}"
+        else:
+            item["birlikte_kaydedilenler"] = [
+                {"id": other["id"], "tur": KIND_LABELS.get(other["kind"], "metin"), "ozet": other["text"]}
+                for other in group["others"]]
+            if group["parts"] - 1 > len(group["others"]):
+                item["grupta_parca"] = group["parts"]
     return item
 
 
@@ -45,7 +63,8 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
                                     page=args.sayfa, kind=KINDS[args.tur])
     except memory.MemoryUnavailable as exc:
         return {"hata": str(exc)}
-    result = {"sayfa": args.sayfa, "kayitlar": [_row(row) for row in found["rows"]], "daha_var": found["more"]}
+    seen: dict = {}
+    result = {"sayfa": args.sayfa, "kayitlar": [_row(row, seen) for row in found["rows"]], "daha_var": found["more"]}
     if query and result["kayitlar"]:
         result["siralama"] = ("En iyi eşleşme önce. 'skor' anlam benzerliğidir (0-1); görsel/ses için 0.2-0.4 "
                               "normaldir, sıraya bak. Metinde geçen kayıtlar öne alınır.")
@@ -53,6 +72,8 @@ async def hafizada_ara(args: MemoryInput, context: ToolContext) -> dict:
         result["siralama"] = "En yeni kayıt önce."
     if any(row.get("kind", "text") != "text" for row in found["rows"]):
         result["medya_notu"] = MEDIA_NOTE
+    if any((row.get("group") or {}).get("parts", 1) > 1 for row in found["rows"]):
+        result["grup_notu"] = GROUP_NOTE
     if not result["kayitlar"]:
         result["not"] = "Bu sayfada kayıt yok." if args.sayfa > 1 else "Hafızada bu aramayla kayıt bulunamadı."
     if found.get("reason"):
@@ -138,4 +159,62 @@ async def hafizadaki_medyayi_ac(args: MemoryOpenInput, context: ToolContext) -> 
     missing = [i for i in dict.fromkeys(args.idler) if i not in {row["id"] for row in rows}]
     if missing:
         result["bulunamayanlar"] = missing
+    return result
+
+
+class MemoryContextInput(ToolInput):
+    id: int = Field(description="hafizada_ara sonucundaki bir kaydın 'id' değeri")
+    sohbet: bool = Field(default=False, description="true: kaydın geldiği sohbetteki mesajlar da gelsin")
+    mesaj_sayisi: int = Field(default=6, ge=1, le=20, description="Sohbetten kaç mesaj gelsin")
+    sohbet_konumu: Literal["cevre", "bas"] = Field(
+        default="cevre", description="cevre: kaydedilen mesaj ve çevresi; bas: sohbetin ilk mesajları")
+    baslangic: int = Field(default=1, ge=1, le=1000,
+                           description="Uzun bir kaydın kaçıncı parçasından devam edilsin (önceki sonuçta 'kalan' "
+                                       "varsa)")
+
+
+CHAT_STATES = {
+    "unknown": "Bu kaydın hangi sohbetten geldiği bilinmiyor (not, dosya ya da eski bir kayıt).",
+    "deleted": "Kaydın geldiği sohbet silinmiş; yalnız hafızadaki metin duruyor.",
+    "cleared": "Kaydın geldiği sohbet temizlenmiş; o mesajlar artık yok.",
+}
+ROLES = {"user": "kullanıcı", "assistant": "asistan"}
+SOURCES = {"chat_save": "sohbetten kaydedildi", "file": "dosyadan eklendi", "manual": "not olarak eklendi",
+           "assistant": "asistan ekledi"}
+
+
+async def hafiza_baglami(args: MemoryContextInput, context: ToolContext) -> dict:
+    """A memory row's whole group (what was saved with it, full texts) and, on request, the conversation it was
+    saved from."""
+    from orion.kernel import memory, memory_groups
+    from orion.kernel.config import get_runtime_settings
+    try:
+        found = await memory_groups.memory_context(
+            context.user_id, args.id, await get_runtime_settings(None, context.user_id), with_chat=args.sohbet,
+            count=args.mesaj_sayisi, where="start" if args.sohbet_konumu == "bas" else "around",
+            start=args.baslangic - 1)
+    except memory.MemoryUnavailable as exc:
+        return {"hata": str(exc)}
+    if found is None:
+        return {"hata": "Bu id ile hafızada kayıt yok."}
+    result = {"id": args.id, "kaynak": SOURCES.get(found["source_kind"], found["source_kind"]),
+              "tarih": found["date"], "parca_sayisi": found["part_count"],
+              "parcalar": [{"id": part["id"], "sira": part["index"], "tur": KIND_LABELS.get(part["kind"], "metin"),
+                            ("metin" if part["kind"] == "text" else "etiket"): part["text"]}
+                           for part in found["parts"]]}
+    if found["title"]:
+        result["dosya" if found["source_kind"] == "file" else "sohbet_basligi"] = found["title"]
+    if found["rest"]:
+        result["kalan"] = (f"{found['rest']} parça daha var; devamı için baslangic="
+                           f"{found['parts'][-1]['index'] + 1} ile tekrar çağır.")
+    if any(part["kind"] != "text" for part in found["parts"]):
+        result["medya_notu"] = "Görsel/sesin içeriğine bakmak için hafizadaki_medyayi_ac aracını kullan."
+    chat = found.get("chat")
+    if chat is not None:
+        if chat["state"] == "ok":
+            result["sohbet"] = {"baslik": chat.get("title"), "mesajlar": [
+                {"rol": ROLES.get(m["role"], m["role"]), "metin": m["text"], "tarih": m["date"],
+                 **({"kaydedilen": True} if m.get("saved") else {})} for m in chat["messages"]]}
+        else:
+            result["sohbet_durumu"] = CHAT_STATES[chat["state"]]
     return result

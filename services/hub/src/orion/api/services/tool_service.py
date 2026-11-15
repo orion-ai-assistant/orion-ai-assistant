@@ -27,7 +27,7 @@ async def read_selection(redis, user_id, chat_id=None):
         if value is not None:
             override = ToolSelection.model_validate(value)
     settings = await get_runtime_settings(redis, user_id)
-    effective = override if override is not None else settings.tool_selection
+    effective = get_registry().complete(override if override is not None else settings.tool_selection)
     return {"selection": effective.model_dump(), "inherited": override is None,
             "enabled_tools": get_registry().enabled(effective)}
 

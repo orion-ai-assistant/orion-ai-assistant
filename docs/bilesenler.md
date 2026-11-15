@@ -694,7 +694,8 @@ Sıra önerisi yukarıdan aşağıya.
   Gemma'da 1780 token, hiçbiri reddedilmedi. Hafıza özelliği önce `chunk_text` ile (~400 token, paragraf sınırında) anlamlı
   parçalar çıkarmalı, `embed_text` ancak taşan parçayı böler. `embed_text(..., title=...)` Gemma'nın `title: ... | text:`
   önekine başlık koyar (anı/hikaye başlığı kaliteyi artırır; Jina'nın öneki başlık almaz).
-- **Hafıza için not (henüz yapılmadı): embedding modelini değiştirmek.** Farklı modellerin vektörleri aynı uzayda değildir
+- **Hafıza için not: embedding modelini değiştirmek** (2026-11-15'te elle tetiklenen "Bu modele aktar" olarak yapıldı, aşağıda "Hafıza kartları").
+  Farklı modellerin vektörleri aynı uzayda değildir
   (boyut aynı olsa bile karşılaştırılamaz). Hafıza veritabanına yazarken her vektörle birlikte `vector_space` (katalogdaki alan:
   `jina-v5-omni-nano`, `embeddinggemma-2`), boyut ve kaynak (metin/görsel/ses) saklanmalı; **kaynağın kendisi** (metin, resim,
   ses dosyası) de saklanmalı, yoksa model değişince yeniden gömülemez. Model değişince: aynı `vector_space` (Jina görsel ↔ Jina
@@ -746,3 +747,30 @@ Sıra önerisi yukarıdan aşağıya.
   o tür atlanır ve sonuçta `skipped` + Türkçe `warnings` döner; uygulama uyarı varsa diyalog gösterir.
 - `GET /api/v1/memory/{id}/media` satırın dosyasını verir (sahibi değilse 404). Arama tüm türleri aynı uzayda karşılaştırır;
   `hafizada_ara` görsel/ses satırları için yalnız etiket, tür ve tarih verir.
+
+## Hafıza kartları, aktarım ve harita (2026-11-15)
+
+- **Grup:** `orion_memory.group_id` birlikte kaydedilen satırları tek hafıza yapar (bir "Hafızaya kaydet", bir not, bir
+  dosya). Sayfa, harita ve araçlar grupla çalışır. Eski satırlar ilk açılışta bir kez gruplanır (`memory_groups.backfill_groups`):
+  aynı kullanıcı + model + kaynak + başlık, ardışık satırlar arası en çok 180 sn (sohbet), 60 sn (dosya), 3 sn (not); dosyadan
+  eklenen görsel/ses kendi grubu; sonradan tek başına kaydedilmiş bir sohbet görseli, adını içeren aynı başlıklı metne katılır.
+- **Kaynak:** yeni kayıtlar `source_chat_id` + `source_message_id` (parçanın başladığı mesajın satır id'si) taşır. Eski
+  sohbet kayıtlarının kaynağı `hafiza_baglami` ilk istendiğinde dosya id'si + etiketteki metinle ya da metnin başıyla
+  bulunur ve yazılır; bulunamazsa "bilinmiyor" denir (yanlış sohbet gösterilmez).
+- **Kopya:** başka modelin satırının etkin modeldeki kopyası aynı grupta, `copied_from` = asıl satır. `coalesce(copied_from, id)`
+  bir içeriğin tüm kopyalarında aynıdır: listede bir hafıza bir kez, parçası bir kez görünür (etkin modeldeki kopya öne
+  geçer); bir parçayı silmek kopyalarını da siler.
+- **API:** `GET /api/v1/memory` artık `groups` (kart) döner (`limit` 1-100, `strength` strong/medium/weak, `match` text/similar/
+  meaning, `score`), `summary` içinde `movable`/`copied` (model başına) ve `job`. `GET /api/v1/memory/groups/{id}` ayrıntı,
+  `POST /api/v1/memory/delete` `ids` (parça) ve `group_ids` (hafıza) alır. Aktarım: `GET|POST /api/v1/memory/move`,
+  `POST /api/v1/memory/move/cancel`, `POST /api/v1/memory/move/cleanup` (eski kopyaları siler). Harita:
+  `GET /api/v1/memory/map?k=4&floor=0.3&limit=300`.
+- **Aktarım işi** (`kernel/memory_move.py`): durumu `orion_memory_jobs`'ta (PC ve telefon API'leri ayrı süreç); başlatan
+  süreç asyncio görevi olarak yürütür, her satırda nabız ve `cancel` bakar; 90 sn nabızsız iş "interrupted" görünür,
+  yeniden başlatınca kopyası olanları atlayarak sürer. Model değişirse (25 satırda bir bakılır) durur.
+- **Harita:** etkin modelin en yeni ≤300 hafızası; her hafızanın vektörü satırlarının ortalaması (`avg(embedding)`), her
+  düğümün en yakın k komşusu eşik üstündeyse kenar (pgvector, tek sorgu). Yerleşim Flutter'da hafif Fruchterman-Reingold.
+- **Araçlar:** `hafizada_ara` sonuçları grubunu söyler (`birlikte_kaydedilenler`, aynı gruptan ikinci sonuçta
+  `ayni_kayittan`, dosya parçasında `dosya`/`parca`). Yeni `hafiza_baglami`: grubun tamamı + istenirse kaynak sohbetin
+  çevresi/başı (silinmiş/temizlenmiş ise söyler). `Tool.default_on`: kayıtlı araç seçimi bir aracı hiç anmıyorsa ve grubu
+  açıksa araç açık sayılır (hafıza araçları); kullanıcının kapattığı (false) kapalı kalır.

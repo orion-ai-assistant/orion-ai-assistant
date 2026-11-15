@@ -1,0 +1,346 @@
+"""Memory cards (groups), the context tool, the move to another embedding model and the map, on a throwaway real
+PostgreSQL (see test_memory_search.PostgresMemoryCase)."""
+import asyncio
+import datetime as dt
+import hashlib
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from orion.api import routes
+from orion.contracts.tools import ToolSelection
+from orion.kernel import media_store, memory, memory_groups, memory_move, registry
+from orion.worker.tools._base import ToolContext
+from orion.worker.tools._registry import get_registry
+from orion.worker.tools.memory import tools as memory_tools
+
+from test_memory_search import JINA, SPACE, PostgresMemoryCase, png, vec
+
+OTHER = 'jina-v5'
+
+
+async def sql(query, *args, fetch=False):
+    conn = await registry._connect()
+    try:
+        return await (conn.fetch if fetch else conn.fetchval)(query, *args)
+    finally:
+        await conn.close()
+
+
+class MemoryGroupTests(PostgresMemoryCase):
+    async def image(self, group, space=SPACE, score=0.3, axis=5, minute=0, title=None, source='chat_save', **extra):
+        raw = png()
+        media_id = hashlib.sha256(raw).hexdigest()
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await media_store.hold_media(conn, media_id, 'image/png', raw)
+        finally:
+            await conn.close()
+        row = await self.add('kalp.png — bu ne', score=score, kind='image', media_id=media_id, axis=axis, group=group,
+                             space=space, minute=minute, title=title, source=source, **extra)
+        await media_store.link_media(media_id, 'memory', str(row))
+        return row, media_id
+
+    # --- grouping -----------------------------------------------------------------------------------------------
+
+    async def test_backfill_groups_a_chat_save_with_its_images_file_chunks_and_keeps_notes_apart(self):
+        text = await self.add('Kullanıcı: bu ne\n\nAsistan: kırmızı kalp', source='chat_save', title='bu ne')
+        image, _ = await self.image(None, title='bu ne', minute=0)
+        await sql("update orion_memory set created_at = created_at + interval '40 seconds' where id = $1", image)
+        later = await self.add('Kullanıcı: başka', source='chat_save', title='bu ne', minute=10)
+        chunks = [await self.add(f'parça {k}', source='file', title='notlar.md', seconds=k) for k in range(3)]
+        notes = [await self.add('not bir', minute=20), await self.add('not iki', minute=21)]
+        conn = await registry._connect()
+        try:
+            self.assertEqual(await memory_groups.backfill_groups(conn), 8)
+            self.assertEqual(await memory_groups.backfill_groups(conn), 0)  # Once.
+        finally:
+            await conn.close()
+        groups = {r['id']: r['group_id'] for r in await sql('select id, group_id from orion_memory', fetch=True)}
+        self.assertEqual(groups[text], groups[image])
+        self.assertNotEqual(groups[text], groups[later])
+        self.assertEqual(len({groups[c] for c in chunks}), 1)
+        self.assertNotEqual(groups[notes[0]], groups[notes[1]])
+
+    async def test_a_chat_save_and_a_file_are_one_card_each_and_a_hit_names_its_part(self):
+        text = await self.add('Kullanıcı: kalpli resim\n\nAsistan: kırmızı bir kalp', score=0.2, group='g1',
+                              source='chat_save', title='kalpli resim')
+        image, _ = await self.image('g1', score=0.6, title='kalpli resim')
+        chunks = [await self.add(f'notlar parça {k}', score=0.1 + 0.05 * k, axis=10 + k, group='g2', source='file',
+                                 title='notlar.md') for k in range(3)]
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        self.assertEqual(page['matching'], 2)
+        cards = {c['group_id']: c for c in page['groups']}
+        self.assertEqual((cards['g1']['kind'], cards['g1']['counts']), ('mixed', {'text': 1, 'image': 1}))
+        self.assertEqual(cards['g1']['text_part'], text)
+        self.assertEqual([p['id'] for p in cards['g1']['parts']], [image])
+        self.assertEqual((cards['g2']['part_count'], cards['g2']['title'], cards['g2']['text_index']), (3, 'notlar.md', 1))
+        found = await memory_groups.list_groups('alice', self.settings, q='görsel', limit=10)
+        self.assertEqual([(c['group_id'], c['matched_part']) for c in found['groups']], [('g1', image), ('g2', chunks[2])])
+        self.assertEqual(found['groups'][1]['text_index'], 3)  # The chunk that matched, not the first.
+        self.assertEqual((found['groups'][0]['strength'], found['groups'][1]['strength']), ('strong', 'weak'))
+
+    async def test_a_copy_in_the_active_model_lists_the_memory_once_and_deleting_a_part_takes_its_copies(self):
+        original = await self.add('kedimin adı Maviş', space=OTHER, group='g1', axis=2)
+        copy = await self.add('kedimin adı Maviş', score=0.7, group='g1', copied_from=original, axis=3)
+        await self.add('yalnız eski modelde', space=OTHER, group='g2', axis=4)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        self.assertEqual(page['matching'], 2)
+        card = next(c for c in page['groups'] if c['group_id'] == 'g1')
+        self.assertEqual((card['text_part'], card['vector_spaces'], card['searchable']), (copy, [SPACE, OTHER], True))
+        summary = page['summary']
+        self.assertEqual((summary['total'], summary['not_searchable']), (2, 1))
+        self.assertEqual((summary['movable'], summary['copied']), ({OTHER: 1}, {OTHER: 1}))
+        found = await memory_groups.list_groups('alice', self.settings, q='maviş', limit=10)
+        self.assertEqual([c['group_id'] for c in found['groups']], ['g1'])  # Text match in both spaces: one card.
+        detail = await memory_groups.group_detail('alice', 'g1', self.settings)
+        self.assertEqual([(p['id'], p['spaces']) for p in detail['parts']], [(copy, [SPACE, OTHER])])
+        self.assertEqual([r['id'] for r in await memory.delete_items('alice', [copy])], [copy])
+        self.assertEqual(await sql("select count(*) from orion_memory where group_id = 'g1'"), 0)
+
+    async def test_the_detail_names_the_source_chat_and_whole_memories_are_deleted(self):
+        await self.add('Kullanıcı: merhaba', group='g1', source='chat_save', chat='chat')
+        image, media_id = await self.image('g1')
+        detail = await memory_groups.group_detail('alice', 'g1', self.settings)
+        self.assertEqual(detail['source_chat'], {'id': 'chat', 'exists': True, 'title': 'New Chat'})
+        self.assertEqual(detail['parts'][1]['media'], True)
+        self.assertIsNone(await memory_groups.group_detail('bob', 'g1', self.settings))
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
+            result = await routes.delete_memory_items(routes.MemoryDelete(group_ids=['g1']), 'alice')
+        self.assertEqual(len(result['deleted']), 2)
+        self.assertEqual(await sql('select count(*) from orion_media_links where media_id = $1', media_id), 0)
+
+    # --- tools --------------------------------------------------------------------------------------------------
+
+    async def tool(self, handler, model, **kwargs):
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            return await handler(model(**kwargs), ToolContext('alice', 'chat', 't', None))
+
+    async def test_search_results_say_what_was_saved_with_them(self):
+        text = await self.add('Kullanıcı: kalpli resim\n\nAsistan: kırmızı bir kalp', score=0.2, group='g1',
+                              source='chat_save', title='kalpli resim')
+        image, _ = await self.image('g1', score=0.6)
+        await self.add('uzun dosya ilk parça', score=0.0, group='g2', source='file', title='notlar.md', axis=8)
+        chunk = await self.add('uzun dosya ikinci parça', score=0.5, group='g2', source='file', title='notlar.md',
+                               axis=7)
+        found = await self.tool(memory_tools.hafizada_ara, memory_tools.MemoryInput, sorgu='kalp resmi')
+        rows = {row['id']: row for row in found['kayitlar']}
+        self.assertEqual(rows[image]['birlikte_kaydedilenler'],
+                         [{'id': text, 'tur': 'metin', 'ozet': 'Kullanıcı: kalpli resim Asistan: kırmızı bir kalp'}])
+        self.assertEqual(rows[text]['ayni_kayittan'], image)  # Its group is told once, at the image.
+        self.assertNotIn('birlikte_kaydedilenler', rows[text])
+        self.assertEqual((rows[chunk]['dosya'], rows[chunk]['parca']), ('notlar.md', '2/2'))
+        self.assertIn('hafiza_baglami', found['grup_notu'])
+
+    async def chat(self, *messages, assistant=True):
+        await sql("update orion_chats set assistant = $1 where id = 'chat'", assistant)
+        ids = []
+        for role, text in messages:
+            ids.append(await sql("insert into orion_chat_messages (chat_id, role, content_json, plain_text) "
+                                 "values ('chat', $1, $2, $3) returning id", role,
+                                 json.dumps({'role': role, 'content': text}), text))
+        return ids
+
+    async def test_the_context_tool_gives_the_whole_group_and_the_chat_around_the_save(self):
+        ids = await self.chat(*[('user' if k % 2 == 0 else 'assistant', f'mesaj {k}') for k in range(10)])
+        text = await self.add('Kullanıcı: mesaj 6\n\nAsistan: mesaj 7', group='g1', source='chat_save',
+                              chat='chat', message=ids[6])
+        image, _ = await self.image('g1', chat='chat', message=ids[6])
+        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=image, sohbet=True,
+                                 mesaj_sayisi=4)
+        self.assertEqual([p['id'] for p in result['parcalar']], [text, image])
+        self.assertEqual(result['parcalar'][0]['metin'], 'Kullanıcı: mesaj 6\n\nAsistan: mesaj 7')
+        messages = result['sohbet']['mesajlar']
+        self.assertEqual([m['metin'] for m in messages], ['mesaj 4', 'mesaj 5', 'mesaj 6', 'mesaj 7'])
+        self.assertEqual([m.get('kaydedilen', False) for m in messages], [False, False, True, False])
+        start = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True,
+                                mesaj_sayisi=2, sohbet_konumu='bas')
+        self.assertEqual([m['metin'] for m in start['sohbet']['mesajlar']], ['mesaj 0', 'mesaj 1'])
+        await sql('delete from orion_chat_messages where id = $1', ids[6])
+        cleared = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True)
+        self.assertIn('temizlenmiş', cleared['sohbet_durumu'])
+        await sql("delete from orion_chats where id = 'chat'")
+        gone = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=text, sohbet=True)
+        self.assertIn('silinmiş', gone['sohbet_durumu'])
+        self.assertIn('kayıt yok', (await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput,
+                                                    id=999999))['hata'])
+
+    async def test_an_old_chat_save_finds_its_chat_by_its_text_and_remembers_it(self):
+        ids = await self.chat(('user', 'eski kayıt sorusu burada'), ('assistant', 'eski cevap'))
+        # Saved after its messages, as a save always is (the helper's dates start in the past).
+        old = await self.add('Kullanıcı: eski kayıt sorusu burada\n\nAsistan: eski cevap', group='g1',
+                             source='chat_save', minute=60 * 24 * 366 * 2)
+        result = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=old, sohbet=True)
+        self.assertEqual([m['metin'] for m in result['sohbet']['mesajlar']], ['eski kayıt sorusu burada', 'eski cevap'])
+        self.assertEqual(await sql('select source_message_id from orion_memory where id = $1', old), ids[0])
+        note = await self.add('elle eklenen not', group='g2')
+        unknown = await self.tool(memory_tools.hafiza_baglami, memory_tools.MemoryContextInput, id=note, sohbet=True)
+        self.assertIn('bilinmiyor', unknown['sohbet_durumu'])
+
+    async def test_a_chat_save_stores_its_group_chat_and_the_message_each_chunk_starts_with(self):
+        ids = await self.chat(('user', 'Benim adım Ayşe.'), ('assistant', 'Memnun oldum.'))
+
+        async def target(settings):
+            return settings, SPACE, True
+
+        async def embed(text, settings, kind, local):
+            return [vec(0.5, 2)]
+        with patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed):
+            await memory.save_chat('alice', 'chat', 'Tanışma', self.settings)
+        row = (await sql('select group_id, source_chat_id, source_message_id from orion_memory', fetch=True))[0]
+        self.assertEqual((len(row['group_id']), row['source_chat_id'], row['source_message_id']), (32, 'chat', ids[0]))
+
+    # --- new tools come on ----------------------------------------------------------------------------------------
+
+    def test_new_memory_tools_come_on_with_their_group_but_an_unchecked_one_stays_off(self):
+        tools = get_registry()
+        saved = ToolSelection(categories={'memory': True}, functions={'hafizada_ara': True, 'hafizadan_sil': False})
+        enabled = tools.enabled(saved)
+        self.assertIn('hafizadaki_medyayi_ac', enabled)
+        self.assertIn('hafiza_baglami', enabled)
+        self.assertNotIn('hafizadan_sil', enabled)
+        complete = tools.complete(saved)
+        self.assertEqual((complete.functions['hafiza_baglami'], complete.functions['hafizadan_sil']), (True, False))
+        self.assertEqual(tools.enabled(ToolSelection(categories={'memory': False}, functions={})), [])
+        self.assertEqual(tools.enabled(ToolSelection(categories={'browser': True}, functions={})), [])  # Not default-on.
+        masked = routes._mask_settings_for_client(SimpleNamespace(
+            tool_selection=saved, router_api_key='', model_copy=lambda update: update))
+        self.assertTrue(masked['tool_selection'].functions['hafizadaki_medyayi_ac'])
+
+    # --- map ----------------------------------------------------------------------------------------------------
+
+    async def test_the_map_links_near_memories_above_the_floor(self):
+        await self.add('kedi', score=0.9, axis=1, group='a')
+        await self.add('kedi maması', score=0.9, axis=2, group='b')
+        await self.add('uzay', score=0.0, axis=3, group='c', minute=1)
+        image, _ = await self.image('d', score=0.0, axis=4, minute=2)
+        await self.add('eski model', space=OTHER, group='e')
+        graph = await memory_groups.map_graph('alice', self.settings, k=3, floor=0.5)
+        self.assertEqual({n['group_id'] for n in graph['nodes']}, {'a', 'b', 'c', 'd'})
+        self.assertEqual([(e['a'], e['b']) for e in graph['edges']], [('a', 'b')])
+        self.assertAlmostEqual(graph['edges'][0]['sim'], 0.81, places=3)
+        self.assertEqual(next(n for n in graph['nodes'] if n['group_id'] == 'd')['thumb'], image)
+        capped = await memory_groups.map_graph('alice', self.settings, limit=2)
+        self.assertEqual((len(capped['nodes']), capped['total'], capped['capped']), (2, 4, True))
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
+            via_route = await routes.memory_map(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None))),
+                                                k=3, floor=0.5, limit=300, current_user='alice')
+        self.assertEqual(len(via_route['nodes']), 4)
+
+    # --- move ---------------------------------------------------------------------------------------------------
+
+    def move_patches(self, support=JINA, embed=None):
+        async def target(settings):
+            return SimpleNamespace(router_model_group='local-embed'), SPACE, True
+
+        async def text_vector(text, settings, kind, local):
+            return [vec(0.4, 20)]
+
+        async def media_vector(parts, target):
+            return vec(0.3, 21)
+        return [patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed or text_vector),
+                patch.object(memory, '_embed_media', media_vector),
+                patch.object(memory, 'media_support', lambda local, name: support)]
+
+    async def run_job(self, patches, start=True):
+        for guard in patches:
+            guard.start()
+            self.addCleanup(guard.stop)
+        job = await memory_move.start('alice', OTHER, self.settings)
+        self.assertEqual(job['state'], 'running')
+        await asyncio.gather(*list(memory_move._tasks))
+        return await memory_move.status('alice')
+
+    async def test_moving_copies_text_and_images_keeps_groups_and_skips_what_the_model_cannot_take(self):
+        text = await self.add('Kullanıcı: kalp', space=OTHER, group='g1', source='chat_save', chat='chat', message=5)
+        image, media_id = await self.image('g1', space=OTHER)
+        voice = await self.add('Ses kaydı 0:05', kind='audio', media_id='b' * 64, space=OTHER, group='g1')
+        done = await self.add('zaten taşınmış', space=OTHER, group='g2')
+        await self.add('zaten taşınmış', group='g2', copied_from=done)
+        status = await self.run_job(self.move_patches())
+        self.assertEqual((status['state'], status['total'], status['done'], status['copied'], status['existing']),
+                         ('done', 3, 3, 2, 1))
+        self.assertEqual(status['unsupported'], {'audio': 1})
+        copies = await sql('select copied_from, group_id, kind, source_chat_id, source_message_id, created_at, media_id '
+                           'from orion_memory where vector_space = $1 and copied_from = any($2::bigint[]) order by id',
+                           SPACE, [text, image, voice], fetch=True)
+        self.assertEqual([(c['copied_from'], c['group_id'], c['kind']) for c in copies],
+                         [(text, 'g1', 'text'), (image, 'g1', 'image')])
+        self.assertEqual((copies[0]['source_chat_id'], copies[0]['source_message_id']), ('chat', 5))
+        self.assertEqual(copies[0]['created_at'], await sql('select created_at from orion_memory where id = $1', text))
+        self.assertEqual(await sql('select count(*) from orion_media_links where media_id = $1', media_id), 2)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        self.assertEqual(page['matching'], 2)
+        self.assertEqual(page['summary']['movable'], {OTHER: 1})  # The voice note stays behind.
+        again = await self.run_job([])
+        self.assertEqual((again['copied'], again['existing'], again['total']), (0, 3, 1))
+        self.assertEqual(await memory_groups.delete_copied('alice', OTHER, self.settings), 3)
+        self.assertEqual(await sql('select count(*) from orion_memory where vector_space = $1', OTHER), 1)
+        self.assertEqual(await sql('select count(*) from orion_media_links where media_id = $1', media_id), 1)
+
+    async def test_a_move_can_be_cancelled_and_a_second_start_waits(self):
+        for k in range(5):
+            await self.add(f'not {k}', space=OTHER, group=f'g{k}')
+        release = asyncio.Event()
+        calls = []
+
+        async def slow(text, settings, kind, local):
+            calls.append(text)
+            await release.wait()
+            return [vec(0.4, 20)]
+        for guard in self.move_patches(embed=slow):
+            guard.start()
+            self.addCleanup(guard.stop)
+        await memory_move.start('alice', OTHER, self.settings)
+        while not calls:
+            await asyncio.sleep(0.01)
+        with self.assertRaisesRegex(ValueError, 'zaten sürüyor'):
+            await memory_move.start('alice', OTHER, self.settings)
+        self.assertTrue((await memory_move.cancel('alice'))['cancel'])
+        release.set()
+        await asyncio.gather(*list(memory_move._tasks))
+        status = await memory_move.status('alice')
+        self.assertEqual((status['state'], status['done'], status['copied']), ('cancelled', 1, 1))
+        await sql("update orion_memory_jobs set state = 'running', updated_at = now() - interval '5 minutes'")
+        self.assertEqual((await memory_move.status('alice'))['state'], 'interrupted')
+        with self.assertRaisesRegex(ValueError, 'zaten etkin'):
+            await memory_move.start('alice', SPACE, self.settings)
+
+
+    async def test_a_hub_stop_leaves_the_move_interrupted_not_done(self):
+        await self.add('not', space=OTHER, group='g1')
+        started = asyncio.Event()
+
+        async def hang(text, settings, kind, local):
+            started.set()
+            await asyncio.Event().wait()
+        for guard in self.move_patches(embed=hang):
+            guard.start()
+            self.addCleanup(guard.stop)
+        await memory_move.start('alice', OTHER, self.settings)
+        await started.wait()
+        task = next(iter(memory_move._tasks))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual((await memory_move.status('alice'))['state'], 'interrupted')
+
+def test_plan_groups_chains_rows_within_the_gap():
+    t = dt.datetime(2026, 11, 1)
+    rows = [{'id': k, 'user_id': 'u', 'vector_space': 's', 'source_kind': 'chat_save', 'title': 'x', 'kind': 'text',
+             'media_id': None, 'created_at': t + dt.timedelta(seconds=s)} for k, s in enumerate((0, 100, 250, 1000))]
+    plan = memory_groups.plan_groups(rows)
+    assert plan[0] == plan[1] == plan[2] != plan[3]  # 100 s and 150 s gaps chain; 750 s does not.
+
+
+def test_a_file_saved_alone_later_joins_the_chat_text_that_names_it():
+    t = dt.datetime(2026, 11, 1)
+
+    def row(k, kind, text, minute):
+        return {'id': k, 'user_id': 'u', 'vector_space': 's', 'source_kind': 'chat_save', 'title': 'kalp',
+                'kind': kind, 'media_id': 'm' if kind != 'text' else None, 'text': text,
+                'created_at': t + dt.timedelta(minutes=minute)}
+    plan = memory_groups.plan_groups([row(1, 'text', 'Kullanıcı: bu ne\nHome _ X.webp\n\nAsistan: bir site', 0),
+                                      row(2, 'image', 'Home _ X.webp — bu ne', 9),
+                                      row(3, 'image', 'baska.png — x', 20)])
+    assert plan[1] == plan[2] != plan[3]

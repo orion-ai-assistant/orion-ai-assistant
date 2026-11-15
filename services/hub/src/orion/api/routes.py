@@ -93,17 +93,93 @@ class MemoryNote(BaseModel):
 
 
 class MemoryDelete(BaseModel):
-    ids: list[int] = Field(default_factory=list, max_length=500)
+    ids: list[int] = Field(default_factory=list, max_length=500)  # Parts (rows); their copies go with them.
+    group_ids: list[str] = Field(default_factory=list, max_length=200)  # Whole memories.
 
 
 @router.get("/api/v1/memory")
-async def list_memory(request: Request, q: str = "", limit: int = 50, offset: int = 0, vector_space: str = "all",
+async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory
+    """A page of memories: cards of the rows saved together (memory_groups.list_groups)."""
+    from orion.kernel import memory, memory_groups
     try:
-        return await memory.list_items(current_user, await get_runtime_settings(request.app.state.redis, current_user),
-                                       q[:200], max(1, min(limit, 200)), max(0, offset),
-                                       vector_space[:100], kind[:20])
+        return await memory_groups.list_groups(
+            current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:200],
+            max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20])
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.get("/api/v1/memory/groups/{group_id}")
+async def memory_group(group_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """One memory for the detail panel: every part, the models it is in, its source chat."""
+    from orion.kernel import memory, memory_groups
+    try:
+        found = await memory_groups.group_detail(current_user, group_id[:64],
+                                                 await get_runtime_settings(request.app.state.redis, current_user))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.")
+    return found
+
+
+@router.get("/api/v1/memory/map")
+async def memory_map(request: Request, k: int = 4, floor: float = 0.3, limit: int = 300,
+                     current_user: str = Depends(get_current_user)):
+    """The memories of the active model as a graph: each one's nearest neighbours above `floor` (pgvector)."""
+    from orion.kernel import memory, memory_groups
+    try:
+        return await memory_groups.map_graph(current_user, await get_runtime_settings(request.app.state.redis, current_user),
+                                             k, max(-1.0, min(floor, 1.0)), limit)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+class MemoryMove(BaseModel):
+    vector_space: str = Field(default="", max_length=100)
+
+
+@router.get("/api/v1/memory/move")
+async def memory_move_status(current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_move
+    try:
+        return {"job": await memory_move.status(current_user)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/move")
+async def memory_move_start(payload: MemoryMove, request: Request, current_user: str = Depends(get_current_user)):
+    """Copy another model's memories into the active model's space, in the background (memory_move)."""
+    from orion.kernel import memory, memory_move
+    try:
+        return {"job": await memory_move.start(current_user, payload.vector_space,
+                                               await get_runtime_settings(request.app.state.redis, current_user))}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/move/cancel")
+async def memory_move_cancel(current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_move
+    try:
+        return {"job": await memory_move.cancel(current_user)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/move/cleanup")
+async def memory_move_cleanup(payload: MemoryMove, request: Request, current_user: str = Depends(get_current_user)):
+    """Delete another model's rows that now have a copy in the active model."""
+    from orion.kernel import memory, memory_groups
+    try:
+        return {"deleted": await memory_groups.delete_copied(
+            current_user, payload.vector_space, await get_runtime_settings(request.app.state.redis, current_user))}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -177,12 +253,13 @@ async def memory_item_media(item_id: int, request: Request, current_user: str = 
 
 @router.post("/api/v1/memory/delete")
 async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory
+    from orion.kernel import memory, memory_groups
     try:
-        deleted = await memory.delete_items(current_user, payload.ids)
+        deleted = [row["id"] for row in await memory.delete_items(current_user, payload.ids)]
+        deleted += [row["id"] for row in await memory_groups.delete_groups(current_user, payload.group_ids)]
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"deleted": [row["id"] for row in deleted]}
+    return {"deleted": deleted}
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -634,9 +711,11 @@ async def stt_proxy(
 
 
 def _mask_settings_for_client(settings: RuntimeSettings) -> RuntimeSettings:
+    # Default-on tools a saved selection predates show as on, as the worker treats them.
+    update = {"tool_selection": get_registry().complete(settings.tool_selection)}
     if settings.router_api_key:
-        return settings.model_copy(update={"router_api_key": mask_api_key(settings.router_api_key)})
-    return settings
+        update["router_api_key"] = mask_api_key(settings.router_api_key)
+    return settings.model_copy(update=update)
 
 
 @router.post("/api/v1/admin/settings", response_model=RuntimeSettings)

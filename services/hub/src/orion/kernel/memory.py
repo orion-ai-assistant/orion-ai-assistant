@@ -1,9 +1,13 @@
 """Minimal memory: chunks of a saved chat with their embedding, searched by the `hafizada_ara` tool.
 
-Rows carry their own text and do not reference the chat, so deleting the chat keeps them. Image and audio rows
-(kind 'image'/'audio') carry a short label as their text and `media_id`: a link of owner 'memory' keeps the file
-after the chat is deleted, and deleting the row drops that link. Rows of another
-embedding model (`vector_space`) are never compared with the current one, only counted."""
+Rows carry their own text, so deleting the chat keeps them; `source_chat_id`/`source_message_id` only point back at
+where a row came from (the chat may be gone). Image and audio rows (kind 'image'/'audio') carry a short label as
+their text and `media_id`: a link of owner 'memory' keeps the file after the chat is deleted, and deleting the row
+drops that link. Rows of another embedding model (`vector_space`) are never compared with the current one.
+
+`group_id` ties the rows saved together (one chat save, one note, one file) into one memory: the page shows a group
+as one card. A copy of a row made for another embedding model (memory_move) keeps the group and names its original
+in `copied_from`, so `coalesce(copied_from, id)` (CONTENT_KEY) is the same for a row and all its copies."""
 from __future__ import annotations
 
 import logging
@@ -52,6 +56,31 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("alter table orion_memory add column if not exists media_mime text")
             await conn.execute("alter table orion_memory add column if not exists media_seconds real")
             await conn.execute("create index if not exists idx_orion_memory_user on orion_memory (user_id, vector_space)")
+            for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint"):
+                await conn.execute(f"alter table orion_memory add column if not exists {column}")
+            await conn.execute("create index if not exists idx_orion_memory_group on orion_memory (user_id, group_id)")
+            await conn.execute("create index if not exists idx_orion_memory_content on orion_memory "
+                               "(user_id, vector_space, (coalesce(copied_from, id)))")
+            await conn.execute("""
+                create table if not exists orion_memory_jobs (
+                    user_id text primary key,
+                    source_space text not null,
+                    target_space text not null,
+                    state text not null,
+                    total integer not null default 0,
+                    done integer not null default 0,
+                    copied integer not null default 0,
+                    existing integer not null default 0,
+                    unsupported jsonb not null default '{}'::jsonb,
+                    failed integer not null default 0,
+                    message text,
+                    cancel boolean not null default false,
+                    started_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now(),
+                    finished_at timestamptz
+                )""")
+            from orion.kernel.memory_groups import backfill_groups
+            await backfill_groups(conn)
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
     except MemoryUnavailable:
@@ -114,18 +143,66 @@ async def _embed(text: str, settings, kind: str, local: bool) -> list[list[float
     return vectors
 
 
+def new_group() -> str:
+    import uuid
+    return uuid.uuid4().hex
+
+
+CONTENT_KEY = "coalesce(copied_from, id)"
+
+
 def _vector(values) -> str:
     return "[" + ",".join(repr(float(v)) for v in values) + "]"
 
 
-def chat_text(messages: list[dict]) -> str:
-    """The readable user and assistant text of a chat, one paragraph per message."""
+def chat_paragraphs(messages: list[dict], ids: list | None = None) -> list[tuple[object, str]]:
+    """(message id, paragraph) of each readable user and assistant message; ids are None without `ids`."""
     paragraphs = []
-    for message in messages:
+    for index, message in enumerate(messages):
         text = message_text(message)
         if text:
-            paragraphs.append(f"{'Kullanıcı' if message.get('role') == 'user' else 'Asistan'}: {text}")
-    return "\n\n".join(paragraphs)
+            paragraphs.append((ids[index] if ids else None,
+                               f"{'Kullanıcı' if message.get('role') == 'user' else 'Asistan'}: {text}"))
+    return paragraphs
+
+
+def chat_text(messages: list[dict]) -> str:
+    """The readable user and assistant text of a chat, one paragraph per message."""
+    return "\n\n".join(text for _, text in chat_paragraphs(messages))
+
+
+def chunk_anchor(chunk: str, paragraphs: list[tuple[object, str]]):
+    """The id of the message a chunk starts with: the first paragraph whose start is in the chunk, else the one
+    the chunk starts inside (a long paragraph split at sentences)."""
+    for message_id, text in paragraphs:
+        head = text[:80].strip()
+        if head and head in chunk:
+            return message_id
+    head = chunk[:60].strip()
+    for message_id, text in paragraphs:
+        if head and head in text:
+            return message_id
+    return None
+
+
+async def _chat_messages(chat_id: str) -> tuple[list[dict], list[int]]:
+    """The chat's messages in order with their row ids (the anchors a saved row points back at)."""
+    import json
+    conn = await _connect()
+    try:
+        await registry._ensure_tables(conn)
+        rows = await conn.fetch("select id, content_json from orion_chat_messages where chat_id = $1 order by id",
+                                chat_id)
+    finally:
+        await conn.close()
+    messages, ids = [], []
+    for row in rows:
+        try:
+            messages.append(json.loads(row["content_json"]))
+            ids.append(row["id"])
+        except ValueError:
+            continue
+    return messages, ids
 
 
 AUDIO_PIECE_SECONDS = 60  # Gemma's mmproj: 25 tokens/s, so a piece fits the default 2048 context.
@@ -133,11 +210,11 @@ NOUNS = {"image": ("görsel", "görseller"), "audio": ("ses kaydı", "sesler")}
 NO_MEDIA = {"has_extra": False, "extra_on": False, "extra_kinds": [], "image": False, "audio": False}
 
 
-def chat_media(messages: list[dict]) -> list[dict]:
+def chat_media(messages: list[dict], ids: list | None = None) -> list[dict]:
     """Images and audio the user sent in the chat (attachments and media parts), once each by media id. The
     assistant's messages, its spoken replies (TTS) included, are never taken."""
     found, seen = [], set()
-    for message in messages:
+    for index, message in enumerate(messages):
         if message.get("role") != "user":
             continue
         shown = message.get("display_text")
@@ -154,7 +231,7 @@ def chat_media(messages: list[dict]) -> list[dict]:
                 continue
             seen.add(media_id)
             found.append({"kind": kind, "media_id": media_id, "mime": mime, "name": item.get("name") or "",
-                          "text": text.strip()[:300]})
+                          "text": text.strip()[:300], "message_id": ids[index] if ids else None})
     return found
 
 
@@ -257,10 +334,12 @@ async def _rows_of(item: dict, mime: str, raw: bytes, target) -> list[tuple[str,
 
 MEDIA_INSERT_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
-    "media_id, media_mime, media_seconds) values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10) returning id")
+    "media_id, media_mime, media_seconds, group_id, source_chat_id, source_message_id) "
+    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id")
 
 
-async def _save_media(conn, user_id, chat_id, title, items, space, target, support) -> tuple[int, dict, list[str]]:
+async def _save_media(conn, user_id, chat_id, title, items, space, target, support,
+                      group: str) -> tuple[int, dict, list[str]]:
     from orion.kernel.media_store import link_media
     saved, skipped, failed, warnings = 0, {}, {}, []
     for kind in ("image", "audio"):
@@ -281,7 +360,8 @@ async def _save_media(conn, user_id, chat_id, title, items, space, target, suppo
                     for label, vector, seconds in rows:
                         row_id = await conn.fetchval(
                             MEDIA_INSERT_SQL, user_id, label[:1000], space, _vector(vector), "chat_save",
-                            title or None, kind, item["media_id"], item["mime"], seconds)
+                            title or None, kind, item["media_id"], item["mime"], seconds, group, chat_id,
+                            item.get("message_id"))
                         await link_media(item["media_id"], "memory", str(row_id), conn=conn)
                 saved += len(rows)
             except Exception as exc:
@@ -296,24 +376,28 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
     """Chunk, embed and store the chat's text, and the images and audio the active model takes. Returns
     {"saved": new rows, "skipped": {kind: count}, "warnings": [Turkish sentences]}."""
     from orion.worker.services.router import chunk_text
-    messages = await registry.get_chat_history_db(chat_id)
-    chunks = chunk_text(chat_text(messages))
-    items = chat_media(messages)
+    messages, ids = await _chat_messages(chat_id)
+    paragraphs = chat_paragraphs(messages, ids)
+    chunks = chunk_text("\n\n".join(text for _, text in paragraphs))
+    items = chat_media(messages, ids)
     if not chunks and not items:
         raise MemoryUnavailable("Bu sohbette kaydedilecek metin yok.")
     conn = await _connect()
     try:
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
+        group = new_group()
         rows = []
         for chunk in chunks:
+            anchor = chunk_anchor(chunk, paragraphs)
             for vector in await _embed(chunk, target, "document", local):
-                rows.append((user_id, chunk, space, _vector(vector), title or None))
+                rows.append((user_id, chunk, space, _vector(vector), title or None, group, chat_id, anchor))
         saved = await _insert_new(conn, rows, "chat_save")
         skipped, warnings = {}, []
         if items:
             support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
-            more, skipped, warnings = await _save_media(conn, user_id, chat_id, title, items, space, target, support)
+            more, skipped, warnings = await _save_media(conn, user_id, chat_id, title, items, space, target, support,
+                                                        group)
             saved += more
         return {"saved": saved, "skipped": skipped, "warnings": warnings}
     finally:
@@ -321,14 +405,15 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
 
 
 INSERT_SQL = (
-    "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title) "
-    "select $1, $2, $3, $4::vector, $6, $5 where not exists "
+    "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, group_id, "
+    "source_chat_id, source_message_id) select $1, $2, $3, $4::vector, $9, $5, $6, $7, $8 where not exists "
     "(select 1 from orion_memory where user_id = $1 and vector_space = $3 and text = $2 and media_id is null)")
 MAX_NOTE = 4000
 
 
 async def _insert_new(conn, rows, source_kind: str) -> int:
-    """Insert rows, skipping a text this user already has in the same vector space; returns how many were new."""
+    """Insert rows (user, text, space, vector, title, group, chat id, message id), skipping a text this user already
+    has in the same vector space; returns how many were new."""
     seen, fresh = set(), []
     for row in rows:
         if (row[1], row[2]) in seen:
@@ -356,10 +441,10 @@ async def add_note(user_id: str, text: str, settings, source_kind: str = "manual
     try:
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
-        rows = []
+        rows, group = [], new_group()
         for piece in chunk_text(text) or [text]:
             for vector in await _embed(piece, target, "document", local):
-                rows.append((user_id, piece, space, _vector(vector), None))
+                rows.append((user_id, piece, space, _vector(vector), None, group, None, None))
         return await _insert_new(conn, rows, source_kind)
     finally:
         await conn.close()
@@ -414,11 +499,12 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> 
     try:
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
+        group = new_group()
         if kind == "text":
             rows = []
             for piece in chunk_text(text) or [text]:
                 for vector in await _embed(piece, target, "document", local):
-                    rows.append((user_id, piece, space, _vector(vector), name or None))
+                    rows.append((user_id, piece, space, _vector(vector), name or None, group, None, None))
             added = await _insert_new(conn, rows, "file")
             return {"added": added, "warnings": [] if added else ["Bu metin hafızada zaten var."]}
         support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
@@ -439,7 +525,7 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings) -> 
             await hold_media(conn, media_id, mime, raw)
             for label, vector, seconds in rows:
                 row_id = await conn.fetchval(MEDIA_INSERT_SQL, user_id, label[:1000], space, _vector(vector), "file",
-                                             name or None, kind, media_id, mime, seconds)
+                                             name or None, kind, media_id, mime, seconds, group, None, None)
                 await link_media(media_id, "memory", str(row_id), conn=conn)
         return {"added": len(rows), "warnings": []}
     finally:
@@ -488,7 +574,7 @@ _TR_LETTERS, _TR_ASCII = "çğıöşüâîû", "cgiosuaiu"
 FOLD_SQL = f"lower(translate(translate(text, '{_TR_UPPER}', '{_TR_LOWER}'), '{_TR_LETTERS}', '{_TR_ASCII}'))"
 _FOLD = str.maketrans(_TR_UPPER + _TR_LETTERS, _TR_LOWER.translate(str.maketrans(_TR_LETTERS, _TR_ASCII)) + _TR_ASCII)
 _COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
-            "media_seconds")
+            "media_seconds, group_id, copied_from, source_chat_id, source_message_id")
 
 
 def fold(text: str) -> str:
@@ -582,22 +668,6 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     return rows
 
 
-def _item(r, space, score=None, match=None, text_score=None) -> dict:
-    item = {"id": r["id"], "text": r["text"], "kind": r["kind"], "vector_space": r["vector_space"],
-            "source_kind": r["source_kind"], "source_chat_title": r["source_chat_title"],
-            "created_at": r["created_at"].isoformat(), "searchable": r["vector_space"] == space}
-    if r.get("media_id"):
-        seconds = r.get("media_seconds")
-        item.update(media_id=r["media_id"], media_mime=r.get("media_mime"),
-                    media_seconds=None if seconds is None else round(float(seconds), 1))
-    if match:
-        item["match"] = match
-        item["score"] = None if score is None else round(float(score), 4)
-        if text_score is not None and match == "similar":
-            item["text_score"] = round(float(text_score), 3)
-    return item
-
-
 async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str | None]:
     """(current vector space, query vector, reason when the search by meaning is off)."""
     try:
@@ -620,89 +690,36 @@ async def _nearest(conn, user_id, space, vector, kind, count, offset=0) -> list[
         user_id, space, vector, count, offset, *args)]
 
 
-async def list_items(user_id: str, settings, q: str = "", limit: int = 50, offset: int = 0,
-                     vector_space: str = "all", kind: str = "all") -> dict:
-    """A page of this user's rows and a summary of all of them. Without `q`: newest first. With `q`: the `limit`
-    rows nearest by meaning (current vector space, best first, no threshold), then the text matches among the rest
-    (substring, then near spellings); each says its `match` (meaning, both, text, similar); `more` says whether
-    more rows by meaning follow."""
-    q = (q or "").strip()
-    kind = kind if kind in KINDS else "all"
-    vector_space = vector_space or "all"
-    semantic, reason, vector = None, None, None
-    if q:
-        space, vector, reason = await _query_vector(q, settings)
-        semantic = vector is not None
-    else:
-        space = await current_space(settings)
-    conn = await _connect()
-    more = False
-    try:
-        await ensure_memory_table(conn)
-        if q:
-            meaning = []
-            searchable = vector is not None and vector_space in ("all", space)
-            if searchable:
-                meaning = await _nearest(conn, user_id, space, vector, kind, limit + 1, offset)
-                more, meaning = len(meaning) > limit, meaning[:limit]
-            texts = await _text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
-                                     vector if searchable else None)
-            text_ids = {r["id"] for r in texts}
-            meaning_ids = {r["id"] for r in meaning}
-            merged = [_item(r, space, r["score"], "both" if r["id"] in text_ids else "meaning") for r in meaning]
-            merged += [_item(r, space, r["score"], r["tmatch"], r["tscore"]) for r in texts
-                       if r["id"] not in meaning_ids]
-            items, matching = merged, len(merged)
-        else:
-            extra, args = _filters(vector_space, kind, 4)
-            rows = await conn.fetch(
-                f"select {_COLUMNS} from orion_memory where user_id = $1{extra} order by created_at desc, id desc "
-                f"limit $2 offset $3", user_id, limit, offset, *args)
-            extra, args = _filters(vector_space, kind, 2)
-            matching = await conn.fetchval(f"select count(*) from orion_memory where user_id = $1{extra}", user_id, *args)
-            items = [_item(r, space) for r in rows]
-        spaces = await conn.fetch(
-            "select vector_space as key, count(*) as n from orion_memory where user_id = $1 group by vector_space", user_id)
-        kinds = await conn.fetch(
-            "select kind as key, count(*) as n from orion_memory where user_id = $1 group by kind", user_id)
-    finally:
-        await conn.close()
-    per_space = {r["key"]: int(r["n"]) for r in spaces}
-    total = sum(per_space.values())
-    result = {
-        "items": items,
-        "matching": int(matching or 0),
-        "summary": {"total": total, "per_vector_space": per_space,
-                    "per_kind": {r["key"]: int(r["n"]) for r in kinds}, "current_vector_space": space,
-                    "not_searchable": total - per_space.get(space, 0) if space else total},
-    }
-    if q:
-        result["semantic"] = semantic
-        result["more"] = more
-        if reason:
-            result["semantic_reason"] = reason
-    return result
+async def delete_rows(conn, user_id: str, where: str, *args) -> list[dict]:
+    """Delete this user's rows matching `where` (SQL after the user's condition, parameters from $2) and drop their
+    media links, inside the caller's transaction; returns (id, text, content_key, group_id) of each."""
+    from orion.kernel.media_store import unlink_media
+    rows = await conn.fetch(
+        f"delete from orion_memory where user_id = $1 and ({where}) "
+        f"returning id, text, media_id, group_id, {CONTENT_KEY} as content_key", user_id, *args)
+    for r in rows:
+        if r["media_id"]:
+            await unlink_media(r["media_id"], "memory", str(r["id"]), conn=conn)
+    return [dict(r) for r in rows]
 
 
 async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
-    """Delete this user's rows among `ids`; returns the deleted rows (id, text). Other users' ids are ignored."""
+    """Delete this user's rows among `ids` together with their copies in other vector spaces (one memory, one
+    delete); returns the asked rows that were deleted (id, text). Other users' ids are ignored."""
     ids = [int(i) for i in ids][:500]
     if not ids:
         return []
     conn = await _connect()
     try:
         await ensure_memory_table(conn)
-        from orion.kernel.media_store import unlink_media
         async with conn.transaction():
-            rows = await conn.fetch(
-                "delete from orion_memory where user_id = $1 and id = any($2::bigint[]) returning id, text, media_id",
-                user_id, ids)
-            for r in rows:
-                if r.get("media_id"):
-                    await unlink_media(r["media_id"], "memory", str(r["id"]), conn=conn)
+            rows = await delete_rows(
+                conn, user_id, f"{CONTENT_KEY} in (select {CONTENT_KEY} from orion_memory where user_id = $1 "
+                               "and id = any($2::bigint[]))", ids)
     finally:
         await conn.close()
-    return [{"id": r["id"], "text": r["text"]} for r in rows]
+    asked = set(ids)
+    return [{"id": r["id"], "text": r["text"]} for r in rows if r["id"] in asked]
 
 
 def _ranked(meaning: list[dict], texts: list[dict]) -> list[dict]:
@@ -718,6 +735,71 @@ def _ranked(meaning: list[dict], texts: list[dict]) -> list[dict]:
         bonus = {"text": TEXT_BONUS, "similar": 0.8 * TEXT_BONUS}.get(r["tmatch"], 0.0)
         return (float(r["score"]) if r["score"] is not None else 0.0) + bonus + 0.01 * float(r["tscore"])
     return sorted(pool.values(), key=lambda r: (-rank(r), -r["id"]))
+
+
+def group_key(row) -> str:
+    """The memory (card) a row belongs to: its group, or the row alone for a row saved before groups."""
+    return row.get("group_id") or f"r{row['id']}"
+
+
+def content_key(row) -> int:
+    return row.get("copied_from") or row["id"]
+
+
+def unshadowed(n: int) -> str:
+    """SQL: the row is in the space ${n}, or that space has no copy of it (a memory is listed once)."""
+    return (f"(vector_space = ${n} or not exists (select 1 from orion_memory c where c.user_id = orion_memory.user_id "
+            f"and c.vector_space = ${n} and coalesce(c.copied_from, c.id) = "
+            f"coalesce(orion_memory.copied_from, orion_memory.id)))")
+
+
+def _one_per_content(ranked: list[dict]) -> list[dict]:
+    """The best-ranked row of each content (a row and its copies in other spaces count once)."""
+    seen, kept = set(), []
+    for r in ranked:
+        key = content_key(r)
+        if key not in seen:
+            seen.add(key)
+            kept.append(r)
+    return kept
+
+
+def prefer_space(rows: list[dict], space) -> list[dict]:
+    """One row per content, the copy in `space` when there is one, in the order the memory was saved."""
+    chosen = {}
+    for r in rows:
+        key = content_key(r)
+        if key not in chosen or (r["vector_space"] == space and chosen[key]["vector_space"] != space):
+            chosen[key] = r
+    return [chosen[key] for key in sorted(chosen)]
+
+
+GROUP_ROW_COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, group_id, copied_from, media_id, "
+                     "created_at")
+
+
+async def group_context(conn, user_id: str, rows: list[dict], space) -> dict[int, dict]:
+    """For each row: what was saved with it, briefly. {row id: {"parts", "index", "source_kind", "title",
+    "others": [{"id", "kind", "text"}] (at most 3, other kinds first)}}."""
+    groups = {r.get("group_id") for r in rows if r.get("group_id")}
+    members: dict[str, list[dict]] = {}
+    if groups:
+        for r in await conn.fetch(f"select {GROUP_ROW_COLUMNS} from orion_memory where user_id = $1 "
+                                  "and group_id = any($2::text[]) order by id", user_id, list(groups)):
+            members.setdefault(r["group_id"], []).append(dict(r))
+    context = {}
+    for row in rows:
+        parts = prefer_space(members.get(row.get("group_id"), []) or [row], space)
+        keys = [content_key(p) for p in parts]
+        mine = content_key(row)
+        others = [p for p in parts if content_key(p) != mine]
+        others.sort(key=lambda p: (p["kind"] == (row.get("kind") or "text"), content_key(p)))
+        context[row["id"]] = {
+            "key": group_key(row), "parts": len(parts), "index": keys.index(mine) + 1 if mine in keys else None,
+            "source_kind": row.get("source_kind"), "title": row.get("source_chat_title"),
+            "others": [{"id": p["id"], "kind": p["kind"], "text": " ".join(p["text"].split())[:100]}
+                       for p in others[:3]]}
+    return context
 
 
 async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all") -> dict:
@@ -738,23 +820,33 @@ async def search(user_id: str, query: str, settings, page: int = 1, kind: str = 
         if query:
             meaning = await _nearest(conn, user_id, space, vector, kind, start + PAGE + 1) if vector else []
             texts = await _text_rows(conn, user_id, query, "all", kind, space, vector)
-            ranked = _ranked(meaning, texts)
+            ranked = _one_per_content(_ranked(meaning, texts))
         else:
             extra, args = _filters("all", kind, 4)
+            params = [user_id, PAGE + 1, start, *args]
+            if space:
+                params.append(space)
+                extra += f" and {unshadowed(len(params))}"
             ranked = [None] * start + [{**dict(r), "score": None, "tmatch": None} for r in await conn.fetch(
                 f"select {_COLUMNS} from orion_memory where user_id = $1{extra} order by created_at desc, id desc "
-                f"limit $2 offset $3", user_id, PAGE + 1, start, *args)]
+                f"limit $2 offset $3", *params)]
+        page_rows = [r for r in ranked[start:start + PAGE] if r is not None]
+        groups = await group_context(conn, user_id, page_rows, space)
+        # Rows of another space that have no copy in this one: the search reaches them by text only.
         other = await conn.fetchval(
-            "select count(*) from orion_memory where user_id = $1 and vector_space <> $2", user_id, space) if space else 0
+            "select count(*) from orion_memory r where user_id = $1 and vector_space <> $2 and not exists "
+            "(select 1 from orion_memory c where c.user_id = $1 and c.vector_space = $2 "
+            "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))", user_id, space) if space else 0
     finally:
         await conn.close()
     rows = []
-    for r in ranked[start:start + PAGE]:
+    for r in page_rows:
         # Every row of the space has a meaning score (no threshold), so a text match is what the label says.
         match = (r["tmatch"] or "meaning") if query else None
         rows.append({"id": r["id"], "text": r["text"], "date": r["created_at"].date().isoformat(),
                      "kind": r.get("kind") or "text", "media_id": r.get("media_id"),
-                     "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match})
+                     "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match,
+                     "group": groups.get(r["id"])})
     result = {"rows": rows, "more": len(ranked) > start + PAGE, "other_spaces": int(other or 0)}
     if query and reason:
         result["reason"] = reason

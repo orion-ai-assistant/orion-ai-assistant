@@ -18,7 +18,7 @@ import asyncpg
 
 from orion.api import routes
 from orion.contracts.settings import RuntimeSettings
-from orion.kernel import media_store, memory, registry
+from orion.kernel import media_store, memory, memory_groups, registry
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
 from orion.worker.tools.memory import tools as memory_tools
@@ -55,7 +55,8 @@ def png():
     return out.getvalue()
 
 
-class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
+class PostgresMemoryCase(unittest.IsolatedAsyncioTestCase):
+    """A throwaway PostgreSQL cluster per class, emptied before each test (no tests of its own)."""
     @classmethod
     def setUpClass(cls):
         binary = postgres_bin()
@@ -110,7 +111,7 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
             await registry._ensure_tables(conn)
             await media_store.ensure_table(conn)
             await memory.ensure_memory_table(conn)
-            await conn.execute('truncate orion_memory, orion_chats, orion_media cascade')
+            await conn.execute('truncate orion_memory, orion_memory_jobs, orion_chats, orion_media cascade')
             await conn.execute("insert into orion_chats(id,user_id) values('chat','alice')")
         finally:
             await conn.close()
@@ -127,17 +128,24 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
             guard.start()
             self.addCleanup(guard.stop)
 
-    async def add(self, text, score=0.0, kind='text', user='alice', space=SPACE, minute=0, media_id=None, axis=1):
+    async def add(self, text, score=0.0, kind='text', user='alice', space=SPACE, minute=0, media_id=None, axis=1,
+                  group=None, source='manual', title=None, copied_from=None, chat=None, message=None, seconds=0):
         conn = await registry._connect()
         try:
             return await conn.fetchval(
                 "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, kind, media_id, "
-                "media_mime, created_at) values ($1, $2, $3, $4::vector, 'manual', $5, $6, $7, "
-                "timestamptz '2026-11-01' + $8 * interval '1 minute') returning id",
+                "media_mime, created_at, group_id, source_chat_title, copied_from, source_chat_id, source_message_id) "
+                "values ($1, $2, $3, $4::vector, $9, $5, $6, $7, "
+                "timestamptz '2026-11-01' + $8 * interval '1 minute' + $14 * interval '1 second', $10, $11, $12, "
+                "$13, $15) returning id",
                 user, text, space, memory._vector(vec(score, axis)), kind, media_id,
-                {'image': 'image/png', 'audio': 'audio/ogg'}.get(kind), minute)
+                {'image': 'image/png', 'audio': 'audio/ogg'}.get(kind), minute, source, group, title, copied_from,
+                chat, seconds, message)
         finally:
             await conn.close()
+
+
+class MemorySearchTests(PostgresMemoryCase):
 
     async def tool(self, **kwargs):
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
@@ -166,8 +174,8 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found['kayitlar'][0]['tur'], 'görsel')
         self.assertIn('hafizadaki_medyayi_ac', found['medya_notu'])
         self.assertNotIn('göremezsin', found['medya_notu'])
-        page = await memory.list_items('alice', self.settings, q='kalp', limit=10)
-        self.assertEqual((page['items'][0]['id'], page['items'][0]['match']), (heart, 'meaning'))
+        page = await memory_groups.list_groups('alice', self.settings, q='kalp', limit=10)
+        self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (heart, 'meaning'))
 
     async def test_tur_without_a_query_lists_the_newest_of_that_kind(self):
         images = [await self.add(f'foto {k}.jpg', kind='image', minute=k, media_id=f'{k}' * 64) for k in range(3)]
@@ -180,11 +188,12 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row.get('metin') for row in only['kayitlar']], ['metin'])
 
     async def check_near_spellings(self):
-        hello = await self.add('Kullanıcı: selam naber nasılsın', score=0.3, axis=2)
-        merhaba = await self.add('Merhaba dünya', score=0.3, axis=3)
-        city = await self.add("İstanbul'a gittim", score=0.3, axis=4)
-        light = await self.add('IŞIK yandı', score=0.3, axis=5)
-        await self.add('Bugün hava çok güzel', score=0.6, axis=6)
+        # Minutes apart: five notes, five memories (the group backfill joins notes seconds apart).
+        hello = await self.add('Kullanıcı: selam naber nasılsın', score=0.3, axis=2, minute=1)
+        merhaba = await self.add('Merhaba dünya', score=0.3, axis=3, minute=2)
+        city = await self.add("İstanbul'a gittim", score=0.3, axis=4, minute=3)
+        light = await self.add('IŞIK yandı', score=0.3, axis=5, minute=4)
+        await self.add('Bugün hava çok güzel', score=0.6, axis=6, minute=5)
         found = await self.tool(sorgu='selam nabe')  # A partial word: a plain substring.
         self.assertEqual((found['kayitlar'][0]['id'], found['kayitlar'][0]['eslesme']), (hello, 'metin'))
         typo = await self.tool(sorgu='selam nabr nasilsin')
@@ -194,9 +203,8 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
         exact = await self.tool(sorgu='İSTANBUL')
         self.assertEqual((exact['kayitlar'][0]['id'], exact['kayitlar'][0]['eslesme']), (city, 'metin'))
         self.assertEqual((await self.tool(sorgu='ışık'))['kayitlar'][0]['id'], light)
-        page = await memory.list_items('alice', self.settings, q='selam nabr nasilsin', limit=1)
-        labels = {item['id']: item['match'] for item in page['items']}
-        self.assertEqual(labels[hello], 'similar')
+        page = await memory_groups.list_groups('alice', self.settings, q='selam nabr nasilsin', limit=1)
+        self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (hello, 'similar'))
         self.assertTrue(page['more'])
 
     async def test_near_spellings_with_pg_trgm(self):
@@ -215,19 +223,21 @@ class MemorySearchTests(unittest.IsolatedAsyncioTestCase):
         other = await self.add('Maviş jina notu', space='jina-v5', axis=2)
         mine = await self.add('kedim MAVİŞ uyuyor', score=0.4, axis=3)
         await self.add('alakasız', score=0.9, axis=4)
-        page = await memory.list_items('alice', self.settings, q='maviş', limit=1)
-        self.assertEqual([(i['match'], i['score']) for i in page['items']][0], ('meaning', 0.9))
-        self.assertEqual({i['id']: i['match'] for i in page['items'][1:]}, {other: 'text', mine: 'text'})
-        jina = await memory.list_items('alice', self.settings, q='maviş', vector_space='jina-v5')
-        self.assertEqual([(i['id'], i['match']) for i in jina['items']], [(other, 'text')])
+        page = await memory_groups.list_groups('alice', self.settings, q='maviş', limit=10)
+        # A text match ranks its memory TEXT_BONUS higher: "kedim MAVİŞ" (0.4 + bonus) before the 0.9 one.
+        self.assertEqual([(g['matched_part'], g['match']) for g in page['groups']],
+                         [(mine, 'text'), (page['groups'][1]['matched_part'], 'meaning'), (other, 'text')])
+        self.assertEqual(page['groups'][1]['score'], 0.9)
+        jina = await memory_groups.list_groups('alice', self.settings, q='maviş', vector_space='jina-v5')
+        self.assertEqual([(g['matched_part'], g['match']) for g in jina['groups']], [(other, 'text')])
 
         async def off(q, settings):
             return None, None, memory.SETUP_MESSAGE
         with patch.object(memory, '_query_vector', off):
-            page = await memory.list_items('alice', self.settings, q='maviş')
+            page = await memory_groups.list_groups('alice', self.settings, q='maviş')
             found = await self.tool(sorgu='maviş')
         self.assertEqual((page['semantic'], page['semantic_reason']), (False, memory.SETUP_MESSAGE))
-        self.assertEqual({i['id'] for i in page['items']}, {other, mine})
+        self.assertEqual({g['matched_part'] for g in page['groups']}, {other, mine})
         self.assertEqual({row['id'] for row in found['kayitlar']}, {other, mine})
         self.assertIn(memory.SETUP_MESSAGE, found['uyari_anlam'])
 
