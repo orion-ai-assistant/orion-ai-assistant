@@ -326,8 +326,10 @@ class MemoryPiecesTests(PostgresMemoryCase):
         found = await memory.search('alice', 'zzz', self.settings)
         self.assertEqual(found['rows'][0]['id'], second)
         self.assertTrue(found['rows'][0]['via_whole'])
-        tool = memory_tools._row(found['rows'][0], {})
-        self.assertEqual((tool['parca'], tool['eslesme_notu'][:10]), ('2/2', 'kaydın tam'))
+        with patch('orion.kernel.config.get_runtime_settings', self._settings()):
+            tool = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='zzz')]), ToolContext('alice', 'chat', 't', None))
+        self.assertEqual((tool['results'][0]['id'], tool['results'][0]['part']), (second, '2 of 2'))
 
     async def test_deleting_pieces_keeps_the_whole_vector_right(self):
         self.patches()
@@ -355,13 +357,13 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.assertEqual(len(pieces), 5)
         context = ToolContext('alice', 'chat', 't', None)
         with patch('orion.kernel.config.get_runtime_settings', self._settings()):
-            near = await memory_tools.hafiza_baglami(memory_tools.MemoryContextInput(id=pieces[2]['id'], komsu=1),
-                                                     context)
-            whole = await memory_tools.hafiza_baglami(memory_tools.MemoryContextInput(id=pieces[2]['id']), context)
-        self.assertEqual([p['id'] for p in near['parcalar']], [p['id'] for p in pieces[1:4]])
-        self.assertEqual([p['parca'] for p in near['parcalar']], ['2/5', '3/5', '4/5'])
-        self.assertTrue(near['parcalar'][1]['sorulan'] and 'kapsam' in near)
-        self.assertEqual(len(whole['parcalar']), 5)
+            near = await memory_tools.memory_context(
+                memory_tools.MemoryContextInput(id=pieces[2]['id'], neighbours=1), context)
+            whole = await memory_tools.memory_context(memory_tools.MemoryContextInput(id=pieces[2]['id']), context)
+        self.assertEqual([p['id'] for p in near['parts']], [p['id'] for p in pieces[1:4]])
+        self.assertEqual([p['part'] for p in near['parts']], ['2 of 5', '3 of 5', '4 of 5'])
+        self.assertTrue(near['parts'][1]['asked'] and 'scope' in near)
+        self.assertEqual(len(whole['parts']), 5)
 
     def _settings(self):
         async def settings(*args):
@@ -422,10 +424,10 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.assertEqual([m['kind'] for m in only_frames[0]['media']], ['image'] * 4)
         with patch.object(memory, 'chat_model_media', self._can()), \
                 patch('orion.kernel.config.get_runtime_settings', self._settings()):
-            result = await memory_tools.hafizadaki_medyayi_ac(memory_tools.MemoryOpenInput(idler=[segment['id']]),
-                                                             ToolContext('alice', 'chat', 't', None))
-        self.assertEqual(result['acilanlar'][0]['acilan'], '4 kare, 1 ses')
-        self.assertEqual(len(result['_medya']), 5)
+            result = await memory_tools.open_memory_files(memory_tools.MemoryOpenInput(ids=[segment['id']]),
+                                                          ToolContext('alice', 'chat', 't', None))
+        self.assertEqual(result['opened'][0]['opened_as'], '4 frames, 1 sound')
+        self.assertEqual(len(result['_model_media']), 5)
         self.assertEqual(added['group_id'], rows[0]['group_id'])
 
     def _can(self):
@@ -450,9 +452,10 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.patches()
         await memory.add_file('alice', 'v.mp4', 'video/mp4', clip(70, fps=2), self.settings)
         await self.finish_jobs()
-        found = await memory.search('alice', '', self.settings, kind='video')
-        tool = [memory_tools._row(r, {}) for r in found['rows']]
-        self.assertTrue(all('tamami' not in t for t in tool))  # Whole vectors are never listed alone.
-        times = sorted(t['zaman'] for t in tool)
-        self.assertIn('0:20–0:40', times)
-        self.assertTrue(all(t['parca'].endswith('/4') for t in tool))
+        with patch('orion.kernel.config.get_runtime_settings', self._settings()):
+            tool = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='bahçe')], kind='video'), ToolContext('alice', 'chat', 't', None))
+        best = tool['results'][0]  # The video is one memory: its best segment, never the whole vector alone.
+        self.assertEqual(best['kind'], 'video')
+        self.assertRegex(best['part'], r'^\d of 4$')
+        self.assertRegex(best['time'], r'^\d:\d\d–\d:\d\d$')

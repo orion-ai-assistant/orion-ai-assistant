@@ -1,6 +1,9 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 LEGACY_WEB_TOOLS = {"search_web", "read_page", "read_pages"}
+# The memory tools' Turkish ids before they were renamed (a saved selection keeps its choices under the new ids).
+RENAMED_TOOLS = {"hafizada_ara": "search_memory", "hafizaya_ekle": "add_memory", "hafizadan_sil": "delete_memory",
+                 "hafizadaki_medyayi_ac": "open_memory_files", "hafiza_baglami": "memory_context"}
 
 
 class ToolSelection(BaseModel):
@@ -22,6 +25,9 @@ class ToolSelection(BaseModel):
     @classmethod
     def migrate_tool_ids(cls, value):
         functions = dict(value)
+        for old, new in RENAMED_TOOLS.items():
+            if old in functions:
+                functions.setdefault(new, functions.pop(old))
         if functions.get('browser_control'):
             functions.setdefault('browser_tabs', True)
         if functions.get('youtube_control') or functions.get('ytmusic_control'):
@@ -40,6 +46,6 @@ def default_tool_selection() -> ToolSelection:
     # New plugins never become enabled merely by being installed.
     # The memory tools are the exception: they only touch what the user chose to save, so they are on from the start.
     return ToolSelection(categories={"datetime": True, "memory": True},
-                         functions={"get_current_time": True, "hafizada_ara": True,
-                                    "hafizaya_ekle": True, "hafizadan_sil": True,
-                                    "hafizadaki_medyayi_ac": True, "hafiza_baglami": True})
+                         functions={"get_current_time": True, "search_memory": True,
+                                    "add_memory": True, "delete_memory": True,
+                                    "open_memory_files": True, "memory_context": True})

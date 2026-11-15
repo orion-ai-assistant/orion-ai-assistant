@@ -8,6 +8,7 @@ from urllib.parse import quote
 from orion.contracts.tools import LEGACY_WEB_TOOLS
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
+from orion.worker.services.tool_history import MODEL_MEDIA_KINDS
 
 WEB_TOOLS = {"research_web", "google_ai_mode", *LEGACY_WEB_TOOLS}
 
@@ -205,10 +206,10 @@ class ToolConversation:
                         google_direct_result = result
                     else:
                         result = await execute_tool(registry.tools[name], arguments, context)
-                        # Media a tool opened for the model (hafizadaki_medyayi_ac): references, never in the JSON.
-                        media_refs = result.pop('_medya', None) if isinstance(result, dict) else None
+                        # Files a tool opened for the model (open_memory_files): references, never in the JSON.
+                        media_refs = result.pop('_model_media', None) if isinstance(result, dict) else None
                         # The files themselves for the user: shown under this turn like attachments (references).
-                        shown = result.pop('_ekler', None) if isinstance(result, dict) else None
+                        shown = result.pop('_show_user', None) if isinstance(result, dict) else None
                         if shown:
                             item['media'] = shown
                     if name == 'google_ai_mode' and settings.google_ai_direct_stream and not (
@@ -252,9 +253,10 @@ class ToolConversation:
                     fresh = [ref for ref in media_refs if key(ref) not in self.opened_memory]
                     repeated = sorted({ref.get('memory_id') for ref in media_refs if key(ref) in self.opened_memory})
                     if repeated and isinstance(item.get('result'), dict):
-                        item['result']['zaten_acik'] = [
-                            *item['result'].get('zaten_acik', []),
-                            *({"id": m, "not": "Bu dosya bu mesajda az önce açıldı; ona bak."} for m in repeated)]
+                        item['result']['already_open'] = [
+                            *item['result'].get('already_open', []),
+                            *({"id": m, "note": "Just opened earlier in this answer; look at it there."}
+                              for m in repeated)]
                         for shown in item.get('media') or []:
                             if shown.get('memory_id') in repeated:
                                 shown['already'] = True
@@ -264,7 +266,8 @@ class ToolConversation:
                 if media_refs and item['status'] == 'completed':
                     # Kept with the chat: model_history shows them again on every later turn.
                     result_message["media_refs"] = media_refs
-                    round_media.extend(media_refs)
+                    # Documents and files the model cannot take are kept only to know they were opened.
+                    round_media.extend(ref for ref in media_refs if ref.get('kind') in MODEL_MEDIA_KINDS)
                 messages.append(result_message)
                 self.transcript.append(result_message)
                 yield "tool_result", json.dumps(item)

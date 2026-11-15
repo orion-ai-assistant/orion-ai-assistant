@@ -337,7 +337,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       vector_space: str = "all", kind: str = "all", vector: str | None = None,
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
                       mode: str = "together", input_labels: list[str] | None = None,
-                      exclude: list[str] | None = None, exclude_vectors: list[str] | None = None) -> dict:
+                      exclude: list[str] | None = None, exclude_vectors: list[str] | None = None,
+                      leave_out: set[str] | None = None) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
@@ -345,7 +346,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     weak: next to the best result), `best_part` (the piece that matched best, its place and time) and
     `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
     mode "each": several inputs searched one by one and fused as OR (fuse_inputs; `input_labels` name them); the cards' scores are each part's best
-    score against any input. ("together" is the caller's one combined vector in `vector`.)"""
+    score against any input. ("together" is the caller's one combined vector in `vector`.) `leave_out`: memories
+    never listed (the memory a search by one of its own parts started from)."""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
     vector_space = vector_space or "all"
@@ -354,6 +356,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     negatives = [t.strip() for t in exclude or [] if t.strip()][:5]
     negative_vectors = list(exclude_vectors or [])[:5]
     excluding = bool(negatives or negative_vectors)
+    leave_out = set(leave_out or ())
     searching = bool(q) or vector is not None
     if vector is not None:
         space = vector_space_of_query or await memory.current_space(settings)
@@ -389,12 +392,14 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                     f"select * from (select distinct on ({GROUP_KEY}) {_ROW}, 1 - (embedding <=> $3::vector) as score "
                     f"from orion_memory where user_id = $1 and vector_space = $2{extra} "
                     f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
-                    f"limit {offset + limit + 1 + (EACH_POOL if excluding else 0)}", *params)]
+                    f"limit {offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0)}", *params)]
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             each = bool(vectors and len(vectors) > 1 and mode == "each")
             ranked = merge_matches(meaning, texts, keep_order=each)
             excluded = 0
+            if leave_out:
+                ranked = [e for e in ranked if e["group"] not in leave_out]
             if excluding:
                 out = await mf.excluded_groups(conn, user_id, space if searchable else None, negatives, settings,
                                                negative_vectors)
@@ -478,7 +483,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
 
 def _best_part(rows: list[dict], part_id, prefer) -> dict | None:
     """Where the best piece sits: {"id", "index" (its place among the memory's parts), "piece", "pieces" (within its
-    item), "span_start", "span_end", "kind", "track"}."""
+    item), "span_start", "span_end", "kind", "track", "text" (a text piece's text, a media part's label): what a
+    label or tooltip of the memory shows while searching}."""
     parts = pieces_only(prefer_space(rows, prefer))
     chosen = next((p for p in parts if p["id"] == part_id), None)
     if chosen is None:
@@ -488,7 +494,7 @@ def _best_part(rows: list[dict], part_id, prefer) -> dict | None:
         return None
     position = item_positions(parts).get(chosen["id"], (1, 1))
     best = {"id": chosen["id"], "index": parts.index(chosen) + 1, "piece": position[0], "pieces": position[1],
-            "kind": chosen["kind"]}
+            "kind": chosen["kind"], "text": chosen["text"] if chosen["kind"] == "text" else chosen["text"][:300]}
     if chosen.get("span_start") is not None:
         best.update(span_start=round(float(chosen["span_start"]), 2), span_end=round(float(chosen["span_end"]), 2))
     if chosen.get("track"):
@@ -868,3 +874,135 @@ async def memory_context(user_id: str, row_id: int, settings, with_chat: bool = 
         return result
     finally:
         await conn.close()
+
+
+# --- The chat model's search (the memory tools) ---------------------------------------------------------------------
+
+async def row_vector(user_id: str, row_id: int, space: str | None) -> dict | None:
+    """This user's memory row as a search query, the way a dropped file is one on the page: {"vector" (its embedding
+    in `space`: the copy there when it was saved with another model; None when it has none), "group", "kind",
+    "text"}. None for a row this user does not have."""
+    conn = await memory._connect()
+    try:
+        await memory.ensure_memory_table(conn)
+        row = await conn.fetchrow("select id, kind, text, group_id, copied_from, vector_space, embedding::text as e "
+                                  "from orion_memory where user_id = $1 and id = $2", user_id, int(row_id))
+        if row is None:
+            return None
+        vector = row["e"] if row["vector_space"] == space else await conn.fetchval(
+            "select embedding::text from orion_memory where user_id = $1 and vector_space = $2 "
+            "and coalesce(copied_from, id) = $3 limit 1", user_id, space, row["copied_from"] or row["id"])
+    finally:
+        await conn.close()
+    return {"vector": vector, "group": group_key(dict(row)), "kind": row["kind"], "text": row["text"]}
+
+
+class QueryError(ValueError):
+    """A query the search cannot run (an unknown id, an id without a vector of the active model): its message says
+    which, in English, for the chat model."""
+
+
+async def search_queries(user_id: str, settings, queries: list[dict], mode: str = "together", kind: str = "all",
+                         vector_space: str = "all", limit: int = 10, offset: int = 0) -> dict:
+    """The page's search for the chat model: several queries, each a text or a memory row id (that row's vector, as
+    a dropped file), `like` true (results like it) or false (memories like it are left out); mode "together" (one
+    query: the normalized mean of the like-queries) or "each" (each ranked on its own, fused as OR: fuse_inputs).
+    The memory a like-id belongs to is not listed (it would come first, matching itself). Answers list_groups's
+    page, plus "labels" (each like-query's label: '"text"' or 'id 12', the names `via` uses) and "left_out"
+    (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`)."""
+    import json
+    from orion.kernel.memory_pieces import mean_vector
+    likes = [q for q in queries if q.get("like", True)]
+    unlikes = [q for q in queries if not q.get("like", True)]
+    if unlikes and not likes:
+        raise QueryError("Add at least one query with like=true: like=false only leaves memories out of a search.")
+    space = await memory.current_space(settings)
+    leave_out: set[str] = set()
+    exclude, exclude_vectors = [], []
+
+    async def of_id(row_id: int) -> dict:
+        found = await row_vector(user_id, row_id, space)
+        if found is None:
+            raise QueryError(f"There is no memory with id {row_id}.")
+        if found["vector"] is None:
+            raise QueryError(f"Memory {row_id} has no vector of the active embedding model; search for it by text.")
+        leave_out.add(found["group"])
+        return found
+
+    for q in unlikes:
+        if q.get("id") is not None:
+            exclude_vectors.append((await of_id(int(q["id"])))["vector"])
+        elif (q.get("text") or "").strip():
+            exclude.append(q["text"].strip()[:200])
+    texts = [q["text"].strip()[:memory.MAX_QUERY_CHARS] for q in likes
+             if q.get("id") is None and (q.get("text") or "").strip()]
+    words = ", ".join(texts)
+    common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors)
+    if not likes:
+        found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind)
+        found["labels"] = []
+        return found
+    if len(likes) == 1 and texts:  # One text: exactly the page's text search (meaning and its words).
+        found = await list_groups(user_id, settings, texts[0], limit, offset, leave_out=leave_out, **common)
+        found["labels"] = [json.dumps(texts[0][:60], ensure_ascii=False)]
+        return found
+    vectors, labels, reason = [], [], None
+    for q in likes:
+        if q.get("id") is not None:
+            vectors.append(json.loads((await of_id(int(q["id"])))["vector"]))
+            labels.append(f"id {int(q['id'])}")
+            continue
+        text = (q.get("text") or "").strip()[:memory.MAX_QUERY_CHARS]
+        if not text:
+            continue
+        _, vector, why = await memory._query_vector(text, settings)
+        if vector is None:
+            reason = why
+            continue
+        vectors.append(json.loads(vector))
+        labels.append(json.dumps(text[:60], ensure_ascii=False))
+    if not vectors:  # Meaning search is off: the texts' words only.
+        found = await list_groups(user_id, settings, words, limit, offset, leave_out=leave_out, **common)
+        found["labels"] = []
+        return found
+    found = await list_groups(
+        user_id, settings, words, limit, offset, vector=memory._vector(mean_vector(vectors)),
+        vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors],
+        mode="each" if mode == "each" else "together", input_labels=labels, leave_out=leave_out, **common)
+    found["labels"] = labels
+    if reason:
+        found["semantic_reason"] = reason
+    return found
+
+
+async def item_document(user_id: str, row_id: int, settings) -> dict | None:
+    """The text item a memory row belongs to, as one document: {"name", "text" (its pieces joined in order: pieces
+    are whole paragraphs, so this is the text that was saved), "pieces": [{"id", "text"}], "asked" (the row's place
+    among them), "source_kind", "title"}. A text file added on the page is its pieces; a note or a chat save's text is
+    its own item. None for a row this user does not have or one that is not text."""
+    space = await memory.current_space(settings)
+    conn = await memory._connect()
+    try:
+        await memory.ensure_memory_table(conn)
+        row = await conn.fetchrow(f"select {_ROW} from orion_memory where user_id = $1 and id = $2", user_id, int(row_id))
+        if row is None or row["kind"] != "text":
+            return None
+        row = dict(row)
+        group = group_key(row)
+        rows = (await _group_rows(conn, user_id, [group])).get(group) or [row]
+    finally:
+        await conn.close()
+    parts = pieces_only(prefer_space(rows, space)) or [row]
+    item = row.get("item_id")
+    pieces = [p for p in parts if p["kind"] == "text" and (p.get("item_id") == item if item else
+                                                            content_key(p) == content_key(row))] or [row]
+    key = content_key(row)
+    asked = next((i for i, p in enumerate(pieces) if content_key(p) == key), 0)
+    title = (row.get("source_chat_title") or "").strip()
+    if row.get("source_kind") == "file" and title and "." in title[-6:]:
+        name = title
+    else:
+        name = f"Hafıza kaydı {row['id']}.txt"
+    return {"name": name, "text": "\n\n".join(p["text"] for p in pieces),
+            "pieces": [{"id": p["id"], "text": p["text"]} for p in pieces], "asked": asked,
+            "source_kind": row.get("source_kind"), "title": title}

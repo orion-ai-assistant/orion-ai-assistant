@@ -121,21 +121,26 @@ def model_history(history, max_messages, slide=1, prior_turns=0):
                               if key == "content" else msg[key]
                               for key in ("role", "content", "tool_calls", "tool_call_id") if key in msg})
             if msg.get('role') == 'tool' and isinstance(msg.get('media_refs'), list):
-                pending.extend(msg['media_refs'])
+                pending.extend(ref for ref in msg['media_refs'] if ref.get('kind') in MODEL_MEDIA_KINDS)
     if pending:
         projected.append(media_message(pending))
     return projected
+
+
+# What a memory file opened for the model is shown as; a "file" ref (a document, or media the model could not take)
+# only records that the file was opened in the chat.
+MODEL_MEDIA_KINDS = ("image", "audio")
 
 
 def media_message(refs):
     """The user message that shows the model the memory media a tool opened (tool results cannot carry media on
     OpenAI-compatible APIs). It follows the round's tool results, now and on every later turn, byte for byte the
     same, so the prompt cache holds; the files are references, hydrated per request."""
-    parts = [{"type": "text", "text": "Hafızadan açılan dosyalar (bunu kullanıcı yazmadı; hafizadaki_medyayi_ac "
-                                      "aracının sonucu):"}]
+    parts = [{"type": "text", "text": "Files opened from memory (the user did not write this; it is what "
+                                      "open_memory_files opened):"}]
     for ref in refs:
-        label = "Görsel" if ref.get("kind") == "image" else "Ses"
-        parts.append({"type": "text", "text": f"Kayıt {ref.get('memory_id')} — {label}: {ref.get('label') or ''}"})
+        label = "Image" if ref.get("kind") == "image" else "Audio"
+        parts.append({"type": "text", "text": f"Memory {ref.get('memory_id')} — {label}: {ref.get('label') or ''}"})
         parts.append({"type": "hub_media", "attachment": {
             "media_id": ref["media_id"], "mime_type": ref.get("mime_type"), "memory_id": ref.get("memory_id")}})
     return {"role": "user", "content": parts}

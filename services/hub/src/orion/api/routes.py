@@ -278,7 +278,8 @@ class MemorySearch(BaseModel):
     mode: str = Field(default="together", max_length=20)
     kinds: list[str] = Field(default_factory=list, max_length=8)
     exclude: list[str] = Field(default_factory=list, max_length=5)  # "benzemesin" texts (also as inputs).
-    exclude_vectors: list[list[float]] = Field(default_factory=list, max_length=5)  # "benzemesin" files, made.  # The inputs' kinds an earlier answer gave.
+    exclude_vectors: list[list[float]] = Field(default_factory=list, max_length=5)  # "benzemesin" files, made.
+    labels: list[str] = Field(default_factory=list, max_length=8)  # The inputs' names an earlier answer gave.
 
 
 @router.post("/api/v1/memory/search")
@@ -318,10 +319,22 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
 INPUT_LABELS = {"query": "metin", "text": "metin dosyası", "image": "görsel", "audio": "ses", "video": "video"}
 
 
-def input_labels(kinds: list[str], count: int) -> list[str]:
-    """What each search input is called on a card ("metin", "görsel"); two of a kind are numbered."""
-    names = [INPUT_LABELS.get(kinds[i], "girdi") if i < len(kinds) else "girdi" for i in range(count)]
-    return [f"{n} {names[:i + 1].count(n)}" if names.count(n) > 1 else n for i, n in enumerate(names)]
+def input_labels(kinds: list[str], count: int, names: list[str] | None = None) -> list[str]:
+    """What each search input is called on a card: its own name when known (a text in quotes: '"kuş"', a file by its
+    name), else its kind ("metin", "görsel"; two of a kind are numbered)."""
+    kinds_named = [INPUT_LABELS.get(kinds[i], "girdi") if i < len(kinds) else "girdi" for i in range(count)]
+    labels = [f"{n} {kinds_named[:i + 1].count(n)}" if kinds_named.count(n) > 1 else n
+              for i, n in enumerate(kinds_named)]
+    return [(names[i] if names and i < len(names) and names[i] else labels[i])[:80] for i in range(count)]
+
+
+def input_name(one) -> str:
+    """A search input's own name: its text in quotes (cut), or its file's name."""
+    import json
+    text = " ".join(one.text.split())
+    if text:
+        return json.dumps(text if len(text) <= 40 else text[:39] + "…", ensure_ascii=False)
+    return " ".join(one.name.split())[:80]
 
 
 async def _search_memory_multi(payload: MemorySearch, settings, current_user: str) -> dict:
@@ -334,7 +347,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
     from orion.kernel.memory_pieces import mean_vector
     mode = payload.mode if payload.mode in ("together", "each") else "together"
     try:
-        space, vectors, kinds = payload.vector_space or None, [], []
+        space, vectors, kinds, names = payload.vector_space or None, [], [], []
         exclude = [t[:200] for t in payload.exclude if t.strip()]
         if any(len(v) != 768 for v in payload.exclude_vectors):
             raise HTTPException(400, "Arama vektörü geçersiz.")
@@ -344,6 +357,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
                 raise HTTPException(400, "Arama vektörü geçersiz.")
             vectors = [list(v) for v in payload.vectors]
             kinds = [k[:20] for k in payload.kinds][:len(vectors)]
+            names = [n[:80] for n in payload.labels][:len(vectors)]
             space = space or await memory.current_space(settings)
         else:
             for one in payload.inputs:
@@ -367,6 +381,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
                         continue
                 vectors.append(json.loads(vector))
                 kinds.append(kind)
+                names.append(input_name(one))
         if not vectors:
             raise HTTPException(400, "Aranacak bir şey yok: en az bir \"benzesin\" metni ya da dosyası ekle.")
         combined = mean_vector(vectors)
@@ -374,7 +389,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
             payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
             vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode,
-            input_labels=input_labels(kinds, len(vectors)), exclude=exclude,
+            input_labels=input_labels(kinds, len(vectors), names), exclude=exclude,
             exclude_vectors=[memory._vector(v) for v in exclude_vectors])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -384,7 +399,8 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
         found["query_cut"] = memory.MAX_QUERY_CHARS
     found["query"] = {"exclude_vectors": [[round(v, 6) for v in one] for one in exclude_vectors],
                       "vector": [round(v, 6) for v in combined], "vectors": [[round(v, 6) for v in one] for one in vectors],
-                      "vector_space": space, "kinds": kinds, "mode": mode}
+                      "vector_space": space, "kinds": kinds, "mode": mode,
+                      "labels": input_labels(kinds, len(vectors), names)}
     return found
 
 

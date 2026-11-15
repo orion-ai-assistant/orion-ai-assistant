@@ -1,7 +1,11 @@
 {
   "categories.browser.name": "Tarayıcı",
   "categories.memory.name": "Hafıza",
-  "tools.hafizada_ara.name": "Hafızada ara",
+  "tools.search_memory.name": "Hafızada ara",
+  "tools.add_memory.name": "Hafızaya ekle",
+  "tools.delete_memory.name": "Hafızadan sil",
+  "tools.open_memory_files.name": "Hafızadaki dosyayı aç",
+  "tools.memory_context.name": "Hafıza kaydının bağlamı",
   "categories.datetime.name": "Tarih ve saat",
   "categories.google_ai.name": "Google AI Modu",
   "categories.media.name": "YouTube ve YouTube Music",

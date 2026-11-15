@@ -34,8 +34,28 @@ class Tool:
     def schema(self) -> dict:
         return {"type": "function", "function": {
             "name": self.id, "description": self.description,
-            "parameters": self.input_model.model_json_schema(),
+            "parameters": inline_refs(self.input_model.model_json_schema()),
         }}
+
+
+def inline_refs(schema: dict) -> dict:
+    """A JSON schema with its `$defs` written in place of each `$ref` (a nested input model): some providers'
+    function-calling schemas take no references."""
+    defs = schema.get("$defs") or {}
+    if not defs:
+        return schema
+
+    def walk(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                rest = {k: v for k, v in node.items() if k != "$ref"}
+                return {**walk(defs[ref.split("/")[-1]]), **walk(rest)}
+            return {k: walk(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+    return walk(schema)
 
 
 @dataclass(frozen=True)

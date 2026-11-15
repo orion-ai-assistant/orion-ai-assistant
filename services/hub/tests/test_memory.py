@@ -149,36 +149,45 @@ def _tool_settings(monkeypatch):
     monkeypatch.setattr('orion.kernel.config.get_runtime_settings', settings)
 
 
-def test_the_tool_is_registered_enabled_by_default_and_answers_in_turkish(monkeypatch):
+def test_the_tool_is_registered_enabled_by_default_and_answers_in_plain_words(monkeypatch):
     from orion.contracts.tools import default_tool_selection
+    from orion.kernel import memory_groups
     registry_ = get_registry()
-    assert 'hafizada_ara' in registry_.enabled(default_tool_selection())
+    assert 'search_memory' in registry_.enabled(default_tool_selection())
     assert registry_.categories['memory'].name == 'Hafıza'
     calls = []
 
-    async def search(user, query, settings, page=1, kind='all', exclude=None, also=None):
-        calls.append((user, query, page, kind))
-        return {'rows': [{'id': 3, 'text': 'adım Ayşe', 'date': '2026-11-14', 'kind': 'text', 'media_id': None,
-                          'score': 0.71, 'match': 'both'}], 'more': True, 'other_spaces': 2}
-    monkeypatch.setattr(memory, 'search', search)
+    async def search(user, settings, queries, mode='together', kind='all', vector_space='all', limit=10, offset=0):
+        calls.append((user, queries, mode, kind, vector_space, limit, offset))
+        return {'groups': [{'group_id': 'g', 'created_at': '2026-11-14T10:00:00+00:00', 'kind': 'text',
+                            'counts': {'text': 1}, 'part_count': 1, 'text': 'adım Ayşe', 'text_part': 3,
+                            'score': 0.71, 'match': 'text', 'above': 0.25, 'matched_part': 3,
+                            'best_part': {'id': 3, 'kind': 'text', 'text': 'adım Ayşe', 'piece': 1, 'pieces': 1}}],
+                'more': True, 'matching': 12, 'summary': {'not_searchable': 2}, 'labels': ['"adım"']}
+    monkeypatch.setattr(memory_groups, 'search_queries', search)
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
-    result = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='adım', sayfa=2, tur='metin'), context))
-    assert calls == [('u1', 'adım', 2, 'text')]
-    assert result['kayitlar'] == [{'id': 3, 'tarih': '2026-11-14', 'metin': 'adım Ayşe', 'skor': 0.71,
-                                   'eslesme': 'anlam+metin'}]
-    assert result['sayfa'] == 2 and result['daha_var'] is True
-    assert result['uyari'].startswith('2 kayıt başka embedding modeliyle kaydedilmiş')
+    result = asyncio.run(memory_tools.search_memory(memory_tools.MemorySearchInput(
+        queries=[memory_tools.MemoryQuery(text='adım')], page=2, kind='text'), context))
+    assert calls == [('u1', [{'text': 'adım', 'id': None, 'like': True}], 'together', 'text', 'all', 10, 10)]
+    row = result['results'][0]
+    assert (row['id'], row['kind'], row['text'], row['score'], row['score_from'], row['above_average']) ==         (3, 'text', 'adım Ayşe', 0.71, '"adım"', 0.25)
+    assert row['why'] == 'its words contain the query ("adım"); meaning similarity 71%; 25 points above this '                          "search's average score"
+    assert result['page'] == 2 and result['more'] is True
+    assert result['other_models'].startswith('2 memories were saved with another embedding model')
 
 
 def test_the_tool_reports_the_setup_message_instead_of_raising(monkeypatch):
+    from orion.kernel import memory_groups
+
     async def fail(*args, **kwargs):
         raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
 
-    monkeypatch.setattr(memory, 'search', fail)
+    monkeypatch.setattr(memory_groups, 'search_queries', fail)
     _tool_settings(monkeypatch)
-    result = asyncio.run(memory_tools.hafizada_ara(memory_tools.MemoryInput(sorgu='x'), ToolContext('u', 'c', 't', None)))
-    assert result == {'hata': "Hafıza için Bileşenler'de embedding bileşenini kur ve aç."}
+    result = asyncio.run(memory_tools.search_memory(memory_tools.MemorySearchInput(
+        queries=[memory_tools.MemoryQuery(text='x')]), ToolContext('u', 'c', 't', None)))
+    assert result == {'error': "Hafıza için Bileşenler'de embedding bileşenini kur ve aç."}
 
 
 def _target(monkeypatch, models, local_space='jina-v5-omni-nano'):
@@ -323,17 +332,17 @@ def test_delete_is_scoped_to_the_user_and_a_foreign_id_is_404(monkeypatch):
 def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeypatch):
     from orion.contracts.tools import default_tool_selection
     enabled = get_registry().enabled(default_tool_selection())
-    assert {'hafizaya_ekle', 'hafizadan_sil'} <= set(enabled)
+    assert {'add_memory', 'delete_memory'} <= set(enabled)
     conn = ListConn()
     wire(monkeypatch, conn)
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
-    added = asyncio.run(memory_tools.hafizaya_ekle(memory_tools.MemoryAddInput(metin='Doğum günüm 3 Mart.'), context))
-    assert added == {'eklendi': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
-    gone = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[5]), context))
-    assert gone['silinenler'] == [{'id': 5, 'metin': 'eski'}]
-    nothing = asyncio.run(memory_tools.hafizadan_sil(memory_tools.MemoryDeleteInput(idler=[9]), context))
-    assert 'silinmedi' in nothing['not']
+    added = asyncio.run(memory_tools.add_memory(memory_tools.MemoryAddInput(text='Doğum günüm 3 Mart.'), context))
+    assert added == {'added': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
+    gone = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[5]), context))
+    assert gone['deleted'] == [{'id': 5, 'text': 'eski'}]
+    nothing = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[9]), context))
+    assert 'nothing was deleted' in nothing['note']
 
 
 def test_the_memory_page_paths_pass_the_access_boundary():

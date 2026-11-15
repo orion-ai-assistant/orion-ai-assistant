@@ -1,4 +1,4 @@
-"""Minimal memory: chunks of a saved chat with their embedding, searched by the `hafizada_ara` tool.
+"""Minimal memory: chunks of a saved chat with their embedding, searched by the `search_memory` tool.
 
 Rows carry their own text, so deleting the chat keeps them; `source_chat_id`/`source_message_id` only point back at
 where a row came from (the chat may be gone). Image and audio rows (kind 'image'/'audio') carry a short label as
@@ -1138,7 +1138,7 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
 
 async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all",
                  exclude: list[str] | None = None, also: list[str] | None = None) -> dict:
-    """One page (PAGE rows, best first, no threshold) of this user's memory for the `hafizada_ara` tool. With a
+    """One page (PAGE rows, best first, no threshold) of this user's memory (rows, best first). With a
     query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
     order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
     from orion.kernel import memory_filters as mf
@@ -1252,8 +1252,8 @@ def _sliced(row: dict) -> bool:
 
 
 def opened_in_chat(messages: list[dict]) -> dict[str, int]:
-    """{file sha256: turn} of the memory media still in a chat's history (hafizadaki_medyayi_ac's tool messages
-    keep them as `media_refs`; a video's frames name their file in `source`). Keyed by content: the same bytes under
+    """{file sha256: turn} of the memory files still in a chat's history (open_memory_files's tool messages keep
+    them as `media_refs`, documents and files the model could not take as kind "file"; a video's frames name their file in `source`). Keyed by content: the same bytes under
     any memory row are the same file, a changed file is a new one, and a file no longer in the history (compacted)
     is not listed. The turn counts the user's messages from 1; the first opening wins."""
     opened: dict[str, int] = {}
@@ -1275,8 +1275,9 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
     linked to the chat (owner 'chat'), so the chat's history can hand it to the model on every later turn and the
     cleaner keeps it while a message names it; such rows say `opened` and list their `media`
     ([{"kind", "media_id", "mime"}]). A video row (or a piece of a long audio) is opened as what it holds: a few
-    frames and its sound, stored as files of their own (segment_media). A row whose file is in `already` ({sha256: turn}, opened
-    earlier in this chat) is not attached again: it says `already` (that turn)."""
+    frames and its sound, stored as files of their own (segment_media). A file whose kind the model cannot take is
+    still linked to the chat (the user sees it under the turn): such rows say `shown`. A row whose file is in
+    `already` ({sha256: turn}, opened earlier in this chat) is not attached again: it says `already` (that turn)."""
     import asyncio
     import hashlib
     from orion.kernel.media_store import hold_media, link_media
@@ -1299,11 +1300,14 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
                 found.append(row)
                 continue
             wanted = bool(kinds & {"image", "audio"}) if row["kind"] == "video" else row["kind"] in kinds
-            if not row["media_id"] or not wanted:
+            if not row["media_id"]:
                 found.append(row)
                 continue
             try:
-                if not _sliced(row):
+                if not wanted:  # The model cannot take it; the user still gets the file under the turn.
+                    await link_media(row["media_id"], "chat", chat_id, conn=conn)
+                    row["shown"] = True
+                elif not _sliced(row):
                     await link_media(row["media_id"], "chat", chat_id, conn=conn)
                     row["media"] = [{"kind": row["kind"], "media_id": row["media_id"], "mime": row["media_mime"]}]
                 else:
@@ -1320,7 +1324,7 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
                             await hold_media(conn, media_id, mime, data)
                             await link_media(media_id, "chat", chat_id, conn=conn)
                             row["media"].append({"kind": kind, "media_id": media_id, "mime": mime})
-                row["opened"] = bool(row["media"])
+                row["opened"] = bool(row.get("media"))
             except LookupError:
                 row["missing"] = True
             except Exception as exc:

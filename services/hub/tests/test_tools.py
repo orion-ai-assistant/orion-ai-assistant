@@ -35,7 +35,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('text', registry.categories)
         self.assertEqual([tool.id for tool in registry.categories['text'].tools],
                          ['analyze_text', 'find_in_text', 'replace_in_text'])
-        self.assertEqual(registry.enabled(default_tool_selection()), ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+        self.assertEqual(registry.enabled(default_tool_selection()), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
         context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
         analyze = await execute_tool(registry.tools['analyze_text'], json.dumps({'text': 'Bir iki\nüç'}), context)
         self.assertEqual(analyze, {'characters': 10, 'words': 3, 'lines': 2})
@@ -52,12 +52,12 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
     def test_discovery_selection_and_duplicate_ids(self):
         registry = get_registry()
         selection = default_tool_selection()
-        self.assertEqual(registry.enabled(selection), ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
         selection.categories['datetime'] = False
-        self.assertEqual(registry.enabled(selection), ['hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+        self.assertEqual(registry.enabled(selection), ['search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
         self.assertTrue(selection.functions['get_current_time'])
         selection.categories['datetime'] = True
-        self.assertEqual(registry.enabled(selection), ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
         with self.assertRaises(ValueError):
             ToolRegistry([CATEGORY, CATEGORY])
         with self.assertRaises(ValueError):
@@ -469,13 +469,13 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             nonlocal durable
             durable = value
         with patch.object(db, 'get_chat_tool_selection', db_get), patch.object(db, 'set_chat_tool_selection', db_set), patch.object(tool_service, 'get_runtime_settings', AsyncMock(side_effect=lambda *args: settings)):
-            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
             settings = RuntimeSettings(tool_selection=ToolSelection())
             self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], [])
             result = await tool_service.save_selection(redis, 'u', 'c', default_tool_selection())
             self.assertFalse(result['inherited'])
             cache.clear()
-            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
             result = await tool_service.save_selection(redis, 'u', 'c', None)
             self.assertTrue(result['inherited'])
             self.assertEqual(result['enabled_tools'], [])
@@ -503,7 +503,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(job_service, 'get_runtime_settings', AsyncMock(return_value=RuntimeSettings())), patch.object(job_service, 'upsert_chat', AsyncMock()):
             await job_service.create_job(redis, JobCreateRequest(user_id='u', input={'text': 'hi'}))
         fields = redis.pipeline.return_value.xadd.call_args.kwargs['fields']
-        self.assertEqual(json.loads(fields['enabled_tools']), ['get_current_time', 'hafizada_ara', 'hafizaya_ekle', 'hafizadan_sil', 'hafizadaki_medyayi_ac', 'hafiza_baglami'])
+        self.assertEqual(json.loads(fields['enabled_tools']), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
         with self.assertRaises(HTTPException):
             await job_service.create_job(redis, JobCreateRequest(user_id='u', chat_id='c', input={'text': 'hi'}, tool_selection=ToolSelection()))
 
