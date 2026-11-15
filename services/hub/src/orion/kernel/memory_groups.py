@@ -208,24 +208,32 @@ def _strength(entry: dict, top: float) -> str:
 
 
 EACH_POOL = 200  # Memories taken per input before fusing (mode "each").
-RRF_K = 60  # Reciprocal-rank fusion's usual constant: a memory near the top of several inputs' lists wins.
+SPREAD_FLOOR = 0.02  # The least spread an input's similarities are taken to have (a tiny memory pool).
+EACH_STRONG, EACH_MEDIUM = 3.0, 2.0  # Standing out from an input's own pool by this many spreads.
 
 
-def fuse_ranks(lists: list[list[dict]]) -> list[dict]:
-    """Several inputs' best rows per memory fused by reciprocal rank (sum of 1 / (RRF_K + rank)): a memory close to
-    every input comes first, one close to a single input still shows. Raw similarities of different kinds (an
-    image's against a text's) are not comparable, ranks are. Each memory keeps its best-scoring row and that
-    score (what the card shows); `fused` is the order."""
+def fuse_inputs(lists: list[list[dict]], labels: list[str] | None = None) -> list[dict]:
+    """Several inputs searched one by one ("each"), fused as OR: a memory ranks by the input it stands out for
+    most. Each input's similarities are calibrated against that input's own pool (z = (score - mean) / spread),
+    since an image's and a text's similarities live on different scales and an input that matches nothing
+    (an unrelated picture) has a flat pool where nothing stands out. Rank fusion summed every input's ranks, so
+    such an input acted like AND and pushed a strong single-input match down. Each memory keeps the row and raw
+    score of its winning input (the card's number), `via` (that input's label) and `fused` (the z, the order)."""
+    import statistics
     pool: dict[str, dict] = {}
-    for rows in lists:
-        for rank, r in enumerate(rows, 1):
+    for index, rows in enumerate(lists):
+        if not rows:
+            continue
+        scores = [float(r["score"]) for r in rows]
+        mean = statistics.fmean(scores)
+        spread = max(statistics.pstdev(scores) if len(scores) > 1 else 0.0, SPREAD_FLOOR)
+        label = labels[index] if labels and index < len(labels) else f"girdi {index + 1}"
+        for r in rows:
+            z = (float(r["score"]) - mean) / spread
             g = group_key(r)
             entry = pool.get(g)
-            if entry is None:
-                pool[g] = entry = {**r, "fused": 0.0}
-            elif float(r["score"]) > float(entry["score"]):
-                entry.update({**r, "fused": entry["fused"]})
-            entry["fused"] += 1.0 / (RRF_K + rank)
+            if entry is None or z > entry["fused"]:
+                pool[g] = {**r, "fused": z, "via": label}
     return sorted(pool.values(), key=lambda e: (-e["fused"], -e["id"]))
 
 
@@ -246,13 +254,13 @@ def merge_matches(meaning: list[dict], texts: list[dict], keep_order: bool = Fal
         better = (order[r["tmatch"]], float(r["tscore"])) > (order.get(entry["tmatch"], 0), float(entry["tscore"]))
         if better:
             entry.update(tmatch=r["tmatch"], tscore=float(r["tscore"]), row=r)
-    if keep_order:  # Already fused (fuse_ranks): the order stands, strength by place.
+    if keep_order:  # Already fused (fuse_inputs): the order stands, strength by how far it stands out.
         ranked = list(pool.values())
-        top = max((float(e["row"].get("fused") or 0.0) for e in ranked), default=0.0)
         for e in ranked:
-            share = float(e["row"].get("fused") or 0.0) / top if top > 0 else 0.0
+            z = float(e["row"].get("fused") or 0.0)
             e["match"] = e["tmatch"] or "meaning"
-            e["strength"] = "strong" if share >= STRONG else ("medium" if share >= WEAK else "weak")
+            e["via"] = e["row"].get("via")
+            e["strength"] = "strong" if z >= EACH_STRONG else ("medium" if z >= EACH_MEDIUM else "weak")
         return ranked
     ranked = sorted(pool.values(), key=lambda e: (-_rank(e), -e["row"]["id"]))
     top = _rank(ranked[0]) if ranked else 0.0
@@ -328,14 +336,14 @@ def _in_space(rows: list[dict], space) -> list[dict]:
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
                       vector_space: str = "all", kind: str = "all", vector: str | None = None,
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
-                      mode: str = "together") -> dict:
+                      mode: str = "together", input_labels: list[str] | None = None) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
     (meaning, text, similar: what the words did; `score` says the meaning), `score`, `strength` (strong, medium,
     weak: next to the best result), `best_part` (the piece that matched best, its place and time) and
     `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
-    mode "each": several inputs ranked one by one and fused (fuse_ranks); the cards' scores are each part's best
+    mode "each": several inputs searched one by one and fused as OR (fuse_inputs; `input_labels` name them); the cards' scores are each part's best
     score against any input. ("together" is the caller's one combined vector in `vector`.)"""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
@@ -368,7 +376,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                         f"as score from orion_memory where user_id = $1 and vector_space = $2{extra} "
                         f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
                         f"limit {EACH_POOL}", *params)])
-                meaning = fuse_ranks(lists)
+                meaning = fuse_inputs(lists, input_labels)
             elif searchable:
                 params = [user_id, space, vector]
                 extra = _filters("all", kind, params)
@@ -428,6 +436,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             item.update(match=entry["match"], strength=entry["strength"], matched_part=matched,
                         score=None if entry["score"] is None else round(float(entry["score"]), 4),
                         matched_parts=max(1, parts_match["matched"]), via_whole=bool(entry["row"].get("whole")))
+            if entry.get("via"):
+                item["via"] = entry["via"]  # Which input it matched ("metin", "görsel"): its score is that one's.
             best = _best_part(rows, matched, prefer)
             if best:
                 item["best_part"] = best

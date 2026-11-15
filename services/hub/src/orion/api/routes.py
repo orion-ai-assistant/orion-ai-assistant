@@ -268,11 +268,12 @@ class MemorySearch(BaseModel):
     offset: int = 0
     # Several inputs at once: files (name + data URL) and texts; `vectors` are the query vectors an earlier answer
     # gave (the next page). mode "together": one query, the normalized mean of the inputs; "each": every input
-    # ranked on its own and fused (memory_groups.fuse_ranks).
+    # ranked on its own and fused as OR (memory_groups.fuse_inputs).
     inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
     vectors: list[list[float]] = Field(default_factory=list, max_length=8)
     q: str = Field(default="", max_length=20000)  # The texts, for the words' own matches (cut like `text`).
     mode: str = Field(default="together", max_length=20)
+    kinds: list[str] = Field(default_factory=list, max_length=8)  # The inputs' kinds an earlier answer gave.
 
 
 @router.post("/api/v1/memory/search")
@@ -309,6 +310,15 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
     return found
 
 
+INPUT_LABELS = {"query": "metin", "text": "metin dosyası", "image": "görsel", "audio": "ses", "video": "video"}
+
+
+def input_labels(kinds: list[str], count: int) -> list[str]:
+    """What each search input is called on a card ("metin", "görsel"); two of a kind are numbered."""
+    names = [INPUT_LABELS.get(kinds[i], "girdi") if i < len(kinds) else "girdi" for i in range(count)]
+    return [f"{n} {names[:i + 1].count(n)}" if names.count(n) > 1 else n for i, n in enumerate(names)]
+
+
 async def _search_memory_multi(payload: MemorySearch, settings, current_user: str) -> dict:
     """Several files and texts at once: each becomes a query vector (memory.file_query_vector, a text as a query);
     "together" searches with their normalized mean, "each" fuses each one's ranking. The answer's `query` has the
@@ -324,6 +334,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             if any(len(v) != 768 for v in payload.vectors):
                 raise HTTPException(400, "Arama vektörü geçersiz.")
             vectors = [list(v) for v in payload.vectors]
+            kinds = [k[:20] for k in payload.kinds][:len(vectors)]
             space = space or await memory.current_space(settings)
         else:
             for one in payload.inputs:
@@ -347,7 +358,8 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
         found = await memory_groups.list_groups(
             current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
             payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
-            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode)
+            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode,
+            input_labels=input_labels(kinds, len(vectors)))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
