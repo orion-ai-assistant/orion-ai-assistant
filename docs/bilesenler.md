@@ -791,3 +791,80 @@ Sıra önerisi yukarıdan aşağıya.
   `ayni_kayittan`, dosya parçasında `dosya`/`parca`). Yeni `hafiza_baglami`: grubun tamamı + istenirse kaynak sohbetin
   çevresi/başı (silinmiş/temizlenmiş ise söyler). `Tool.default_on`: kayıtlı araç seçimi bir aracı hiç anmıyorsa ve grubu
   açıksa araç açık sayılır (hafıza araçları); kullanıcının kapattığı (false) kapalı kalır.
+
+## Video ve uzun kayıtlar: örtüşen parçalar ve "tamamı" vektörü (2026-11-15)
+
+### Ölçümler (llama.cpp b12378, Vulkan, RTX 3060 Ti; Hub'a dokunmadan, Gemma ayrı bir sunucuda 8192 bağlamla)
+
+Görseller Windows'un duvar kâğıtları (gerçek fotoğraflar), en uzun kenarı 640 / 448 / 224 / 896 px JPEG.
+
+| | EmbeddingGemma 2 (+mmproj, mean pooling) | Jina v5 omni nano (+vision mmproj) |
+| --- | --- | --- |
+| Bir görsel (640 px) | 108 token, 0,06 sn | 286-299 token, 0,04 sn |
+| Bir kare ≤448 px (224 de aynı) | 88 token (kare başına ~79 + ~9 sabit) | 277 token |
+| 896 px | 213 token | 461 token |
+| Tek istekte 2 / 4 görsel | **tek vektör**; tek tek vektörlerin normalize ortalamasına cos 0,971 / 0,944 (tek görsellere 0,81-0,95) | tek vektör; ortalamaya cos 0,987 / 0,969 |
+| 8 / 16 / 30 kare (448 px) | 641 / 1273 / 2386 token, 0,26 / 0,49 / 0,95 sn (~32 ms/kare) | 8 kare = 2272 token: 2048 bağlamda **500** ("increase the physical batch size") |
+| Ses | 10 sn = 254, 30 sn = 754 token (25 token/sn), 0,12-0,15 sn | ses yok (mmproj yalnız görüntü) |
+| 4 kare + 20 sn ses tek istekte | tek vektör, ama karelere cos 0,977, sese yalnız 0,731: **ses boğuluyor** | — |
+| `video_url` / `input_video` parçası | 500 "Failed to load image or audio file" (ffmpeg yok) | aynı |
+| VRAM (8192 bağlam, mmproj dahil) | ~2,8 GB (tablodaki 1432 + 1085 ile uyumlu) | — |
+
+Sonuçlar:
+- Birkaç kare tek istekte tek vektör verir ve bu vektör karelerin ortalamasına çok yakındır: bir video parçası için **tek
+  istek** yeter (her kare için ayrı istekten ucuz).
+- Ses ve kareler aynı istekte olunca vektör karelerin; bu yüzden bir video parçasının sesi **ayrı vektör** alır
+  (model sesi alıyorsa).
+- llama.cpp'nin kendi video yolu ffmpeg ister (PATH'te yok) → Hub videoyu kendisi PyAV ile çözer (zaten bağımlılık).
+- Bağlam artırılmadı: Orion embedding sunucusunu 2048 ile açar; Gemma'da 4096 +379 MB, Jina'da +133 MB VRAM ister ve
+  sunucuyu yeniden başlatmak gerekirdi. Bunun yerine **parça penceresi sabit, kare sayısı bağlama göre**: bir pencerede
+  `(bağlam − 64) / kare maliyeti` kare (en çok saniyede bir). Kare maliyeti işin başında tek karelik bir istekle ölçülür
+  (Router `usage.prompt_tokens`'ı geçirir; söylemezse 300 sayılır). 2048 bağlamda: Gemma 25 kare / 30 sn, Jina 7 kare / 30 sn.
+
+### Parçalar (`kernel/memory_pieces.py`)
+
+- Her parçanın bir **çekirdeği** (öğeyi boşluksuz ve örtüşmesiz döşer: sayfada gösterilen metin, söylenen zaman) ve bir
+  **penceresi** var (çekirdek + iki yanda pencerenin 1/6'sı kadar bağlam): komşu pencereler üçte bir örtüşür, kesimden geçen
+  bir düşünce/sahne bir vektörde bütün kalır.
+  - Metin (not, metin dosyası, sohbet kaydı): ~300 tokenlık çekirdek (paragraflar, `chunk_text`), pencere = önceki
+    çekirdeğin son ~75 tokenı + çekirdek + sonrakinin ilk ~75 tokenı. Satırın `text`'i çekirdektir (tekrar görünmez).
+  - Ses: pencere bağlamın aldığı kadar (25 token/sn, en çok 60 sn: 40 sn çekirdek + 10'ar sn bağlam).
+  - Video: 30 sn pencere (20 sn çekirdek + 5'er sn); kareler en çok 448 px JPEG (daha küçüğü daha az token tutmuyor), tek
+    ızgarada saniyede bir alınır (en çok 1800 kare; daha uzun video seyrek örneklenir), her pencere kendi aralığından eşit
+    aralıklı seçer. Parça başına bir **görüntü** vektörü (`track` 'frames') ve model sesi alıyorsa bir **ses** vektörü
+    (`track` 'audio').
+- Birden çok parçalı her öğe (ve videoda her iz) bir **tamamı** vektörü de alır (`whole` = true): parça vektörlerinin
+  normalize ortalaması (her çekirdek bir kez sayılır). Bir parça silinince tamamı kalanların ortalamasına güncellenir, tek
+  parça kalınca kalkar (`memory.refresh_wholes`). Tamamı vektörü parça değildir: sayfada/araçta parça olarak görünmez,
+  metin eşleşmesinde aranmaz, haritanın ortalamasına girmez.
+- Yeni sütunlar: `item_id` (bir hafızanın içindeki öğe: bir not bloğu, bir dosya, sohbetin metni, bir görsel...), `whole`,
+  `span_start`/`span_end` (sn), `track`, `caption` (kullanıcının dosyaya yazdığı açıklama), `item_order` (öğenin hafızadaki
+  sırası: isteğin zamanı, arka planda biten video da yerini korur).
+
+### Arama ve sayfa
+
+- Sıralama: bir hafıza en iyi satırıyla sıralanır; bu bir parça ya da öğenin tamamı olabilir (`max`). Kartta yine **en iyi
+  parça** gösterilir: `best_part` (id, hafızadaki sırası, öğedeki `piece/pieces`, `span_start/end`), `matched_parts`
+  (eşleşen parça sayısı), `via_whole` (tamamı da eşleşti). Bir parça "eşleşti" sayılır: kelimeleri sorguda geçiyorsa ya da
+  anlam skoru hafızanın en iyi parçasının %80'i (STRONG) ve türüne göre zayıf değil (`WEAK_SCORE`).
+- `POST /api/v1/memory/groups/{id}/match` (`q` ya da `vector` + `vector_space`): ayrıntıdaki her parçanın skoru, eşleşmesi,
+  `matched`, `best`.
+- **Dosyayla arama:** `POST /api/v1/memory/search` (`name` + `data` data URL; ya da önceki cevabın `query.vector`'ü ile
+  sonraki sayfa): görsel olduğu gibi, ses ilk penceresi, video baştan sona yayılmış kareler (bir isteğe sığdığı kadar),
+  metin dosyası ilk parçası (belge önekiyle) gömülür; cevap `GET /api/v1/memory` gibidir + `query`.
+- **Video ekleme:** `POST /api/v1/memory/file` video için hemen `job` döner; iş arka planda (`kernel/memory_media_jobs.py`,
+  durum `orion_memory_media_jobs`'ta, bölüm başına nabız, `cancel`): tüm satırlar en sonda tek işlemde yazılır, yarıda kalan iş
+  hiçbir şey bırakmaz. Dosya iş sürerken kendi bağıyla ('memory', "job:<id>") tutulur. Sınırlar: 64 MB (medya deposu), 30 dk.
+  `GET /api/v1/memory/media-jobs`, `POST /api/v1/memory/media-jobs/{id}/cancel`. Sohbet kaydındaki videolar da aynı işle.
+  Ölçülen süre (testteki 70 sn klip): çözme + 4 parça < 2 sn; gerçek bir 10 dk videoda Gemma ~30 parça × ~0,8 sn ≈ 25 sn +
+  çözme.
+- `GET /api/v1/memory/{id}/frame?at=` video satırından JPEG kare (küçük resimler; varsayılan parçanın başı).
+
+### Araçlar
+
+- `hafizada_ara`: sonuç `parca` ("3/5"), `zaman` ("1:20–1:40"), `iz` (görüntü/ses), tamamı eşleşip en iyi parçası
+  gösterilince `eslesme_notu`; `tur` artık `video` da alır.
+- `hafiza_baglami(komsu=1-5)`: yalnız o parça ve önceki/sonraki N parça (aynı öğe ve iz önce); 0 = hafızanın tamamı.
+- `hafizadaki_medyayi_ac`: video satırı birkaç kare (parçada 4, tamamında 6; 640 px) + parçanın sesi (sohbet modeli
+  duyuyorsa; tamamında ilk 120 sn), çok parçalı sesin bir parçası yalnız kendi aralığı olarak açılır. Bunlar sohbete bağlı
+  ayrı dosyalar olarak saklanır.
