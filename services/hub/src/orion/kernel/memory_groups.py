@@ -172,15 +172,45 @@ def card(group: str, rows: list[dict], prefer, active, full: bool = False, match
     return item
 
 
-async def _group_rows(conn, user_id: str, groups: list[str]) -> dict[str, list[dict]]:
+async def _group_rows(conn, user_id: str, groups: list[str], full=True) -> dict[str, list[dict]]:
+    """The rows of these memories. `full` True: whole texts (the panel). A card needs only CARD_TEXT characters of
+    one part's text, so `full` False cuts every text there, and a set of ids keeps those rows whole (the ones a
+    word match must read: text_candidates)."""
     real = [g for g in groups if not g.startswith("r")]
     loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
+    ids = [] if isinstance(full, bool) else sorted(full)
+    cut = _ROW if full is True else _ROW.replace(
+        "id, text,", f"id, case when id = any($4::bigint[]) then text else left(text, {CARD_TEXT}) end as text,", 1)
     found: dict[str, list[dict]] = {}
-    for r in await conn.fetch(f"select {_ROW} from orion_memory where user_id = $1 and "
+    args = (user_id, real, loose) + (() if full is True else (ids,))
+    for r in await conn.fetch(f"select {cut} from orion_memory where user_id = $1 and "
                               "(group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
-                              "order by id", user_id, real, loose):
+                              "order by id", *args):
         found.setdefault(group_key(r), []).append(dict(r))
     return found
+
+
+TEXT_CANDIDATE_SIMILARITY = 0.3  # Looser than FUZZY_MIN_PY: the database only picks who is read by text_hit.
+
+
+async def text_candidates(conn, user_id: str, groups: list[str], q: str) -> set[int] | None:
+    """Ids of the rows of these memories whose words may match `q` (a substring or a near spelling); text_hit then
+    decides on those only, not on every piece. None: no trigram support, every row is checked."""
+    folded = memory.fold(q or "")
+    if not folded or len(q) > memory.TEXT_MATCH_CHARS:
+        return set()
+    if not memory._trgm:
+        return None
+    real = [g for g in groups if not g.startswith("r")]
+    loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
+    like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    async with conn.transaction():
+        await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{TEXT_CANDIDATE_SIMILARITY}', true)")
+        rows = await conn.fetch(
+            f"select id from orion_memory where user_id = $1 and (group_id = any($2::text[]) or "
+            f"(group_id is null and id = any($3::bigint[]))) and ({memory.FOLD_SQL} like $4 or $5 <% {memory.FOLD_SQL})",
+            user_id, real, loose, like, folded)
+    return {r["id"] for r in rows}
 
 
 def _filters(vector_space: str, kind: str, params: list) -> str:
@@ -284,7 +314,7 @@ def text_hit(q: str, text: str) -> tuple[str | None, float]:
     return ("similar", similarity) if similarity >= memory.FUZZY_MIN_PY else (None, 0.0)
 
 
-def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dict:
+def score_parts(parts: list[dict], scores: dict[int, float], q: str = "", candidates: set[int] | None = None) -> dict:
     """Each part's own match for a search: {"parts": {id: {"score", "match", "matched", "best"}}, "best": id,
     "matched": how many parts matched, "whole_score"}. A part matched when its words hit the query or its meaning
     is close to its memory's best (STRONG share of the best part's score, and not weak for its kind: WEAK_SCORE).
@@ -300,7 +330,7 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
     top = max((scores[p["id"]] for p in pieces if p["id"] in scores), default=None)
     for p in pieces:
         score = scores.get(p["id"])
-        hit, tscore = text_hit(q, p["text"]) if q else (None, 0.0)
+        hit, tscore = text_hit(q, p["text"]) if q and (candidates is None or p["id"] in candidates) else (None, 0.0)
         rank = (score or 0.0) + {"text": memory.TEXT_BONUS, "similar": 0.8 * memory.TEXT_BONUS}.get(hit, 0.0) \
             + 0.01 * tscore
         close = (score is not None and top is not None and top > 0 and score >= STRONG * top
@@ -316,14 +346,14 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
             "whole_score": None if whole is None else round(float(whole), 4)}
 
 
-def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "") -> dict:
+def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", candidates: set[int] | None = None) -> dict:
     """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
     the chat tool all show. `rows`: the memory's rows; `scores`: each row's cosine with the query vector the
     search used (_scores); `q`: the words, for the word matches. Returns score_parts' {"parts", "best", "matched",
     "whole_score"} plus "score" (the memory's: its best row's, a piece or the whole text's: what ranks it),
     "best_score" (the best piece's) and "via_whole" (the whole text's score is the higher one)."""
     in_space = _in_space(rows, space)
-    found = score_parts(in_space, scores, q)
+    found = score_parts(in_space, scores, q, candidates)
     best = found["parts"].get(found["best"]) if found["best"] is not None else None
     best_score = None if best is None else best["score"]
     whole = found["whole_score"]
@@ -364,6 +394,26 @@ async def _scores(conn, user_id: str, groups: list[str], space, vector) -> dict[
 def _in_space(rows: list[dict], space) -> list[dict]:
     """A memory's rows one per content, in `space` when they have a copy there, whole vectors included."""
     return prefer_space(rows, space)
+
+
+MAX_CANDIDATES = 20000  # Most nearest rows a search widens to while it still lacks enough memories.
+
+
+async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dict]:
+    """The best row of each of (at least) `need` nearest memories, best first: the nearest rows through the vector
+    index, then grouped. The rows taken widen (x4) while they hold fewer memories than needed and the index still
+    has more (one long text has thousands of rows). params: [user, space, vector, ...filters]."""
+    count = max(200, need * 8)
+    while True:
+        rows = await memory.ann_fetch(
+            conn, f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
+            f"and vector_space = $2{extra} order by embedding <=> $3::vector limit {count}", *params)
+        best: dict[str, dict] = {}
+        for r in rows:  # nearest first: the first row of a memory is its best
+            best.setdefault(group_key(r), dict(r))
+        if len(best) >= need or len(rows) < count or count >= MAX_CANDIDATES:
+            return sorted(best.values(), key=lambda r: (-float(r["score"]), -r["id"]))
+        count = min(count * 4, MAX_CANDIDATES)
 
 
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
@@ -416,20 +466,13 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                 for one in vectors:
                     params = [user_id, space, one]
                     extra = _filters("all", kind, params)
-                    lists.append([dict(r) for r in await conn.fetch(
-                        f"select * from (select distinct on ({GROUP_KEY}) {_ROW}, 1 - (embedding <=> $3::vector) "
-                        f"as score from orion_memory where user_id = $1 and vector_space = $2{extra} "
-                        f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
-                        f"limit {EACH_POOL}", *params)])
+                    lists.append((await _nearest_groups(conn, params, extra, EACH_POOL))[:EACH_POOL])
                 meaning = fuse_inputs(lists, input_labels)
             elif searchable:
                 params = [user_id, space, vector]
                 extra = _filters("all", kind, params)
-                meaning = [dict(r) for r in await conn.fetch(
-                    f"select * from (select distinct on ({GROUP_KEY}) {_ROW}, 1 - (embedding <=> $3::vector) as score "
-                    f"from orion_memory where user_id = $1 and vector_space = $2{extra} "
-                    f"order by {GROUP_KEY}, embedding <=> $3::vector, id) best order by score desc, id desc "
-                    f"limit {offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0)}", *params)]
+                meaning = await _nearest_groups(
+                    conn, params, extra, offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0))
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             # One definition of a word match, the one the panel's marks use (text_hit): the query's candidates
@@ -452,7 +495,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             # A neutral cue: how far each score is above this query's typical score against every memory.
             stats = None
             if searchable and not each:
-                stats = mf.calibrate(list((await mf.group_scores(conn, user_id, space, vector, kind)).values()))
+                stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector, kind)).values()))
             for e in ranked:
                 if each:
                     e["above"] = e["row"].get("above")
@@ -485,7 +528,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             matching = await conn.fetchval(
                 f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1{extra}", *params)
             more = offset + len(groups) < int(matching or 0)
-        members = await _group_rows(conn, user_id, groups)
+        hits = await text_candidates(conn, user_id, groups, q) if searching and q else set()
+        members = await _group_rows(conn, user_id, groups, full=hits if hits is not None else True)
         summary = await _summary(conn, user_id, space)
     finally:
         await conn.close()
@@ -498,7 +542,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         matched = None
         parts_match = None
         if entry:
-            parts_match = group_match(rows, space, scores, q)
+            parts_match = group_match(rows, space, scores, q, hits)
             row = entry["row"]
             # The part the memory is shown by is the panel's best part: one computation.
             matched = parts_match["best"] if parts_match["best"] is not None else row["id"]
@@ -575,10 +619,11 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
             return None
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
         whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
+        hits = await text_candidates(conn, user_id, [group], q) if q else set()
     finally:
         await conn.close()
     in_space = _in_space(rows, space)
-    found = group_match(rows, space, scores, q)
+    found = group_match(rows, space, scores, q, hits)
     found["all_score"] = None if whole_memory is None else round(whole_memory, 4)
     # The page shows each part once (the copy in the preferred space): its match is the match of its content.
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}

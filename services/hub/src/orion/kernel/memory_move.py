@@ -223,13 +223,12 @@ async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> in
     """The whole vectors of `items` in `space`, from their pieces there, for the tracks that have one in another
     space and none here yet (memory.refresh_wholes keeps them right after). Returns how many were made."""
     from orion.kernel.media_store import link_media
-    from orion.kernel.memory_pieces import mean_vector
     if not items:
         return 0
     rows = [dict(r) for r in await conn.fetch(
         "select id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
         "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, track, caption, "
-        "item_order, embedding::text as v from orion_memory where user_id = $1 and item_id = any($2::text[])",
+        "item_order from orion_memory where user_id = $1 and item_id = any($2::text[])",
         user_id, items)]
     made = 0
     for item in items:
@@ -240,9 +239,12 @@ async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> in
             pieces = [r for r in here if not r["whole"]]
             if source is None or any(r["whole"] for r in here) or len(pieces) < 2:
                 continue
-            vector = mean_vector([memory._parse_vector(p["v"]) for p in pieces])
+            # The mean is made by the database (no embedding is read out): normalized, as mean_vector makes it.
+            vector = await conn.fetchval(
+                "select l2_normalize(avg(embedding))::text from orion_memory where user_id = $1 and item_id = $2 "
+                "and vector_space = $3 and track is not distinct from $4 and not whole", user_id, item, space, track)
             new_id = await conn.fetchval(
-                COPY_SQL, user_id, source["text"], space, memory._vector(vector), source["source_kind"],
+                COPY_SQL, user_id, source["text"], space, vector, source["source_kind"],
                 source["source_chat_title"], source["kind"], source["media_id"], source["media_mime"],
                 source["media_seconds"], source["group_id"], source["copied_from"] or source["id"],
                 source["source_chat_id"], source["source_message_id"], source["created_at"], item, True, None, None,

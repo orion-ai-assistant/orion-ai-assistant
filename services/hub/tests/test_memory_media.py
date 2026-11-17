@@ -252,9 +252,9 @@ def test_deleting_a_media_row_drops_its_memory_link(monkeypatch):
     wire(monkeypatch, conn, GEMMA)
     unlinked = []
 
-    async def unlink(media_id, owner_kind, owner_id, *, conn=None):
-        unlinked.append((media_id, owner_kind, owner_id))
-    monkeypatch.setattr(media_store, 'unlink_media', unlink)
+    async def unlink(links, owner_kind, *, conn=None):
+        unlinked.extend((media_id, owner_kind, str(owner_id)) for media_id, owner_id in links)
+    monkeypatch.setattr(media_store, 'unlink_many', unlink)
     assert [r['id'] for r in asyncio.run(memory.delete_items('u1', [7, 8]))] == [7, 8]
     assert unlinked == [(IMG, 'memory', '7')] and conn.delete_args[0] == 'u1'
 

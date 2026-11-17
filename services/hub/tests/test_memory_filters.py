@@ -16,6 +16,13 @@ class Conn:
     def __init__(self, texts, scores):
         self.texts, self.scores = texts, scores
 
+    def transaction(self):
+        import contextlib
+        return contextlib.nullcontext()
+
+    async def execute(self, sql, *args):
+        pass
+
     async def fetch(self, sql, *args):
         if 'like $2' in sql:
             return [{'g': g} for g, t in self.texts.items() if args[1].strip('%') in t]

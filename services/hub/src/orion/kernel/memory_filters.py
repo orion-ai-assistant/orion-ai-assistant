@@ -33,14 +33,36 @@ def standing(score, stats) -> float | None:
     return (float(score) - stats[0]) / stats[1]
 
 
+POOL_ROWS = 1000  # Nearest rows looked at for the memories that stand out (exclusions).
+SAMPLE_ROWS = 2000  # Newest rows a query's typical score is measured on (never every row of the user).
+
+
 async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:
-    """Each memory's best similarity to `vector` in `space` (every memory of the user, pieces and whole vectors)."""
+    """Best similarity to `vector` in `space` of the memories among the POOL_ROWS nearest rows (pieces and whole
+    vectors): the ones that can stand out, found through the vector index, not by scoring every row."""
+    from orion.kernel.memory_groups import GROUP_KEY, _filters
+    params = [user_id, space, vector]
+    extra = _filters("all", kind, params)
+    rows = await memory.ann_fetch(
+        conn, f"select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from orion_memory "
+        f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit {POOL_ROWS}",
+        *params)
+    best: dict[str, float] = {}
+    for r in rows:  # nearest first
+        best.setdefault(r["g"], float(r["s"]))
+    return best
+
+
+async def sample_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:
+    """Each memory's best similarity among the user's SAMPLE_ROWS newest rows: the typical scores of this query,
+    for calibrate (a bounded read, however large the memory has grown)."""
     from orion.kernel.memory_groups import GROUP_KEY, _filters
     params = [user_id, space, vector]
     extra = _filters("all", kind, params)
     rows = await conn.fetch(
-        f"select {GROUP_KEY} as g, max(1 - (embedding <=> $3::vector)) as s from orion_memory "
-        f"where user_id = $1 and vector_space = $2{extra} group by g", *params)
+        f"select g, max(s) as s from (select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from "
+        f"orion_memory where user_id = $1 and vector_space = $2{extra} order by id desc limit {SAMPLE_ROWS}) t "
+        f"group by g", *params)
     return {r["g"]: float(r["s"]) for r in rows}
 
 
@@ -78,8 +100,8 @@ async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
     if not space:
         return out
     for vector in found:
+        stats = calibrate(list((await sample_scores(conn, user_id, space, vector)).values()))
         scores = await group_scores(conn, user_id, space, vector)
-        stats = calibrate(list(scores.values()))
         for g, s in scores.items():
             z = standing(s, stats)
             if z is not None and z >= EXCLUDE_Z:

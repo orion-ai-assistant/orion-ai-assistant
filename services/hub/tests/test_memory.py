@@ -42,6 +42,12 @@ class FakeConn:
     async def fetch(self, sql, *args):
         if 'where group_id is null' in sql:  # The group backfill: nothing to do.
             return []
+        if 'content_hash = any' in sql:  # The batched duplicate check: the known texts among the asked hashes.
+            import hashlib
+            return [{'content_hash': hashlib.sha256(t.encode()).hexdigest(), 'text': t, 'group_id': args[3],
+                     'embedding': '[0.5]'}
+                    for t, space in self.existing if space == args[1]
+                    and hashlib.sha256(t.encode()).hexdigest() in args[2]]
         self.fetch_args = args
         return self.rows
 
