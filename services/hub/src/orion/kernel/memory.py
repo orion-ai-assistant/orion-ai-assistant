@@ -173,7 +173,12 @@ async def ensure_memory_table(conn) -> None:
 
 
 SCHEMA_VERSION = 3  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash.
-LIVE = "deleted_at is null"  # A row not in the trash: what every read for the page, the map and the tools sees.
+LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
+
+
+def live(alias: str) -> str:
+    """LIVE for a table alias (a query with a join)."""
+    return f"not exists (select 1 from orion_mem_trash t where t.memory_id = {alias}.id)"
 
 
 async def _migrate(conn) -> None:
@@ -258,10 +263,16 @@ async def _schema_2(conn) -> None:
 
 
 async def _schema_3(conn) -> None:
-    """The trash: a removed row keeps everything and gets `deleted_at` and the removal it belongs to (`trash_id`: what
-    one press removed, restored or deleted for good together). Reads skip such rows (LIVE); the counters do too."""
-    await conn.execute("alter table orion_memory add column if not exists deleted_at timestamptz")
-    await conn.execute("alter table orion_memory add column if not exists trash_id text")
+    """The trash: a removed row keeps everything and has an entry in `orion_mem_trash` (the removal it belongs to,
+    `trash_id`: what one press removed, restored or deleted for good together, and when). It is a table of its own so
+    that removing 1000 rows is one insert of 1000 small entries: updating a flag on `orion_memory` rows would write
+    every one of them into every index again (HNSW, trigram: seconds). Reads skip such rows (LIVE); the counters do
+    too (triggers on the trash table)."""
+    await conn.execute(
+        "create table if not exists orion_mem_trash (memory_id bigint primary key, user_id text not null, "
+        "trash_id text not null, deleted_at timestamptz not null default now())")
+    await conn.execute("create index if not exists idx_orion_mem_trash_entry on orion_mem_trash (user_id, trash_id)")
+    await conn.execute("create index if not exists idx_orion_mem_trash_at on orion_mem_trash (user_id, deleted_at)")
     if await conn.fetchval("select to_regclass('orion_memory_pending') is not null"):
         await conn.execute("alter table orion_memory_pending add column if not exists trash_id text")
 
@@ -274,21 +285,22 @@ ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks th
 # recount of the user's rows. Three small tables: memories per (group, space), items per kind, contents per space.
 _COUNTERS = (
     ("orion_memory_cnt_group", ("user_id", "g", "s"),
-     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "{a}.deleted_at is null"),
+     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "{live}"),
     ("orion_memory_cnt_item", ("user_id", "i", "kind"),
      ("{a}.user_id", "coalesce({a}.item_id, coalesce({a}.copied_from, {a}.id)::text)", "{a}.kind"),
-     "not {a}.whole and {a}.deleted_at is null"),
+     "not {a}.whole and {live}"),
     ("orion_memory_cnt_content", ("user_id", "c", "s"),
-     ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "{a}.deleted_at is null"),
-)  # Rows in the trash are not counted: removing is an update of deleted_at, which moves them out of the counts.
+     ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "{live}"),
+)  # Rows in the trash are not counted: an entry in orion_mem_trash moves them out of the counts (its triggers).
 _COLUMN_TYPES = {"user_id": "text", "g": "text", "s": "text", "i": "text", "kind": "text", "c": "bigint"}
-_COUNTED = ("group_id", "vector_space", "kind", "item_id", "copied_from", "whole", "deleted_at")
-COUNTERS_MARKER = "counters_built_2"  # The counts' definition changed (trash): filled again once.
+_COUNTED = ("group_id", "vector_space", "kind", "item_id", "copied_from", "whole")
+COUNTERS_MARKER = "counters_built_3"  # The counts' definition changed (trash): filled again once.
 
 
-def _count_sql(source: str, sign: int, other: str | None = None) -> str:
+def _count_sql(source: str, sign: int, other: str | None = None, trashed: bool = False) -> str:
     """plpgsql statements adding `sign` x the rows of transition table `source` to every counter table. `other`:
-    the other transition table of an update; only rows whose counted columns changed are taken."""
+    the other transition table of an update; only rows whose counted columns changed are taken. Only rows not in the
+    trash count; `trashed`: `source` is a query of rows whose trash entry is being made or removed (no check)."""
     join = ""
     if other:
         mine = ", ".join(f"r.{c}" for c in _COUNTED)
@@ -300,7 +312,7 @@ def _count_sql(source: str, sign: int, other: str | None = None) -> str:
         select = ", ".join(e.format(a="r") for e in exprs)
         group = ", ".join(str(i + 1) for i in range(len(names)))
         sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
-                f"where {where.format(a='r')} group by {group} "
+                f"where {where.format(a='r', live='true' if trashed else live('r'))} group by {group} "
                 f"on conflict ({columns}) do update set n = {table}.n + excluded.n; ")
     return sql  # Rows that reach 0 stay (readers count n > 0; _counter_triggers purges them at start): a delete is cheaper.
 
@@ -341,6 +353,21 @@ async def _counter_triggers(conn) -> None:
         await conn.execute(f"drop trigger if exists orion_memory_count_{event} on orion_memory")
         await conn.execute(f"create trigger orion_memory_count_{event} after {event} on orion_memory "
                            f"referencing {referencing} for each statement execute function orion_memory_count_{event}()")
+    # Entries in the trash move rows out of / back into the counts (set-based, per statement).
+    trash_bodies = {
+        "insert": ("new table as new_rows",
+                   _count_sql("(select m.* from orion_memory m join new_rows n on n.memory_id = m.id)", -1, trashed=True)
+                   + _bump("new_rows")),
+        "delete": ("old table as old_rows",
+                   _count_sql("(select m.* from orion_memory m join old_rows n on n.memory_id = m.id)", 1, trashed=True)
+                   + _bump("old_rows")),
+    }
+    for event, (referencing, body) in trash_bodies.items():
+        await conn.execute(f"create or replace function orion_mem_trash_count_{event}() returns trigger language plpgsql "
+                           f"as $$ begin {body} return null; end $$")
+        await conn.execute(f"drop trigger if exists orion_mem_trash_count_{event} on orion_mem_trash")
+        await conn.execute(f"create trigger orion_mem_trash_count_{event} after {event} on orion_mem_trash "
+                           f"referencing {referencing} for each statement execute function orion_mem_trash_count_{event}()")
     await conn.execute("create or replace function orion_memory_count_truncate() returns trigger language plpgsql as "
                        "$$ begin truncate orion_memory_cnt_group, orion_memory_cnt_item, orion_memory_cnt_content; "
                        "update orion_memory_version set n = n + 1; "
@@ -361,7 +388,7 @@ async def _counter_triggers(conn) -> None:
             select = ", ".join(e.format(a="r") for e in exprs)
             group = ", ".join(str(i + 1) for i in range(len(names)))
             await conn.execute(f"insert into {table} ({', '.join(names)}, n) select {select}, count(*) "
-                               f"from orion_memory r where {where.format(a='r')} group by {group}")
+                               f"from orion_memory r where {where.format(a='r', live=live('r'))} group by {group}")
         await conn.execute("insert into orion_memory_meta (key, value) values ($1, 'yes') on conflict do nothing",
                            COUNTERS_MARKER)
 
@@ -988,10 +1015,10 @@ async def text_item_pieces(conn, user_id: str, space: str, text: str, target, lo
         # One lookup for every core (index user, space, content_hash): the row of this group first, else any.
         for r in await conn.fetch(
                 "select distinct on (content_hash) content_hash, text, embedding::text as embedding, "
-                "case when deleted_at is null then group_id end as group_id "
+                f"case when {LIVE} then group_id end as group_id "
                 "from orion_memory where user_id = $1 and vector_space = $2 and content_hash = any($3::text[]) "
                 "and media_id is null and not whole order by content_hash, "
-                "(group_id = $4 and deleted_at is null) desc nulls last, id",  # A removed copy is not "known".
+                f"(group_id = $4 and {LIVE}) desc nulls last, id",  # A removed copy is not "known".
                 user_id, space, hashes, group or ""):
             seen[r["text"]] = dict(r)
     for index, (core, window) in enumerate(split):
@@ -1336,7 +1363,7 @@ async def open_plan(user_id: str, ids: list[int], settings) -> tuple[list[int], 
         rows = {r["id"]: dict(r) for r in await conn.fetch(
             "select m.id, m.kind, m.whole, m.media_seconds, (select coalesce(sum(length(t.text)), 0) from orion_memory t "
             "where t.user_id = m.user_id and not t.whole and t.item_id is not null and t.item_id = m.item_id) as chars "
-            "from orion_memory m where m.user_id = $1 and m.id = any($2::bigint[]) and m.deleted_at is null",
+            f"from orion_memory m where m.user_id = $1 and m.id = any($2::bigint[]) and {live('m')}",
             user_id, ids)}
     finally:
         await conn.close()
@@ -1613,9 +1640,10 @@ async def refresh_wholes(conn, user_id: str, items: list[str]) -> None:
     if not wholes:
         return
     counts = {(r["item_id"], r["vector_space"], r["track"]): r for r in await conn.fetch(
-        "select item_id, vector_space, track, count(*) as n, count(*) filter (where deleted_at is null) as live, "
-        "(array_agg(trash_id order by deleted_at desc) filter (where deleted_at is not null))[1] as trash_id "
-        "from orion_memory where user_id = $1 and item_id = any($2::text[]) and not whole group by 1, 2, 3",
+        "select m.item_id, m.vector_space, m.track, count(*) as n, count(*) filter (where t.memory_id is null) as live, "
+        "(array_agg(t.trash_id order by t.deleted_at desc) filter (where t.memory_id is not null))[1] as trash_id "
+        "from orion_memory m left join orion_mem_trash t on t.memory_id = m.id "
+        "where m.user_id = $1 and m.item_id = any($2::text[]) and not m.whole group by 1, 2, 3",
         user_id, items)}
 
     def of(w):
@@ -1625,18 +1653,20 @@ async def refresh_wholes(conn, user_id: str, items: list[str]) -> None:
         await conn.execute("delete from orion_memory where id = any($1::bigint[])", [w["id"] for w in gone])
         await unlink_many([(w["media_id"], w["id"]) for w in gone if w["media_id"]], "memory", conn=conn)
     dead = [w for w in wholes if w not in gone and of(w)["live"] == 0]
-    for w in dead:
-        await conn.execute("update orion_memory set deleted_at = coalesce(deleted_at, now()), "
-                           "trash_id = coalesce(trash_id, $2) where id = $1", w["id"], of(w)["trash_id"])
+    if dead:
+        await conn.execute(
+            "insert into orion_mem_trash (memory_id, user_id, trash_id) select unnest($1::bigint[]), $2, "
+            "unnest($3::text[]) on conflict do nothing", [w["id"] for w in dead], user_id, [of(w)["trash_id"] for w in dead])
     kept = [w for w in wholes if w not in gone and w not in dead]
     if kept:
         await conn.execute(
-            "update orion_memory w set embedding = l2_normalize(m.v), deleted_at = null, trash_id = null "
+            "update orion_memory w set embedding = l2_normalize(m.v) "
             "from (select item_id, vector_space, track, avg(embedding) as v from orion_memory where user_id = $1 "
             f"and item_id = any($2::text[]) and not whole and {LIVE} group by 1, 2, 3) m "
             "where w.id = any($3::bigint[]) and w.item_id = m.item_id "
             "and w.vector_space = m.vector_space and w.track is not distinct from m.track",
             user_id, items, [w["id"] for w in kept])
+        await conn.execute("delete from orion_mem_trash where memory_id = any($1::bigint[])", [w["id"] for w in kept])
 
 
 async def delete_whole_items(user_id: str, item_ids: list[str]) -> list[dict]:

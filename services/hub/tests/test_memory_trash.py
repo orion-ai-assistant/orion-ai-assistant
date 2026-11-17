@@ -100,8 +100,9 @@ class TrashTests(PostgresMemoryCase):
         copy = await self.add('uzun metin parça 0', space=OTHER, group='g-long', copied_from=pieces[0], axis=40)
         removed = await memory_trash.trash_items('alice', [pieces[0]])
         self.assertEqual([r['id'] for r in removed['removed']], [pieces[0]])
-        states = {r['id']: r['deleted_at'] is not None for r in await sql(
-            'select id, deleted_at from orion_memory', fetch=True)}
+        states = {r['id']: r['gone'] for r in await sql(
+            'select id, exists (select 1 from orion_mem_trash t where t.memory_id = id) as gone from orion_memory',
+            fetch=True)}
         self.assertEqual((states[pieces[0]], states[copy], states[pieces[1]], states[whole]), (True, True, False, False))
         # The whole vector is the mean of the two live pieces now.
         cos = await sql("select 1 - (w.embedding <=> l2_normalize((select avg(embedding) from orion_memory "
@@ -110,15 +111,15 @@ class TrashTests(PostgresMemoryCase):
         trash = (await memory_trash.list_trash('alice', self.settings))['entries']
         self.assertEqual((len(trash), trash[0]['scope']), (1, 'part'))  # The memory itself is still there.
         rest = await memory_trash.trash_whole_items('alice', ['item-1'])
-        self.assertTrue(await sql('select deleted_at is not null from orion_memory where id = $1', whole))
-        self.assertEqual(await sql('select trash_id from orion_memory where id = $1', whole), rest['trash_id'])
+        self.assertTrue(await sql('select exists (select 1 from orion_mem_trash where memory_id = $1)', whole))
+        self.assertEqual(await sql('select trash_id from orion_mem_trash where memory_id = $1', whole), rest['trash_id'])
         await memory_trash.restore('alice', [removed['trash_id']])  # One piece back: the whole comes back with it.
-        self.assertTrue(await sql('select deleted_at is null from orion_memory where id = $1', whole))
+        self.assertFalse(await sql('select exists (select 1 from orion_mem_trash where memory_id = $1)', whole))
         await memory_trash.restore('alice', [rest['trash_id']])
         cos = await sql("select 1 - (w.embedding <=> l2_normalize((select avg(embedding) from orion_memory "
                         "where id = any($2::bigint[])))) from orion_memory w where w.id = $1", whole, pieces)
         self.assertGreater(cos, 0.9999)
-        self.assertEqual(await sql('select count(*) from orion_memory where deleted_at is not null'), 0)
+        self.assertEqual(await sql('select count(*) from orion_mem_trash'), 0)
 
     async def test_the_chat_confirmation_moves_to_the_trash_and_the_tools_no_longer_see_it(self):
         text = await self.add('kedim Maviş', group='g1', score=0.9, axis=2)
@@ -127,7 +128,7 @@ class TrashTests(PostgresMemoryCase):
         done = await routes.memory_pending_confirm(pending['token'], 'alice')
         self.assertEqual((done['state'], done['deleted']), ('deleted', [text]))
         self.assertTrue(done['trash_id'])
-        self.assertTrue(await sql('select deleted_at is not null from orion_memory where id = $1', text))
+        self.assertTrue(await sql('select exists (select 1 from orion_mem_trash where memory_id = $1)', text))
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
             context = ToolContext('alice', 'chat', 't', None)
             found = await memory_tools.search_memory(memory_tools.MemorySearchInput(), context)
@@ -141,7 +142,7 @@ class TrashTests(PostgresMemoryCase):
             self.assertIn('trash', outcome['note'])
         self.assertEqual(done['trash'], 'in')
         await memory_trash.restore('alice', [done['trash_id']])
-        self.assertTrue(await sql('select deleted_at is null from orion_memory where id = $1', text))
+        self.assertFalse(await sql('select exists (select 1 from orion_mem_trash where memory_id = $1)', text))
         self.assertEqual((await memory_pending.status('alice', pending['token']))['trash'], 'restored')
         again = await memory_trash.trash_items('alice', [text])
         await memory_trash.purge('alice', [again['trash_id']])
@@ -184,7 +185,7 @@ class TrashTests(PostgresMemoryCase):
         bobs = await self.add('bob eski', group='g-bob', user='bob', axis=4)
         for user, row in (('alice', old), ('alice', new), ('bob', bobs)):
             await memory_trash.trash_items(user, [row])
-        await sql("update orion_memory set deleted_at = now() - interval '10 days' where id = any($1::bigint[])",
+        await sql("update orion_mem_trash set deleted_at = now() - interval '10 days' where memory_id = any($1::bigint[])",
                   [old, bobs])
         days = {'alice': 7, 'bob': 30}
 

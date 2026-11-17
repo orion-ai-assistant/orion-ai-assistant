@@ -159,7 +159,7 @@ async def measure(dsn: str) -> None:
     await timed("v2 list page, in documents", lambda: memory_groups.list_groups(
         USER, v2, limit=20, vector_space=SPACE, collections=["documents"]))
     groups = [r["group_id"] for r in await conn.fetch(
-        "select distinct group_id from orion_memory where user_id = $1 and deleted_at is null order by group_id "
+        "select distinct group_id from orion_memory where user_id = $1 and " + memory.LIVE + " order by group_id "
         "limit 40", USER)]
     started = time.perf_counter()
     removed = [await memory_trash.trash_groups(USER, groups[k:k + 20]) for k in (0, 20)]

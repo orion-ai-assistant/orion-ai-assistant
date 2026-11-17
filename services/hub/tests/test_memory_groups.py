@@ -280,7 +280,7 @@ class MemoryGroupTests(PostgresMemoryCase):
         from orion.api import routes
         result = await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'alice')
         self.assertEqual(len(result['deleted']), 14)
-        left = await sql('select text from orion_memory where deleted_at is null', fetch=True)
+        left = await sql('select text from orion_memory where ' + memory.LIVE, fetch=True)
         self.assertEqual([r['text'] for r in left], ['öteki parça'])  # The whole vector went with its sections.
         self.assertEqual(await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'bob'),
                          {'deleted': [], 'trash_id': None})

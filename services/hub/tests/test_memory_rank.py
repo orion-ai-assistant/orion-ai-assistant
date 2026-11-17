@@ -528,7 +528,7 @@ class RankTests(PostgresMemoryCase):
         with patch.object(memory, 'ann_fetch', capped):
             page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
         self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
-        self.assertEqual(memory.filters_sql('all', 'image', []), " and deleted_at is null and kind = 'image'")
+        self.assertEqual(memory.filters_sql('all', 'image', []), f" and {memory.LIVE} and kind = 'image'")
 
     async def test_cores_concatenate_to_the_original_text_byte_for_byte(self):
         import random
@@ -620,7 +620,7 @@ class RankTests(PostgresMemoryCase):
         """Rows not in the trash."""
         conn = await registry._connect()
         try:
-            return await conn.fetchval('select count(*) from orion_memory where deleted_at is null')
+            return await conn.fetchval('select count(*) from orion_memory where ' + memory.LIVE)
         finally:
             await conn.close()
 

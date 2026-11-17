@@ -1,6 +1,8 @@
 """The trash (docs/hafiza-tasarimi.md §11.2): removing a memory, a part or a piece moves its rows to the trash, it is
-not deleted. A row in the trash keeps everything (text, vectors in every model, media link) and has `deleted_at` and
-`trash_id`: the removal it belongs to, the unit the trash lists, restores and deletes for good. Every read for the
+not deleted. A row in the trash keeps everything (text, vectors in every model, media link) and has an entry in
+`orion_mem_trash` (`trash_id`: the removal it belongs to, the unit the trash lists, restores and deletes for good;
+`deleted_at`). Moving rows in and out is one set-based insert / delete of those small entries, never an update of
+`orion_memory` rows (that would write every row into every index again). Every read for the
 page, the map, the counts and the chat model skips it (memory.LIVE). After the user's `memory_trash_days` (30 by
 default) a periodic job deletes it for good; the user can restore it before, or delete it for good at once.
 
@@ -25,6 +27,8 @@ PURGE_EVERY = 3600  # Seconds between purge runs.
 PURGE_START = 120  # Seconds after the Hub starts before the first run.
 LIST_ROWS = 40  # Rows of one removal read for its card (counts come from SQL): a long text has thousands.
 GROUP_KEY = "coalesce(group_id, 'r' || id::text)"
+MG = "coalesce(m.group_id, 'r' || m.id::text)"  # The same keys for a query with a join (alias m).
+MC = "coalesce(m.copied_from, m.id)"
 
 
 async def trash_rows(conn, user_id: str, where: str, *args) -> dict:
@@ -34,9 +38,11 @@ async def trash_rows(conn, user_id: str, where: str, *args) -> dict:
     trash_id = memory.new_group()
     n = len(args) + 2
     rows = [dict(r) for r in await conn.fetch(
-        f"update orion_memory set deleted_at = now(), trash_id = ${n} where user_id = $1 and {memory.LIVE} "
+        f"with hit as (select id, text, group_id, item_id, whole from orion_memory where user_id = $1 and {memory.LIVE} "
         f"and {memory.CONTENT_KEY} in (select {memory.CONTENT_KEY} from orion_memory where user_id = $1 "
-        f"and {memory.LIVE} and ({where})) returning id, text, group_id, item_id, whole", user_id, *args, trash_id)]
+        f"and {memory.LIVE} and ({where}))), "
+        f"put as (insert into orion_mem_trash (memory_id, user_id, trash_id) select id, $1, ${n} from hit) "
+        f"select * from hit", user_id, *args, trash_id)]
     if not rows:
         return {"trash_id": None, "rows": []}
     items = sorted({r["item_id"] for r in rows if r.get("item_id")})
@@ -47,7 +53,7 @@ async def trash_rows(conn, user_id: str, where: str, *args) -> dict:
         await conn.execute(
             "update orion_memory_media_jobs j set cancel = true where j.user_id = $1 and j.state = 'running' "
             f"and j.group_id = any($2::text[]) and not exists (select 1 from orion_memory m where m.user_id = $1 "
-            f"and m.group_id = j.group_id and m.{memory.LIVE})", user_id, groups)
+            f"and m.group_id = j.group_id and {memory.live('m')})", user_id, groups)
     return {"trash_id": trash_id, "rows": rows}
 
 
@@ -116,9 +122,10 @@ async def restore(user_id: str, trash_ids: list[str]) -> dict:
         await memory.ensure_memory_table(conn)
         async with conn.transaction():
             rows = [dict(r) for r in await conn.fetch(
-                "update orion_memory set deleted_at = null, trash_id = null where user_id = $1 "
-                "and trash_id = any($2::text[]) and deleted_at is not null "
-                f"returning id, item_id, whole, {GROUP_KEY} as g", user_id, trash_ids)]
+                "with gone as (delete from orion_mem_trash where user_id = $1 and trash_id = any($2::text[]) "
+                "returning memory_id) "
+                f"select m.id, m.item_id, m.whole, {MG} "
+                "as g from orion_memory m join gone on gone.memory_id = m.id", user_id, trash_ids)]
             items = sorted({r["item_id"] for r in rows if r.get("item_id")})
             if items:
                 await memory.refresh_wholes(conn, user_id, items)
@@ -135,17 +142,20 @@ async def purge(user_id: str, trash_ids: list[str] | None = None, settings=None)
         await memory.ensure_memory_table(conn)
         if trash_ids is None:
             trash_ids = [r["trash_id"] for r in await conn.fetch(
-                "select distinct trash_id from orion_memory where user_id = $1 and deleted_at is not null", user_id)]
+                "select distinct trash_id from orion_mem_trash where user_id = $1", user_id)]
         trash_ids = [str(t)[:64] for t in trash_ids if t]
         if not trash_ids:
             return {"deleted": [], "entries": 0}
         async with conn.transaction():
             ids = [r["id"] for r in await conn.fetch(
-                "select id from orion_memory where user_id = $1 and trash_id = any($2::text[]) and deleted_at is not null "
-                "and not whole", user_id, trash_ids)]
+                "select m.id from orion_memory m join orion_mem_trash t on t.memory_id = m.id "
+                "where t.user_id = $1 and t.trash_id = any($2::text[]) and not m.whole", user_id, trash_ids)]
             neighbours = await memory._neighbours_of(conn, user_id, ids) if ids else []
-            rows = await memory.delete_rows(conn, user_id, "trash_id = any($2::text[]) and deleted_at is not null",
-                                            trash_ids)
+            rows = await memory.delete_rows(
+                conn, user_id, "id in (select memory_id from orion_mem_trash where user_id = $1 "
+                "and trash_id = any($2::text[]))", trash_ids)
+            await conn.execute("delete from orion_mem_trash where user_id = $1 and trash_id = any($2::text[])",
+                               user_id, trash_ids)
             gone = [r["id"] for r in rows]
             if gone:
                 await _scrub_previews(conn, user_id, gone)
@@ -179,22 +189,24 @@ async def list_trash(user_id: str, settings, limit: int = 50, offset: int = 0) -
     try:
         await memory.ensure_memory_table(conn)
         heads = [dict(r) for r in await conn.fetch(
-            f"select trash_id, min(deleted_at) as deleted_at, min({GROUP_KEY}) as g, "
-            f"min(deleted_at) + make_interval(days => $2) as purge_at, "
-            f"count(distinct {memory.CONTENT_KEY}) filter (where not whole) as parts "
-            f"from orion_memory where user_id = $1 and deleted_at is not null group by trash_id "
-            f"order by min(deleted_at) desc, trash_id limit $3 offset $4", user_id, days, limit + 1, offset)]
+            f"select t.trash_id, min(t.deleted_at) as deleted_at, min({MG}) as g, "
+            f"min(t.deleted_at) + make_interval(days => $2) as purge_at, "
+            f"count(distinct {MC}) filter (where not m.whole) as parts "
+            f"from orion_mem_trash t join orion_memory m on m.id = t.memory_id where t.user_id = $1 "
+            f"group by t.trash_id order by min(t.deleted_at) desc, t.trash_id limit $3 offset $4",
+            user_id, days, limit + 1, offset)]
         more = len(heads) > limit
         heads = heads[:limit]
-        total = await conn.fetchval("select count(distinct trash_id) from orion_memory where user_id = $1 "
-                                    "and deleted_at is not null", user_id)
+        total = await conn.fetchval("select count(distinct t.trash_id) from orion_mem_trash t "
+                                    "join orion_memory m on m.id = t.memory_id where t.user_id = $1", user_id)
         ids = [h["trash_id"] for h in heads]
         rows: dict[str, list[dict]] = {}
         columns = memory_groups._ROW.replace("id, text,", f"id, left(text, {memory_groups.CARD_TEXT}) as text,", 1)
         for r in await conn.fetch(
-                f"select * from (select {columns}, trash_id, row_number() over (partition by trash_id "
-                f"order by whole, id) as k from orion_memory where user_id = $1 and trash_id = any($2::text[]) "
-                f"and deleted_at is not null) t where k <= {LIST_ROWS}", user_id, ids):
+                f"select * from (select {columns}, tid as trash_id, row_number() over (partition by tid "
+                f"order by whole, id) as k from (select m.*, t.trash_id as tid from orion_memory m "
+                f"join orion_mem_trash t on t.memory_id = m.id where t.user_id = $1 and t.trash_id = any($2::text[])) x"
+                f") y where k <= {LIST_ROWS}", user_id, ids):
             rows.setdefault(r["trash_id"], []).append(dict(r))
         live = {r["g"] for r in await conn.fetch(
             f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and {memory.LIVE} "
@@ -230,13 +242,14 @@ async def purge_expired(settings_of=None) -> int:
         if not await conn.fetchval("select pg_try_advisory_lock($1)", PURGE_LOCK):
             return 0
         try:
-            users = [r["user_id"] for r in await conn.fetch(
-                "select distinct user_id from orion_memory where deleted_at is not null")]
+            await conn.execute("delete from orion_mem_trash t where not exists "
+                               "(select 1 from orion_memory m where m.id = t.memory_id)")  # Rows gone by another path.
+            users = [r["user_id"] for r in await conn.fetch("select distinct user_id from orion_mem_trash")]
             due: dict[str, tuple[list[str], object]] = {}
             for user_id in users:
                 settings = await settings_of(user_id)
                 expired = [r["trash_id"] for r in await conn.fetch(
-                    "select trash_id from orion_memory where user_id = $1 and deleted_at is not null group by trash_id "
+                    "select trash_id from orion_mem_trash where user_id = $1 group by trash_id "
                     "having min(deleted_at) < now() - make_interval(days => $2)", user_id, days_of(settings))]
                 if expired:
                     due[user_id] = (expired, settings)

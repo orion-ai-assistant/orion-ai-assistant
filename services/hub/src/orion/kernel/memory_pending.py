@@ -65,7 +65,8 @@ async def status(user_id: str, token: str) -> dict | None:
         where = None
         if row is not None and row["trash_id"]:
             now = await conn.fetchval(  # Any of its parts live: restored; else in the trash; else gone.
-                "select bool_or(deleted_at is null) from orion_memory where user_id = $1 and id = any($2::bigint[])",
+                "select bool_or(t.memory_id is null) from orion_memory m left join orion_mem_trash t "
+                "on t.memory_id = m.id where m.user_id = $1 and m.id = any($2::bigint[])",
                 user_id, list(row["deleted"] or []))
             where = "gone" if now is None else ("restored" if now else "in")
     finally:
