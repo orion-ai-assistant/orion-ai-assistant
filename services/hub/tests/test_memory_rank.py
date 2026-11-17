@@ -492,3 +492,40 @@ class RankTests(PostgresMemoryCase):
                 queries=[memory_tools.MemoryQuery(text='x')], kind='text'), ToolContext('alice', 'chat', 't', None))
         row = next(r for r in only['results'] if r['id'] == t1)
         self.assertEqual(row['score'], 30)
+
+    async def test_matched_words_come_back_as_spans_in_text_title_and_caption(self):
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await memory.insert_item(
+                    conn, 'alice', SPACE, 'g1', {'kind': 'text', 'source_kind': 'file', 'title': 'Test.TXT', 'caption': 'bir test daha'},
+                    [{'text': 'İlk satır test.\nİkinci TEST burada', 'vector': vec(0.2, 2)}])
+        finally:
+            await conn.close()
+        page = await memory_groups.list_groups('alice', self.settings, q='test', limit=10)
+        spans = page['groups'][0]['spans']
+        text = 'İlk satır test.\nİkinci TEST burada'
+        got = [(s['field'], {'text': text, 'title': 'Test.TXT', 'caption': 'bir test daha'}[s['field']][s['start']:s['end']])
+               for s in spans]
+        self.assertEqual(got, [('text', 'test'), ('text', 'TEST'), ('title', 'Test'), ('caption', 'test')])
+        panel = await memory_groups.part_scores('alice', 'g1', self.settings, q='test')
+        self.assertEqual(list(panel['parts'].values())[0]['spans'], spans)
+        near = await memory_groups.list_groups('alice', self.settings, q='tset satir', limit=10)
+        self.assertTrue(all(s['end'] > s['start'] for s in near['groups'][0].get('spans', [])))
+
+    async def test_a_kind_filter_finds_every_image_when_the_index_scan_stops_short(self):
+        """95% text: a filtered index scan can end at its scan limit before the images do. The search must still
+        return all of them (an exact scan settles it)."""
+        for k in range(38):
+            await self.add(f'metin {k}', score=0.9 - k * 0.01, axis=2 + k % 700, group=f't{k}', minute=k)
+        images = [await self.add(f'foto{k}.png', score=0.2 + k * 0.01, axis=300 + k, group=f'i{k}', minute=50 + k,
+                                 kind='image', media_id=f'{k:064d}') for k in range(2)]
+        real = memory.ann_fetch
+
+        async def capped(conn, sql, *args):  # Like a graph scan that gave up: the nearest rows, then the filter.
+            rows = await real(conn, sql.replace(" and kind = 'image'", ""), *args)
+            return [r for r in rows[:10] if r['kind'] == 'image']
+        with patch.object(memory, 'ann_fetch', capped):
+            page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
+        self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
+        self.assertEqual(memory.filters_sql('all', 'image', []), " and kind = 'image'")
