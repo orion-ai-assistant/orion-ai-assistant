@@ -338,8 +338,9 @@ async def _connect():
     return conn
 
 
-async def embedding_target(settings) -> tuple[object, str, bool]:
-    """(settings aimed at the embedding model, its vector space, whether it is local)."""
+async def embedding_targets(settings) -> list[tuple[object, str, bool]]:
+    """(settings aimed at the model, its vector space, whether it is local) of every embedding model the Router
+    lists, the one searches use first (a local one, else the first)."""
     from orion.kernel.router_models import get_router_catalog
     try:
         models = [m for m in (await get_router_catalog(include_voices=False))["models"] if m.get("capability") == "embed"]
@@ -347,14 +348,22 @@ async def embedding_target(settings) -> tuple[object, str, bool]:
         raise MemoryUnavailable(ROUTER_DOWN_MESSAGE) from exc  # No catalog: the Router itself cannot be reached.
     if not models:
         raise MemoryUnavailable(SETUP_MESSAGE)
-    chosen = next((m for m in models if m.get("provider") == "local"), models[0])
-    local = chosen.get("provider") == "local"
-    if local:
-        from services.shared import local_parts
-        space = local_parts.embedding_profile().get("vector_space") or "local"
-    else:
-        space = f"cloud:{chosen['name']}"
-    return settings.model_copy(update={"router_model_group": chosen["name"]}), space, local
+    models.sort(key=lambda m: m.get("provider") != "local")
+    found = []
+    for chosen in models:
+        local = chosen.get("provider") == "local"
+        if local:
+            from services.shared import local_parts
+            space = local_parts.embedding_profile().get("vector_space") or "local"
+        else:
+            space = f"cloud:{chosen['name']}"
+        found.append((settings.model_copy(update={"router_model_group": chosen["name"]}), space, local))
+    return found
+
+
+async def embedding_target(settings) -> tuple[object, str, bool]:
+    """(settings aimed at the embedding model, its vector space, whether it is local)."""
+    return (await embedding_targets(settings))[0]
 
 
 async def _embed(text: str, settings, kind: str, local: bool) -> list[list[float]]:
@@ -1346,29 +1355,52 @@ def _schedule_reembed(user_id: str, ids: list[int], settings) -> None:
 
 
 async def _reembed(user_id: str, ids: list[int], settings) -> None:
-    """Make the vectors of text pieces `ids` again from their windows as they are now (a neighbour was deleted),
-    in the active model's space; the items' whole vectors follow."""
+    """Make the vectors of the text pieces `ids` again from their windows as they are now (a neighbour was deleted),
+    in EVERY vector space they exist in, with that space's own model; the items' whole vectors follow. A space whose
+    model cannot be reached drops its copy of the piece when the memory has another copy of it (a later move makes
+    it again), so the deleted words never stay findable through a stale window; a piece with no other copy is kept
+    and logged. Own settings, own connection: a delete never waits for this or fails because of it."""
     from orion.kernel.memory_pieces import windows_of
     try:
         if settings is None:
             from orion.kernel.config import get_runtime_settings
             settings = await get_runtime_settings(None, user_id)
-        target, space, local = await embedding_target(settings)
+        try:
+            targets = {space: (target, local) for target, space, local in await embedding_targets(settings)}
+        except MemoryUnavailable as exc:
+            logger.warning("Memory: no embedding model for the neighbours of a deleted piece: %s", exc)
+            targets = {}
         conn = await _connect()
         try:
-            wanted = {r["id"]: r["item_id"] for r in await conn.fetch(
-                "select id, item_id from orion_memory where user_id = $1 and id = any($2::bigint[]) "
-                "and vector_space = $3", user_id, ids, space)}
-            for item in sorted(set(wanted.values())):
+            wanted = [dict(r) for r in await conn.fetch(
+                "select id, item_id, vector_space from orion_memory where user_id = $1 and id = any($2::bigint[])",
+                user_id, ids)]
+            for item, space in sorted({(r["item_id"], r["vector_space"]) for r in wanted}):
+                mine = {r["id"] for r in wanted if (r["item_id"], r["vector_space"]) == (item, space)}
                 pieces = sorted((dict(r) for r in await conn.fetch(
                     "select id, text, copied_from, item_order from orion_memory where user_id = $1 and item_id = $2 "
                     "and vector_space = $3 and kind = 'text' and not whole", user_id, item, space)), key=order_key)
-                for piece, window in zip(pieces, windows_of([p["text"] for p in pieces])):
-                    if wanted.get(piece["id"]) != item:
-                        continue
-                    vector = (await _embed(window, target, "document", local))[0]
-                    await conn.execute("update orion_memory set embedding = $3::vector where user_id = $1 and id = $2",
-                                       user_id, piece["id"], _vector(vector))
+                windows = windows_of([p["text"] for p in pieces])
+                if space in targets:
+                    target, local = targets[space]
+                    for piece, window in zip(pieces, windows):
+                        if piece["id"] in mine:
+                            vector = (await _embed(window, target, "document", local))[0]
+                            await conn.execute("update orion_memory set embedding = $3::vector "
+                                               "where user_id = $1 and id = $2", user_id, piece["id"], _vector(vector))
+                else:
+                    for piece in pieces:
+                        if piece["id"] not in mine:
+                            continue
+                        other = await conn.fetchval(
+                            "select 1 from orion_memory where user_id = $1 and vector_space <> $2 and "
+                            f"{CONTENT_KEY} = $3 limit 1", user_id, space, content_key(piece))
+                        if other:
+                            await conn.execute("delete from orion_memory where user_id = $1 and id = $2",
+                                               user_id, piece["id"])
+                        else:
+                            logger.warning("Memory: piece %s in space %s keeps a stale window (no model for it)",
+                                           piece["id"], space)
                 async with conn.transaction():
                     await refresh_wholes(conn, user_id, [item])
         finally:

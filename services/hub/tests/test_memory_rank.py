@@ -194,7 +194,7 @@ class RankTests(PostgresMemoryCase):
             windows.append(text)
             return [[1.0] + [0.0] * 767]
         target = (SimpleNamespace(router_model_group='e'), SPACE, True)
-        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=[target])):
             await memory.delete_items('alice', [rows[1]], self.settings)
             await asyncio.gather(*memory._reembed_tasks)
         self.assertEqual(len(windows), 2)  # The piece before and the piece after.
@@ -272,3 +272,62 @@ class RankTests(PostgresMemoryCase):
             await conn.close()
         self.assertEqual(lasts[first], ids[3])   # Up to the message before the next piece starts.
         self.assertEqual(lasts[second], ids[5])  # The last piece: to the chat's last message at save time.
+
+    async def test_a_deleted_pieces_words_leave_the_neighbours_in_every_model(self):
+        other = 'jina-v5'
+        originals, copies = [], []
+        for k, text in enumerate(('birinci parça', 'ikinci parça', 'üçüncü parça')):
+            originals.append(await self.add(text, score=0.9, axis=2 + k, group='g', minute=k))
+            copies.append(await self.add(text, score=0.9, axis=2 + k, group='g', minute=k, space=other,
+                                         copied_from=originals[-1]))
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = coalesce(copied_from, id) "
+                               "where group_id = 'g'")
+        finally:
+            await conn.close()
+
+        async def embed(text, settings, kind, local):  # A window that holds 'ikinci' is near the query.
+            return [[1.0] + [0.0] * 767 if 'ikinci' in text else [0.0, 0.0, 0.0, 0.0, 1.0] + [0.0] * 763]
+        targets = [(SimpleNamespace(router_model_group='a'), SPACE, True),
+                   (SimpleNamespace(router_model_group='b'), other, False)]
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=targets)):
+            await memory.delete_items('alice', [originals[1]], self.settings)
+            await asyncio.gather(*memory._reembed_tasks)
+        conn = await registry._connect()
+        try:
+            rows = await conn.fetch("select vector_space, 1 - (embedding <=> $1::vector) as s from orion_memory",
+                                    memory._vector(self.query))
+        finally:
+            await conn.close()
+        self.assertEqual(len(rows), 4)  # Both neighbours, in both models.
+        self.assertTrue(all(abs(r['s']) < 1e-6 for r in rows), [dict(r) for r in rows])
+        self.assertEqual({r['vector_space'] for r in rows}, {SPACE, other})
+
+    async def test_a_model_that_cannot_be_reached_drops_its_stale_neighbour_copy(self):
+        other = 'jina-v5'
+        a = await self.add('birinci', score=0.9, axis=2, group='g', minute=0)
+        await self.add('birinci', score=0.9, axis=2, group='g', minute=0, space=other, copied_from=a)
+        b = await self.add('ikinci', score=0.9, axis=3, group='g', minute=1)
+        await self.add('ikinci', score=0.9, axis=3, group='g', minute=1, space=other, copied_from=b)
+        c = await self.add('üçüncü', score=0.9, axis=4, group='g', minute=2)
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = coalesce(copied_from, id) "
+                               "where group_id = 'g'")
+        finally:
+            await conn.close()
+
+        async def embed(text, settings, kind, local):
+            return [[0.0] * 768]
+        targets = [(SimpleNamespace(router_model_group='a'), SPACE, True)]
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=targets)):
+            await memory.delete_items('alice', [b], self.settings)
+            await asyncio.gather(*memory._reembed_tasks)
+        conn = await registry._connect()
+        try:
+            spaces = [r['vector_space'] for r in await conn.fetch('select vector_space from orion_memory where id <> $1 '
+                                                                    'order by id', c)]
+        finally:
+            await conn.close()
+        self.assertEqual(spaces, [SPACE])  # The other model's copy of the neighbour is gone, not left stale.
