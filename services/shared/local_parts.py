@@ -470,6 +470,10 @@ def _numbered_cards(part, hw):
     return cuda_cards(part, hw) if any(c['id'] == 'cuda' for c in choices(part, hw)) else _nvidia_cards(hw)
 
 
+# Memory pieces are fixed-size (memory_pieces.py): the biggest window needs ~2000 tokens, so the context never goes lower.
+EMBEDDING_CONTEXT_MIN = 2048
+
+
 def default_settings(part, model, hw):
     """What a part runs with unless the user changes it (Gelişmiş ayarlar)."""
     hardware_id = choices(part, hw)[0]['id']
@@ -1163,10 +1167,12 @@ def advanced(part, hw, model=None):
     # No layer count to type: on a card the whole model goes to it unless the memory mode keeps part on the
     # processor (command()); on the processor none can go.
     fields += [
-        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int', 'min': 512,
-         'max': context_max(part, model),
-         'hint': 'Bir seferde ne kadar metin görebilir; üst sınır seçili modelin kendi sınırı. '
-                 'Büyüdükçe daha çok bellek ister.'},
+        {'key': 'context_size', 'label': 'Bağlam boyutu (token)', 'type': 'int',
+         'min': EMBEDDING_CONTEXT_MIN if part['id'] == 'embedding' else 512, 'max': context_max(part, model),
+         'hint': ('Bir seferde ne kadar metin görebilir; üst sınır seçili modelin kendi sınırı. '
+                  'Büyüdükçe daha çok bellek ister.')
+                 + (' Artırmanın hafıza kalitesine etkisi yok; yalnızca daha fazla bellek kullanır.'
+                    if part['id'] == 'embedding' else '')},
         {'key': 'parallel', 'label': 'Aynı anda istek', 'type': 'int', 'min': 1, 'max': 8,
          'hint': 'Kaç isteğe aynı anda yanıt verir. Her biri bellek ister.'},
     ]
@@ -1245,6 +1251,9 @@ def effective(part, hw, config=None):
     if 'context_size' in settings:
         # Never past what the model was trained for (a context saved for another model, or the default).
         settings['context_size'] = min(int(settings['context_size']), context_max(part, model))
+        if part['id'] == 'embedding':
+            # Saved lower than a memory piece needs (older versions allowed 512): raised to the minimum.
+            settings['context_size'] = max(settings['context_size'], EMBEDDING_CONTEXT_MIN)
     if settings['hardware'] not in {choice['id'] for choice in choices(part, hw)}:
         settings['hardware'] = choices(part, hw)[0]['id']  # A card that is gone, or a config copied from another PC.
     if settings.get('gpu', 'all') != 'all' and settings['gpu'] not in {str(gpu['index']) for gpu in _numbered_cards(part, hw)}:

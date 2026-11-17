@@ -69,19 +69,19 @@ def test_spans_tile_the_item_and_windows_overlap_by_a_third():
     assert [(s.start, s.end) for s in mp.spans(80.5, 60)] == [(0, 40), (40, 80.5)]  # A tail < 1 s joins.
 
 
-def test_the_window_and_frame_count_follow_the_context_and_the_measured_frame_cost():
-    assert mp.audio_window(2048) == 60 and mp.audio_window(512) == 17 and mp.audio_window(None) == 60
-    assert mp.frames_per_window(2048, 79) == 25  # EmbeddingGemma 2: ~79 tokens per <=448 px frame.
-    assert mp.frames_per_window(2048, 277) == 7  # Jina v5: ~277.
-    assert mp.frames_per_window(8192, 79) == 30  # At most one a second.
-    assert mp.frames_per_window(2048, None) == 6  # The server did not say: a cost above any measured one.
-    assert mp.frames_per_window(256, 277) == 1
+def test_windows_and_frame_counts_are_fixed_and_fit_2048_for_the_dearest_model():
+    assert mp.audio_window() == 60
+    assert mp.TOKEN_MARGIN + mp.VIDEO_FRAMES * 277 <= 2048  # Jina v5 (~277 tokens a frame) is the dearest measured.
+    assert mp.TOKEN_MARGIN + 30 * mp.AUDIO_TOKENS_PER_SECOND + mp.VIDEO_COMBINED_FRAMES * 277 <= 2048
+    mp.ensure_context(2048, 277, video=True, audio=True)
+    mp.ensure_context(None, 277, video=True)  # Unknown (a cloud model): no check.
 
 
-def test_frames_beside_the_sound_fit_the_context():
-    assert mp.combined_frames(2048, 79, 30) == 15  # 2048 - 750 sound - 64 margin = 1234 -> 15 frames.
-    assert mp.combined_frames(2048, 277, 30) == 4
-    assert mp.combined_frames(1024, 277, 30) == 0  # Not one frame beside 30 s of sound.
+def test_a_context_too_small_for_a_window_is_refused_clearly():
+    with pytest.raises(ValueError, match='en az'):
+        mp.ensure_context(1024, 277, video=True)
+    with pytest.raises(ValueError, match='bağlam'):
+        mp.ensure_context(1024, None, audio=True)
 
 
 def test_the_whole_vector_is_the_normalized_mean_of_the_unit_pieces():
@@ -200,13 +200,13 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.assertEqual(len({r['item_id'] for r in rows}), 1)
         self.assertEqual(frames[1]['text'], 'Video 1:10 (tatil.mp4) 0:20–0:40 görüntü — denizde')
         self.assertEqual(frames[1]['caption'], 'denizde')
-        # 30 s windows at 2 fps hold <= 25 frames at Gemma's cost: one request per segment, 20-25 frames.
+        # Fixed frame count whatever the cost or context: one request per segment, VIDEO_FRAMES frames.
         frame_requests = [r for r in self.requests if r[0] == 'image_url' and 'input_audio' not in r]
         self.assertEqual(len(frame_requests), 4)
-        self.assertTrue(all(len(r) <= 25 for r in frame_requests) and len(frame_requests[1]) >= 20)
-        # Frames and 30 s of sound (750 tokens) in one request: as many frames as fit beside it, 15 at Gemma's cost.
+        self.assertEqual([len(r) for r in frame_requests], [mp.VIDEO_FRAMES] * 4)
+        # Frames and 30 s of sound in one request: the fixed VIDEO_COMBINED_FRAMES (+ the sound).
         combined = [r for r in self.requests if 'input_audio' in r and r[0] == 'image_url']
-        self.assertEqual([len(r) for r in combined], [16] * 4)
+        self.assertEqual([len(r) for r in combined], [mp.VIDEO_COMBINED_FRAMES + 1] * 4)
         self.assertEqual(combined[0][-1], 'input_audio')
         conn = await registry._connect()
         try:  # The job's own link to the file is gone; each row keeps it.
@@ -385,7 +385,7 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.patches()
         space, vector, kind = await memory.file_query_vector('v.mp4', 'video/mp4', clip(20, fps=2), self.settings)
         self.assertEqual((space, kind), (SPACE, 'video'))
-        self.assertEqual(len(self.requests[-1]), 20)  # min(25 that fit, 20 s at 1 fps... spread over the clip).
+        self.assertEqual(len(self.requests[-1]), mp.VIDEO_FRAMES)  # The fixed count, spread over the clip.
 
     async def test_opening_a_video_segment_shows_a_few_frames_and_its_sound(self):
         self.patches()

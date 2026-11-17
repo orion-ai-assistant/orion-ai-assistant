@@ -128,7 +128,7 @@ async def frame_cost(frame: bytes, target) -> int | None:
         return None
 
 
-def plan(raw: bytes, info: dict, context: int | None) -> dict:
+def plan(raw: bytes, info: dict) -> dict:
     """Decode what a video's segments need (in a thread): frame times on one grid for all windows, the frames, and
     the sound as PCM."""
     seconds = info["seconds"]
@@ -148,15 +148,16 @@ async def run(job_id: str, user_id: str, group: str, item: dict, raw: bytes, inf
     state, message = "done", None
     try:
         await memory.ensure_memory_table(conn)
-        decoded = await asyncio.to_thread(plan, raw, info, memory.embedding_context())
+        decoded = await asyncio.to_thread(plan, raw, info)
         if not decoded["frames"]:
             raise ValueError("Videodan kare çıkarılamadı.")
         seconds = decoded["seconds"]
         segments = mp.spans(seconds, mp.VIDEO_WINDOW)
         hear = bool(support.get("audio")) and len(decoded["pcm"]) >= mp.SAMPLE_RATE // 5
         cost = await frame_cost(decoded["frames"][0], target)
-        count = mp.frames_per_window(memory.embedding_context(), cost)
-        both = mp.combined_frames(memory.embedding_context(), cost, mp.VIDEO_WINDOW) if hear else 0
+        mp.ensure_context(memory.embedding_context(), cost, video=True, audio=hear)
+        count = mp.VIDEO_FRAMES
+        both = mp.VIDEO_COMBINED_FRAMES if hear else 0
         await conn.execute("update orion_memory_media_jobs set total = $2, updated_at = now() where id = $1",
                            job_id, len(segments))
         name = memory.media_name(item)
