@@ -324,10 +324,21 @@ class MemorySearchTests(PostgresMemoryCase):
     async def test_a_long_text_file_is_a_background_job_and_the_detail_is_paged(self):
         from orion.kernel import memory_media_jobs
         paragraphs = [f'Bölüm {k}: ' + ' '.join([f'kelime{k}'] * 400) for k in range(30)]
+        samples = []
+
+        async def sample():
+            jobs = await memory_media_jobs.jobs('alice')
+            samples.append((jobs[0]['state'], jobs[0]['done'], jobs[0]['total']) if jobs else None)
+        self.on_embed = sample
         added = await self.add_file('kitap.txt', 'text/plain', '\n\n'.join(paragraphs).encode())
         self.assertEqual((added['added'], added['job']['kind'], added['job']['state']), (0, 'text', 'running'))
         jobs = await memory_media_jobs.jobs('alice')
         self.assertEqual((jobs[0]['state'], jobs[0]['done']), ('done', jobs[0]['total']))
+        # While it ran, the status the page polls was a growing count of the pieces, ending at the total.
+        seen = [d for st, d, t in filter(None, samples) if st == 'running']
+        self.assertGreater(len(seen), 3)
+        self.assertEqual(seen, sorted(seen))
+        self.assertTrue(all(t == jobs[0]['total'] for _, _, t in filter(None, samples)))
         rows = await self.add_rows()
         self.assertEqual(len(rows), jobs[0]['total'])
         detail = await memory_groups.group_detail('alice', added['group_id'], self.settings, around=[rows[20]])
@@ -500,6 +511,8 @@ class MemorySearchTests(PostgresMemoryCase):
 
         async def embed(text, settings, kind, local):
             self.embedded += 1
+            if getattr(self, 'on_embed', None):
+                await self.on_embed()
             return [vec(0.5, 2)]
 
         async def embed_media(parts, target):
