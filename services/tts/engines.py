@@ -1028,11 +1028,11 @@ DEFAULT_TEMPERATURE = 0.85
 DEFAULT_SEED = 32  # every request without a seed (default voice, clone or voice description)
 VOXCPM2_DEFAULTS = {"creativity": DEFAULT_GUIDANCE - MIN_GUIDANCE, "steps": DEFAULT_STEPS,
                     "temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED}
-# The warm-up voices are made with these, fixed, so a change of the defaults above does not change them.
-# 8810 page values: creativity 1 ("Varsayılan" = guidance 3), quality steps 30, randomness 0.9.
-PRIME_GUIDANCE = 3.0
-PRIME_STEPS = 30
-PRIME_TEMPERATURE = 0.9
+# The default voice's automatic warm-up (made once, when none was saved from the 8810 page) uses the engine's
+# own defaults above. Its file name holds these values, so a change of a default makes a new warm-up.
+PRIME_GUIDANCE = DEFAULT_GUIDANCE
+PRIME_STEPS = DEFAULT_STEPS
+PRIME_TEMPERATURE = DEFAULT_TEMPERATURE
 
 
 class Leveler:
