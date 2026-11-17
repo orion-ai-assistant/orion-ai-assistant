@@ -393,6 +393,10 @@ anlam + kelime gerçekten birleşsin; tarih katkısı sınırlı (sorguda zaman 
 türe özel yapay normalizasyon yok; gösterilen % gerçek benzerlik kalsın ve sıra ile % ilişkisi arayüzde
 açıklanabilsin; "benzemesin" anlamı aynı kararın parçası; aynı sorgu + veri + süzgeç → her yerde aynı sıra.
 
+**Karar (kullanıcı):** Türler ayrı bölümlere ayrılmaz ve türler arası yapay normalizasyon yapılmaz; tek liste,
+gerçek benzerlik sırası. Görselin metinden düşük çıkması bir sorun değildir. Belli bir tür gerekiyorsa kullanıcı
+sayfada, model `search_memory`'de tür süzgecini kullanır. Bu yüzden aşağıdaki C seçeneği elendi.
+
 Seçenekler:
 
 | | Nasıl | Artı | Eksi |
