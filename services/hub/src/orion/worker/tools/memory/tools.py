@@ -67,6 +67,40 @@ NOTE = ("Compare scores between results, not against a fixed number. open_memory
         "the user the file); memory_context reads the parts around a part.")
 
 
+LABEL_CHARS = 140  # A result's label is a snippet; memory_context reads the rest.
+MEDIA_LISTED = 6  # Other media parts of a mixed memory named on its result.
+
+
+def _snippet(text: str | None, spans: list[dict] | None = None, limit: int = LABEL_CHARS) -> str | None:
+    """`text` as a short one-line snippet: whitespace collapsed, at most `limit` characters; around the first matched
+    word of the text (`spans`, offsets into `text`) when it sits past the start."""
+    if text is None:
+        return None
+    hit = next((s for s in spans or [] if s.get("field") == "text" and s["end"] <= len(text)), None)
+    start = max(0, hit["start"] - limit // 3) if hit and hit["start"] > limit // 2 else 0
+    flat = " ".join(text[start:start + limit * 3].split())
+    if start and flat:
+        flat = "…" + flat
+    return flat if len(flat) <= limit else flat[:limit - 1].rstrip() + "…"
+
+
+def _media_of(card: dict, shown_id) -> list[dict]:
+    """The memory's other media parts as {id, kind, name} (no captions), those the query's words hit first, so the
+    model can open the right file without another call."""
+    hits = set(card.get("hit_parts") or [])
+    media = []
+    for part in card.get("parts") or []:
+        if part["id"] == shown_id or part.get("kind") == "text":
+            continue
+        name = (part.get("text") or "").split(" — ", 1)[0]
+        entry = {"id": part["id"], "kind": KIND_NAMES.get(part["kind"], part["kind"]), "name": _snippet(name, None, 80)}
+        if part["id"] in hits:
+            entry["matched"] = True
+        media.append(entry)
+    media.sort(key=lambda e: not e.get("matched"))
+    return media[:MEDIA_LISTED]
+
+
 def _result(card: dict, labels: list[str], words: str) -> dict:
     """One memory as the chat model reads it, lean: its best part (id, label), the score as a percent, the query
     that gave it and how it matched."""
@@ -80,10 +114,14 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
     if label is None:
         label = card.get("text") if kind == "text" else next(
             (p["text"] for p in card.get("parts") or [] if p["id"] == row_id), None)
-    if card.get("source_kind") == "file" and card.get("title") and kind == "text":
-        label = f"{card['title']}: {label or ''}"
     if label is not None:
-        item["label"] = label
+        item["label"] = _snippet(label, card.get("spans") if row_id == card.get("matched_part") else None)
+    if card.get("source_kind") == "file" and card.get("title") and kind == "text":
+        item["label"] = _snippet(f"{card['title']}: {item.get('label') or ''}")
+    if card.get("part_count", 1) > 1:
+        media = _media_of(card, row_id)
+        if media:
+            item["media"] = media
     if card.get("score") is not None:
         match = card.get("match") or "meaning"
         item["score"] = round(float(card["score"]) * 100)

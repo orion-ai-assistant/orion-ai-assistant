@@ -371,6 +371,7 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
     return {"parts": found, "best": best, "matched": sum(1 for v in found.values() if v["matched"]),
             "whole_score": whole, "best_score": best_score, "score": score,
             "via_whole": whole is not None and (best_score is None or whole > best_score),
+            "hits": [pid for pid, v in found.items() if v["match"] != "meaning"],  # Parts the words hit (names, captions too)
             "match": "text" if "text" in kinds else ("similar" if kinds else "meaning"),
             "strength": strength_of(score, stats)}
 
@@ -582,6 +583,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                         score=None if own is None else round(float(own), 4),
                         best_score=parts_match["best_score"], whole_score=parts_match["whole_score"],
                         matched_parts=max(1, parts_match["matched"]), via_whole=parts_match["via_whole"])
+            if parts_match["hits"]:
+                item["hit_parts"] = parts_match["hits"]
             if entry.get("query_index_shown") is not None:
                 item["query_index"] = entry["query_index_shown"]
             if entry.get("via"):
@@ -589,6 +592,13 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             best = _best_part(rows, matched, prefer)
             if best:
                 item["best_part"] = best
+        elif kind != "all":
+            # Newest-first under a kind filter: the memory is shown by its first part of that kind, not by whichever
+            # part comes first (a mixed memory's text).
+            of_kind = next((p for p in pieces_only(prefer_space(rows, prefer)) if p["kind"] == kind), None)
+            if of_kind is not None:
+                item["matched_part"] = of_kind["id"]
+                item["best_part"] = _best_part(rows, of_kind["id"], prefer)
         cards.append(item)
     result = {"groups": cards, "matching": int(matching or 0), "more": more, "summary": summary}
     if searching and excluding:

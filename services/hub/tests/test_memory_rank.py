@@ -657,3 +657,42 @@ class RankTests(PostgresMemoryCase):
                 self.assertEqual((len(fit), len(later)), (expected, 6 - expected))
                 self.assertEqual(fit + later, rows)
                 self.assertEqual(plan['budget'], int(context * memory.OPEN_SHARE))
+
+    async def mixed_memory(self):
+        """A chat save: a long transcript (text), two screenshots; one is named 'Ekran Görüntüsü (28).png'."""
+        transcript = 'Kullanıcı: bak şu resme\r\n\r\nAsistan: ' + 'uzun bir cevap ' * 80 + ' Ekran Görüntüsü (28).png ' + 'devam ' * 80
+        text = await self.add(transcript, score=0.3, axis=2, group='g', source='chat_save', title='sohbet', minute=1)
+        other = await self.add('Ekran Görüntüsü (5).png — ' + 'çöp altyazı ' * 40, score=0.35, axis=3, group='g',
+                               kind='image', media_id='a' * 64, minute=2, source='chat_save')
+        named = await self.add('Ekran Görüntüsü (28).png', score=0.2, axis=4, group='g', kind='image',
+                               media_id='b' * 64, minute=3, source='chat_save')
+        return text, other, named
+
+    async def test_the_tool_shows_the_kind_asked_with_short_labels_and_the_other_media_by_name(self):
+        text, other, named = await self.mixed_memory()
+        # 6: a kind filter without a query shows that kind's part, not the memory's text.
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            images = await memory_tools.search_memory(memory_tools.MemorySearchInput(kind='image'),
+                                                      ToolContext('alice', 'chat', 't', None))
+        row = images['results'][0]
+        self.assertEqual((row['id'], row['kind']), (other, 'image'))
+        # 7: short, one-line labels.
+        self.assertLessEqual(len(row['label']), memory_tools.LABEL_CHARS)
+        self.assertNotIn('\n', row['label'])
+        # 8: the memory's other media, as id/kind/name without captions.
+        self.assertEqual(row['media'], [{'id': named, 'kind': 'image', 'name': 'Ekran Görüntüsü (28).png'}])
+        # 9: a name hit: found, the named image listed first with a flag, the text label cut around the words.
+        found = await self.tool([{'text': 'Ekran Görüntüsü (28).png'}])
+        hit = found['results'][0]
+        self.assertEqual(hit['match'], 'text')
+        self.assertTrue(hit['media'][0].get('matched') or hit['id'] == named)
+        ids = {hit['id']} | {m['id'] for m in hit.get('media', [])}
+        self.assertIn(named, ids)
+        self.assertLessEqual(len(hit['label']), memory_tools.LABEL_CHARS)
+        self.assertNotIn('\r', hit['label'])
+        if hit['id'] == text:
+            self.assertIn('Ekran', hit['label'])  # A snippet around the matched words, not the transcript's start.
+        # The no-query note stays short.
+        self.assertLess(len(images['note']), 200)
