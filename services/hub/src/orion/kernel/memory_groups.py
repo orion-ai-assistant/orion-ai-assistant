@@ -106,6 +106,8 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part["track"] = r["track"]
     if r.get("source_kind") == "file" and r["kind"] == "text" and (r.get("source_chat_title") or "").strip():
         part["file_name"] = r["source_chat_title"].strip()  # A file in a chat memory keeps its own name.
+    if r["kind"] == "text" and r.get("source_kind") != "chat_save":
+        part["title"] = (r.get("source_chat_title") or "").strip() or None  # Each part its own name (null: none).
     if r.get("caption"):
         part["caption"] = r["caption"]
     if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.
@@ -465,7 +467,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     if vector is not None:
         space = vector_space_of_query or await memory.current_space(settings)
     elif q and meaning:
-        space, vector, reason = await memory._query_vector(q, settings)
+        # A page filtered to another model searches with THAT model's query vector (its own prompts, its own space).
+        other = vector_space if vector_space not in ("", "all", "active") else None
+        space, vector, reason = (await memory._query_vector(q, settings, other) if other
+                                 else await memory._query_vector(q, settings))
+        if vector is None and other:
+            space = other  # No model for it: its rows are listed by words and by date, without percentages.
     else:
         space = await memory.current_space(settings)
     if q and not meaning and vector is None:
@@ -641,7 +648,8 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     vector already made (a search by file, with its `space`). None for a memory this user does not have."""
     q = (q or "").strip()
     if vector is None and q:
-        space, vector, _ = await memory._query_vector(q, settings)
+        space, vector, _ = (await memory._query_vector(q, settings, space) if space
+                            else await memory._query_vector(q, settings))
     elif space is None:
         space = await memory.current_space(settings)
     conn = await memory._connect()
@@ -1237,6 +1245,8 @@ async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     title = (row.get("source_chat_title") or "").strip()
     if row.get("source_kind") == "file" and title and "." in title[-6:]:
         name = title
+    elif title and row.get("source_kind") != "chat_save":  # A note's own name.
+        name = title if "." in title[-6:] else title + ".txt"
     else:
         name = readable_name(pieces[0]["text"]) or f"Hafıza kaydı {row['id']}"
         name += ".txt"
