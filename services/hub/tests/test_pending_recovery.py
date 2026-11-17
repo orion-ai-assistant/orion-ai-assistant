@@ -65,7 +65,10 @@ class PendingRecoveryTests(unittest.IsolatedAsyncioTestCase):
             probe.bind(('127.0.0.1', 0))
             port = probe.getsockname()[1]
         cls.url = f'redis://127.0.0.1:{port}/0'
-        executable = Path(__file__).resolve().parents[3] / '.local_db/redis/redis-server.exe'
+        # A worktree has no .local_db of its own: look in the checkouts above it too (as the PostgreSQL tests do).
+        executable = next((f / '.local_db/redis/redis-server.exe' for f in Path(__file__).resolve().parents
+                           if (f / '.local_db/redis/redis-server.exe').exists()),
+                          Path(__file__).resolve().parents[3] / '.local_db/redis/redis-server.exe')
         cls.server = subprocess.Popen(
             [str(executable), '--bind', '127.0.0.1', '--port', str(port), '--save', '', '--appendonly', 'no'],
             cwd=cls.directory.name, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
