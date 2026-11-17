@@ -146,7 +146,6 @@ async def ensure_memory_table(conn) -> None:
                     "done as (update orion_memory m set text = m.text from todo where m.id = todo.id returning 1) "
                     "select count(*) from done"):
                 pass
-            await _version_triggers(conn)
             # Every row is stored with a group now: the one-time grouping of old rows runs until it has run once
             # (a marker), not as a scan of the whole table at every start.
             await conn.execute("create table if not exists orion_memory_meta (key text primary key, value text)")
@@ -156,6 +155,7 @@ async def ensure_memory_table(conn) -> None:
                 await conn.execute("insert into orion_memory_meta (key, value) values ('groups_backfilled', 'yes') "
                                    "on conflict do nothing")
             await backfill_message_last(conn)
+            await _counter_triggers(conn)
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
     except MemoryUnavailable:
@@ -172,28 +172,87 @@ ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too f
 ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks the graph to fill a filtered query.
 
 
-async def _version_triggers(conn) -> None:
-    """A per-user write counter (orion_memory_version): bumped once per statement that inserts, updates or deletes
-    rows of a user, so the page's summary (counts over all the user's rows) is computed once per change and cached
-    (memory_groups._summary), not scanned for on every request."""
-    await conn.execute("create table if not exists orion_memory_version (user_id text primary key, n bigint not null "
-                       "default 0)")
-    for event, table in (("insert", "new"), ("update", "new"), ("delete", "old")):
-        await conn.execute(f"""
-            create or replace function orion_memory_bump_{event}() returns trigger language plpgsql as $$
-            begin
-                insert into orion_memory_version (user_id, n) select distinct user_id, 1 from {table}_rows
-                on conflict (user_id) do update set n = orion_memory_version.n + 1;
-                return null;
-            end $$""")
-        await conn.execute(f"drop trigger if exists orion_memory_bump_{event} on orion_memory")
-        await conn.execute(f"create trigger orion_memory_bump_{event} after {event} on orion_memory "
-                           f"referencing {table} table as {table}_rows for each statement "
-                           f"execute function orion_memory_bump_{event}()")
+# What the page's summary counts, kept by statement triggers as rows come and go (+/-), so no write is followed by a
+# recount of the user's rows. Three small tables: memories per (group, space), items per kind, contents per space.
+_COUNTERS = (
+    ("orion_memory_cnt_group", ("user_id", "g", "s"),
+     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "true"),
+    ("orion_memory_cnt_item", ("user_id", "i", "kind"),
+     ("{a}.user_id", "coalesce({a}.item_id, coalesce({a}.copied_from, {a}.id)::text)", "{a}.kind"), "not {a}.whole"),
+    ("orion_memory_cnt_content", ("user_id", "c", "s"),
+     ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "true"),
+)
+_COLUMN_TYPES = {"user_id": "text", "g": "text", "s": "text", "i": "text", "kind": "text", "c": "bigint"}
+_COUNTED = ("group_id", "vector_space", "kind", "item_id", "copied_from", "whole")
 
 
-async def memory_version(conn, user_id: str) -> int:
-    return int(await conn.fetchval("select n from orion_memory_version where user_id = $1", user_id) or 0)
+def _count_sql(source: str, sign: int, other: str | None = None) -> str:
+    """plpgsql statements adding `sign` x the rows of transition table `source` to every counter table. `other`:
+    the other transition table of an update; only rows whose counted columns changed are taken."""
+    join = ""
+    if other:
+        mine = ", ".join(f"r.{c}" for c in _COUNTED)
+        theirs = ", ".join(f"o.{c}" for c in _COUNTED)
+        join = f"join {other} o on o.id = r.id and ({mine}) is distinct from ({theirs})"
+    sql = ""
+    for table, names, exprs, where in _COUNTERS:
+        columns = ", ".join(names)
+        select = ", ".join(e.format(a="r") for e in exprs)
+        group = ", ".join(str(i + 1) for i in range(len(names)))
+        keys = " and ".join(f"t.{n} = k.k{i}" for i, n in enumerate(names))
+        aliased = ", ".join(f"{e.format(a='r')} as k{i}" for i, e in enumerate(exprs))
+        sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
+                f"where {where.format(a='r')} group by {group} "
+                f"on conflict ({columns}) do update set n = {table}.n + excluded.n; ")
+        if sign < 0:
+            sql += (f"delete from {table} t using (select distinct {aliased} from {source} r {join}) k "
+                    f"where {keys} and t.n <= 0; ")
+    return sql
+
+
+async def _counter_triggers(conn) -> None:
+    """The counter tables, their triggers and, once, their first fill from the rows that exist (marker
+    'counters_built'). Insert, delete and update (only rows whose counted columns changed) adjust them per statement;
+    truncate empties them."""
+    for table, names, _, _ in _COUNTERS:
+        columns = ", ".join(f"{c} {_COLUMN_TYPES[c]} not null" for c in names)
+        await conn.execute(f"create table if not exists {table} ({columns}, n integer not null, "
+                           f"primary key ({', '.join(names)}))")
+    # The per-space reads of the summary (contents of one space, joined to the active space's).
+    await conn.execute("create index if not exists idx_orion_memory_cnt_content_space on orion_memory_cnt_content "
+                       "(user_id, s, c)")
+    bodies = {
+        "insert": ("new table as new_rows", _count_sql("new_rows", 1)),
+        "delete": ("old table as old_rows", _count_sql("old_rows", -1)),
+        "update": ("old table as old_rows new table as new_rows",
+                   _count_sql("old_rows", -1, "new_rows") + _count_sql("new_rows", 1, "old_rows")),
+    }
+    for event, (referencing, body) in bodies.items():
+        await conn.execute(f"create or replace function orion_memory_count_{event}() returns trigger language plpgsql as "
+                           f"$$ begin {body} return null; end $$")
+        await conn.execute(f"drop trigger if exists orion_memory_count_{event} on orion_memory")
+        await conn.execute(f"create trigger orion_memory_count_{event} after {event} on orion_memory "
+                           f"referencing {referencing} for each statement execute function orion_memory_count_{event}()")
+    await conn.execute("create or replace function orion_memory_count_truncate() returns trigger language plpgsql as "
+                       "$$ begin truncate orion_memory_cnt_group, orion_memory_cnt_item, orion_memory_cnt_content; "
+                       "return null; end $$")
+    await conn.execute("drop trigger if exists orion_memory_count_truncate on orion_memory")
+    await conn.execute("create trigger orion_memory_count_truncate after truncate on orion_memory "
+                       "for each statement execute function orion_memory_count_truncate()")
+    for old in ("orion_memory_bump_insert", "orion_memory_bump_update", "orion_memory_bump_delete"):
+        await conn.execute(f"drop trigger if exists {old} on orion_memory")
+    if await conn.fetchval("select value from orion_memory_meta where key = 'counters_built'"):
+        return
+    async with conn.transaction():
+        await conn.execute("lock table orion_memory in share row exclusive mode")  # No write slips between the steps.
+        for table, names, exprs, where in _COUNTERS:
+            await conn.execute(f"truncate {table}")
+            select = ", ".join(e.format(a="r") for e in exprs)
+            group = ", ".join(str(i + 1) for i in range(len(names)))
+            await conn.execute(f"insert into {table} ({', '.join(names)}, n) select {select}, count(*) "
+                               f"from orion_memory r where {where.format(a='r')} group by {group}")
+        await conn.execute("insert into orion_memory_meta (key, value) values ('counters_built', 'yes') "
+                           "on conflict do nothing")
 
 
 INDEX_LOCK = 51730202

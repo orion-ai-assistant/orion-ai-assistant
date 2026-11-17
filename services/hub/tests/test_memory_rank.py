@@ -331,3 +331,68 @@ class RankTests(PostgresMemoryCase):
         finally:
             await conn.close()
         self.assertEqual(spaces, [SPACE])  # The other model's copy of the neighbour is gone, not left stale.
+
+    async def recount(self, space):
+        """The summary by the old way: one pass over the user's rows."""
+        conn = await registry._connect()
+        try:
+            rows = await conn.fetch(
+                "with r as materialized (select coalesce(group_id, 'r' || id::text) as g, vector_space as s, kind, "
+                "coalesce(item_id, coalesce(copied_from, id)::text) as i, whole, coalesce(copied_from, id) as c "
+                "from orion_memory where user_id = 'alice') "
+                "select 'total' as part, '' as key, count(distinct g) as n from r "
+                "union all select 'space', s, count(distinct g) from r group by s "
+                "union all select 'kind', kind, count(distinct i) from r where not whole group by kind "
+                "union all select 'movable', s, count(distinct c) from r where s <> $1 and c not in "
+                "(select c from r where s = $1) group by s "
+                "union all select 'copied', s, count(distinct c) from r where s <> $1 and c in "
+                "(select c from r where s = $1) group by s", space)
+        finally:
+            await conn.close()
+        out = {'total': 0, 'space': {}, 'kind': {}, 'movable': {}, 'copied': {}}
+        for r in rows:
+            if r['part'] == 'total':
+                out['total'] = r['n']
+            else:
+                out[r['part']][r['key']] = r['n']
+        return out
+
+    async def test_the_summary_counters_follow_every_kind_of_write(self):
+        other = 'jina-v5'
+
+        async def check(step):
+            conn = await registry._connect()
+            try:
+                got = await memory_groups._summary(conn, 'alice', SPACE)
+            finally:
+                await conn.close()
+            want = await self.recount(SPACE)
+            self.assertEqual((got['total'], got['per_vector_space'], got['per_kind'], got['movable'], got['copied']),
+                             (want['total'], want['space'], want['kind'], want['movable'], want['copied']), step)
+        await check('empty')
+        a = await self.add('bir', group='g1', minute=1)
+        b = await self.add('iki', group='g1', minute=2, kind='image', media_id='m' * 64)
+        await self.add('bir', group='g1', minute=1, space=other, copied_from=a)
+        await self.add('üç', group='g2', minute=3, space=other)
+        await self.add('dört', group='g3', minute=4, user='bob')
+        await check('inserts')
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set group_id = 'g2' where id = $1", b)  # A part moves to another memory.
+            await check('regroup')
+            await conn.execute("update orion_memory set vector_space = $1 where group_id = 'g2' and vector_space <> $1", SPACE)
+            await check('respace')
+            await conn.execute("update orion_memory set text = text")  # Nothing counted changes.
+            await check('text update')
+        finally:
+            await conn.close()
+        await memory.delete_items('alice', [a])
+        await check('delete')
+        await memory_groups.delete_groups('alice', ['g2'])
+        await check('delete group')
+        conn = await registry._connect()
+        try:
+            await conn.execute('truncate orion_memory')
+        finally:
+            await conn.close()
+        await check('truncate')

@@ -585,54 +585,37 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     return found
 
 
-_summary_cache: dict = {}  # (user, space) -> (write counter, counts): recomputed only after a write of that user.
-SUMMARY_CACHE = 256
-
-
 async def _summary(conn, user_id: str, space) -> dict:
-    """The page's counts. They scan all of the user's rows, so they are kept until the user's next write
-    (memory.memory_version: a counter bumped by the table's triggers); the running job is always read fresh."""
+    """The page's counts, from the counter tables the write triggers keep (memory._counter_triggers): small tables,
+    no scan of the user's rows, nothing recounted after a write. The running job is read fresh."""
     from orion.kernel.memory_move import job_status
-    version = await memory.memory_version(conn, user_id)
-    key = (user_id, space)
-    cached = _summary_cache.get(key)
-    if cached is None or cached[0] != version:
-        cached = (version, await _count_summary(conn, user_id, space))
-        _summary_cache.pop(key, None)
-        _summary_cache[key] = cached
-        while len(_summary_cache) > SUMMARY_CACHE:
-            _summary_cache.pop(next(iter(_summary_cache)))
-    return {**cached[1], "job": await job_status(conn, user_id)}
+    return {**await _count_summary(conn, user_id, space), "job": await job_status(conn, user_id)}
 
 
 async def _count_summary(conn, user_id: str, space) -> dict:
-    """Every count of the summary from one pass over the user's rows (one materialized read, then the groupings)."""
-    sql = (f"with r as materialized (select {GROUP_KEY} as g, vector_space as s, kind, {ITEM_KEY} as i, whole, "
-           "coalesce(copied_from, id) as c from orion_memory where user_id = $1) "
-           "select 'total' as part, '' as key, count(distinct g) as n from r "
-           "union all select 'space', s, count(distinct g) from r group by s "
-           "union all select 'kind', kind, count(distinct i) from r where not whole group by kind")
-    rows = await conn.fetch(sql, user_id)
+    rows = await conn.fetch(
+        "select 'total' as part, '' as key, count(distinct g) as n from orion_memory_cnt_group where user_id = $1 "
+        "union all select 'space', s, count(*) from orion_memory_cnt_group where user_id = $1 group by s "
+        "union all select 'kind', kind, count(*) from orion_memory_cnt_item where user_id = $1 group by kind", user_id)
     total = next((int(x["n"]) for x in rows if x["part"] == "total"), 0)
     per_space = {x["key"]: int(x["n"]) for x in rows if x["part"] == "space"}
     per_kind = {x["key"]: int(x["n"]) for x in rows if x["part"] == "kind"}
     summary = {"total": total, "per_vector_space": per_space, "per_kind": per_kind,
                "current_vector_space": space, "not_searchable": total, "movable": {}, "copied": {}}
     if space:
-        extra = await conn.fetch(
-            f"with r as materialized (select {GROUP_KEY} as g, vector_space as s, coalesce(copied_from, id) as c "
-            "from orion_memory where user_id = $1), has as materialized (select distinct c from r where s = $2) "
-            "select 'nosearch' as part, '' as key, count(*) as n from (select g from r group by g "
-            "having bool_and(s <> $2)) t "
-            "union all select 'movable', s, count(distinct c) from r where s <> $2 and c not in (select c from has) "
-            "group by s "
-            "union all select 'copied', s, count(distinct c) from r where s <> $2 and c in (select c from has) "
-            "group by s", user_id, space)
-        for x in extra:
-            if x["part"] == "nosearch":
-                summary["not_searchable"] = int(x["n"])
-            else:
-                summary[x["part"]][x["key"]] = int(x["n"])
+        summary["not_searchable"] = total - per_space.get(space, 0)
+        for other in per_space:  # One index range per other space: its contents, and how many the active space has.
+            if other == space:
+                continue
+            mine = [r["c"] for r in await conn.fetch(
+                "select c from orion_memory_cnt_content where user_id = $1 and s = $2", user_id, other)]
+            copied = await conn.fetchval(  # Index lookups by the other space's contents: no plan guesses on fresh tables.
+                "select count(*) from orion_memory_cnt_content where user_id = $1 and s = $2 and c = any($3::bigint[])",
+                user_id, space, mine) if mine else 0
+            if copied:
+                summary["copied"][other] = int(copied)
+            if len(mine) - int(copied or 0):
+                summary["movable"][other] = len(mine) - int(copied or 0)
     return summary
 
 
