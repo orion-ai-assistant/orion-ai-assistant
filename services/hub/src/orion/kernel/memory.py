@@ -729,7 +729,7 @@ def audio_windows(raw: bytes, window: float | None = None) -> tuple[list[tuple[o
     seconds = len(pcm) / (mp.SAMPLE_RATE * 2)
     if seconds < 0.1:
         return [], seconds
-    window = window or mp.audio_window(embedding_context())
+    window = window or mp.audio_window()
     return [(span, mp.wav_bytes(mp.pcm_slice(pcm, span.window_start, span.window_end)))
             for span in mp.spans(seconds, window)], seconds
 
@@ -1724,7 +1724,8 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
             _, probe, _ = await asyncio.to_thread(mp.video_frames, raw, [seconds / 2])
             if not probe:
                 raise ValueError("Videodan kare çıkarılamadı.")
-            count = mp.frames_per_window(embedding_context(), await memory_media_jobs.frame_cost(probe[0], target))
+            mp.ensure_context(embedding_context(), await memory_media_jobs.frame_cost(probe[0], target), video=True)
+            count = mp.VIDEO_FRAMES
             count = min(count, max(1, int(seconds * mp.VIDEO_MAX_FPS)))
             times = [(k + 0.5) * seconds / count for k in range(count)]
             _, frames, _ = await asyncio.to_thread(mp.video_frames, raw, times)

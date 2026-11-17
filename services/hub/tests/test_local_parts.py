@@ -1345,3 +1345,14 @@ def test_users_model_with_an_extra_file_estimates_its_share():
     facts = P.memory_facts({'id': 'llm'}, {'size_mb': 1000, 'mmproj': 'mmproj.gguf', 'mmproj_mb': 800}, {})
     assert facts['vision_mb'] == 960
     assert 'vision_mb' not in P.memory_facts({'id': 'llm'}, {'size_mb': 1000}, {})
+
+
+def test_embedding_context_is_never_below_2048(parts):
+    emb = P.spec('embedding')
+    field = next(f for f in P.advanced(emb, TWO_CARDS) if f['key'] == 'context_size')
+    assert field['min'] == 2048
+    assert P.effective(emb, TWO_CARDS)[1]['context_size'] >= 2048
+    P.write_part_config('embedding', settings={'context_size': 512})  # Saved by an older version.
+    assert P.effective(emb, TWO_CARDS)[1]['context_size'] == 2048
+    with pytest.raises(P.PartError):
+        P.clean_settings(emb, {'context_size': 1024}, TWO_CARDS)

@@ -26,16 +26,22 @@ CONTEXT_SHARE = 1 / 6  # Context on each side, as a share of a window: windows o
 TEXT_CORE_TOKENS = 300
 TEXT_CONTEXT_TOKENS = 75
 
-# Audio: 25 tokens/s (EmbeddingGemma 2). 60 s windows fit the 2048 context Orion starts the server with.
+# Piece sizes and frame counts are fixed constants, never derived from the embedding server's context setting
+# (the same item always gets the same vectors). The context only has to be big enough: its minimum is 2048.
+# Audio: 25 tokens/s (EmbeddingGemma 2). A 60 s window is ~1564 tokens with the margin.
 AUDIO_TOKENS_PER_SECOND = 25
 AUDIO_WINDOW_MAX = 60.0
 AUDIO_WINDOW_MIN = 10.0
 
 # Video: 30 s windows (20 s cores, 5 s context each side); frames of at most 448 px (larger frames cost more
-# tokens, smaller ones no fewer), at most one a second, as many as the context takes (frames_per_window).
+# tokens, smaller ones no fewer). VIDEO_FRAMES frames per window: 7 fit 2048 tokens at the dearest measured cost
+# (Jina ~277: 64 + 7*277 = 2003; Gemma ~79 would take 25). VIDEO_COMBINED_FRAMES beside 30 s of sound (750 tokens):
+# 4 (64 + 750 + 4*277 = 1922).
 VIDEO_WINDOW = 30.0
 VIDEO_FRAME_SIZE = 448
 VIDEO_MAX_FPS = 1.0
+VIDEO_FRAMES = 7  # Frames per 30 s window's frames vector.
+VIDEO_COMBINED_FRAMES = 4  # Frames beside the window's sound in its combined vector.
 VIDEO_MAX_FRAMES = 1800  # Frames decoded for one video at most (a longer one is sampled more sparsely).
 MAX_VIDEO_SECONDS = 30 * 60
 TOKEN_MARGIN = 64  # Start/end tokens and the request's own text around the media.
@@ -69,30 +75,28 @@ def spans(total: float, window: float) -> list[Span]:
     return found
 
 
-def audio_window(context_tokens: int | None) -> float:
-    """The longest audio window the embedding server's context takes (25 tokens/s), at most a minute."""
+def audio_window() -> float:
+    """The audio window: fixed (a piece's vector must not depend on the embedding server's context setting)."""
+    return AUDIO_WINDOW_MAX
+
+
+def ensure_context(context_tokens: int | None, frame_tokens: int | None = None, *, video: bool = False,
+                   audio: bool = False) -> None:
+    """Raise ValueError (Turkish) when the embedding server's context is smaller than one fixed-size window needs:
+    audio alone (60 s), a video's frames (VIDEO_FRAMES), a video's frames beside its sound (VIDEO_COMBINED_FRAMES
+    and 30 s). None (a cloud model, unknown) passes; an unknown frame cost counts as the dearest measured one."""
     if not context_tokens:
-        return AUDIO_WINDOW_MAX
-    seconds = (int(context_tokens) - TOKEN_MARGIN) / AUDIO_TOKENS_PER_SECOND
-    return max(AUDIO_WINDOW_MIN, min(AUDIO_WINDOW_MAX, math.floor(seconds)))
-
-
-def frames_per_window(context_tokens: int | None, frame_tokens: int | None, window: float = VIDEO_WINDOW) -> int:
-    """How many frames one window's request can carry: what the context holds at the measured cost of one frame,
-    at most one a second, at least one."""
-    cost = frame_tokens or FALLBACK_FRAME_TOKENS
-    fit = (int(context_tokens or 2048) - TOKEN_MARGIN) // max(1, int(cost))
-    return max(1, min(int(window * VIDEO_MAX_FPS), fit))
-
-
-def combined_frames(context_tokens: int | None, frame_tokens: int | None, audio_seconds: float,
-                    window: float = VIDEO_WINDOW) -> int:
-    """Frames that fit one request together with `audio_seconds` of sound (25 tokens/s): the segment's combined
-    (frames + sound) vector. 0 when not even one frame fits."""
-    room = int(context_tokens or 2048) - int(math.ceil(audio_seconds * AUDIO_TOKENS_PER_SECOND))
-    if room - TOKEN_MARGIN < int(frame_tokens or FALLBACK_FRAME_TOKENS):
-        return 0
-    return frames_per_window(room, frame_tokens, window)
+        return
+    cost = int(frame_tokens or FALLBACK_FRAME_TOKENS)
+    need = 0
+    if audio:
+        need = max(need, TOKEN_MARGIN + int(AUDIO_WINDOW_MAX * AUDIO_TOKENS_PER_SECOND))
+    if video:
+        need = max(need, TOKEN_MARGIN + VIDEO_FRAMES * cost,
+                   TOKEN_MARGIN + int(VIDEO_WINDOW * AUDIO_TOKENS_PER_SECOND) + VIDEO_COMBINED_FRAMES * cost)
+    if int(context_tokens) < need:
+        raise ValueError(f"Embedding bağlam boyutu ({int(context_tokens)}) bu parça için yetmiyor; en az {need} "
+                         f"gerekli. Bileşenler sayfasından bağlam boyutunu artırın.")
 
 
 def frame_times(total: float, step: float) -> list[float]:

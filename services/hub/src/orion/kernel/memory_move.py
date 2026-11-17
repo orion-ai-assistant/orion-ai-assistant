@@ -118,12 +118,12 @@ def _window(row: dict, window: float, total: float) -> tuple[float, float]:
     return max(0.0, start - context), min(total, end + context)
 
 
-def _decode(raw: bytes, rows: list[dict], context: int | None) -> dict:
+def _decode(raw: bytes, rows: list[dict]) -> dict:
     """What re-embedding one audio or video file's rows needs, decoded once (in a thread)."""
     from orion.kernel import memory_pieces as mp
     from orion.kernel import memory_media_jobs
     if rows[0]["kind"] == "video":
-        return memory_media_jobs.plan(raw, mp.video_info(raw), context)
+        return memory_media_jobs.plan(raw, mp.video_info(raw))
     if all(r.get("span_start") is None for r in rows):
         return {"pieces": memory.audio_pieces(raw)[0]}
     pcm = mp.decode_pcm(raw)
@@ -143,7 +143,7 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
         vector = await memory._embed_media([image_part(raw, rows[0].get("media_mime") or mime)], target)
         return [vector] + [None] * (len(rows) - 1)
     context = memory.embedding_context()
-    decoded = await asyncio.to_thread(_decode, raw, rows, context)
+    decoded = await asyncio.to_thread(_decode, raw, rows)
     if "pieces" in decoded:  # Audio stored before overlapping pieces: one row per <=60 s, in order.
         pieces = decoded["pieces"]
         return [await memory._embed_media([audio_part(pieces[i], "wav")], target) if i < len(pieces) else None
@@ -151,7 +151,7 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
     total = float(decoded["seconds"])
     vectors = []
     if rows[0]["kind"] == "audio":
-        size = mp.audio_window(context)
+        size = mp.audio_window()
         for r in rows:
             start, end = _window(r, size, total) if r.get("span_start") is not None else (0.0, total)
             wav = mp.wav_bytes(mp.pcm_slice(decoded["pcm"], start, end))
@@ -164,11 +164,11 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
         if r.get("track") == "both":
             from orion.kernel.memory_media_jobs import frame_cost
             pcm = mp.pcm_slice(decoded["pcm"], start, end)
-            fit = mp.combined_frames(context, await frame_cost(decoded["frames"][0], target), end - start)
-            if not fit or len(pcm) < mp.SAMPLE_RATE // 5:
+            if len(pcm) < mp.SAMPLE_RATE // 5:
                 vectors.append(None)
                 continue
-            frames = mp.window_frames(decoded["times"], decoded["frames"], span, fit)
+            mp.ensure_context(context, await frame_cost(decoded["frames"][0], target), video=True, audio=True)
+            frames = mp.window_frames(decoded["times"], decoded["frames"], span, mp.VIDEO_COMBINED_FRAMES)
             vectors.append(await memory._embed_media([image_part(f, "image/jpeg") for f in frames]
                                                      + [audio_part(mp.wav_bytes(pcm), "wav")], target))
             continue
@@ -179,7 +179,8 @@ async def _media_vectors(conn, rows: list[dict], target) -> list[list[float] | N
             continue
         if count is None:
             from orion.kernel.memory_media_jobs import frame_cost
-            count = mp.frames_per_window(context, await frame_cost(decoded["frames"][0], target))
+            mp.ensure_context(context, await frame_cost(decoded["frames"][0], target), video=True)
+            count = mp.VIDEO_FRAMES
         frames = mp.window_frames(decoded["times"], decoded["frames"], span, count)
         vectors.append(await memory._embed_media([image_part(f, "image/jpeg") for f in frames], target))
     return vectors
