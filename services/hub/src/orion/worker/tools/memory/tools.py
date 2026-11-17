@@ -157,9 +157,10 @@ class MemoryDeleteInput(ToolInput):
 
 
 class MemoryOpenInput(ToolInput):
-    ids: list[int] = Field(min_length=1, max_length=3,
-                           description="Ids from search_memory results (up to 3): images, audio, video, text "
-                                       "files, notes.")
+    ids: list[int] = Field(min_length=1, max_length=50,
+                           description="Ids from search_memory results: images, audio, video, text files, notes. As "
+                                       "many open as fit the chat model's context (about 40% of it); the rest are "
+                                       "reported as not opened and can be asked for again.")
 
 
 async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
@@ -288,7 +289,8 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
     settings = await get_runtime_settings(None, context.user_id)
     can = await memory.chat_model_media(settings)
     kinds = {kind for kind in ("image", "audio") if can[kind]}
-    ids = list(dict.fromkeys(args.ids))
+    asked = list(dict.fromkeys(args.ids))
+    ids, later, plan = await memory.open_plan(context.user_id, asked, settings)
     try:
         # Opened earlier in this chat: it is in the conversation already (sent every turn), not attached again.
         earlier = memory.opened_in_chat((await memory._chat_messages(context.chat_id))[0]) if context.chat_id else {}
@@ -359,9 +361,13 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
         result["_show_user"] = attachments  # The tool runner shows them to the user under this turn.
     if closed:
         result["not_opened"] = closed
-    missing = [i for i in ids if i not in by_id]
+    missing = [i for i in asked if i not in by_id and i not in later]
     if missing:
         result["not_found"] = missing
+    if later:
+        result["not_opened_yet"] = {
+            "ids": later, "reason": f"Not opened: they would not fit the chat model's context (about {plan['budget']} "
+                                    "tokens for files at once). Ask again for these, once you have used what is open."}
     return result
 
 

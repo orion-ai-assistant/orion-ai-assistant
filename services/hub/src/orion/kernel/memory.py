@@ -1166,6 +1166,78 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
         await conn.close()
 
 
+MAX_OPEN = 50  # Ids one open_memory_files call looks at (a resource cap; the token budget decides how many open).
+OPEN_SHARE = 0.4  # The share of the chat model's context that files opened by one call may take.
+OPEN_FLOOR = 2000  # Tokens a call may always use (one small file opens even in a tiny context).
+IMAGE_TOKENS = 1000  # What an image costs a chat model (local mmproj models 256-1024, cloud ones 85-1500): an estimate.
+TEXT_OPEN_TOKENS = 3000  # The most of a text memory one open sends (the whole when it fits, else the asked part and neighbours).
+
+
+async def chat_context(settings) -> int | None:
+    """The active chat model's context window in tokens: the local model's configured context; None when it is
+    not known (a cloud model: the API does not say)."""
+    from orion.kernel.router_models import get_model_provider
+    try:
+        if await get_model_provider(settings.router_model_group, "chat") != "local":
+            return None
+        from services.shared import local_parts
+        part = local_parts.spec("llm")
+        _, current = local_parts.effective(part, local_parts.hardware())
+        return int(current["context_size"]) or None
+    except Exception as exc:
+        logger.warning("Chat model context unknown: %s", exc)
+        return None
+
+
+def open_cost(row: dict) -> int:
+    """About how many tokens opening this memory row puts into the conversation: an image IMAGE_TOKENS; audio its
+    seconds (up to OPEN_AUDIO_MAX) at 25 tokens a second; a video its frames (OPEN_FRAMES) and its sound; a text
+    its length (at most TEXT_OPEN_TOKENS)."""
+    from orion.kernel.memory_pieces import AUDIO_TOKENS_PER_SECOND
+    kind = row.get("kind")
+    seconds = min(float(row.get("media_seconds") or 0), OPEN_AUDIO_MAX)
+    if kind == "image":
+        return IMAGE_TOKENS
+    if kind == "audio":
+        return int(seconds * AUDIO_TOKENS_PER_SECOND) or AUDIO_TOKENS_PER_SECOND * 30
+    if kind == "video":
+        return OPEN_FRAMES["whole" if row.get("whole") else "piece"] * IMAGE_TOKENS + int(seconds * AUDIO_TOKENS_PER_SECOND)
+    return min(TEXT_OPEN_TOKENS, int(float(row.get("chars") or 0) * 0.35) + 1)
+
+
+def plan_open(costs: list[int], budget: int) -> int:
+    """How many of the asked files (in order) fit `budget` tokens together: the first always opens, then each that
+    still fits; the rest wait for another ask."""
+    used, fit = 0, 0
+    for cost in costs:
+        if fit and used + cost > budget:
+            break
+        used += cost
+        fit += 1
+    return fit
+
+
+async def open_plan(user_id: str, ids: list[int], settings) -> tuple[list[int], list[int], dict]:
+    """(ids that fit, ids left for another ask, {"budget", "used"}) for opening `ids` in this chat: the budget is
+    OPEN_SHARE of the chat model's context (a default window when unknown), every file costed by open_cost."""
+    ids = list(dict.fromkeys(int(i) for i in ids))[:MAX_OPEN]
+    context = await chat_context(settings) or 32768
+    budget = max(OPEN_FLOOR, int(context * OPEN_SHARE))
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        rows = {r["id"]: dict(r) for r in await conn.fetch(
+            "select m.id, m.kind, m.whole, m.media_seconds, (select coalesce(sum(length(t.text)), 0) from orion_memory t "
+            "where t.user_id = m.user_id and not t.whole and t.item_id is not null and t.item_id = m.item_id) as chars "
+            "from orion_memory m where m.user_id = $1 and m.id = any($2::bigint[])", user_id, ids)}
+    finally:
+        await conn.close()
+    known = [i for i in ids if i in rows]
+    costs = [open_cost(rows[i]) for i in known]
+    fit = plan_open(costs, budget)
+    return known[:fit], known[fit:], {"budget": budget, "used": sum(costs[:fit])}
+
+
 async def chat_model_media(settings) -> dict:
     """{"image": bool, "audio": bool}: what the chat model can be shown. The local model by its extra file
     (mmproj) and what the file says; a cloud model (or a model group) is taken to see images but not hear audio,
@@ -1735,7 +1807,7 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
     import asyncio
     import hashlib
     from orion.kernel.media_store import hold_media, link_media
-    ids = [int(i) for i in ids][:3]
+    ids = [int(i) for i in ids][:MAX_OPEN]
     conn = await _connect()
     try:
         await ensure_memory_table(conn)

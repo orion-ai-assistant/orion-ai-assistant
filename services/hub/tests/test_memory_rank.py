@@ -622,3 +622,38 @@ class RankTests(PostgresMemoryCase):
             return await conn.fetchval('select count(*) from orion_memory')
         finally:
             await conn.close()
+
+    async def test_unlike_queries_leave_memories_out_the_same_way_in_list_panel_and_tool(self):
+        ids = await self.seed()  # ten memories, 0.90 ... 0.18; id 7 holds the word "maviş"
+        await self.patch_vectors({'a': self.query, 'b': self.vectors_for(None)['b'], 'maviş': self.vectors_for(None)['b']})
+        queries = [{'text': 'a'}, {'text': 'maviş', 'like': False}, {'id': ids[2], 'like': False}]
+        found = await memory_groups.search_queries('alice', self.settings, queries, limit=20)
+        cards = found['groups']
+        self.assertNotIn(ids[7], [c['matched_part'] for c in cards])  # Contains the unliked word.
+        self.assertNotIn(ids[2], [c['matched_part'] for c in cards])  # The unliked id's own memory.
+        shown = [c['score'] for c in cards]
+        self.assertEqual(shown, sorted(shown, reverse=True))
+        tool = await self.tool(queries)
+        self.assertEqual([r['id'] for r in tool['results']], [c['matched_part'] for c in cards][:len(tool['results'])])
+        self.assertEqual([r['score'] for r in tool['results']], [round(c['score'] * 100) for c in cards][:len(tool['results'])])
+        self.assertTrue(tool.get('left_out'))
+        for card in cards[:4]:
+            panel = await memory_groups.part_scores('alice', card['group_id'], self.settings, q='a',
+                                                    vector=memory._vector(self.query), space=SPACE)
+            self.assertEqual((panel['score'], panel['best'], panel['strength']),
+                             (card['score'], card['matched_part'], card['strength']))
+
+    async def test_open_memory_files_opens_as_many_as_fit_the_chat_models_context(self):
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        self.assertEqual(memory.plan_open([1000, 1000, 1000], 2500), 2)
+        self.assertEqual(memory.plan_open([5000, 10], 100), 1)  # The first always opens.
+        rows = [await self.add(f'foto{k}.png', kind='image', media_id=f'{k}' * 64, axis=2 + k, group=f'g{k}') for k in range(6)]
+        for context, expected in ((8192, 3), (32768, 6)):  # 40% of the window / ~1000 tokens an image.
+            with self.subTest(context):
+                with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)), \
+                        patch.object(memory, 'chat_context', AsyncMock(return_value=context)):
+                    fit, later, plan = await memory.open_plan('alice', rows, self.settings)
+                self.assertEqual((len(fit), len(later)), (expected, 6 - expected))
+                self.assertEqual(fit + later, rows)
+                self.assertEqual(plan['budget'], int(context * memory.OPEN_SHARE))
