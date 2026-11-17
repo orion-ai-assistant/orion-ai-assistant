@@ -295,7 +295,7 @@ def test_a_note_is_embedded_and_stored_as_manual(monkeypatch):
     assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][4] == 'manual'
 
 
-@pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * 4001, '4000')])
+@pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * (memory.MAX_NOTE + 1), '2097152')])
 def test_an_empty_or_too_long_note_is_a_turkish_400(monkeypatch, text, message):
     async def settings(*args):
         return Settings()
@@ -344,10 +344,7 @@ def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeyp
     context = ToolContext('u1', 'c', 't', None)
     added = asyncio.run(memory_tools.add_memory(memory_tools.MemoryAddInput(text='Doğum günüm 3 Mart.'), context))
     assert added == {'added': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
-    gone = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[5]), context))
-    assert gone['deleted'] == [{'id': 5, 'text': 'eski'}]
-    nothing = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[9]), context))
-    assert 'nothing was deleted' in nothing['note']
+    # Deleting through the chat model is tested against a real database (test_memory_rank: confirmation card).
 
 
 def test_the_memory_page_paths_pass_the_access_boundary():

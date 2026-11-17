@@ -87,7 +87,8 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("drop index if exists idx_orion_memory_user")
             for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint",
                            "item_id text", "whole boolean not null default false", "span_start real", "span_end real",
-                           "track text", "caption text", "item_order bigint", "source_message_last bigint", "folded text",
+                           "track text", "caption text", "item_order bigint", "source_message_last bigint", "lossless boolean not null default false",
+                           "folded text",
                            "caption_folded text"):
                 await conn.execute(f"alter table orion_memory add column if not exists {column}")
             await conn.execute("create index if not exists idx_orion_memory_group on orion_memory (user_id, group_id)")
@@ -788,9 +789,9 @@ def whole_label(item: dict, pieces: list[dict]) -> str:
 ROW_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
     "media_id, media_mime, media_seconds, group_id, source_chat_id, source_message_id, item_id, whole, span_start, "
-    "span_end, track, caption, item_order, source_message_last, folded, caption_folded) "
+    "span_end, track, caption, item_order, source_message_last, folded, caption_folded, lossless) "
     "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, "
-    "$22, $23) "
+    "$22, $23, $24) "
     "returning id")
 
 
@@ -828,7 +829,7 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
             item["kind"], item.get("media_id"), item.get("mime"), piece.get("seconds"), group, item.get("chat_id"),
             piece.get("message_id", item.get("message_id")), item_id, bool(piece.get("whole")), piece.get("span_start"), piece.get("span_end"),
             piece.get("track"), caption, order, piece.get("message_last", item.get("message_last")), fold(match_text(text, item.get("title"), caption, item.get("source_kind") or "manual")),
-            None if caption is None else fold(caption))
+            None if caption is None else fold(caption), item["kind"] == "text" and not piece.get("whole"))
         if item.get("media_id"):
             await link_media(item["media_id"], "memory", str(row_id), conn=conn)
         stored += 1
@@ -856,7 +857,7 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
             ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
             row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
             row["span_end"], row["track"], caption or None, order, None,
-            fold(match_text(row["text"], name, caption, source_kind)), fold(caption) if caption else None)
+            fold(match_text(row["text"], name, caption, source_kind)), fold(caption) if caption else None, False)
         await link_media(media_id, "memory", str(row_id), conn=conn)
     return len(rows)
 
@@ -1006,18 +1007,24 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
         await conn.close()
 
 
-MAX_NOTE = 4000
+MAX_NOTE = 2 * 1024 * 1024  # Characters: a resource cap only (as a text file's), a long note is split into windows.
+MAX_TITLE = 120
 
 
-async def add_note(user_id: str, text: str, settings, source_kind: str = "manual") -> int:
+async def add_note(user_id: str, text: str, settings, source_kind: str = "manual", title: str = "") -> int:
     """Embed and store a text the user (or the assistant on the user's request) wants remembered; returns how many
     rows were new."""
-    return (await add_note_to(user_id, text, settings, source_kind))["added"]
+    result = await add_note_to(user_id, text, settings, source_kind, title=title)
+    return result["added"] or (1 if result.get("job") else 0)  # A long note is embedded in the background.
 
 
-async def add_note_to(user_id: str, text: str, settings, source_kind: str = "manual", group: str | None = None) -> dict:
+async def add_note_to(user_id: str, text: str, settings, source_kind: str = "manual", group: str | None = None,
+                      title: str = "") -> dict:
     """A note as a new memory, or an item added to the memory `group` (LookupError when this user has no such
-    memory). {"added": new rows, "group_id"}."""
+    memory), with an optional `title` (the memory's name on its card). A long note (many windows) is embedded in
+    the background like a text file: {"added": new rows, "group_id"[, "job"]}."""
+    import asyncio
+    title = " ".join((title or "").split())[:MAX_TITLE] or None
     text = (text or "").strip()
     if not text:
         raise ValueError("Hafızaya eklenecek metin boş.")
@@ -1028,12 +1035,20 @@ async def add_note_to(user_id: str, text: str, settings, source_kind: str = "man
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
         group = await join_group(conn, user_id, group)
-        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
+        from orion.kernel import memory_pieces as mp
+        split = await asyncio.to_thread(mp.text_pieces, text)
+        if len(split) > TEXT_JOB_PIECES:
+            from orion.kernel import memory_media_jobs
+            job = await memory_media_jobs.start_text(user_id, group, {
+                "kind": "text", "source_kind": source_kind, "title": title, "name": title or "Not"}, text, split,
+                settings)
+            return {"added": 0, "group_id": group, "job": job}
+        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
         added = 0
         if pieces:
             async with conn.transaction():
-                added = await insert_item(conn, user_id, space, group, {"kind": "text", "source_kind": source_kind},
-                                          pieces)
+                added = await insert_item(conn, user_id, space, group,
+                                          {"kind": "text", "source_kind": source_kind, "title": title}, pieces)
         return {"added": added, "group_id": group}
     finally:
         await conn.close()
@@ -1151,6 +1166,78 @@ async def add_file(user_id: str, name: str, mime: str, raw: bytes, settings, gro
         await conn.close()
 
 
+MAX_OPEN = 50  # Ids one open_memory_files call looks at (a resource cap; the token budget decides how many open).
+OPEN_SHARE = 0.4  # The share of the chat model's context that files opened by one call may take.
+OPEN_FLOOR = 2000  # Tokens a call may always use (one small file opens even in a tiny context).
+IMAGE_TOKENS = 1000  # What an image costs a chat model (local mmproj models 256-1024, cloud ones 85-1500): an estimate.
+TEXT_OPEN_TOKENS = 3000  # The most of a text memory one open sends (the whole when it fits, else the asked part and neighbours).
+
+
+async def chat_context(settings) -> int | None:
+    """The active chat model's context window in tokens: the local model's configured context; None when it is
+    not known (a cloud model: the API does not say)."""
+    from orion.kernel.router_models import get_model_provider
+    try:
+        if await get_model_provider(settings.router_model_group, "chat") != "local":
+            return None
+        from services.shared import local_parts
+        part = local_parts.spec("llm")
+        _, current = local_parts.effective(part, local_parts.hardware())
+        return int(current["context_size"]) or None
+    except Exception as exc:
+        logger.warning("Chat model context unknown: %s", exc)
+        return None
+
+
+def open_cost(row: dict) -> int:
+    """About how many tokens opening this memory row puts into the conversation: an image IMAGE_TOKENS; audio its
+    seconds (up to OPEN_AUDIO_MAX) at 25 tokens a second; a video its frames (OPEN_FRAMES) and its sound; a text
+    its length (at most TEXT_OPEN_TOKENS)."""
+    from orion.kernel.memory_pieces import AUDIO_TOKENS_PER_SECOND
+    kind = row.get("kind")
+    seconds = min(float(row.get("media_seconds") or 0), OPEN_AUDIO_MAX)
+    if kind == "image":
+        return IMAGE_TOKENS
+    if kind == "audio":
+        return int(seconds * AUDIO_TOKENS_PER_SECOND) or AUDIO_TOKENS_PER_SECOND * 30
+    if kind == "video":
+        return OPEN_FRAMES["whole" if row.get("whole") else "piece"] * IMAGE_TOKENS + int(seconds * AUDIO_TOKENS_PER_SECOND)
+    return min(TEXT_OPEN_TOKENS, int(float(row.get("chars") or 0) * 0.35) + 1)
+
+
+def plan_open(costs: list[int], budget: int) -> int:
+    """How many of the asked files (in order) fit `budget` tokens together: the first always opens, then each that
+    still fits; the rest wait for another ask."""
+    used, fit = 0, 0
+    for cost in costs:
+        if fit and used + cost > budget:
+            break
+        used += cost
+        fit += 1
+    return fit
+
+
+async def open_plan(user_id: str, ids: list[int], settings) -> tuple[list[int], list[int], dict]:
+    """(ids that fit, ids left for another ask, {"budget", "used"}) for opening `ids` in this chat: the budget is
+    OPEN_SHARE of the chat model's context (a default window when unknown), every file costed by open_cost."""
+    ids = list(dict.fromkeys(int(i) for i in ids))[:MAX_OPEN]
+    context = await chat_context(settings) or 32768
+    budget = max(OPEN_FLOOR, int(context * OPEN_SHARE))
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        rows = {r["id"]: dict(r) for r in await conn.fetch(
+            "select m.id, m.kind, m.whole, m.media_seconds, (select coalesce(sum(length(t.text)), 0) from orion_memory t "
+            "where t.user_id = m.user_id and not t.whole and t.item_id is not null and t.item_id = m.item_id) as chars "
+            "from orion_memory m where m.user_id = $1 and m.id = any($2::bigint[])", user_id, ids)}
+    finally:
+        await conn.close()
+    known = [i for i in ids if i in rows]
+    costs = [open_cost(rows[i]) for i in known]
+    fit = plan_open(costs, budget)
+    return known[:fit], known[fit:], {"budget": budget, "used": sum(costs[:fit])}
+
+
 async def chat_model_media(settings) -> dict:
     """{"image": bool, "audio": bool}: what the chat model can be shown. The local model by its extra file
     (mmproj) and what the file says; a cloud model (or a model group) is taken to see images but not hear audio,
@@ -1211,7 +1298,7 @@ def match_text(text: str, title: str | None = None, caption: str | None = None, 
     name (the title of a file's rows) and the user's caption. Names and captions are not embedded into the meaning
     vector (noise there); they only count here."""
     parts = [text or ""]
-    if source_kind == "file" and title:
+    if title and source_kind != "chat_save":  # A file's name, a note's name; a chat's title is not a word of its text.
         parts.append(title)
     if caption:
         parts.append(caption)
@@ -1220,6 +1307,18 @@ def match_text(text: str, title: str | None = None, caption: str | None = None, 
 
 def row_match_text(row) -> str:
     return match_text(row.get("text"), row.get("source_chat_title"), row.get("caption"), row.get("source_kind"))
+
+
+def join_pieces(pieces: list[dict]) -> str:
+    """The text of an item from its pieces in order. Pieces stored since cores are cut without loss (`lossless`) are
+    exact slices: they join with nothing between and give back the saved text byte for byte; older pieces were
+    stripped when cut (their blank lines are gone), so they are joined with a blank line, the closest there is."""
+    out = ""
+    for index, piece in enumerate(pieces):
+        out += piece["text"]
+        if index + 1 < len(pieces) and not piece.get("lossless"):
+            out += "\n\n"
+    return out
 
 
 def like_pattern(folded: str) -> str:
@@ -1708,7 +1807,7 @@ async def open_media(user_id: str, chat_id: str, ids: list[int], kinds: set[str]
     import asyncio
     import hashlib
     from orion.kernel.media_store import hold_media, link_media
-    ids = [int(i) for i in ids][:3]
+    ids = [int(i) for i in ids][:MAX_OPEN]
     conn = await _connect()
     try:
         await ensure_memory_table(conn)

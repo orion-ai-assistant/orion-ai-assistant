@@ -465,6 +465,7 @@ class MemorySearchTests(PostgresMemoryCase):
 
     async def open_tool(self, ids, can=None):
         with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)), \
+                patch.object(memory, 'chat_context', AsyncMock(return_value=None)), \
                 patch.object(memory, 'chat_model_media', AsyncMock(return_value=can or {'image': True, 'audio': False})):
             return await memory_tools.open_memory_files(memory_tools.MemoryOpenInput(ids=ids),
                                                         ToolContext('alice', 'chat', 't', None))
@@ -657,7 +658,7 @@ def test_the_open_media_tool_is_on_by_default_and_its_schema_pages():
     query = schema['queries']['items']  # Inlined: no $ref for providers that take none.
     assert {'text', 'id', 'like'} <= query['properties'].keys()
     assert '$ref' not in json.dumps(tools.tools['search_memory'].schema())
-    assert tools.tools['open_memory_files'].schema()['function']['parameters']['properties']['ids']['maxItems'] == 3
+    assert tools.tools['open_memory_files'].schema()['function']['parameters']['properties']['ids']['maxItems'] == 50  # A resource cap: the token budget decides how many open.
 
 
 def test_python_word_similarity_finds_partial_words_and_typos():

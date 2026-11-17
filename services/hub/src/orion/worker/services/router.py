@@ -550,6 +550,57 @@ def split_by_tokens(text: str, budget: float) -> list[str]:
     return [piece for piece in pieces if piece]
 
 
+def split_exact(text: str, budget: float) -> list[str]:
+    """split_by_tokens without losing a character: pieces of at most `budget` estimated tokens cut at a paragraph,
+    line, sentence or word boundary, nothing stripped, so "".join(pieces) == text exactly."""
+    import bisect
+    costs = _costs(text)
+    pieces: list[str] = []
+    start, n = 0, len(text)
+    while start < n and int(costs[n] - costs[start]) + 1 > budget:
+        end = bisect.bisect_right(costs, costs[start] + budget, lo=start + 1) - 1
+        end = min(max(end, start + 1), n)
+        cut = end
+        window = text[start:end]
+        half = (end - start) // 2
+        for mark in _BOUNDARIES:
+            found = window.rfind(mark)
+            if found > half:
+                cut = start + found + len(mark)
+                break
+        pieces.append(text[start:cut])
+        start = cut
+    if start < n:
+        pieces.append(text[start:])
+    return pieces
+
+
+def chunk_text_exact(text: str, target_tokens: int = 400) -> list[str]:
+    """chunk_text that loses nothing: whole paragraphs (each with its blank-line separator) are packed up to the
+    target, a longer paragraph is split at sentences or lines (split_exact); the chunks' concatenation is `text`
+    byte for byte (newlines, CRLF, any script)."""
+    import re
+    units, pos = [], 0
+    for match in re.finditer(r"\n[ \t\r]*\n(?:[ \t\r]*\n)*", text):
+        units.append(text[pos:match.end()])
+        pos = match.end()
+    if pos < len(text):
+        units.append(text[pos:])
+    chunks: list[str] = []
+    current, current_tokens = "", 0
+    for unit in units:
+        for piece in split_exact(unit, target_tokens):
+            tokens = estimate_tokens(piece)
+            if current and current_tokens + tokens > target_tokens:
+                chunks.append(current)
+                current = ""
+            current += piece
+            current_tokens = estimate_tokens(current)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def split_for_embedding(text: str, prefix: str, context_tokens: int) -> list[str]:
     """Pieces that fit the server's context together with the prefix. This is only the overflow guard; memory
     code should chunk its text first (chunk_text) so every piece is a meaningful unit."""

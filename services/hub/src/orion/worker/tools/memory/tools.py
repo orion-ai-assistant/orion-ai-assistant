@@ -67,6 +67,40 @@ NOTE = ("Compare scores between results, not against a fixed number. open_memory
         "the user the file); memory_context reads the parts around a part.")
 
 
+LABEL_CHARS = 140  # A result's label is a snippet; memory_context reads the rest.
+MEDIA_LISTED = 6  # Other media parts of a mixed memory named on its result.
+
+
+def _snippet(text: str | None, spans: list[dict] | None = None, limit: int = LABEL_CHARS) -> str | None:
+    """`text` as a short one-line snippet: whitespace collapsed, at most `limit` characters; around the first matched
+    word of the text (`spans`, offsets into `text`) when it sits past the start."""
+    if text is None:
+        return None
+    hit = next((s for s in spans or [] if s.get("field") == "text" and s["end"] <= len(text)), None)
+    start = max(0, hit["start"] - limit // 3) if hit and hit["start"] > limit // 2 else 0
+    flat = " ".join(text[start:start + limit * 3].split())
+    if start and flat:
+        flat = "…" + flat
+    return flat if len(flat) <= limit else flat[:limit - 1].rstrip() + "…"
+
+
+def _media_of(card: dict, shown_id) -> list[dict]:
+    """The memory's other media parts as {id, kind, name} (no captions), those the query's words hit first, so the
+    model can open the right file without another call."""
+    hits = set(card.get("hit_parts") or [])
+    media = []
+    for part in card.get("parts") or []:
+        if part["id"] == shown_id or part.get("kind") == "text":
+            continue
+        name = (part.get("text") or "").split(" — ", 1)[0]
+        entry = {"id": part["id"], "kind": KIND_NAMES.get(part["kind"], part["kind"]), "name": _snippet(name, None, 80)}
+        if part["id"] in hits:
+            entry["matched"] = True
+        media.append(entry)
+    media.sort(key=lambda e: not e.get("matched"))
+    return media[:MEDIA_LISTED]
+
+
 def _result(card: dict, labels: list[str], words: str) -> dict:
     """One memory as the chat model reads it, lean: its best part (id, label), the score as a percent, the query
     that gave it and how it matched."""
@@ -80,10 +114,14 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
     if label is None:
         label = card.get("text") if kind == "text" else next(
             (p["text"] for p in card.get("parts") or [] if p["id"] == row_id), None)
-    if card.get("source_kind") == "file" and card.get("title") and kind == "text":
-        label = f"{card['title']}: {label or ''}"
     if label is not None:
-        item["label"] = label
+        item["label"] = _snippet(label, card.get("spans") if row_id == card.get("matched_part") else None)
+    if card.get("source_kind") == "file" and card.get("title") and kind == "text":
+        item["label"] = _snippet(f"{card['title']}: {item.get('label') or ''}")
+    if card.get("part_count", 1) > 1:
+        media = _media_of(card, row_id)
+        if media:
+            item["media"] = media
     if card.get("score") is not None:
         match = card.get("match") or "meaning"
         item["score"] = round(float(card["score"]) * 100)
@@ -138,22 +176,29 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
 
 
 class MemoryAddInput(ToolInput):
-    text: str = Field(min_length=1, max_length=4000,
-                      description="What to remember, one self-contained sentence (e.g. 'The user's daughter is "
-                                  "called Elif.').")
+    text: str = Field(min_length=1, max_length=2 * 1024 * 1024,
+                      description="What to remember: a self-contained sentence (e.g. 'The user's daughter is called "
+                                  "Elif.') or a longer note.")
+    title: str = Field(default="", max_length=120,
+                       description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
+                                   "a short fact.")
 
 
 class MemoryDeleteInput(ToolInput):
-    ids: list[int] = Field(min_length=1, max_length=20, description="Ids from search_memory results.")
+    ids: list[int] = Field(default_factory=list, max_length=20, description="Ids from search_memory results.")
     whole_memory: bool = Field(default=False,
                                description="false: delete only these parts. true: delete the whole memory each id "
                                            "belongs to (everything saved with it).")
+    confirmation_id: str = Field(default="", max_length=64,
+                                 description="Only to ask what became of an earlier delete request: its "
+                                             "confirmation_id. Leave empty (and give ids) to request a delete.")
 
 
 class MemoryOpenInput(ToolInput):
-    ids: list[int] = Field(min_length=1, max_length=3,
-                           description="Ids from search_memory results (up to 3): images, audio, video, text "
-                                       "files, notes.")
+    ids: list[int] = Field(min_length=1, max_length=50,
+                           description="Ids from search_memory results: images, audio, video, text files, notes. As "
+                                       "many open as fit the chat model's context (about 40% of it); the rest are "
+                                       "reported as not opened and can be asked for again.")
 
 
 async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
@@ -161,35 +206,41 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
     from orion.kernel.config import get_runtime_settings
     try:
         added = await memory.add_note(context.user_id, args.text, await get_runtime_settings(None, context.user_id),
-                                      source_kind="assistant")
+                                      source_kind="assistant", title=args.title)
     except (memory.MemoryUnavailable, ValueError) as exc:
         return {"error": str(exc)}
     return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}
 
 
 async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
-    from orion.kernel import memory, memory_groups
+    """Never deletes: records what would go and shows the user a confirmation card (memory_pending); the user's Sil
+    press deletes. With `confirmation_id`: the outcome so far (pending, deleted, declined, expired)."""
+    from orion.kernel import memory, memory_pending
     try:
-        if args.whole_memory:
-            groups = []
-            for row_id in dict.fromkeys(args.ids):
-                found = await memory_groups.row_vector(context.user_id, row_id, None)
-                if found is not None:
-                    groups.append(found["group"])
-            deleted = await memory_groups.delete_groups(context.user_id, groups) if groups else []
-        else:
-            deleted = await memory.delete_items(context.user_id, args.ids)
+        if args.confirmation_id:
+            found = await memory_pending.status(context.user_id, args.confirmation_id.strip())
+            if found is None:
+                return {"note": "No such confirmation."}
+            outcome = {"pending": "The user has not answered yet; nothing is deleted.",
+                       "claimed": "The user confirmed; the delete is being carried out.",
+                       "deleted": "The user confirmed and it was deleted.",
+                       "declined": "The user declined: nothing was deleted. Do not ask again unless they do.",
+                       "expired": "Nobody answered in time; nothing was deleted."}[found["state"]]
+            return {"state": found["state"], "deleted_ids": found["deleted"], "note": outcome}
+        if not args.ids:
+            return {"error": "Give the ids to delete (from search_memory), or a confirmation_id to check."}
+        pending = await memory_pending.create(context.user_id, context.chat_id, args.ids, args.whole_memory)
     except memory.MemoryUnavailable as exc:
         return {"error": str(exc)}
-    if not deleted:
-        return {"note": "No memory has these ids; nothing was deleted."}
-    seen, shown = set(), []
-    for row in deleted:
-        if row["text"] not in seen:
-            seen.add(row["text"])
-            shown.append({"id": row["id"], "text": row["text"][:300]})
-    return {"deleted": shown[:20], "deleted_parts": len(deleted),
-            "instruction": "Tell the user briefly what you deleted."}
+    if pending is None:
+        return {"note": "No memory has these ids; nothing to delete."}
+    return {"status": "awaiting_user_confirmation", "confirmation_id": pending["token"],
+            "will_delete": pending["will_delete"][:20], "parts": pending["parts"],
+            "whole_memory": pending["whole_memory"],
+            "instruction": "NOTHING is deleted yet. A confirmation card with a Sil button was shown to the user. Tell "
+                           "them briefly what you asked to delete and that it waits for their press; do not say it "
+                           "was deleted. If they say they answered, call delete_memory with this confirmation_id to "
+                           "see the outcome."}
 
 
 def attachment_of(row: dict, chat_id: str) -> dict:
@@ -246,7 +297,7 @@ async def _open_document(row_id: int, context: ToolContext, settings, earlier: d
         # Too long for the context at once: the asked part with two neighbours each side reaches the model; the
         # user has the whole file.
         lo, hi = max(0, asked - 2), min(len(pieces), asked + 3)
-        sent = "\n\n".join(p["text"] for p in pieces[lo:hi]).encode("utf-8")
+        sent = memory.join_pieces(pieces[lo:hi]).encode("utf-8")
         sent_sha = hashlib.sha256(sent).hexdigest()
         conn = await memory._connect()
         try:
@@ -276,7 +327,8 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
     settings = await get_runtime_settings(None, context.user_id)
     can = await memory.chat_model_media(settings)
     kinds = {kind for kind in ("image", "audio") if can[kind]}
-    ids = list(dict.fromkeys(args.ids))
+    asked = list(dict.fromkeys(args.ids))
+    ids, later, plan = await memory.open_plan(context.user_id, asked, settings)
     try:
         # Opened earlier in this chat: it is in the conversation already (sent every turn), not attached again.
         earlier = memory.opened_in_chat((await memory._chat_messages(context.chat_id))[0]) if context.chat_id else {}
@@ -347,9 +399,13 @@ async def open_memory_files(args: MemoryOpenInput, context: ToolContext) -> dict
         result["_show_user"] = attachments  # The tool runner shows them to the user under this turn.
     if closed:
         result["not_opened"] = closed
-    missing = [i for i in ids if i not in by_id]
+    missing = [i for i in asked if i not in by_id and i not in later]
     if missing:
         result["not_found"] = missing
+    if later:
+        result["not_opened_yet"] = {
+            "ids": later, "reason": f"Not opened: they would not fit the chat model's context (about {plan['budget']} "
+                                    "tokens for files at once). Ask again for these, once you have used what is open."}
     return result
 
 

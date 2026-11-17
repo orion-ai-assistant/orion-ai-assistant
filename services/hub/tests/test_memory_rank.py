@@ -230,7 +230,7 @@ class RankTests(PostgresMemoryCase):
         self.assertEqual(firsts[0], 0)
         for core, _, first, last in pieces:
             self.assertGreaterEqual(last, first)  # Exact: the core starts inside the message it points at.
-            self.assertIn(core[:30], messages[first], (first, core[:40]))
+            self.assertIn(core.strip()[:30], messages[first], (first, core[:40]))
         self.assertIn(3, firsts)  # Not confused with the earlier message that repeats the same words.
 
     async def test_the_last_link_takes_the_media_file_with_it(self):
@@ -529,3 +529,170 @@ class RankTests(PostgresMemoryCase):
             page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
         self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
         self.assertEqual(memory.filters_sql('all', 'image', []), " and kind = 'image'")
+
+    async def test_cores_concatenate_to_the_original_text_byte_for_byte(self):
+        import random
+        rng = random.Random(7)
+        samples = [
+            '"a": "Došlo k chybě",\n"common.success": "Úspěch",\n' * 300,                      # one huge paragraph of lines
+            '{"x": "مجدداً",\n"settings.auth.newPassword": "كلمة"}\n' * 200,                   # RTL
+            'satır bir\r\nsatır iki\r\n\r\n\r\nüçüncü 😀 paragraf\r\n' * 150,                   # CRLF, blank runs, emoji
+            '\n\n  baş boşluk\n\n' + 'kelime ' * 3000 + '\n\nson\n\n\n',                         # edges, one long line
+            '😀👍🏽' * 900,                                                                    # no spaces at all
+            ''.join(rng.choice('ab c\n\r\t.!?。ç😀') for _ in range(20000)),                    # arbitrary
+        ]
+        for text in samples:
+            with self.subTest(len(text)):
+                self.assertEqual(''.join(core for core, _ in memory_pieces.text_pieces(text)), text)
+        messages = ['Kullanıcı: ' + 'merhaba\n' * 500, 'Asistan: ' + 'cevap, ' * 900 + '\n\nikinci', 'Kullanıcı: kısa', 'Asistan: tamam']
+        pieces = memory_pieces.chat_pieces(messages)
+        self.assertEqual(''.join(core for core, _, _, _ in pieces), '\n\n'.join(messages))
+        # The item's text comes back through join_pieces exactly; old (stripped) pieces still get a blank line.
+        rows = [{'text': core, 'lossless': True} for core, _ in memory_pieces.text_pieces(samples[0])]
+        self.assertEqual(memory.join_pieces(rows), samples[0])
+        self.assertEqual(memory.join_pieces([{'text': 'a'}, {'text': 'b'}]), 'a\n\nb')
+
+    async def test_a_note_has_an_optional_name_and_can_be_long(self):
+        async def embed(text, settings, kind, local):
+            return [[1.0] + [0.0] * 767]
+        target = (SimpleNamespace(router_model_group='e'), SPACE, True)
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+            one = await memory.add_note_to('alice', 'Elif 34 yaşında', self.settings, source_kind='assistant', title='  Elif   Kaya ')
+            long_text = '\n\n'.join(f'Bölüm {k}: ' + 'söz ' * 300 for k in range(20))  # Far over the old 4000-character limit.
+            long = await memory.add_note_to('alice', long_text, self.settings, title='Uzun not')
+            self.assertEqual(one['added'], 1)
+            self.assertEqual(memory.MAX_NOTE, 2 * 1024 * 1024)
+            from orion.kernel import memory_media_jobs
+            for _ in range(200):
+                if not [j for j in await memory_media_jobs.jobs('alice') if j['state'] == 'running']:
+                    break
+                await asyncio.sleep(0.05)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        titles = {g['group_id']: g['title'] for g in page['groups']}
+        self.assertEqual(titles[one['group_id']], 'Elif Kaya')
+        self.assertEqual(titles[long['group_id']], 'Uzun not')
+        found = await memory_groups.list_groups('alice', self.settings, q='elif kaya', limit=10)
+        self.assertEqual(next(g for g in found['groups'] if g['group_id'] == one['group_id'])['match'], 'text')  # Names count as words.
+        self.assertTrue(long.get('job'))
+
+    async def delete_tool(self, **kwargs):
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        return await memory_tools.delete_memory(memory_tools.MemoryDeleteInput(**kwargs), ToolContext('alice', 'chat', 't', None))
+
+    async def test_the_chat_model_cannot_delete_without_the_users_press(self):
+        a = await self.add('silinecek not', group='g1', minute=1)
+        b = await self.add('kalacak not', group='g2', minute=2, axis=3)
+        asked = await self.delete_tool(ids=[a])
+        self.assertEqual(asked['status'], 'awaiting_user_confirmation')
+        self.assertEqual([x['id'] for x in asked['will_delete']], [a])
+        self.assertEqual(await self.count_rows(), 2)  # Nothing is gone.
+        token = asked['confirmation_id']
+        self.assertEqual((await self.delete_tool(confirmation_id=token))['state'], 'pending')
+        # Another user cannot answer it.
+        from orion.kernel import memory_pending
+        self.assertIsNone(await memory_pending.resolve('bob', token, True))
+        self.assertEqual(await self.count_rows(), 2)
+        done = await routes.memory_pending_confirm(token, 'alice')
+        self.assertEqual((done['state'], done['deleted']), ('deleted', [a]))
+        self.assertEqual(await self.count_rows(), 1)
+        again = await routes.memory_pending_confirm(token, 'alice')  # A second press deletes nothing more.
+        self.assertEqual(again['state'], 'deleted')
+        self.assertEqual((await self.delete_tool(confirmation_id=token))['state'], 'deleted')
+        # Declined: the model is told, nothing goes.
+        asked = await self.delete_tool(ids=[b], whole_memory=True)
+        self.assertTrue(asked['whole_memory'])
+        declined = await routes.memory_pending_decline(asked['confirmation_id'], 'alice')
+        self.assertEqual(declined['state'], 'declined')
+        self.assertEqual(await self.count_rows(), 1)
+        self.assertIn('declined', (await self.delete_tool(confirmation_id=asked['confirmation_id']))['note'])
+        self.assertEqual((await routes.memory_pending_confirm(asked['confirmation_id'], 'alice'))['state'], 'declined')
+        self.assertEqual(await self.count_rows(), 1)
+        # A whole-memory confirmation deletes every part saved with it.
+        c = await self.add('bir', group='g3', minute=3, axis=4)
+        await self.add('iki', group='g3', minute=4, axis=5)
+        asked = await self.delete_tool(ids=[c], whole_memory=True)
+        self.assertEqual(asked['parts'], 2)
+        await routes.memory_pending_confirm(asked['confirmation_id'], 'alice')
+        self.assertEqual(await self.count_rows(), 1)
+
+    async def count_rows(self):
+        conn = await registry._connect()
+        try:
+            return await conn.fetchval('select count(*) from orion_memory')
+        finally:
+            await conn.close()
+
+    async def test_unlike_queries_leave_memories_out_the_same_way_in_list_panel_and_tool(self):
+        ids = await self.seed()  # ten memories, 0.90 ... 0.18; id 7 holds the word "maviş"
+        await self.patch_vectors({'a': self.query, 'b': self.vectors_for(None)['b'], 'maviş': self.vectors_for(None)['b']})
+        queries = [{'text': 'a'}, {'text': 'maviş', 'like': False}, {'id': ids[2], 'like': False}]
+        found = await memory_groups.search_queries('alice', self.settings, queries, limit=20)
+        cards = found['groups']
+        self.assertNotIn(ids[7], [c['matched_part'] for c in cards])  # Contains the unliked word.
+        self.assertNotIn(ids[2], [c['matched_part'] for c in cards])  # The unliked id's own memory.
+        shown = [c['score'] for c in cards]
+        self.assertEqual(shown, sorted(shown, reverse=True))
+        tool = await self.tool(queries)
+        self.assertEqual([r['id'] for r in tool['results']], [c['matched_part'] for c in cards][:len(tool['results'])])
+        self.assertEqual([r['score'] for r in tool['results']], [round(c['score'] * 100) for c in cards][:len(tool['results'])])
+        self.assertTrue(tool.get('left_out'))
+        for card in cards[:4]:
+            panel = await memory_groups.part_scores('alice', card['group_id'], self.settings, q='a',
+                                                    vector=memory._vector(self.query), space=SPACE)
+            self.assertEqual((panel['score'], panel['best'], panel['strength']),
+                             (card['score'], card['matched_part'], card['strength']))
+
+    async def test_open_memory_files_opens_as_many_as_fit_the_chat_models_context(self):
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        self.assertEqual(memory.plan_open([1000, 1000, 1000], 2500), 2)
+        self.assertEqual(memory.plan_open([5000, 10], 100), 1)  # The first always opens.
+        rows = [await self.add(f'foto{k}.png', kind='image', media_id=f'{k}' * 64, axis=2 + k, group=f'g{k}') for k in range(6)]
+        for context, expected in ((8192, 3), (32768, 6)):  # 40% of the window / ~1000 tokens an image.
+            with self.subTest(context):
+                with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)), \
+                        patch.object(memory, 'chat_context', AsyncMock(return_value=context)):
+                    fit, later, plan = await memory.open_plan('alice', rows, self.settings)
+                self.assertEqual((len(fit), len(later)), (expected, 6 - expected))
+                self.assertEqual(fit + later, rows)
+                self.assertEqual(plan['budget'], int(context * memory.OPEN_SHARE))
+
+    async def mixed_memory(self):
+        """A chat save: a long transcript (text), two screenshots; one is named 'Ekran Görüntüsü (28).png'."""
+        transcript = 'Kullanıcı: bak şu resme\r\n\r\nAsistan: ' + 'uzun bir cevap ' * 80 + ' Ekran Görüntüsü (28).png ' + 'devam ' * 80
+        text = await self.add(transcript, score=0.3, axis=2, group='g', source='chat_save', title='sohbet', minute=1)
+        other = await self.add('Ekran Görüntüsü (5).png — ' + 'çöp altyazı ' * 40, score=0.35, axis=3, group='g',
+                               kind='image', media_id='a' * 64, minute=2, source='chat_save')
+        named = await self.add('Ekran Görüntüsü (28).png', score=0.2, axis=4, group='g', kind='image',
+                               media_id='b' * 64, minute=3, source='chat_save')
+        return text, other, named
+
+    async def test_the_tool_shows_the_kind_asked_with_short_labels_and_the_other_media_by_name(self):
+        text, other, named = await self.mixed_memory()
+        # 6: a kind filter without a query shows that kind's part, not the memory's text.
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            images = await memory_tools.search_memory(memory_tools.MemorySearchInput(kind='image'),
+                                                      ToolContext('alice', 'chat', 't', None))
+        row = images['results'][0]
+        self.assertEqual((row['id'], row['kind']), (other, 'image'))
+        # 7: short, one-line labels.
+        self.assertLessEqual(len(row['label']), memory_tools.LABEL_CHARS)
+        self.assertNotIn('\n', row['label'])
+        # 8: the memory's other media, as id/kind/name without captions.
+        self.assertEqual(row['media'], [{'id': named, 'kind': 'image', 'name': 'Ekran Görüntüsü (28).png'}])
+        # 9: a name hit: found, the named image listed first with a flag, the text label cut around the words.
+        found = await self.tool([{'text': 'Ekran Görüntüsü (28).png'}])
+        hit = found['results'][0]
+        self.assertEqual(hit['match'], 'text')
+        self.assertTrue(hit['media'][0].get('matched') or hit['id'] == named)
+        ids = {hit['id']} | {m['id'] for m in hit.get('media', [])}
+        self.assertIn(named, ids)
+        self.assertLessEqual(len(hit['label']), memory_tools.LABEL_CHARS)
+        self.assertNotIn('\r', hit['label'])
+        if hit['id'] == text:
+            self.assertIn('Ekran', hit['label'])  # A snippet around the matched words, not the transcript's start.
+        # The no-query note stays short.
+        self.assertLess(len(images['note']), 200)

@@ -89,7 +89,8 @@ async def save_chat_to_memory(chat_id: str, request: Request, current_user: str 
 
 
 class MemoryNote(BaseModel):
-    text: str = ""
+    text: str = Field(default="", max_length=8 * 1024 * 1024)  # A request-size guard; memory.MAX_NOTE is the real cap.
+    title: str = Field(default="", max_length=200)  # The memory's name (optional).
     group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
 
 
@@ -255,7 +256,7 @@ async def add_memory_note(payload: MemoryNote, request: Request, current_user: s
     try:
         return await memory.add_note_to(current_user, payload.text,
                                         await get_runtime_settings(request.app.state.redis, current_user),
-                                        group=payload.group_id or None)
+                                        group=payload.group_id or None, title=payload.title)
     except LookupError as exc:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:
@@ -471,6 +472,46 @@ async def memory_group_match(group_id: str, payload: MemoryMatch, request: Reque
         raise HTTPException(503, str(exc)) from exc
     if found is None:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.")
+    return found
+
+
+@router.get("/api/v1/memory/pending-delete/{token}")
+async def memory_pending_status(token: str, current_user: str = Depends(get_current_user)):
+    """A delete the chat model asked for: {"state": pending | claimed | deleted | declined | expired, "will_delete",
+    "whole_memory", "deleted"} (the confirmation card's content)."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.status(current_user, token[:64])
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
+    return found
+
+
+@router.post("/api/v1/memory/pending-delete/{token}/confirm")
+async def memory_pending_confirm(token: str, current_user: str = Depends(get_current_user)):
+    """The user pressed Sil: delete what the model asked to (once). Answers the confirmation's state."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.resolve(current_user, token[:64], True)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
+    return found
+
+
+@router.post("/api/v1/memory/pending-delete/{token}/decline")
+async def memory_pending_decline(token: str, current_user: str = Depends(get_current_user)):
+    """The user declined: nothing is deleted; the model can see it with its confirmation id."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.resolve(current_user, token[:64], False)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
     return found
 
 

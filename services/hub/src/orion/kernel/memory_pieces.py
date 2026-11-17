@@ -157,7 +157,7 @@ def windows_of(cores: list[str], context_tokens: int = TEXT_CONTEXT_TOKENS) -> l
     for index, core in enumerate(cores):
         before = _tail(cores[index - 1], context_tokens) if index else ""
         after = _head(cores[index + 1], context_tokens) if index + 1 < len(cores) else ""
-        windows.append("\n\n".join(part for part in (before, core, after) if part))
+        windows.append("\n\n".join(part for part in (before, core.strip(), after) if part))
     return windows
 
 
@@ -165,8 +165,8 @@ def text_pieces(text: str, core_tokens: int = TEXT_CORE_TOKENS,
                 context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str]]:
     """(core, window) of each piece of a text: cores are whole paragraphs packed to ~core_tokens (chunk_text), the
     window adds the end of the previous core and the start of the next one."""
-    from orion.worker.services.router import chunk_text
-    cores = chunk_text(text, core_tokens) or ([text.strip()] if text.strip() else [])
+    from orion.worker.services.router import chunk_text_exact
+    cores = chunk_text_exact(text, core_tokens) if text.strip() else []  # "".join(cores) == text
     return list(zip(cores, windows_of(cores, context_tokens)))
 
 
@@ -178,37 +178,41 @@ def chat_pieces(messages: list[str], core_tokens: int = TEXT_CORE_TOKENS,
     pack whole turns up to core_tokens; windows are windows_of the cores. `first`: the index in `messages` of the
     message the core starts with and `last` the one it ends in (exact, however many messages repeat the same words). `messages`: one string per
     message ("Kullanıcı: ...", "Asistan: ..."), a user message starting a turn."""
-    from orion.worker.services.router import chunk_text, estimate_tokens
+    from orion.worker.services.router import chunk_text_exact, estimate_tokens
     turns: list[list[tuple[int, str]]] = []
     for index, message in enumerate(messages):
         if not turns or message.startswith("Kullanıcı:"):
             turns.append([])
         turns[-1].append((index, message))
-    units: list[tuple[int, int, str]] = []  # (the message it starts in, the one it ends in, text)
+    last_message = len(messages) - 1
+    glue = lambda index: "\n\n" if index < last_message else ""  # What follows a message in the transcript.
+    units: list[tuple[int, int, str]] = []  # (the message it starts in, the one it ends in, text + its separator)
     for turn in turns:
         whole = "\n\n".join(m for _, m in turn)
         if estimate_tokens(whole) <= core_tokens:
-            units.append((turn[0][0], turn[-1][0], whole))
+            units.append((turn[0][0], turn[-1][0], whole + glue(turn[-1][0])))
             continue
         for index, message in turn:
             if estimate_tokens(message) <= core_tokens:
-                units.append((index, index, message))
+                units.append((index, index, message + glue(index)))
             else:
-                units.extend((index, index, chunk) for chunk in chunk_text(message, core_tokens))
-    cores: list[tuple[str, int, int]] = []
-    current, first, last, tokens = [], 0, 0, 0
+                chunks = chunk_text_exact(message, core_tokens)
+                chunks[-1] += glue(index)
+                units.extend((index, index, chunk) for chunk in chunks)
+    cores: list[tuple[str, int, int]] = []  # "".join(core texts) is the transcript, message separators included
+    current, first, last, tokens = "", 0, 0, 0
     for index, end, unit in units:
         cost = estimate_tokens(unit)
         if current and tokens + cost > core_tokens:
-            cores.append(("\n\n".join(current), first, last))
-            current, tokens = [], 0
+            cores.append((current, first, last))
+            current, tokens = "", 0
         if not current:
             first = index
-        current.append(unit)
+        current += unit
         last = end
         tokens += cost
     if current:
-        cores.append(("\n\n".join(current), first, last))
+        cores.append((current, first, last))
     texts = [core for core, _, _ in cores]
     return [(core, window, first, last) for (core, first, last), window in zip(cores, windows_of(texts, context_tokens))]
 

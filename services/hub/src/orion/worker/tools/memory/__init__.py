@@ -21,7 +21,9 @@ CATEGORY = Category(
                 description=("When the user says 'forget this', 'delete it from your memory'. Find the memories with "
                              "search_memory first and pass only the ids of what the user wants forgotten; "
                              "whole_memory=true deletes everything saved together with each id. If unsure, ask "
-                             "before deleting. Then tell the user what you deleted."),
+                             "before deleting. This only ASKS: the user sees a confirmation card and deletes with its Sil button, "
+                             "so say that it waits for their press (never that it is deleted). To learn the "
+                             "outcome call it again with the confirmation_id."),
                 input_model=MemoryDeleteInput, handler=delete_memory, timeout_seconds=30, default_on=True),
            Tool(id="open_memory_files", name="Hafızadaki dosyayı aç",
                 description=(
