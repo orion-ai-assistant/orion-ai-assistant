@@ -356,6 +356,20 @@ class MemorySearchTests(PostgresMemoryCase):
         out = await self.tool(queries=[{'text': 'x'}, {'keyword': 'süt', 'like': False}])
         self.assertNotIn(hit, [r['id'] for r in out['results']])
 
+    async def test_the_text_endpoint_serves_a_whole_text_item_and_only_the_owners(self):
+        paragraphs = [f'Bölüm {k}: ' + ' '.join([f'kelime{k}'] * 400) for k in range(12)]
+        raw = '\n\n'.join(paragraphs)
+        await self.add_file('uzun.txt', 'text/plain', raw.encode())
+        rows = await self.add_rows()
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
+            answer = await routes.memory_item_text(rows[7], request, 'alice')
+            self.assertEqual(answer.media_type, 'text/plain; charset=utf-8')
+            self.assertEqual(answer.body.decode().count('Bölüm '), 12)  # Every section, from any row of it.
+            with self.assertRaises(routes.HTTPException) as refused:
+                await routes.memory_item_text(rows[7], request, 'bob')
+        self.assertEqual(refused.exception.status_code, 404)
+
     async def add_rows(self):
         conn = await registry._connect()
         try:

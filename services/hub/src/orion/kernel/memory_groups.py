@@ -104,6 +104,8 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part.update(span_start=round(float(r["span_start"]), 2), span_end=round(float(r["span_end"]), 2))
     if r.get("track"):
         part["track"] = r["track"]
+    if r.get("source_kind") == "file" and r["kind"] == "text" and (r.get("source_chat_title") or "").strip():
+        part["file_name"] = r["source_chat_title"].strip()  # A file in a chat memory keeps its own name.
     if r.get("caption"):
         part["caption"] = r["caption"]
     if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.

@@ -206,11 +206,46 @@ def _vector(values) -> str:
     return "[" + ",".join(repr(float(v)) for v in values) + "]"
 
 
+def _is_text_file(item) -> bool:
+    return (isinstance(item, dict) and item.get("isText") and isinstance(item.get("data"), str)
+            and not item["data"].startswith("data:"))
+
+
+def memory_message_text(message: dict) -> str | None:
+    """A message as the transcript keeps it: what was typed and the names of its attachments; a text file's content
+    is its own part of the memory (chat_text_files), never inlined (it can be huge)."""
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list) or not any(_is_text_file(a) for a in attachments):
+        return message_text(message)
+    trimmed = {**message, "attachments": [{k: v for k, v in a.items() if k != "data"} if _is_text_file(a) else a
+                                           for a in attachments]}
+    return message_text(trimmed)
+
+
+def chat_text_files(messages: list[dict], ids: list | None = None) -> list[dict]:
+    """The text files the user attached in the chat, once each by content: {name, text, message_id}."""
+    import hashlib
+    found, seen = [], set()
+    for index, message in enumerate(messages):
+        if message.get("role") != "user":
+            continue
+        for item in message.get("attachments") or []:
+            if not _is_text_file(item):
+                continue
+            text = item["data"].replace("\x00", "").strip()
+            key = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+            if text and key not in seen:
+                seen.add(key)
+                found.append({"name": " ".join(str(item.get("name") or "Metin").split())[:200], "text": text,
+                              "message_id": ids[index] if ids else None})
+    return found
+
+
 def chat_paragraphs(messages: list[dict], ids: list | None = None) -> list[tuple[object, str]]:
     """(message id, paragraph) of each readable user and assistant message; ids are None without `ids`."""
     paragraphs = []
     for index, message in enumerate(messages):
-        text = message_text(message)
+        text = memory_message_text(message)
         if text:
             paragraphs.append((ids[index] if ids else None,
                                f"{'Kullanıcı' if message.get('role') == 'user' else 'Asistan'}: {text}"))
@@ -575,7 +610,8 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
     paragraphs = chat_paragraphs(messages, ids)
     text = "\n\n".join(text for _, text in paragraphs)
     items = chat_media(messages, ids)
-    if not text.strip() and not items:
+    files = chat_text_files(messages, ids)
+    if not text.strip() and not items and not files:
         raise MemoryUnavailable("Bu sohbette kaydedilecek metin yok.")
     conn = await _connect()
     try:
@@ -584,7 +620,11 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
         group = new_group()
         saved = 0
         if text.strip():
-            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
+            import asyncio
+            from orion.kernel.memory_pieces import chat_pieces
+            # Sections split on message boundaries (a user message stays with its answer).
+            split = await asyncio.to_thread(chat_pieces, [t for _, t in paragraphs])
+            pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
             if pieces:
                 for piece in pieces:
                     piece["message_id"] = chunk_anchor(piece["text"], paragraphs)
@@ -592,6 +632,19 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
                         "message_id": pieces[0]["message_id"]}
                 async with conn.transaction():
                     saved += await insert_item(conn, user_id, space, group, item, pieces)
+        for file in files:
+            # An attached text file is a part of its own (named by the file), like an image is: the transcript only
+            # names it.
+            import asyncio
+            from orion.kernel.memory_pieces import text_pieces
+            file_split = await asyncio.to_thread(text_pieces, file["text"])
+            pieces, _ = await text_item_pieces(conn, user_id, space, file["text"], target, local, group=group,
+                                               split=file_split)
+            if pieces:
+                async with conn.transaction():
+                    saved += await insert_item(conn, user_id, space, group, {
+                        "kind": "text", "source_kind": "file", "title": file["name"], "chat_id": chat_id,
+                        "message_id": file["message_id"]}, pieces)
         skipped, warnings, jobs = {}, [], []
         if items:
             support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
@@ -988,6 +1041,23 @@ async def refresh_wholes(conn, user_id: str, items: list[str]) -> None:
             else:
                 await conn.execute("update orion_memory set embedding = $2::vector where id = $1", whole["id"],
                                    _vector(mean_vector([_parse_vector(p["v"]) for p in pieces])))
+
+
+async def delete_whole_items(user_id: str, item_ids: list[str]) -> list[dict]:
+    """Delete these items entirely (every piece, the whole vectors, the copies in other spaces, the media links):
+    a part of the page is an item, a long text has thousands of rows and the panel holds only some of them.
+    Returns (id, text) of each piece deleted."""
+    item_ids = [str(i)[:64] for i in item_ids if i and not str(i).startswith("r")][:100]
+    if not item_ids:
+        return []
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        async with conn.transaction():
+            rows = await delete_rows(conn, user_id, "item_id = any($2::text[])", item_ids)
+    finally:
+        await conn.close()
+    return [{"id": r["id"], "text": r["text"]} for r in rows if not r.get("whole")]
 
 
 async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
