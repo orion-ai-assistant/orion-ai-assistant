@@ -214,10 +214,11 @@ class RankTests(PostgresMemoryCase):
         messages = ['Kullanıcı: tamam', 'Asistan: ' + 'cevap ' * 400, 'Kullanıcı: tamam', 'Asistan: ' + 'başka ' * 400,
                     'Kullanıcı: tamam', 'Asistan: kısa']
         pieces = memory_pieces.chat_pieces(messages)
-        firsts = [first for _, _, first in pieces]
+        firsts = [first for _, _, first, _ in pieces]
         self.assertEqual(firsts, sorted(firsts))
         self.assertEqual(firsts[0], 0)
-        for core, _, first in pieces:  # Exact: the core starts inside the message it points at.
+        for core, _, first, last in pieces:
+            self.assertGreaterEqual(last, first)  # Exact: the core starts inside the message it points at.
             self.assertIn(core[:30], messages[first], (first, core[:40]))
         self.assertIn(3, firsts)  # Not confused with the earlier message that repeats the same words.
 
@@ -248,3 +249,26 @@ class RankTests(PostgresMemoryCase):
             self.assertTrue(await conn.fetchval("select 1 from orion_memory_meta where key = 'groups_backfilled'"))
         finally:
             await conn.close()
+
+    async def test_chat_pieces_keep_their_end_message_and_old_rows_are_backfilled(self):
+        messages = ['Kullanıcı: tamam', 'Asistan: ' + 'cevap ' * 400, 'Kullanıcı: tamam', 'Asistan: ' + 'başka ' * 400]
+        pieces = memory_pieces.chat_pieces(messages)
+        self.assertEqual(pieces[-1][3], 3)
+        self.assertTrue(all(a[3] <= b[3] and a[2] <= b[2] for a, b in zip(pieces, pieces[1:])))
+        conn = await registry._connect()
+        try:
+            ids = [await conn.fetchval(
+                "insert into orion_chat_messages (chat_id, role, content_json, created_at) values ('chat', 'user', '{}', "
+                "timestamptz '2026-10-31' + $1 * interval '1 minute') returning id", k) for k in range(6)]
+            first = await self.add('parça bir', group='g', source='chat_save', chat='chat', message=ids[1])
+            second = await self.add('parça iki', group='g', source='chat_save', chat='chat', message=ids[4], minute=1)
+            await conn.execute("update orion_memory set item_id = 'it', item_order = id where group_id = 'g'")
+            await conn.execute("delete from orion_memory_meta where key = 'message_last_backfilled'")
+            self.assertEqual(await memory.backfill_message_last(conn), 2)
+            self.assertEqual(await memory.backfill_message_last(conn), 0)  # Once.
+            lasts = {r['id']: r['source_message_last'] for r in
+                     await conn.fetch('select id, source_message_last from orion_memory')}
+        finally:
+            await conn.close()
+        self.assertEqual(lasts[first], ids[3])   # Up to the message before the next piece starts.
+        self.assertEqual(lasts[second], ids[5])  # The last piece: to the chat's last message at save time.

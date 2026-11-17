@@ -87,7 +87,7 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("drop index if exists idx_orion_memory_user")
             for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint",
                            "item_id text", "whole boolean not null default false", "span_start real", "span_end real",
-                           "track text", "caption text", "item_order bigint"):
+                           "track text", "caption text", "item_order bigint", "source_message_last bigint"):
                 await conn.execute(f"alter table orion_memory add column if not exists {column}")
             await conn.execute("create index if not exists idx_orion_memory_group on orion_memory (user_id, group_id)")
             await conn.execute("create index if not exists idx_orion_memory_content on orion_memory "
@@ -155,6 +155,7 @@ async def ensure_memory_table(conn) -> None:
                 await backfill_groups(conn)
                 await conn.execute("insert into orion_memory_meta (key, value) values ('groups_backfilled', 'yes') "
                                    "on conflict do nothing")
+            await backfill_message_last(conn)
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
     except MemoryUnavailable:
@@ -463,6 +464,29 @@ def chat_text(messages: list[dict]) -> str:
     return "\n\n".join(text for _, text in chat_paragraphs(messages))
 
 
+async def backfill_message_last(conn) -> int:
+    """Once: the last message of each stored chat piece, for rows saved before it was kept. A piece runs to the message
+    before the next piece's start (same item and space); the item's last piece to the chat's last message at save time.
+    Returns rows updated (0 when it has run)."""
+    if await conn.fetchval("select value from orion_memory_meta where key = 'message_last_backfilled'"):
+        return 0
+    done = await conn.fetchval(
+        """with w as (select id, source_chat_id, source_message_id, created_at,
+                             lead(source_message_id) over (partition by user_id, item_id, vector_space
+                                                           order by item_order, coalesce(copied_from, id)) as next_start
+                      from orion_memory where source_kind = 'chat_save' and kind = 'text' and not whole
+                      and source_chat_id is not null and source_message_id is not null and item_id is not null),
+                u as (update orion_memory m set source_message_last = greatest(w.source_message_id, coalesce(
+                          (select max(x.id) from orion_chat_messages x where x.chat_id = w.source_chat_id
+                           and case when w.next_start is not null then x.id < w.next_start
+                                    else x.created_at <= w.created_at end), w.source_message_id))
+                      from w where m.id = w.id and m.source_message_last is null returning 1)
+           select count(*) from u""")
+    await conn.execute("insert into orion_memory_meta (key, value) values ('message_last_backfilled', 'yes') "
+                       "on conflict do nothing")
+    return int(done or 0)
+
+
 async def _chat_messages(chat_id: str) -> tuple[list[dict], list[int]]:
     """The chat's messages in order with their row ids (the anchors a saved row points back at)."""
     import json
@@ -645,8 +669,8 @@ def whole_label(item: dict, pieces: list[dict]) -> str:
 ROW_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
     "media_id, media_mime, media_seconds, group_id, source_chat_id, source_message_id, item_id, whole, span_start, "
-    "span_end, track, caption, item_order) "
-    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) "
+    "span_end, track, caption, item_order, source_message_last) "
+    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) "
     "returning id")
 
 
@@ -681,7 +705,7 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
             space, _vector(piece["vector"]), item.get("source_kind") or "manual", item.get("title") or None,
             item["kind"], item.get("media_id"), item.get("mime"), piece.get("seconds"), group, item.get("chat_id"),
             piece.get("message_id", item.get("message_id")), item_id, bool(piece.get("whole")), piece.get("span_start"), piece.get("span_end"),
-            piece.get("track"), (item.get("caption") or None), order)
+            piece.get("track"), (item.get("caption") or None), order, piece.get("message_last", item.get("message_last")))
         if item.get("media_id"):
             await link_media(item["media_id"], "memory", str(row_id), conn=conn)
         stored += 1
@@ -708,7 +732,7 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
         row_id = await conn.fetchval(
             ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
             row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
-            row["span_end"], row["track"], caption or None, order)
+            row["span_end"], row["track"], caption or None, order, None)
         await link_media(media_id, "memory", str(row_id), conn=conn)
     return len(rows)
 
@@ -824,11 +848,12 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
             from orion.kernel.memory_pieces import chat_pieces
             # Sections split on message boundaries (a user message stays with its answer).
             chat_split = await asyncio.to_thread(chat_pieces, [t for _, t in paragraphs])
-            split = [(core, window) for core, window, _ in chat_split]
+            split = [(core, window) for core, window, _, _ in chat_split]
             pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
             if pieces:
                 for piece in pieces:  # Each piece points at the message its core starts with (exact).
                     piece["message_id"] = paragraphs[chat_split[piece["split_index"]][2]][0]
+                    piece["message_last"] = paragraphs[chat_split[piece["split_index"]][3]][0]
                 item = {"kind": "text", "source_kind": "chat_save", "title": title, "chat_id": chat_id,
                         "message_id": pieces[0]["message_id"]}
                 async with conn.transaction():
