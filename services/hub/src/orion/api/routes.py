@@ -475,6 +475,46 @@ async def memory_group_match(group_id: str, payload: MemoryMatch, request: Reque
     return found
 
 
+@router.get("/api/v1/memory/pending-delete/{token}")
+async def memory_pending_status(token: str, current_user: str = Depends(get_current_user)):
+    """A delete the chat model asked for: {"state": pending | claimed | deleted | declined | expired, "will_delete",
+    "whole_memory", "deleted"} (the confirmation card's content)."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.status(current_user, token[:64])
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
+    return found
+
+
+@router.post("/api/v1/memory/pending-delete/{token}/confirm")
+async def memory_pending_confirm(token: str, current_user: str = Depends(get_current_user)):
+    """The user pressed Sil: delete what the model asked to (once). Answers the confirmation's state."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.resolve(current_user, token[:64], True)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
+    return found
+
+
+@router.post("/api/v1/memory/pending-delete/{token}/decline")
+async def memory_pending_decline(token: str, current_user: str = Depends(get_current_user)):
+    """The user declined: nothing is deleted; the model can see it with its confirmation id."""
+    from orion.kernel import memory, memory_pending
+    try:
+        found = await memory_pending.resolve(current_user, token[:64], False)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if found is None:
+        raise HTTPException(404, "Onay bulunamadı.")
+    return found
+
+
 @router.get("/api/v1/memory/media-jobs")
 async def memory_media_jobs(current_user: str = Depends(get_current_user)):
     """Videos being embedded in the background and those that ended in the last minutes (memory_media_jobs)."""

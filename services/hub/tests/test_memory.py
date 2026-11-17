@@ -344,10 +344,7 @@ def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeyp
     context = ToolContext('u1', 'c', 't', None)
     added = asyncio.run(memory_tools.add_memory(memory_tools.MemoryAddInput(text='Doğum günüm 3 Mart.'), context))
     assert added == {'added': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
-    gone = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[5]), context))
-    assert gone['deleted'] == [{'id': 5, 'text': 'eski'}]
-    nothing = asyncio.run(memory_tools.delete_memory(memory_tools.MemoryDeleteInput(ids=[9]), context))
-    assert 'nothing was deleted' in nothing['note']
+    # Deleting through the chat model is tested against a real database (test_memory_rank: confirmation card).
 
 
 def test_the_memory_page_paths_pass_the_access_boundary():

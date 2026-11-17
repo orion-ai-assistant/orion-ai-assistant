@@ -147,10 +147,13 @@ class MemoryAddInput(ToolInput):
 
 
 class MemoryDeleteInput(ToolInput):
-    ids: list[int] = Field(min_length=1, max_length=20, description="Ids from search_memory results.")
+    ids: list[int] = Field(default_factory=list, max_length=20, description="Ids from search_memory results.")
     whole_memory: bool = Field(default=False,
                                description="false: delete only these parts. true: delete the whole memory each id "
                                            "belongs to (everything saved with it).")
+    confirmation_id: str = Field(default="", max_length=64,
+                                 description="Only to ask what became of an earlier delete request: its "
+                                             "confirmation_id. Leave empty (and give ids) to request a delete.")
 
 
 class MemoryOpenInput(ToolInput):
@@ -171,28 +174,34 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
 
 
 async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
-    from orion.kernel import memory, memory_groups
+    """Never deletes: records what would go and shows the user a confirmation card (memory_pending); the user's Sil
+    press deletes. With `confirmation_id`: the outcome so far (pending, deleted, declined, expired)."""
+    from orion.kernel import memory, memory_pending
     try:
-        if args.whole_memory:
-            groups = []
-            for row_id in dict.fromkeys(args.ids):
-                found = await memory_groups.row_vector(context.user_id, row_id, None)
-                if found is not None:
-                    groups.append(found["group"])
-            deleted = await memory_groups.delete_groups(context.user_id, groups) if groups else []
-        else:
-            deleted = await memory.delete_items(context.user_id, args.ids)
+        if args.confirmation_id:
+            found = await memory_pending.status(context.user_id, args.confirmation_id.strip())
+            if found is None:
+                return {"note": "No such confirmation."}
+            outcome = {"pending": "The user has not answered yet; nothing is deleted.",
+                       "claimed": "The user confirmed; the delete is being carried out.",
+                       "deleted": "The user confirmed and it was deleted.",
+                       "declined": "The user declined: nothing was deleted. Do not ask again unless they do.",
+                       "expired": "Nobody answered in time; nothing was deleted."}[found["state"]]
+            return {"state": found["state"], "deleted_ids": found["deleted"], "note": outcome}
+        if not args.ids:
+            return {"error": "Give the ids to delete (from search_memory), or a confirmation_id to check."}
+        pending = await memory_pending.create(context.user_id, context.chat_id, args.ids, args.whole_memory)
     except memory.MemoryUnavailable as exc:
         return {"error": str(exc)}
-    if not deleted:
-        return {"note": "No memory has these ids; nothing was deleted."}
-    seen, shown = set(), []
-    for row in deleted:
-        if row["text"] not in seen:
-            seen.add(row["text"])
-            shown.append({"id": row["id"], "text": row["text"][:300]})
-    return {"deleted": shown[:20], "deleted_parts": len(deleted),
-            "instruction": "Tell the user briefly what you deleted."}
+    if pending is None:
+        return {"note": "No memory has these ids; nothing to delete."}
+    return {"status": "awaiting_user_confirmation", "confirmation_id": pending["token"],
+            "will_delete": pending["will_delete"][:20], "parts": pending["parts"],
+            "whole_memory": pending["whole_memory"],
+            "instruction": "NOTHING is deleted yet. A confirmation card with a Sil button was shown to the user. Tell "
+                           "them briefly what you asked to delete and that it waits for their press; do not say it "
+                           "was deleted. If they say they answered, call delete_memory with this confirmation_id to "
+                           "see the outcome."}
 
 
 def attachment_of(row: dict, chat_id: str) -> dict:

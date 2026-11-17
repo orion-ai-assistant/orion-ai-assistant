@@ -574,3 +574,51 @@ class RankTests(PostgresMemoryCase):
         found = await memory_groups.list_groups('alice', self.settings, q='elif kaya', limit=10)
         self.assertEqual(next(g for g in found['groups'] if g['group_id'] == one['group_id'])['match'], 'text')  # Names count as words.
         self.assertTrue(long.get('job'))
+
+    async def delete_tool(self, **kwargs):
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        return await memory_tools.delete_memory(memory_tools.MemoryDeleteInput(**kwargs), ToolContext('alice', 'chat', 't', None))
+
+    async def test_the_chat_model_cannot_delete_without_the_users_press(self):
+        a = await self.add('silinecek not', group='g1', minute=1)
+        b = await self.add('kalacak not', group='g2', minute=2, axis=3)
+        asked = await self.delete_tool(ids=[a])
+        self.assertEqual(asked['status'], 'awaiting_user_confirmation')
+        self.assertEqual([x['id'] for x in asked['will_delete']], [a])
+        self.assertEqual(await self.count_rows(), 2)  # Nothing is gone.
+        token = asked['confirmation_id']
+        self.assertEqual((await self.delete_tool(confirmation_id=token))['state'], 'pending')
+        # Another user cannot answer it.
+        from orion.kernel import memory_pending
+        self.assertIsNone(await memory_pending.resolve('bob', token, True))
+        self.assertEqual(await self.count_rows(), 2)
+        done = await routes.memory_pending_confirm(token, 'alice')
+        self.assertEqual((done['state'], done['deleted']), ('deleted', [a]))
+        self.assertEqual(await self.count_rows(), 1)
+        again = await routes.memory_pending_confirm(token, 'alice')  # A second press deletes nothing more.
+        self.assertEqual(again['state'], 'deleted')
+        self.assertEqual((await self.delete_tool(confirmation_id=token))['state'], 'deleted')
+        # Declined: the model is told, nothing goes.
+        asked = await self.delete_tool(ids=[b], whole_memory=True)
+        self.assertTrue(asked['whole_memory'])
+        declined = await routes.memory_pending_decline(asked['confirmation_id'], 'alice')
+        self.assertEqual(declined['state'], 'declined')
+        self.assertEqual(await self.count_rows(), 1)
+        self.assertIn('declined', (await self.delete_tool(confirmation_id=asked['confirmation_id']))['note'])
+        self.assertEqual((await routes.memory_pending_confirm(asked['confirmation_id'], 'alice'))['state'], 'declined')
+        self.assertEqual(await self.count_rows(), 1)
+        # A whole-memory confirmation deletes every part saved with it.
+        c = await self.add('bir', group='g3', minute=3, axis=4)
+        await self.add('iki', group='g3', minute=4, axis=5)
+        asked = await self.delete_tool(ids=[c], whole_memory=True)
+        self.assertEqual(asked['parts'], 2)
+        await routes.memory_pending_confirm(asked['confirmation_id'], 'alice')
+        self.assertEqual(await self.count_rows(), 1)
+
+    async def count_rows(self):
+        conn = await registry._connect()
+        try:
+            return await conn.fetchval('select count(*) from orion_memory')
+        finally:
+            await conn.close()
