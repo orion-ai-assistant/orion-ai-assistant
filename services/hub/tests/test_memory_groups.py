@@ -191,6 +191,95 @@ class MemoryGroupTests(PostgresMemoryCase):
         row = (await sql('select group_id, source_chat_id, source_message_id from orion_memory', fetch=True))[0]
         self.assertEqual((len(row['group_id']), row['source_chat_id'], row['source_message_id']), (32, 'chat', ids[0]))
 
+    async def save_chat_with(self, messages):
+        """Saves a chat whose messages are given as (role, content_json dict); the embedding is patched."""
+        await sql("update orion_chats set assistant = true where id = 'chat'")
+        for role, body in messages:
+            await sql("insert into orion_chat_messages (chat_id, role, content_json, plain_text) "
+                      "values ('chat', $1, $2, $3) returning id", role, json.dumps({'role': role, **body}),
+                      body.get('display_text') or body.get('content') or '')
+
+        async def target(settings):
+            return settings, SPACE, True
+
+        async def embed(text, settings, kind, local):
+            return [vec(0.5, 2)]
+        with patch.object(memory, 'embedding_target', target), patch.object(memory, '_embed', embed):
+            return await memory.save_chat('alice', 'chat', 'Tanışma', self.settings)
+
+    async def test_a_chat_saved_with_a_text_file_keeps_the_file_as_its_own_part(self):
+        big = 'benim adım Ahmet. ' * 400
+        await self.save_chat_with([
+            ('user', {'content': 'dosyaya bak', 'display_text': 'dosyaya bak',
+                      'attachments': [{'name': 'benim adım Ahmet.txt', 'isText': True, 'data': big,
+                                       'mime_type': 'text/plain'}]}),
+            ('assistant', {'content': 'Ekleri inceledim.'}),
+        ])
+        rows = await sql('select text, source_kind, source_chat_title from orion_memory where not whole order by id',
+                         fetch=True)
+        transcript = [r for r in rows if r['source_kind'] == 'chat_save']
+        files = [r for r in rows if r['source_kind'] == 'file']
+        # The transcript names the file; its content is not inlined.
+        self.assertTrue(all('benim adım Ahmet. benim adım Ahmet.' not in r['text'] for r in transcript))
+        self.assertIn('benim adım Ahmet.txt', ' '.join(r['text'] for r in transcript))
+        self.assertTrue(files and all(r['source_chat_title'] == 'benim adım Ahmet.txt' for r in files))
+        self.assertIn('benim adım Ahmet.', files[0]['text'])
+        group = (await sql('select group_id from orion_memory limit 1', fetch=True))[0]['group_id']
+        detail = await memory_groups.group_detail('alice', group, self.settings)
+        names = {p.get('file_name') for p in detail['parts'] if p['kind'] == 'text'}
+        self.assertIn('benim adım Ahmet.txt', names)
+
+    async def test_chat_sections_split_on_message_boundaries_and_keywords_find_them(self):
+        messages = []
+        for k in range(8):
+            messages.append(('user', {'content': f'Soru {k}: ' + 'söz ' * 30}))
+            messages.append(('assistant', {'content': f'Cevap {k}: ' + 'yanıt ' * 30}))
+        messages.append(('user', {'content': 'Zürafa hakkında ne biliyorsun'}))
+        messages.append(('assistant', {'content': 'Zürafalar uzun boyludur.'}))
+        await self.save_chat_with(messages)
+        cores = [r['text'] for r in await sql(
+            'select text from orion_memory where not whole and source_kind = $1 order by id', 'chat_save', fetch=True)]
+        self.assertGreater(len(cores), 1)
+        # Every section starts at a user message (a turn is kept with its answer), none starts mid-answer.
+        self.assertTrue(all(c.startswith('Kullanıcı: ') for c in cores), [c[:20] for c in cores])
+        # A question and its answer are in the same section.
+        for k in range(8):
+            q = next(c for c in cores if f'Soru {k}:' in c)
+            self.assertIn(f'Cevap {k}:', q)
+        # Keyword and text matching work for a chat save like for any text.
+        found = await memory_groups.search_queries('alice', self.settings, [{'keyword': 'zürafa'}])
+        self.assertEqual(len(found['groups']), 1)
+        page = await memory_groups.list_groups('alice', self.settings, q='zürafa')
+        self.assertEqual(page['groups'][0]['match'], 'text')
+
+    async def test_deleting_a_whole_part_takes_every_section_and_its_whole_vector(self):
+        text = '\n\n'.join(f'Bölüm {k}: ' + 'kelime ' * 120 for k in range(20))
+        conn = await registry._connect()
+        try:
+            for k in range(14):
+                await conn.execute(
+                    "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, kind, group_id, "
+                    "item_id) values ('alice', $1, $2, $3::vector, 'file', 'text', 'g', 'long')",
+                    f'parça {k}', SPACE, memory._vector(vec(0.3, 2 + k)))
+            await conn.execute(
+                "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, kind, group_id, "
+                "item_id, whole) values ('alice', 'bütün', $1, $2::vector, 'file', 'text', 'g', 'long', true)",
+                SPACE, memory._vector(vec(0.3, 30)))
+            await conn.execute(
+                "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, kind, group_id, "
+                "item_id) values ('alice', 'öteki parça', $1, $2::vector, 'manual', 'text', 'g', 'other')",
+                SPACE, memory._vector(vec(0.3, 40)))
+        finally:
+            await conn.close()
+        # The panel knows only a few rows of the long item; the delete goes by item.
+        from orion.api import routes
+        result = await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'alice')
+        self.assertEqual(len(result['deleted']), 14)
+        left = await sql('select text from orion_memory', fetch=True)
+        self.assertEqual([r['text'] for r in left], ['öteki parça'])
+        self.assertEqual(await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'bob'),
+                         {'deleted': []})
+
     # --- new tools come on ----------------------------------------------------------------------------------------
 
     def test_new_memory_tools_come_on_with_their_group_but_an_unchecked_one_stays_off(self):

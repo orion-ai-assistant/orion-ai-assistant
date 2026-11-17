@@ -122,19 +122,6 @@ def test_a_video_is_decoded_without_ffmpeg():
         mp.video_info(b'not a video')
 
 
-def test_promote_pieces_shows_the_best_piece_where_the_whole_ranked():
-    ranked = [{'id': 9, 'whole': True, 'item_id': 'v', 'track': 'frames', 'score': 0.8},
-              {'id': 3, 'item_id': 'n', 'score': 0.7},
-              {'id': 5, 'item_id': 'v', 'track': 'frames', 'score': 0.6},
-              {'id': 6, 'item_id': 'v', 'track': 'frames', 'score': 0.5},
-              {'id': 10, 'whole': True, 'item_id': 'w', 'score': 0.4}]
-    shown = memory.promote_pieces(ranked)
-    assert [r['id'] for r in shown] == [5, 3, 6, 10]
-    assert shown[0]['via_whole'] and shown[0]['whole_score'] == 0.8
-
-
-# --- Real PostgreSQL ------------------------------------------------------------------------------------------------
-
 class MemoryPiecesTests(PostgresMemoryCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -323,9 +310,6 @@ class MemoryPiecesTests(PostgresMemoryCase):
         self.assertTrue(card['via_whole'])
         self.assertEqual((card['matched_part'], card['best_part']['id'], card['best_part']['piece']), (second, second, 2))
         self.assertEqual(card['part_count'], 2)
-        found = await memory.search('alice', 'zzz', self.settings)
-        self.assertEqual(found['rows'][0]['id'], second)
-        self.assertTrue(found['rows'][0]['via_whole'])
         with patch('orion.kernel.config.get_runtime_settings', self._settings()):
             tool = await memory_tools.search_memory(memory_tools.MemorySearchInput(
                 queries=[memory_tools.MemoryQuery(text='zzz')]), ToolContext('alice', 'chat', 't', None))

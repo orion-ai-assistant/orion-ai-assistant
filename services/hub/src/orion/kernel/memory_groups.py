@@ -104,6 +104,8 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part.update(span_start=round(float(r["span_start"]), 2), span_end=round(float(r["span_end"]), 2))
     if r.get("track"):
         part["track"] = r["track"]
+    if r.get("source_kind") == "file" and r["kind"] == "text" and (r.get("source_chat_title") or "").strip():
+        part["file_name"] = r["source_chat_title"].strip()  # A file in a chat memory keeps its own name.
     if r.get("caption"):
         part["caption"] = r["caption"]
     if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.
@@ -299,8 +301,6 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
     for p in pieces:
         score = scores.get(p["id"])
         hit, tscore = text_hit(q, p["text"]) if q else (None, 0.0)
-        if q and p.get("caption") and hit is None:
-            hit, tscore = text_hit(q, p["caption"])
         rank = (score or 0.0) + {"text": memory.TEXT_BONUS, "similar": 0.8 * memory.TEXT_BONUS}.get(hit, 0.0) \
             + 0.01 * tscore
         close = (score is not None and top is not None and top > 0 and score >= STRONG * top
@@ -314,6 +314,24 @@ def score_parts(parts: list[dict], scores: dict[int, float], q: str = "") -> dic
         found[best]["matched"] = True
     return {"parts": found, "best": best, "matched": sum(1 for v in found.values() if v["matched"]),
             "whole_score": None if whole is None else round(float(whole), 4)}
+
+
+def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "") -> dict:
+    """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
+    the chat tool all show. `rows`: the memory's rows; `scores`: each row's cosine with the query vector the
+    search used (_scores); `q`: the words, for the word matches. Returns score_parts' {"parts", "best", "matched",
+    "whole_score"} plus "score" (the memory's: its best row's, a piece or the whole text's: what ranks it),
+    "best_score" (the best piece's) and "via_whole" (the whole text's score is the higher one)."""
+    in_space = _in_space(rows, space)
+    found = score_parts(in_space, scores, q)
+    best = found["parts"].get(found["best"]) if found["best"] is not None else None
+    best_score = None if best is None else best["score"]
+    whole = found["whole_score"]
+    scored = [x for x in (best_score, whole) if x is not None]
+    found["best_score"] = best_score
+    found["score"] = max(scored) if scored else None
+    found["via_whole"] = whole is not None and (best_score is None or whole > best_score)
+    return found
 
 
 async def all_score(conn, user_id: str, group: str, space, vector) -> float | None:
@@ -414,6 +432,10 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                     f"limit {offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0)}", *params)]
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
+            # One definition of a word match, the one the panel's marks use (text_hit): the query's candidates
+            # from the database are confirmed by it, so the order, the card and the panel agree.
+            texts = [{**r, "tmatch": hit, "tscore": ts} for r in texts
+                     for hit, ts in [text_hit(q, r["text"])] if hit]
             each = bool(vectors and len(vectors) > 1 and mode == "each")
             ranked = merge_matches(meaning, texts, keep_order=each)
             excluded, dropped = 0, []
@@ -441,10 +463,17 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             search = {e["group"]: e for e in picked}
             groups = [e["group"] for e in picked]
             matching = len(ranked)
-            if searchable and vectors and len(vectors) > 1 and mode == "each":
-                for one in vectors:
-                    for rid, value in (await _scores(conn, user_id, groups, space, one)).items():
-                        scores[rid] = max(scores.get(rid, -1.0), value)
+            if searchable and each:
+                # A memory's rows are scored with the input that gave it its place (its `via`): the number the card
+                # shows is that input's, and so is every part's in the panel.
+                names = list(input_labels or [])
+                by_input: dict[int, list[str]] = {}
+                for e in picked:
+                    by_input.setdefault(names.index(e["via"]) if e.get("via") in names else 0, []).append(e["group"])
+                for index, gs in by_input.items():
+                    scores.update(await _scores(conn, user_id, gs, space, vectors[min(index, len(vectors) - 1)]))
+                    for g in gs:
+                        search[g]["query_index"] = index
             elif searchable:
                 scores = await _scores(conn, user_id, groups, space, vector)
         else:
@@ -469,21 +498,23 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         matched = None
         parts_match = None
         if entry:
-            parts_match = score_parts(_in_space(rows, space), scores, q)
+            parts_match = group_match(rows, space, scores, q)
             row = entry["row"]
-            if row.get("whole") or not parts_match["parts"].get(row["id"]):
-                matched = parts_match["best"]
-            else:
-                key = content_key(row)
-                shown = prefer_space([r for r in rows if content_key(r) == key], prefer)
-                matched = shown[0]["id"] if shown else row["id"]
-            if matched is None:
-                matched = row["id"]
+            # The part the memory is shown by is the panel's best part: one computation.
+            matched = parts_match["best"] if parts_match["best"] is not None else row["id"]
         item = card(g, rows, prefer, space, matched=matched)
         if entry:
-            item.update(match=entry["match"], strength=entry["strength"], matched_part=matched,
-                        score=None if entry["score"] is None else round(float(entry["score"]), 4),
-                        matched_parts=max(1, parts_match["matched"]), via_whole=bool(entry["row"].get("whole")))
+            # The memory's score is group_match's (the panel shows the same); a memory the vectors did not reach
+            # (another model's, found by its words) keeps the search's own.
+            own = parts_match["score"] if parts_match["score"] is not None else entry["score"]
+            best_hit = parts_match["parts"].get(parts_match["best"]) if parts_match["best"] is not None else None
+            item.update(match=best_hit["match"] if best_hit else entry["match"], strength=entry["strength"],
+                        matched_part=matched,
+                        score=None if own is None else round(float(own), 4),
+                        best_score=parts_match["best_score"], whole_score=parts_match["whole_score"],
+                        matched_parts=max(1, parts_match["matched"]), via_whole=parts_match["via_whole"])
+            if entry.get("query_index") is not None:
+                item["query_index"] = entry["query_index"]
             if entry.get("above") is not None:
                 item["above"] = round(float(entry["above"]), 4)  # Score minus this query's typical score.
             if entry.get("via"):
@@ -547,7 +578,7 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     finally:
         await conn.close()
     in_space = _in_space(rows, space)
-    found = score_parts(in_space, scores, q)
+    found = group_match(rows, space, scores, q)
     found["all_score"] = None if whole_memory is None else round(whole_memory, 4)
     # The page shows each part once (the copy in the preferred space): its match is the match of its content.
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}

@@ -96,6 +96,7 @@ class MemoryNote(BaseModel):
 class MemoryDelete(BaseModel):
     ids: list[int] = Field(default_factory=list, max_length=500)  # Parts (rows); their copies go with them.
     group_ids: list[str] = Field(default_factory=list, max_length=200)  # Whole memories.
+    item_ids: list[str] = Field(default_factory=list, max_length=100)  # Whole parts (every piece of an item).
 
 
 _searches: dict = {}
@@ -536,6 +537,25 @@ async def delete_memory_item(item_id: int, current_user: str = Depends(get_curre
     return {"deleted": [row["id"] for row in deleted]}
 
 
+@router.get("/api/v1/memory/{item_id}/text")
+async def memory_item_text(item_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    """The whole text of the item a text row belongs to (a note, a chat's text, a text file: its sections joined),
+    as a plain text file: the viewer opens it like any text attachment, whatever its length. Another user's row,
+    a missing row and a media row are the same 404."""
+    from orion.kernel import memory, memory_groups
+    try:
+        doc = await memory_groups.item_document(current_user, item_id,
+                                                await get_runtime_settings(request.app.state.redis, current_user))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    if doc is None:
+        raise HTTPException(404, 'Text not found')
+    from urllib.parse import quote
+    return Response(content=doc["text"].encode("utf-8"), media_type="text/plain; charset=utf-8",
+                    headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                             'X-File-Name': quote(doc["name"])})
+
+
 @router.get("/api/v1/memory/{item_id}/media")
 async def memory_item_media(item_id: int, request: Request, current_user: str = Depends(get_current_user)):
     """The image or audio a memory row keeps. Another user's row, a missing row and a row without media are the
@@ -560,6 +580,7 @@ async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends
     from orion.kernel import memory, memory_groups
     try:
         deleted = [row["id"] for row in await memory.delete_items(current_user, payload.ids)]
+        deleted += [row["id"] for row in await memory.delete_whole_items(current_user, payload.item_ids)]
         deleted += [row["id"] for row in await memory_groups.delete_groups(current_user, payload.group_ids)]
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc

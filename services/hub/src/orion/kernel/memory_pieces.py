@@ -163,6 +163,46 @@ def text_pieces(text: str, core_tokens: int = TEXT_CORE_TOKENS,
     return pieces
 
 
+def chat_pieces(messages: list[str], core_tokens: int = TEXT_CORE_TOKENS,
+                context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str]]:
+    """(core, window) of each piece of a chat transcript, split on message boundaries: a turn (a user message with
+    the answers that follow it) is kept whole while it fits a core; a longer turn is split between its messages; one
+    message alone longer than a core is split inside (chunk_text: paragraphs, then sentences). Cores pack whole turns up
+    to core_tokens; windows add the neighbours' tail and head, as text_pieces does. `messages`: one string per message
+    ("Kullanıcı: ...", "Asistan: ..."), a user message starting a turn."""
+    from orion.worker.services.router import chunk_text, estimate_tokens
+    turns: list[list[str]] = []
+    for message in messages:
+        if not turns or message.startswith("Kullanıcı:"):
+            turns.append([])
+        turns[-1].append(message)
+    units: list[str] = []
+    for turn in turns:
+        whole = "\n\n".join(turn)
+        if estimate_tokens(whole) <= core_tokens:
+            units.append(whole)
+            continue
+        for message in turn:
+            units.extend([message] if estimate_tokens(message) <= core_tokens
+                         else chunk_text(message, core_tokens))
+    cores, current, tokens = [], [], 0
+    for unit in units:
+        cost = estimate_tokens(unit)
+        if current and tokens + cost > core_tokens:
+            cores.append("\n\n".join(current))
+            current, tokens = [], 0
+        current.append(unit)
+        tokens += cost
+    if current:
+        cores.append("\n\n".join(current))
+    pieces = []
+    for index, core in enumerate(cores):
+        before = _tail(cores[index - 1], context_tokens) if index else ""
+        after = _head(cores[index + 1], context_tokens) if index + 1 < len(cores) else ""
+        pieces.append((core, "\n\n".join(part for part in (before, core, after) if part)))
+    return pieces
+
+
 # --- Audio ----------------------------------------------------------------------------------------------------------
 
 def decode_pcm(raw: bytes, rate: int = SAMPLE_RATE) -> bytes:
