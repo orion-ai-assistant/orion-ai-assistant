@@ -203,7 +203,7 @@ async def _group_rows(conn, user_id: str, groups: list[str], full=True) -> dict[
         "id, text,", f"id, case when id = any($4::bigint[]) then text else left(text, {CARD_TEXT}) end as text,", 1)
     found: dict[str, list[dict]] = {}
     args = (user_id, real, loose) + (() if full is True else (ids,))
-    for r in await conn.fetch(f"select {cut} from orion_memory where user_id = $1 and "
+    for r in await conn.fetch(f"select {cut} from orion_memory where user_id = $1 and {memory.LIVE} and "
                               "(group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
                               "order by id", *args):
         found.setdefault(group_key(r), []).append(dict(r))
@@ -224,7 +224,7 @@ async def text_candidates(conn, user_id: str, groups: list[str], q: str) -> set[
     async with conn.transaction():
         await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{memory.FUZZY_MIN}', true)")
         rows = await conn.fetch(
-            f"select id from orion_memory where user_id = $1 and (group_id = any($2::text[]) or "
+            f"select id from orion_memory where user_id = $1 and {memory.LIVE} and (group_id = any($2::text[]) or "
             f"(group_id is null and id = any($3::bigint[]))) and (folded like $4 or $5 <% folded)",
             user_id, real, loose, like, folded)
     return {r["id"] for r in rows}
@@ -249,7 +249,7 @@ async def _group_scores(conn, user_id: str, groups: list[str], space, vector, ki
     loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
     return {r["g"]: float(r["s"]) for r in await conn.fetch(
         f"select {GROUP_KEY} as g, max(1 - (embedding <=> $4::vector)) as s from orion_memory where user_id = $1 "
-        "and vector_space = $5 and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
+        f"and {memory.LIVE} and vector_space = $5 and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
         + ("" if kind == "all" else "and kind = $6 ") + "group by 1",
         user_id, real, loose, vector, space, *([] if kind == "all" else [kind]))}
 
@@ -389,7 +389,7 @@ async def all_score(conn, user_id: str, group: str, space, vector, kind: str = "
     key = group if not group.startswith("r") else group[1:]
     value = await conn.fetchval(
         f"select 1 - (avg(embedding) <=> $3::vector) from orion_memory where user_id = $1 and vector_space = $4 "
-        f"and not whole and {where}" + ("" if kind == "all" else " and kind = $5"),
+        f"and not whole and {memory.LIVE} and {where}" + ("" if kind == "all" else " and kind = $5"),
         user_id, key, vector, space, *([] if kind == "all" else [kind]))
     return None if value is None else float(value)
 
@@ -402,7 +402,7 @@ async def _scores(conn, user_id: str, groups: list[str], space, vector) -> dict[
     loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
     return {r["id"]: float(r["s"]) for r in await conn.fetch(
         "select id, 1 - (embedding <=> $4::vector) as s from orion_memory where user_id = $1 and vector_space = $5 "
-        "and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[])))",
+        f"and {memory.LIVE} and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[])))",
         user_id, real, loose, vector, space)}
 
 
@@ -800,7 +800,8 @@ async def group_detail(user_id: str, group: str, settings, offset: int = 0, limi
 
 
 async def delete_groups(user_id: str, groups: list[str]) -> list[dict]:
-    """Delete whole memories (every part, in every space); returns the deleted rows."""
+    """Delete whole memories for good, at once (every part, in every space); returns the deleted rows. The user's
+    removals go through the trash (memory_trash) instead."""
     groups = [str(g)[:64] for g in groups][:200]
     if not groups:
         return []
@@ -868,12 +869,12 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
     kind = kind if kind in KINDS else "all"
     by_kind = "" if kind == "all" else f" and kind = '{kind}'"  # Validated above: one of KINDS.
     picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
-              f"where user_id = $1 and vector_space = $2 and not whole{by_kind} group by 1 order by at desc, g desc limit $3")
+              f"where user_id = $1 and vector_space = $2 and not whole and {memory.LIVE}{by_kind} group by 1 order by at desc, g desc limit $3")
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
         total = await conn.fetchval(f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1 "
-                                    "and vector_space = $2" + by_kind, user_id, space)
+                                    f"and vector_space = $2 and {memory.LIVE}" + by_kind, user_id, space)
         groups = [r["g"] for r in await conn.fetch(f"select g from ({picked}) p", user_id, space, limit)]
         # Every pair once (<= 45k at 300 nodes): the space's own spread.
         stats = await conn.fetchrow(
@@ -932,10 +933,11 @@ async def space_vectors(user_id: str, vector_space: str, settings, sample: int =
             f"select count(distinct {GROUP_KEY}) filter (where {has_active}) as memories, "
             f"count(*) filter (where {has_active}) as vectors, "
             f"count(distinct {GROUP_KEY}) filter (where not {has_active}) as kept "
-            f"from orion_memory r where user_id = $1 and vector_space = $2", user_id, vector_space, space)
+            f"from orion_memory r where user_id = $1 and vector_space = $2 and {memory.LIVE}", user_id, vector_space,
+            space)
         groups = [r["g"] for r in await conn.fetch(
             f"select {GROUP_KEY} as g, max(created_at) as at from orion_memory r where user_id = $1 "
-            f"and vector_space = $2 and {has_active} group by 1 order by at desc limit $4",
+            f"and vector_space = $2 and {memory.LIVE} and {has_active} group by 1 order by at desc limit $4",
             user_id, vector_space, space, sample)]
         members = await _group_rows(conn, user_id, groups)
     finally:
@@ -1060,7 +1062,8 @@ async def memory_context(user_id: str, row_id: int, settings, with_chat: bool = 
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
-        row = await conn.fetchrow(f"select {_ROW} from orion_memory where user_id = $1 and id = $2", user_id, int(row_id))
+        row = await conn.fetchrow(f"select {_ROW} from orion_memory where user_id = $1 and id = $2 and {memory.LIVE}",
+                                  user_id, int(row_id))
         if row is None:
             return None
         row = dict(row)
@@ -1109,12 +1112,13 @@ async def row_vector(user_id: str, row_id: int, space: str | None) -> dict | Non
     try:
         await memory.ensure_memory_table(conn)
         row = await conn.fetchrow("select id, kind, text, group_id, copied_from, vector_space, embedding::text as e "
-                                  "from orion_memory where user_id = $1 and id = $2", user_id, int(row_id))
+                                  f"from orion_memory where user_id = $1 and id = $2 and {memory.LIVE}", user_id,
+                                  int(row_id))
         if row is None:
             return None
         vector = row["e"] if row["vector_space"] == space else await conn.fetchval(
             "select embedding::text from orion_memory where user_id = $1 and vector_space = $2 "
-            "and coalesce(copied_from, id) = $3 limit 1", user_id, space, row["copied_from"] or row["id"])
+            f"and coalesce(copied_from, id) = $3 and {memory.LIVE} limit 1", user_id, space, row["copied_from"] or row["id"])
     finally:
         await conn.close()
     return {"vector": vector, "group": group_key(dict(row)), "kind": row["kind"], "text": row["text"]}
@@ -1242,7 +1246,8 @@ async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
-        row = await conn.fetchrow(f"select {_ROW} from orion_memory where user_id = $1 and id = $2", user_id, int(row_id))
+        row = await conn.fetchrow(f"select {_ROW} from orion_memory where user_id = $1 and id = $2 and {memory.LIVE}",
+                                  user_id, int(row_id))
         if row is None or row["kind"] != "text":
             return None
         row = dict(row)

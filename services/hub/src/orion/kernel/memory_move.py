@@ -241,7 +241,8 @@ async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> in
             # The mean is made by the database (no embedding is read out): normalized, as mean_vector makes it.
             vector = await conn.fetchval(
                 "select l2_normalize(avg(embedding))::text from orion_memory where user_id = $1 and item_id = $2 "
-                "and vector_space = $3 and track is not distinct from $4 and not whole", user_id, item, space, track)
+                f"and vector_space = $3 and track is not distinct from $4 and not whole and {memory.LIVE}", user_id, item,
+                space, track)
             new_id = await conn.fetchval(
                 COPY_SQL, user_id, source["text"], space, vector, source["source_kind"],
                 source["source_chat_title"], source["kind"], source["media_id"], source["media_mime"],
@@ -269,7 +270,7 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
                    "span_start, span_end, track, caption, item_order, lossless")
         rows = [dict(r) for r in await conn.fetch(
             f"select {columns} from orion_memory r where user_id = $1 and vector_space = $2 and not {_HAS_COPY} "
-            "order by id", user_id, source, space)]
+            f"and {memory.LIVE} order by id", user_id, source, space)]  # Rows in the trash are not copied.
         # The windows come from every piece of each text item (also those already copied: a window holds its
         # neighbours), so a move rebuilds exactly the windows the pieces were first embedded with.
         item_ids = sorted({r["item_id"] for r in rows if r["kind"] == "text" and r.get("item_id")})
@@ -279,7 +280,7 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
         windows = text_windows(whole_items)
         existing = await conn.fetchval(
             f"select count(distinct {CONTENT_KEY}) from orion_memory r where user_id = $1 and vector_space = $2 "
-            f"and {_HAS_COPY} and not whole", user_id, source, space)
+            f"and {_HAS_COPY} and not whole and {memory.LIVE}", user_id, source, space)
         work = _work(rows)
         await conn.execute("update orion_memory_jobs set total = $2, existing = $3, updated_at = now() "
                            "where user_id = $1", user_id, sum(len(unit) for unit in work), int(existing or 0))

@@ -68,8 +68,9 @@ class CollectionTests(PostgresMemoryCase):
                 await memory.ensure_memory_table(conn)
             finally:
                 await conn.close()
-        self.backup.assert_awaited_once_with('schema-1-to-2')
-        self.assertEqual(await sql("select value from orion_memory_meta where key = 'schema_version'"), '2')
+        self.backup.assert_awaited_once_with(f'schema-1-to-{memory.SCHEMA_VERSION}')
+        self.assertEqual(await sql("select value from orion_memory_meta where key = 'schema_version'"),
+                         str(memory.SCHEMA_VERSION))
 
     async def test_with_the_setting_off_nothing_changes(self):
         await self.memories()
@@ -78,7 +79,7 @@ class CollectionTests(PostgresMemoryCase):
         self.assertEqual(groups, same)
         self.assertNotIn('collections', after)
         self.assertEqual(await sql('select count(*) from orion_mem_collection'), 0)
-        self.assertEqual(await sql('select count(*) from orion_memory where collection_id is not null'), 0)
+        self.assertEqual(await sql('select count(*) from orion_mem_collection_item'), 0)
         self.backup.assert_not_awaited()
         self.assertEqual(before['matching'], 3)
 
@@ -90,8 +91,8 @@ class CollectionTests(PostgresMemoryCase):
         names = [c['name'] for c in page['collections']]
         self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Sohbetler', 'Belgeler', 'Eski hafıza'])
         old = next(c['id'] for c in page['collections'] if c['name'] == 'Eski hafıza')
-        rows = {r['group_id']: r['c'] for r in await sql(
-            'select group_id, min(collection_id) as c from orion_memory group by 1', fetch=True)}
+        rows = {r['group_id']: r['collection_id'] for r in await sql(
+            'select group_id, collection_id from orion_mem_collection_item where main', fetch=True)}
         self.assertEqual(rows, {'alice-chat': old, 'alice-note': old, 'alice-doc': 'belgeler'})
         _, docs = await self.groups(self.v2, collections=['documents'])
         self.assertEqual(docs, ['alice-doc'])
@@ -109,15 +110,19 @@ class CollectionTests(PostgresMemoryCase):
     async def test_new_rows_join_their_memory_s_collection_and_a_new_file_goes_to_documents(self):
         await self.memories()
         await self.groups(self.v2)
-        old = await sql("select collection_id from orion_memory where group_id = 'alice-note' limit 1")
-        added = await self.add('ikinci not', group='alice-note', axis=20)
-        self.assertEqual(await sql('select collection_id from orion_memory where id = $1', added), old)
-        new_file = await self.add('yeni dosya', group='g-new-file', source='file', title='a.md', axis=21)
-        self.assertEqual(await sql('select collection_id from orion_memory where id = $1', new_file), 'belgeler')
-        new_note = await self.add('yeni not', group='g-new-note', axis=22)
-        self.assertIsNone(await sql('select collection_id from orion_memory where id = $1', new_note))
-        bob = await self.add('bob notu', group='g-bob', source='file', title='b.md', user='bob', axis=23)
-        self.assertIsNone(await sql('select collection_id from orion_memory where id = $1', bob))  # Bob has none.
+        main = "select collection_id from orion_mem_collection_item where main and group_id = $1"
+        old = await sql(main, 'alice-note')
+        await self.add('ikinci not', group='alice-note', axis=20)
+        self.assertEqual(await sql(main, 'alice-note'), old)  # A part belongs to its memory.
+        await self.add('yeni dosya', group='g-new-file', source='file', title='a.md', axis=21)
+        await self.add('ikinci parça', group='g-new-file', source='file', title='a.md', axis=24)
+        self.assertEqual(await sql(main, 'g-new-file'), 'belgeler')
+        await self.add('yeni not', group='g-new-note', axis=22)
+        self.assertIsNone(await sql(main, 'g-new-note'))
+        await self.add('sonradan dosya', group='g-new-note', source='file', title='c.md', axis=25)
+        self.assertIsNone(await sql(main, 'g-new-note'))  # Its first row was a note: not moved to Belgeler.
+        await self.add('bob notu', group='g-bob', source='file', title='b.md', user='bob', axis=23)
+        self.assertIsNone(await sql(main, 'g-bob'))  # Bob has no collections.
 
     async def test_revert_puts_everything_back(self):
         await self.memories()
@@ -127,8 +132,8 @@ class CollectionTests(PostgresMemoryCase):
             result = await routes.memory_collections_revert(SimpleNamespace(app=SimpleNamespace(
                 state=SimpleNamespace(redis=None))), 'alice')
         update.assert_awaited_once_with(None, {'memory_v2': 'false'}, 'alice')
-        self.assertEqual(result, {'rows': 5, 'collections': 5})
-        self.assertEqual(await sql('select count(*) from orion_memory where collection_id is not null'), 0)
+        self.assertEqual(result, {'memories': 3, 'collections': 5})
+        self.assertEqual(await sql('select count(*) from orion_mem_collection_item'), 0)
         after, again = await self.groups(self.settings)
         self.assertEqual((groups, before['matching']), (again, after['matching']))
         await self.groups(self.v2)  # On again: sorted again.
@@ -169,7 +174,7 @@ class CollectionTests(PostgresMemoryCase):
         result = await mc.revert('alice')
         self.assertEqual(result['collections'], 5)
         self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'bob'"), 5)
-        self.assertEqual(await sql("select count(*) from orion_memory where user_id = 'bob' and collection_id is null"), 0)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection_item where user_id = 'bob'"), 3)
 
     async def test_the_tool_takes_in(self):
         await self.memories()

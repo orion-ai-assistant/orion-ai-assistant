@@ -78,9 +78,9 @@ async def seed(dsn: str, pieces: int, per_group: int) -> None:
                 items.append(group + "-i")
             await conn.execute(
                 "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, kind, group_id, item_id, "
-                "item_order) select $1, t, $2, v::vector, 'note', 'text', g, i, 0 from "
-                "unnest($3::text[], $4::text[], $5::text[], $6::text[]) as x(t, g, i, v)",
-                user, SPACE, texts, groups, items, unit_vectors(batch, rng))
+                "item_order) select $1, t, $2, v::vector, case when right(g, 1) = '0' then 'file' else 'note' end, "
+                "'text', g, i, 0 from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as x(t, g, i, v)",
+                user, SPACE, texts, groups, items, unit_vectors(batch, rng))  # Every 10th memory a file.
             made += batch
         print(f"seeded {made} rows for {user} in {time.perf_counter() - started:.0f}s")
     await conn.execute("analyze orion_memory")
@@ -137,6 +137,44 @@ async def measure(dsn: str) -> None:
     for chunk in (for_delete[:20], for_delete[20:]):
         await memory.delete_whole_items(USER, chunk)
     print(f"{'delete 40 memories x ~25 pieces':34s} total {(time.perf_counter() - started) * 1000:9.1f} ms")
+    try:
+        from orion.kernel import memory_collections, memory_trash
+    except ImportError:  # Old code: no collections, no trash.
+        await conn.close()
+        return
+    from types import SimpleNamespace
+    v2 = SimpleNamespace(memory_v2=True, memory_trash_days=30)
+    started = time.perf_counter()
+    await memory_collections.ensure_user(conn, USER)
+    print(f"{'memory_v2: sort existing (once)':34s} total {(time.perf_counter() - started) * 1000:9.1f} ms")
+    await conn.execute("analyze orion_memory")
+    await timed("v2 meaning search, whole memory", lambda: memory_groups.list_groups(
+        USER, v2, q="", vector=vector, vector_space_of_query=SPACE, vector_space=SPACE, limit=20))
+    await timed("v2 meaning search, in documents", lambda: memory_groups.list_groups(
+        USER, v2, q="", vector=vector, vector_space_of_query=SPACE, vector_space=SPACE, limit=20,
+        collections=["documents"]))
+    await timed("v2 meaning + word, in documents", lambda: memory_groups.list_groups(
+        USER, v2, q=word, vector=vector, vector_space_of_query=SPACE, vector_space=SPACE, limit=20,
+        collections=["documents"]))
+    await timed("v2 list page, in documents", lambda: memory_groups.list_groups(
+        USER, v2, limit=20, vector_space=SPACE, collections=["documents"]))
+    groups = [r["group_id"] for r in await conn.fetch(
+        "select distinct group_id from orion_memory where user_id = $1 and deleted_at is null order by group_id "
+        "limit 40", USER)]
+    started = time.perf_counter()
+    removed = [await memory_trash.trash_groups(USER, groups[k:k + 20]) for k in (0, 20)]
+    print(f"{'trash 40 memories x ~25 pieces':34s} total {(time.perf_counter() - started) * 1000:9.1f} ms")
+    await timed("meaning search (40 in the trash)", lambda: memory_groups.list_groups(
+        USER, settings, q="", vector=vector, vector_space_of_query=SPACE, vector_space=SPACE, limit=20))
+    await timed("list page (40 in the trash)", lambda: memory_groups.list_groups(
+        USER, settings, limit=20, vector_space=SPACE))
+    await timed("trash list (2 removals)", lambda: memory_trash.list_trash(USER, v2))
+    started = time.perf_counter()
+    await memory_trash.restore(USER, [removed[0]["trash_id"]])
+    print(f"{'restore 20 memories':34s} total {(time.perf_counter() - started) * 1000:9.1f} ms")
+    started = time.perf_counter()
+    await memory_trash.purge(USER, [removed[1]["trash_id"]])
+    print(f"{'purge 20 memories':34s} total {(time.perf_counter() - started) * 1000:9.1f} ms")
     await conn.close()
 
 

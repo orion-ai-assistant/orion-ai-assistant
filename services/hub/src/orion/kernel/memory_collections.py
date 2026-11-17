@@ -1,12 +1,13 @@
-"""Collections (docs/hafiza-tasarimi.md §3, §13): every memory sits in one main collection (`orion_memory.collection_id`)
-and may also be a member of projects/albums (`orion_mem_collection_item`). Behind the per-user setting `memory_v2`:
+"""Collections (docs/hafiza-tasarimi.md §3, §13): every memory sits in one main collection and may also be a member
+of projects/albums: both are rows of `orion_mem_collection_item` (the main one has `main`), one per memory, never a
+column of the vector table (sorting would rewrite every vector row and its HNSW entries). Behind the per-user setting `memory_v2`:
 with it off nothing here runs and the memory behaves as before.
 
 The first time a user's memory is used with `memory_v2` on, their collections are made and their existing memories
 sorted, once (ensure_user): after a dump of the memory tables, the four built-in collections and the project
 "Eski hafıza"; a memory whose first row came from a file goes to Belgeler, every other one to Eski hafıza. Group ids,
-parts and vectors stay as they are. revert() undoes it (the new column emptied, the collections gone); the rows never
-moved. Rows with no collection (saved before, or while the setting was off) are searched as before by a search over
+parts and vectors stay as they are. revert() undoes it (memberships and collections gone); the rows were never
+touched. Memories with no collection (saved before, or while the setting was off) are searched as before by a search over
 the whole memory.
 
 Source links (`orion_mem_source`): where a fact or an event came from (a chat and its first/last message, an item, or
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "Sohbetler"), ("belgeler", "Belgeler"))
 OLD_NAME = "Eski hafıza"
 IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
-BATCH = 500  # Memories sorted per statement while a user's existing memory is sorted.
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 
@@ -51,23 +51,18 @@ async def ensure_user(conn, user_id: str) -> None:
         # Each memory by its first row: a group key and where that row came from (one pass over the user's rows).
         firsts = await conn.fetch(
             "select distinct on (g) g, source_kind from (select coalesce(group_id, 'r' || id::text) as g, id, "
-            "source_kind from orion_memory where user_id = $1 and collection_id is null) t order by g, id", user_id)
+            "source_kind from orion_memory where user_id = $1) t order by g, id", user_id)
         async with conn.transaction():
             await conn.executemany(
                 "insert into orion_mem_collection (user_id, id, kind, name) values ($1, $2, 'builtin', $3) "
                 "on conflict do nothing", [(user_id, cid, name) for cid, name in BUILTIN])
             await conn.execute("insert into orion_mem_collection (user_id, id, kind, name) values ($1, $2, 'project', $3)",
                                user_id, old, OLD_NAME)
-            for target in ("belgeler", old):
-                keys = [r["g"] for r in firsts if (r["source_kind"] == "file") == (target == "belgeler")]
-                for start in range(0, len(keys), BATCH):
-                    part = keys[start:start + BATCH]
-                    groups = [k for k in part if not k.startswith("r")]
-                    loose = [int(k[1:]) for k in part if k.startswith("r") and k[1:].isdigit()]
-                    await conn.execute(
-                        "update orion_memory set collection_id = $2 where user_id = $1 and collection_id is null "
-                        "and (group_id = any($3::text[]) or (group_id is null and id = any($4::bigint[])))",
-                        user_id, target, groups, loose)
+            await conn.execute(
+                "insert into orion_mem_collection_item (user_id, collection_id, group_id, main) "
+                "select $1, c, g, true from unnest($2::text[], $3::text[]) as x(c, g) on conflict do nothing",
+                user_id, ["belgeler" if r["source_kind"] == "file" else old for r in firsts],
+                [r["g"] for r in firsts])
         logger.info("Memory: collections made for a user, %d memories sorted (%d to Belgeler)", len(firsts),
                     sum(1 for r in firsts if r["source_kind"] == "file"))
     finally:
@@ -75,19 +70,17 @@ async def ensure_user(conn, user_id: str) -> None:
 
 
 async def revert(user_id: str) -> dict:
-    """Undo the sorting: the rows lose their collection, the collections and memberships go. Nothing else changes
-    (the rows were never moved). {"rows", "collections"}."""
+    """Undo the sorting: the memberships and the collections go. Nothing else changes (the memories were never
+    touched). {"memories": memberships removed, "collections"}."""
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
         async with conn.transaction():
-            rows = await conn.execute("update orion_memory set collection_id = null where user_id = $1 "
-                                      "and collection_id is not null", user_id)
-            await conn.execute("delete from orion_mem_collection_item where user_id = $1", user_id)
+            rows = await conn.execute("delete from orion_mem_collection_item where user_id = $1", user_id)
             gone = await conn.execute("delete from orion_mem_collection where user_id = $1", user_id)
     finally:
         await conn.close()
-    return {"rows": int(rows.split()[-1]), "collections": int(gone.split()[-1])}
+    return {"memories": int(rows.split()[-1]), "collections": int(gone.split()[-1])}
 
 
 async def list_collections(conn, user_id: str) -> list[dict]:
@@ -122,14 +115,13 @@ async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
 
 
 def filter_sql(collections: list[str] | None, params: list) -> str:
-    """The SQL condition (after the user's, `$1` = user id) for rows in these collections: their main collection or
-    a membership of their memory. Empty for None (the whole memory, as before)."""
+    """The SQL condition (after the user's, `$1` = user id) for rows whose memory is in these collections (main or
+    member). Empty for None (the whole memory, as before)."""
     if not collections:
         return ""
     params.append(list(collections))
-    n = len(params)
-    return (f" and (collection_id = any(${n}::text[]) or group_id in (select i.group_id from orion_mem_collection_item i "
-            f"where i.user_id = $1 and i.collection_id = any(${n}::text[])))")
+    return (f" and coalesce(group_id, 'r' || id::text) in (select i.group_id from orion_mem_collection_item i "
+            f"where i.user_id = $1 and i.collection_id = any(${len(params)}::text[]))")
 
 
 # --- Sources ---------------------------------------------------------------------------------------------------------

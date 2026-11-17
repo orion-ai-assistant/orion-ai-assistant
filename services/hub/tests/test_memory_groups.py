@@ -109,6 +109,11 @@ class MemoryGroupTests(PostgresMemoryCase):
         with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
             result = await routes.delete_memory_items(routes.MemoryDelete(group_ids=['g1']), 'alice')
         self.assertEqual(len(result['deleted']), 2)
+        self.assertIsNone(await memory_groups.group_detail('alice', 'g1', self.settings))
+        # In the trash the file stays (it can come back); deleted for good, its link goes.
+        self.assertEqual(await sql('select count(*) from orion_media_links where media_id = $1', media_id), 1)
+        from orion.kernel import memory_trash
+        await memory_trash.purge('alice', [result['trash_id']])
         self.assertEqual(await sql('select count(*) from orion_media_links where media_id = $1', media_id), 0)
 
     # --- tools --------------------------------------------------------------------------------------------------
@@ -275,10 +280,14 @@ class MemoryGroupTests(PostgresMemoryCase):
         from orion.api import routes
         result = await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'alice')
         self.assertEqual(len(result['deleted']), 14)
+        left = await sql('select text from orion_memory where deleted_at is null', fetch=True)
+        self.assertEqual([r['text'] for r in left], ['öteki parça'])  # The whole vector went with its sections.
+        self.assertEqual(await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'bob'),
+                         {'deleted': [], 'trash_id': None})
+        from orion.kernel import memory_trash
+        await memory_trash.purge('alice', [result['trash_id']])
         left = await sql('select text from orion_memory', fetch=True)
         self.assertEqual([r['text'] for r in left], ['öteki parça'])
-        self.assertEqual(await routes.delete_memory_items(routes.MemoryDelete(item_ids=['long']), 'bob'),
-                         {'deleted': []})
 
     # --- new tools come on ----------------------------------------------------------------------------------------
 

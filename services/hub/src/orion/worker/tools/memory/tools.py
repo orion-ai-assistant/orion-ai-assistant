@@ -195,8 +195,8 @@ class MemoryAddInput(ToolInput):
 class MemoryDeleteInput(ToolInput):
     ids: list[int] = Field(default_factory=list, max_length=20, description="Ids from search_memory results.")
     whole_memory: bool = Field(default=False,
-                               description="false: delete only these parts. true: delete the whole memory each id "
-                                           "belongs to (everything saved with it).")
+                               description="false: only these parts. true: the whole memory each id belongs to "
+                                           "(everything saved with it).")
     confirmation_id: str = Field(default="", max_length=64,
                                  description="Only to ask what became of an earlier delete request: its "
                                              "confirmation_id. Leave empty (and give ids) to request a delete.")
@@ -222,7 +222,8 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
 
 async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
     """Never deletes: records what would go and shows the user a confirmation card (memory_pending); the user's Sil
-    press deletes. With `confirmation_id`: the outcome so far (pending, deleted, declined, expired)."""
+    press moves it to the trash (restorable). With `confirmation_id`: the outcome so far (pending, deleted,
+    declined, expired)."""
     from orion.kernel import memory, memory_pending
     try:
         if args.confirmation_id:
@@ -231,7 +232,8 @@ async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
                 return {"note": "No such confirmation."}
             outcome = {"pending": "The user has not answered yet; nothing is deleted.",
                        "claimed": "The user confirmed; the delete is being carried out.",
-                       "deleted": "The user confirmed and it was deleted.",
+                       "deleted": "The user confirmed: it was moved to the memory's trash (Çöp kutusu), where they "
+                                  "can restore it until it is deleted for good.",
                        "declined": "The user declined: nothing was deleted. Do not ask again unless they do.",
                        "expired": "Nobody answered in time; nothing was deleted."}[found["state"]]
             return {"state": found["state"], "deleted_ids": found["deleted"], "note": outcome}

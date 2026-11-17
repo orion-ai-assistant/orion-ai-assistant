@@ -528,7 +528,7 @@ class RankTests(PostgresMemoryCase):
         with patch.object(memory, 'ann_fetch', capped):
             page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
         self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
-        self.assertEqual(memory.filters_sql('all', 'image', []), " and kind = 'image'")
+        self.assertEqual(memory.filters_sql('all', 'image', []), " and deleted_at is null and kind = 'image'")
 
     async def test_cores_concatenate_to_the_original_text_byte_for_byte(self):
         import random
@@ -595,7 +595,7 @@ class RankTests(PostgresMemoryCase):
         self.assertEqual(await self.count_rows(), 2)
         done = await routes.memory_pending_confirm(token, 'alice')
         self.assertEqual((done['state'], done['deleted']), ('deleted', [a]))
-        self.assertEqual(await self.count_rows(), 1)
+        self.assertEqual(await self.count_rows(), 1)  # In the trash (test_memory_trash: restore, delete for good).
         again = await routes.memory_pending_confirm(token, 'alice')  # A second press deletes nothing more.
         self.assertEqual(again['state'], 'deleted')
         self.assertEqual((await self.delete_tool(confirmation_id=token))['state'], 'deleted')
@@ -617,9 +617,10 @@ class RankTests(PostgresMemoryCase):
         self.assertEqual(await self.count_rows(), 1)
 
     async def count_rows(self):
+        """Rows not in the trash."""
         conn = await registry._connect()
         try:
-            return await conn.fetchval('select count(*) from orion_memory')
+            return await conn.fetchval('select count(*) from orion_memory where deleted_at is null')
         finally:
             await conn.close()
 

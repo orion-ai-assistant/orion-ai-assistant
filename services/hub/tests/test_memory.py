@@ -324,14 +324,27 @@ class ListConn(FakeConn):
 
 
 def test_delete_is_scoped_to_the_user_and_a_foreign_id_is_404(monkeypatch):
-    conn = ListConn()
-    wire(monkeypatch, conn)
-    assert asyncio.run(routes.delete_memory_item(5, 'u1')) == {'deleted': [5]}
-    assert conn.deleted_args[0] == 'u1'
+    """The routes move to the trash as the signed-in user (memory_trash; its user isolation is tested on a real
+    database in test_memory_trash) and answer the removal's id for Geri al."""
+    from orion.kernel import memory_trash
+    calls = []
+
+    async def trash_items(user, ids):
+        calls.append(user)
+        mine = [i for i in ids if i == 5]
+        return {'trash_id': 't1' if mine else None, 'removed': [{'id': i, 'text': 'x'} for i in mine]}
+
+    async def trash(user, ids=(), item_ids=(), groups=()):
+        return await trash_items(user, list(ids))
+    monkeypatch.setattr(memory_trash, 'trash_items', trash_items)
+    monkeypatch.setattr(memory_trash, 'trash', trash)
+    assert asyncio.run(routes.delete_memory_item(5, 'u1')) == {'deleted': [5], 'trash_id': 't1'}
+    assert calls == ['u1']
     with pytest.raises(HTTPException) as error:
         asyncio.run(routes.delete_memory_item(9, 'u1'))
     assert error.value.status_code == 404
-    assert asyncio.run(routes.delete_memory_items(routes.MemoryDelete(ids=[5, 9]), 'u1')) == {'deleted': [5]}
+    assert asyncio.run(routes.delete_memory_items(routes.MemoryDelete(ids=[5, 9]), 'u1')) == \
+        {'deleted': [5], 'trash_id': 't1'}
 
 
 def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeypatch):

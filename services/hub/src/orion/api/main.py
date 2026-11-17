@@ -172,6 +172,9 @@ async def lifespan(app: FastAPI):
         watchdog = asyncio.create_task(admitted(queue_watchdog(app.state.redis)))
         from orion.api.services.job_service import index_chat_search
         search_index = asyncio.create_task(admitted(index_chat_search(app.state.redis)), name='chat-search-index')
+        from orion.kernel.memory_trash import purge_loop
+        # Memory trash: removals older than the user's trash days are deleted for good (one process at a time).
+        trash_purge = asyncio.create_task(admitted(purge_loop()), name='memory-trash-purge')
         provisioner = None
         if getattr(app.state, 'public', True) is False:
             from orion.kernel.router_accounts import provisioning_loop
@@ -186,6 +189,9 @@ async def lifespan(app: FastAPI):
             search_index.cancel()
             with suppress(asyncio.CancelledError):
                 await search_index
+            trash_purge.cancel()
+            with suppress(asyncio.CancelledError):
+                await trash_purge
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog

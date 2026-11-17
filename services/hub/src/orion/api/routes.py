@@ -585,14 +585,15 @@ async def memory_item_frame(item_id: int, request: Request, at: float | None = N
 
 @router.delete("/api/v1/memory/{item_id}")
 async def delete_memory_item(item_id: int, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory
+    """Move one part (and its copies) to the trash."""
+    from orion.kernel import memory, memory_trash
     try:
-        deleted = await memory.delete_items(current_user, [item_id])
+        removed = await memory_trash.trash_items(current_user, [item_id])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    if not deleted:
+    if not removed["removed"]:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.")
-    return {"deleted": [row["id"] for row in deleted]}
+    return {"deleted": [row["id"] for row in removed["removed"]], "trash_id": removed["trash_id"]}
 
 
 @router.get("/api/v1/memory/{item_id}/text")
@@ -635,14 +636,57 @@ async def memory_item_media(item_id: int, request: Request, current_user: str = 
 
 @router.post("/api/v1/memory/delete")
 async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory, memory_groups
+    """Move parts, whole parts (items) and whole memories to the trash as one removal: {"deleted": [part ids],
+    "trash_id"} (POST /api/v1/memory/trash/restore with it is the undo)."""
+    from orion.kernel import memory, memory_trash
     try:
-        deleted = [row["id"] for row in await memory.delete_items(current_user, payload.ids)]
-        deleted += [row["id"] for row in await memory.delete_whole_items(current_user, payload.item_ids)]
-        deleted += [row["id"] for row in await memory_groups.delete_groups(current_user, payload.group_ids)]
+        removed = await memory_trash.trash(current_user, payload.ids, payload.item_ids, payload.group_ids)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"deleted": deleted}
+    return {"deleted": [row["id"] for row in removed["removed"]], "trash_id": removed["trash_id"]}
+
+
+class MemoryTrashIds(BaseModel):
+    trash_ids: list[str] = Field(default_factory=list, max_length=200)
+    all: bool = False  # Purge: the whole trash.
+    confirm: bool = False  # Purge: the user confirmed "geri alınamaz" (a purge without it is refused).
+
+
+@router.get("/api/v1/memory/trash")
+async def memory_trash_list(request: Request, limit: int = 50, offset: int = 0,
+                            current_user: str = Depends(get_current_user)):
+    """The removals in the trash, newest first, with their days left (memory_trash.list_trash)."""
+    from orion.kernel import memory, memory_trash
+    try:
+        return await memory_trash.list_trash(current_user, await get_runtime_settings(request.app.state.redis,
+                                                                                      current_user), limit, offset)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/trash/restore")
+async def memory_trash_restore(payload: MemoryTrashIds, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_trash
+    try:
+        return await memory_trash.restore(current_user, payload.trash_ids)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/trash/purge")
+async def memory_trash_purge(payload: MemoryTrashIds, request: Request, current_user: str = Depends(get_current_user)):
+    """Delete removals for good (every model's vectors, the file when nothing else links it, the text index): only
+    with `confirm` (the page's own "geri alınamaz" question), and only what is in the trash."""
+    from orion.kernel import memory, memory_trash
+    if not payload.confirm:
+        raise HTTPException(400, "Kalıcı silme onaylanmadı.")
+    if not payload.all and not payload.trash_ids:
+        raise HTTPException(400, "Silinecek bir şey seçilmedi.")
+    try:
+        return await memory_trash.purge(current_user, None if payload.all else payload.trash_ids,
+                                        await get_runtime_settings(request.app.state.redis, current_user))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 class SettingsUpdateRequest(BaseModel):
