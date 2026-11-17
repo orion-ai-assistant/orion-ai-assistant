@@ -551,3 +551,26 @@ class RankTests(PostgresMemoryCase):
         rows = [{'text': core, 'lossless': True} for core, _ in memory_pieces.text_pieces(samples[0])]
         self.assertEqual(memory.join_pieces(rows), samples[0])
         self.assertEqual(memory.join_pieces([{'text': 'a'}, {'text': 'b'}]), 'a\n\nb')
+
+    async def test_a_note_has_an_optional_name_and_can_be_long(self):
+        async def embed(text, settings, kind, local):
+            return [[1.0] + [0.0] * 767]
+        target = (SimpleNamespace(router_model_group='e'), SPACE, True)
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+            one = await memory.add_note_to('alice', 'Elif 34 yaşında', self.settings, source_kind='assistant', title='  Elif   Kaya ')
+            long_text = '\n\n'.join(f'Bölüm {k}: ' + 'söz ' * 300 for k in range(20))  # Far over the old 4000-character limit.
+            long = await memory.add_note_to('alice', long_text, self.settings, title='Uzun not')
+            self.assertEqual(one['added'], 1)
+            self.assertEqual(memory.MAX_NOTE, 2 * 1024 * 1024)
+            from orion.kernel import memory_media_jobs
+            for _ in range(200):
+                if not [j for j in await memory_media_jobs.jobs('alice') if j['state'] == 'running']:
+                    break
+                await asyncio.sleep(0.05)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        titles = {g['group_id']: g['title'] for g in page['groups']}
+        self.assertEqual(titles[one['group_id']], 'Elif Kaya')
+        self.assertEqual(titles[long['group_id']], 'Uzun not')
+        found = await memory_groups.list_groups('alice', self.settings, q='elif kaya', limit=10)
+        self.assertEqual(next(g for g in found['groups'] if g['group_id'] == one['group_id'])['match'], 'text')  # Names count as words.
+        self.assertTrue(long.get('job'))

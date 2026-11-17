@@ -138,9 +138,12 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
 
 
 class MemoryAddInput(ToolInput):
-    text: str = Field(min_length=1, max_length=4000,
-                      description="What to remember, one self-contained sentence (e.g. 'The user's daughter is "
-                                  "called Elif.').")
+    text: str = Field(min_length=1, max_length=2 * 1024 * 1024,
+                      description="What to remember: a self-contained sentence (e.g. 'The user's daughter is called "
+                                  "Elif.') or a longer note.")
+    title: str = Field(default="", max_length=120,
+                       description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
+                                   "a short fact.")
 
 
 class MemoryDeleteInput(ToolInput):
@@ -161,7 +164,7 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
     from orion.kernel.config import get_runtime_settings
     try:
         added = await memory.add_note(context.user_id, args.text, await get_runtime_settings(None, context.user_id),
-                                      source_kind="assistant")
+                                      source_kind="assistant", title=args.title)
     except (memory.MemoryUnavailable, ValueError) as exc:
         return {"error": str(exc)}
     return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}

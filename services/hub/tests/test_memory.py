@@ -295,7 +295,7 @@ def test_a_note_is_embedded_and_stored_as_manual(monkeypatch):
     assert conn.inserted[0][1] == 'Kızımın adı Elif.' and conn.inserted[0][4] == 'manual'
 
 
-@pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * 4001, '4000')])
+@pytest.mark.parametrize('text, message', [('   ', 'boş'), ('x' * (memory.MAX_NOTE + 1), '2097152')])
 def test_an_empty_or_too_long_note_is_a_turkish_400(monkeypatch, text, message):
     async def settings(*args):
         return Settings()

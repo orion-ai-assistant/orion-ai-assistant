@@ -1007,18 +1007,24 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
         await conn.close()
 
 
-MAX_NOTE = 4000
+MAX_NOTE = 2 * 1024 * 1024  # Characters: a resource cap only (as a text file's), a long note is split into windows.
+MAX_TITLE = 120
 
 
-async def add_note(user_id: str, text: str, settings, source_kind: str = "manual") -> int:
+async def add_note(user_id: str, text: str, settings, source_kind: str = "manual", title: str = "") -> int:
     """Embed and store a text the user (or the assistant on the user's request) wants remembered; returns how many
     rows were new."""
-    return (await add_note_to(user_id, text, settings, source_kind))["added"]
+    result = await add_note_to(user_id, text, settings, source_kind, title=title)
+    return result["added"] or (1 if result.get("job") else 0)  # A long note is embedded in the background.
 
 
-async def add_note_to(user_id: str, text: str, settings, source_kind: str = "manual", group: str | None = None) -> dict:
+async def add_note_to(user_id: str, text: str, settings, source_kind: str = "manual", group: str | None = None,
+                      title: str = "") -> dict:
     """A note as a new memory, or an item added to the memory `group` (LookupError when this user has no such
-    memory). {"added": new rows, "group_id"}."""
+    memory), with an optional `title` (the memory's name on its card). A long note (many windows) is embedded in
+    the background like a text file: {"added": new rows, "group_id"[, "job"]}."""
+    import asyncio
+    title = " ".join((title or "").split())[:MAX_TITLE] or None
     text = (text or "").strip()
     if not text:
         raise ValueError("Hafızaya eklenecek metin boş.")
@@ -1029,12 +1035,20 @@ async def add_note_to(user_id: str, text: str, settings, source_kind: str = "man
         await ensure_memory_table(conn)
         target, space, local = await embedding_target(settings)
         group = await join_group(conn, user_id, group)
-        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group)
+        from orion.kernel import memory_pieces as mp
+        split = await asyncio.to_thread(mp.text_pieces, text)
+        if len(split) > TEXT_JOB_PIECES:
+            from orion.kernel import memory_media_jobs
+            job = await memory_media_jobs.start_text(user_id, group, {
+                "kind": "text", "source_kind": source_kind, "title": title, "name": title or "Not"}, text, split,
+                settings)
+            return {"added": 0, "group_id": group, "job": job}
+        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
         added = 0
         if pieces:
             async with conn.transaction():
-                added = await insert_item(conn, user_id, space, group, {"kind": "text", "source_kind": source_kind},
-                                          pieces)
+                added = await insert_item(conn, user_id, space, group,
+                                          {"kind": "text", "source_kind": source_kind, "title": title}, pieces)
         return {"added": added, "group_id": group}
     finally:
         await conn.close()
@@ -1212,7 +1226,7 @@ def match_text(text: str, title: str | None = None, caption: str | None = None, 
     name (the title of a file's rows) and the user's caption. Names and captions are not embedded into the meaning
     vector (noise there); they only count here."""
     parts = [text or ""]
-    if source_kind == "file" and title:
+    if title and source_kind != "chat_save":  # A file's name, a note's name; a chat's title is not a word of its text.
         parts.append(title)
     if caption:
         parts.append(caption)

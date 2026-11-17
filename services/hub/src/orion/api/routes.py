@@ -89,7 +89,8 @@ async def save_chat_to_memory(chat_id: str, request: Request, current_user: str 
 
 
 class MemoryNote(BaseModel):
-    text: str = ""
+    text: str = Field(default="", max_length=8 * 1024 * 1024)  # A request-size guard; memory.MAX_NOTE is the real cap.
+    title: str = Field(default="", max_length=200)  # The memory's name (optional).
     group_id: str | None = Field(default=None, max_length=64)  # Add to this memory instead of a new one.
 
 
@@ -255,7 +256,7 @@ async def add_memory_note(payload: MemoryNote, request: Request, current_user: s
     try:
         return await memory.add_note_to(current_user, payload.text,
                                         await get_runtime_settings(request.app.state.redis, current_user),
-                                        group=payload.group_id or None)
+                                        group=payload.group_id or None, title=payload.title)
     except LookupError as exc:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:
