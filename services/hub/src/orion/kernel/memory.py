@@ -199,15 +199,10 @@ def _count_sql(source: str, sign: int, other: str | None = None) -> str:
         columns = ", ".join(names)
         select = ", ".join(e.format(a="r") for e in exprs)
         group = ", ".join(str(i + 1) for i in range(len(names)))
-        keys = " and ".join(f"t.{n} = k.k{i}" for i, n in enumerate(names))
-        aliased = ", ".join(f"{e.format(a='r')} as k{i}" for i, e in enumerate(exprs))
         sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
                 f"where {where.format(a='r')} group by {group} "
                 f"on conflict ({columns}) do update set n = {table}.n + excluded.n; ")
-        if sign < 0:
-            sql += (f"delete from {table} t using (select distinct {aliased} from {source} r {join}) k "
-                    f"where {keys} and t.n <= 0; ")
-    return sql
+    return sql  # Rows that reach 0 stay (readers count n > 0; _counter_triggers purges them at start): a delete is cheaper.
 
 
 async def _counter_triggers(conn) -> None:
@@ -241,6 +236,8 @@ async def _counter_triggers(conn) -> None:
                        "for each statement execute function orion_memory_count_truncate()")
     for old in ("orion_memory_bump_insert", "orion_memory_bump_update", "orion_memory_bump_delete"):
         await conn.execute(f"drop trigger if exists {old} on orion_memory")
+    for table, _, _, _ in _COUNTERS:
+        await conn.execute(f"delete from {table} where n <= 0")
     if await conn.fetchval("select value from orion_memory_meta where key = 'counters_built'"):
         return
     async with conn.transaction():
@@ -1380,24 +1377,19 @@ async def delete_whole_items(user_id: str, item_ids: list[str]) -> list[dict]:
 
 async def _neighbours_of(conn, user_id: str, ids: list[int]) -> list[int]:
     """The text pieces next to the pieces `ids` are about to delete (in their items, in every vector space): the
-    surviving piece before and after each. Their stored vectors were made from windows that hold the deleted text."""
-    rows = [dict(r) for r in await conn.fetch(
-        "select id, item_id, vector_space, copied_from, item_order from orion_memory where user_id = $1 and kind = 'text' "
-        "and not whole and item_id in (select item_id from orion_memory where user_id = $1 and id = any($2::bigint[]) "
-        "and item_id is not null and kind = 'text')", user_id, ids)]
-    asked = {content_key(r) for r in rows if r["id"] in set(ids)}
-    lists: dict[tuple, list[dict]] = {}
-    for r in sorted((r for r in rows if r.get("item_id")), key=order_key):
-        lists.setdefault((r["item_id"], r["vector_space"]), []).append(r)
-    found: set[int] = set()
-    for members in lists.values():
-        kept = [m for m in members if content_key(m) not in asked]
-        positions = [i for i, m in enumerate(members) if content_key(m) in asked]
-        for i in positions:
-            before = next((m for m in reversed(members[:i]) if m in kept), None)
-            after = next((m for m in members[i + 1:] if m in kept), None)
-            found.update(m["id"] for m in (before, after) if m is not None)
-    return sorted(found)
+    surviving piece on either side of each gap. Their stored vectors were made from windows that hold the deleted
+    text. One statement: the items' pieces in order, each flagged dead or alive, a survivor beside a dead one counts."""
+    return [r["id"] for r in await conn.fetch(
+        """with asked as (select coalesce(copied_from, id) as c, item_id from orion_memory where user_id = $1
+                          and id = any($2::bigint[]) and kind = 'text' and not whole and item_id is not null),
+                pieces as (select m.id, coalesce(m.copied_from, m.id) in (select c from asked) as dead,
+                                  lag(coalesce(m.copied_from, m.id) in (select c from asked)) over w as prev_dead,
+                                  lead(coalesce(m.copied_from, m.id) in (select c from asked)) over w as next_dead
+                           from orion_memory m where m.user_id = $1 and m.kind = 'text' and not m.whole
+                           and m.item_id in (select item_id from asked)
+                           window w as (partition by m.item_id, m.vector_space
+                                        order by m.item_order, coalesce(m.copied_from, m.id)))
+           select id from pieces where not dead and (prev_dead or next_dead) order by id""", user_id, ids)]
 
 
 _reembed_tasks: set = set()

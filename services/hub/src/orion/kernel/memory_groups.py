@@ -594,9 +594,9 @@ async def _summary(conn, user_id: str, space) -> dict:
 
 async def _count_summary(conn, user_id: str, space) -> dict:
     rows = await conn.fetch(
-        "select 'total' as part, '' as key, count(distinct g) as n from orion_memory_cnt_group where user_id = $1 "
-        "union all select 'space', s, count(*) from orion_memory_cnt_group where user_id = $1 group by s "
-        "union all select 'kind', kind, count(*) from orion_memory_cnt_item where user_id = $1 group by kind", user_id)
+        "select 'total' as part, '' as key, count(distinct g) as n from orion_memory_cnt_group where user_id = $1 and n > 0 "
+        "union all select 'space', s, count(*) from orion_memory_cnt_group where user_id = $1 and n > 0 group by s "
+        "union all select 'kind', kind, count(*) from orion_memory_cnt_item where user_id = $1 and n > 0 group by kind", user_id)
     total = next((int(x["n"]) for x in rows if x["part"] == "total"), 0)
     per_space = {x["key"]: int(x["n"]) for x in rows if x["part"] == "space"}
     per_kind = {x["key"]: int(x["n"]) for x in rows if x["part"] == "kind"}
@@ -608,9 +608,9 @@ async def _count_summary(conn, user_id: str, space) -> dict:
             if other == space:
                 continue
             mine = [r["c"] for r in await conn.fetch(
-                "select c from orion_memory_cnt_content where user_id = $1 and s = $2", user_id, other)]
+                "select c from orion_memory_cnt_content where user_id = $1 and s = $2 and n > 0", user_id, other)]
             copied = await conn.fetchval(  # Index lookups by the other space's contents: no plan guesses on fresh tables.
-                "select count(*) from orion_memory_cnt_content where user_id = $1 and s = $2 and c = any($3::bigint[])",
+                "select count(*) from orion_memory_cnt_content where user_id = $1 and s = $2 and n > 0 and c = any($3::bigint[])",
                 user_id, space, mine) if mine else 0
             if copied:
                 summary["copied"][other] = int(copied)
