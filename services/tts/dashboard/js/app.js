@@ -6,8 +6,8 @@ let activeEngine = "";
 // A cloned voice's sample is processed again with every sentence: OmniVoice's limits come from /v1/model_info.
 let cloneLimits = null;
 let cloneSeconds = null;
-let stepDefault = 15;
-let cfgDefault = 2.0;
+let stepDefault = 24;
+let cfgDefault = 1.0;
 let tempDefault = null;
 
 // ---------------------------------------------------------------------------
@@ -34,24 +34,22 @@ async function init() {
         document.getElementById('activeModelDisplay').innerText =
             `Aktif Model: ${activeEngine.toUpperCase()} | Donanım: ${devText} | VRAM Tasarrufu: ${lowVramText}`;
 
-        // Guidance: VoxCPM2 gets louder and louder above 4 (it shouts and clicks), so 1-4 with 3 by default there;
-        // OmniVoice keeps 1-10 with 2.
-        // VoxCPM2's "Yaratıcılık" is the Router's 0-2 scale (0 -> guidance 2, 1 -> 3, 2 -> 4; sent as `creativity`);
-        // OmniVoice keeps its guidance of 1-10 with 2.
+        // "Yaratıcılık" is the Router's 0-2 scale on both engines (0 -> guidance 2, 1 -> 3, 2 -> 4; sent as
+        // `creativity`). Above 4 guidance VoxCPM2 shouts and clicks, and OmniVoice is kept on the same range.
         const cfg = document.getElementById('cfgInput');
         if (cfg) {
             const vox = activeEngine.startsWith('voxcpm2');
-            cfg.min = vox ? '0' : '1.0';
-            cfg.max = vox ? '2' : '10.0';
+            cfg.min = '0';
+            cfg.max = '2';
             cfg.step = '0.1';
-            cfgDefault = vox ? (voxDefaults.creativity ?? 1.0) : 2.0;
+            cfgDefault = vox ? (voxDefaults.creativity ?? 1.0) : 1.0;
             cfg.value = String(cfgDefault);
             document.getElementById('cfgVal').innerText = "Varsayılan";
             const label = document.getElementById('cfgLabel');
-            if (label) label.firstChild.textContent = vox ? 'Yaratıcılık (0-2): ' : 'Yaratıcılık (Guidance Scale): ';
+            if (label) label.firstChild.textContent = 'Yaratıcılık (0-2): ';
         }
         // Steps: the engine's own default is where the slider starts and says "Varsayılan".
-        stepDefault = voxDefaults.steps ?? 15;
+        stepDefault = voxDefaults.steps ?? 24;
         const step = document.getElementById('stepInput');
         if (step) step.value = String(stepDefault);
         // Temperature: VoxCPM2 only (0.5-0.9); VoxCPM2 has no speed setting.
@@ -212,15 +210,15 @@ function setupEventListeners() {
         const display = document.getElementById(`${id}Val`);
         if (input && display) {
             input.oninput = () => {
-                const def = { step: stepDefault, cfg: cfgDefault, temp: tempDefault }[id];
+                const def = { speed: 1.0, step: stepDefault, cfg: cfgDefault, temp: tempDefault }[id];
                 display.innerText = def !== undefined && parseFloat(input.value) === def ? "Varsayılan" : input.value;
             };
         }
     });
 
     // Every engine keeps its own settings: what was set for one is not carried over to the other (per browser).
-    // v3: the defaults changed (VoxCPM2 steps 15, randomness 0.85); values kept from before are not carried over.
-    const store = id => `orionTts:v3:${activeEngine}:${id}`;
+    // v4: speed and creativity are 0-2 scales on OmniVoice too, its steps start at 24 (v3: VoxCPM2 steps 15, randomness 0.85); values kept from before are not carried over.
+    const store = id => `orionTts:v4:${activeEngine}:${id}`;
     ['speed', 'cfg', 'step', 'temp', 'seed'].forEach(id => {
         const input = document.getElementById(`${id}Input`);
         if (!input) return;
@@ -325,9 +323,7 @@ async function startGeneration(isStream) {
         voice: finalVoice,
         model: finalInstruct,
         speed: parseFloat(document.getElementById('speedInput').value),
-        ...(activeEngine.startsWith('voxcpm2')
-            ? { creativity: parseFloat(document.getElementById('cfgInput').value) }
-            : { guidance_scale: parseFloat(document.getElementById('cfgInput').value) }),
+        creativity: parseFloat(document.getElementById('cfgInput').value),
         steps: parseInt(document.getElementById('stepInput').value),
         ...(activeEngine.startsWith('voxcpm2')
             ? { temperature: parseFloat(document.getElementById('tempInput').value) } : {}),

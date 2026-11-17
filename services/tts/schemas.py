@@ -6,7 +6,7 @@ class SpeechRequest(BaseModel):
     input: str
     voice: Optional[str] = ""
     response_format: Optional[str] = "wav"
-    speed: Optional[float] = 1.0
+    speed: Optional[float] = 1.0  # OmniVoice: a 0-2 scale like creativity (0 -> 0.9, 1 -> 1.1, 2 -> 1.5)
     language: Optional[str] = "Auto"
     seed: Optional[int] = -1
     

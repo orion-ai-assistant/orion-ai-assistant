@@ -259,9 +259,13 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
             # 0 -> 2, 1 -> 3, 2 -> 4. Clamp out-of-range callers before mapping.
             level = min(2.0, max(0.0, float(speech_request.creativity)))
             guidance = level + 2.0
+        # Speed is a 0-2 scale like creativity: 0 -> 0.9, 1 -> 1.1, 2 -> 1.5. OmniVoice speaks oddly below 0.9 (it says
+        # words wrong and starts over) and 1.1 sounds most natural, so the middle of the scale is 1.1, not 1.0.
+        speed_level = min(2.0, max(0.0, float(1.0 if speech_request.speed is None else speech_request.speed)))
+        speed_val = 0.9 + speed_level * 0.2 if speed_level <= 1.0 else 1.1 + (speed_level - 1.0) * 0.4
         # VoxCPM2: whatever the request leaves out (steps, guidance, temperature, seed) is the engine's own default,
-        # all of them in one place (engines.py, VOXCPM2_DEFAULTS). The other engines keep the 15 steps they always got.
-        steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 15)
+        # all of them in one place (engines.py, VOXCPM2_DEFAULTS). OmniVoice's is 24 (the 8810 page starts there too).
+        steps_val = speech_request.steps or (None if engine_name_env == "voxcpm2-gguf" else 24)
         if guidance is None and engine_name_env != "voxcpm2-gguf":
             guidance = 3.0  # Default creativity 1.0 mapped to local TTS guidance 3.0.
         generic_model_names = {"local-model", "local-tts", "tts-1", "tts-1-hd", "omnivoice", "omnivoice-gguf", "voxcpm", "voxcpm2", "voxcpm2-gguf", "default", "none"}
@@ -285,7 +289,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
 
                 stream_gen = tts.generate_stream(
                     text=speech_request.input, voice_cache=voice_cache, voice_name=voice_label, instruct=instruct_val or "",
-                    speed=speech_request.speed, guidance_scale=guidance,
+                    speed=speed_val, guidance_scale=guidance,
                     steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
@@ -313,7 +317,7 @@ async def create_speech(speech_request: SpeechRequest, request: Request):
                 sr, audio_data = await run_in_threadpool(
                     tts.generate,
                     text=speech_request.input, voice_cache=voice_cache, voice_name=voice_label, instruct=instruct_val or "",
-                    speed=speech_request.speed, guidance_scale=guidance,
+                    speed=speed_val, guidance_scale=guidance,
                     steps=steps_val, seed=speech_request.seed, language=speech_request.language,
                     abort_event=abort_event, **extra
                 )
