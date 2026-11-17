@@ -1325,6 +1325,9 @@ async def _reembed(user_id: str, ids: list[int], settings) -> None:
     in the active model's space; the items' whole vectors follow."""
     from orion.kernel.memory_pieces import windows_of
     try:
+        if settings is None:
+            from orion.kernel.config import get_runtime_settings
+            settings = await get_runtime_settings(None, user_id)
         target, space, local = await embedding_target(settings)
         conn = await _connect()
         try:
@@ -1367,7 +1370,7 @@ async def delete_items(user_id: str, ids: list[int], settings=None) -> list[dict
                                "and id = any($2::bigint[]))", ids)
     finally:
         await conn.close()
-    if neighbours and settings is not None:
+    if neighbours:  # After the commit; the job resolves its own settings and never fails the delete.
         _schedule_reembed(user_id, neighbours, settings)
     asked = set(ids)
     return [{"id": r["id"], "text": r["text"]} for r in rows if r["id"] in asked]

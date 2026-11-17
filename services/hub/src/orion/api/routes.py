@@ -526,7 +526,7 @@ async def memory_item_frame(item_id: int, request: Request, at: float | None = N
 async def delete_memory_item(item_id: int, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory
     try:
-        deleted = await memory.delete_items(current_user, [item_id], await get_runtime_settings(None, current_user))
+        deleted = await memory.delete_items(current_user, [item_id])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if not deleted:
@@ -576,8 +576,7 @@ async def memory_item_media(item_id: int, request: Request, current_user: str = 
 async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory, memory_groups
     try:
-        deleted = [row["id"] for row in await memory.delete_items(
-            current_user, payload.ids, await get_runtime_settings(None, current_user))]
+        deleted = [row["id"] for row in await memory.delete_items(current_user, payload.ids)]
         deleted += [row["id"] for row in await memory.delete_whole_items(current_user, payload.item_ids)]
         deleted += [row["id"] for row in await memory_groups.delete_groups(current_user, payload.group_ids)]
     except memory.MemoryUnavailable as exc:
