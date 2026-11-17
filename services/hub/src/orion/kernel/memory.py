@@ -87,7 +87,8 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("drop index if exists idx_orion_memory_user")
             for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint",
                            "item_id text", "whole boolean not null default false", "span_start real", "span_end real",
-                           "track text", "caption text", "item_order bigint", "source_message_last bigint"):
+                           "track text", "caption text", "item_order bigint", "source_message_last bigint", "folded text",
+                           "caption_folded text"):
                 await conn.execute(f"alter table orion_memory add column if not exists {column}")
             await conn.execute("create index if not exists idx_orion_memory_group on orion_memory (user_id, group_id)")
             await conn.execute("create index if not exists idx_orion_memory_content on orion_memory "
@@ -155,6 +156,7 @@ async def ensure_memory_table(conn) -> None:
                 await conn.execute("insert into orion_memory_meta (key, value) values ('groups_backfilled', 'yes') "
                                    "on conflict do nothing")
             await backfill_message_last(conn)
+            await _fold_columns(conn)
             await _counter_triggers(conn)
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
@@ -205,10 +207,23 @@ def _count_sql(source: str, sign: int, other: str | None = None) -> str:
     return sql  # Rows that reach 0 stay (readers count n > 0; _counter_triggers purges them at start): a delete is cheaper.
 
 
+def _bump(source: str) -> str:
+    return (f"insert into orion_memory_version (user_id, n) select distinct r.user_id, 1 from {source} r "
+            "on conflict (user_id) do update set n = orion_memory_version.n + 1; ")
+
+
+async def memory_version(conn, user_id: str) -> int:
+    """A per-user write counter, bumped by the same statement triggers that keep the counters: what the cached summary
+    is valid for."""
+    return int(await conn.fetchval("select n from orion_memory_version where user_id = $1", user_id) or 0)
+
+
 async def _counter_triggers(conn) -> None:
     """The counter tables, their triggers and, once, their first fill from the rows that exist (marker
     'counters_built'). Insert, delete and update (only rows whose counted columns changed) adjust them per statement;
     truncate empties them."""
+    await conn.execute("create table if not exists orion_memory_version (user_id text primary key, n bigint not null "
+                       "default 0)")
     for table, names, _, _ in _COUNTERS:
         columns = ", ".join(f"{c} {_COLUMN_TYPES[c]} not null" for c in names)
         await conn.execute(f"create table if not exists {table} ({columns}, n integer not null, "
@@ -217,10 +232,10 @@ async def _counter_triggers(conn) -> None:
     await conn.execute("create index if not exists idx_orion_memory_cnt_content_space on orion_memory_cnt_content "
                        "(user_id, s, c)")
     bodies = {
-        "insert": ("new table as new_rows", _count_sql("new_rows", 1)),
-        "delete": ("old table as old_rows", _count_sql("old_rows", -1)),
+        "insert": ("new table as new_rows", _count_sql("new_rows", 1) + _bump("new_rows")),
+        "delete": ("old table as old_rows", _count_sql("old_rows", -1) + _bump("old_rows")),
         "update": ("old table as old_rows new table as new_rows",
-                   _count_sql("old_rows", -1, "new_rows") + _count_sql("new_rows", 1, "old_rows")),
+                   _count_sql("old_rows", -1, "new_rows") + _count_sql("new_rows", 1, "old_rows") + _bump("new_rows")),
     }
     for event, (referencing, body) in bodies.items():
         await conn.execute(f"create or replace function orion_memory_count_{event}() returns trigger language plpgsql as "
@@ -230,6 +245,7 @@ async def _counter_triggers(conn) -> None:
                            f"referencing {referencing} for each statement execute function orion_memory_count_{event}()")
     await conn.execute("create or replace function orion_memory_count_truncate() returns trigger language plpgsql as "
                        "$$ begin truncate orion_memory_cnt_group, orion_memory_cnt_item, orion_memory_cnt_content; "
+                       "update orion_memory_version set n = n + 1; "
                        "return null; end $$")
     await conn.execute("drop trigger if exists orion_memory_count_truncate on orion_memory")
     await conn.execute("create trigger orion_memory_count_truncate after truncate on orion_memory "
@@ -257,12 +273,6 @@ INDEX_DELAY = 5.0  # Seconds after the first use before the background index bui
 _index_task = None
 
 
-# The trigram index is named by its expression: a changed fold builds a new index and drops the old ones.
-def trgm_index() -> str:
-    import hashlib
-    return "idx_orion_memory_trgm_" + hashlib.sha1(FOLD_SQL.encode()).hexdigest()[:8]
-
-
 def _index_plan() -> list[tuple[str, str]]:
     plan = [("idx_orion_memory_item", "create index concurrently if not exists idx_orion_memory_item on orion_memory "
                                       "(user_id, item_id)"),
@@ -273,8 +283,12 @@ def _index_plan() -> list[tuple[str, str]]:
             ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
                                      "using hnsw (embedding vector_cosine_ops)")]
     if _trgm:
-        plan.append((trgm_index(), f"create index concurrently if not exists {trgm_index()} on "
-                                   f"orion_memory using gin (({FOLD_SQL}) gin_trgm_ops)"))
+        plan.append(("idx_orion_memory_folded_trgm", "create index concurrently if not exists "
+                                                     "idx_orion_memory_folded_trgm on orion_memory "
+                                                     "using gin (folded gin_trgm_ops)"))
+        plan.append(("idx_orion_memory_cfolded_trgm", "create index concurrently if not exists "
+                                                      "idx_orion_memory_cfolded_trgm on orion_memory "
+                                                      "using gin (caption_folded gin_trgm_ops)"))
     return plan
 
 
@@ -340,10 +354,9 @@ async def _build_indexes() -> None:
                 finally:
                     watcher.cancel()
                 logger.info("Memory: index %s ready after %.0fs", name, time.monotonic() - started)
-                if name == trgm_index():
+                if name == "idx_orion_memory_folded_trgm":  # The earlier expression indexes are not used any more.
                     for old in await conn.fetch("select c.relname from pg_class c where c.relkind = 'i' and "
-                                                "c.relname ~ '^idx_orion_memory_trgm' and c.relname <> $1",
-                                                trgm_index()):
+                                                "c.relname ~ '^idx_orion_memory_trgm'"):
                         await conn.execute(f'drop index concurrently if exists "{old["relname"]}"')
         finally:
             await conn.execute("reset maintenance_work_mem")
@@ -527,6 +540,31 @@ def chat_paragraphs(messages: list[dict], ids: list | None = None) -> list[tuple
 def chat_text(messages: list[dict]) -> str:
     """The readable user and assistant text of a chat, one paragraph per message."""
     return "\n\n".join(text for _, text in chat_paragraphs(messages))
+
+
+async def _fold_columns(conn) -> None:
+    """`folded` (and `caption_folded`): the words of a row folded by fold(), kept for the trigram indexes. A trigger
+    fills it for a row stored without one; rows from before it existed are folded here once, in batches (marker)."""
+    await conn.execute(
+        "create or replace function orion_memory_fold() returns trigger language plpgsql as $$ begin "
+        f"if new.folded is null then new.folded := {FOLD_FALLBACK_SQL.format(col='new.text')}; end if; "
+        "if new.caption_folded is null and new.caption is not null then "
+        f"new.caption_folded := {FOLD_FALLBACK_SQL.format(col='new.caption')}; end if; return new; end $$")
+    await conn.execute("drop trigger if exists orion_memory_fold on orion_memory")
+    await conn.execute("create trigger orion_memory_fold before insert on orion_memory for each row "
+                       "execute function orion_memory_fold()")
+    if await conn.fetchval("select value from orion_memory_meta where key = 'folded_built'"):
+        return
+    last = 0
+    while True:
+        rows = await conn.fetch("select id, text, caption from orion_memory where id > $1 order by id limit 2000", last)
+        if not rows:
+            break
+        last = rows[-1]["id"]
+        await conn.executemany("update orion_memory set folded = $2, caption_folded = $3 where id = $1",
+                               [(r["id"], fold(r["text"]), None if r["caption"] is None else fold(r["caption"]))
+                                for r in rows])
+    await conn.execute("insert into orion_memory_meta (key, value) values ('folded_built', 'yes') on conflict do nothing")
 
 
 async def backfill_message_last(conn) -> int:
@@ -734,8 +772,9 @@ def whole_label(item: dict, pieces: list[dict]) -> str:
 ROW_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
     "media_id, media_mime, media_seconds, group_id, source_chat_id, source_message_id, item_id, whole, span_start, "
-    "span_end, track, caption, item_order, source_message_last) "
-    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21) "
+    "span_end, track, caption, item_order, source_message_last, folded, caption_folded) "
+    "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, "
+    "$22, $23) "
     "returning id")
 
 
@@ -765,12 +804,15 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
                          "track": track, "whole": True, "seconds": members[0].get("seconds")})
     stored = 0
     for piece in rows:
+        text = piece["text"][:1000] if item["kind"] != "text" or piece.get("whole") else piece["text"]
+        caption = item.get("caption") or None
         row_id = await conn.fetchval(
-            ROW_SQL, user_id, piece["text"][:1000] if item["kind"] != "text" or piece.get("whole") else piece["text"],
+            ROW_SQL, user_id, text,
             space, _vector(piece["vector"]), item.get("source_kind") or "manual", item.get("title") or None,
             item["kind"], item.get("media_id"), item.get("mime"), piece.get("seconds"), group, item.get("chat_id"),
             piece.get("message_id", item.get("message_id")), item_id, bool(piece.get("whole")), piece.get("span_start"), piece.get("span_end"),
-            piece.get("track"), (item.get("caption") or None), order, piece.get("message_last", item.get("message_last")))
+            piece.get("track"), caption, order, piece.get("message_last", item.get("message_last")), fold(text),
+            None if caption is None else fold(caption))
         if item.get("media_id"):
             await link_media(item["media_id"], "memory", str(row_id), conn=conn)
         stored += 1
@@ -797,7 +839,8 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
         row_id = await conn.fetchval(
             ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
             row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
-            row["span_end"], row["track"], caption or None, order, None)
+            row["span_end"], row["track"], caption or None, order, None, fold(row["text"]),
+            fold(caption) if caption else None)
         await link_media(media_id, "memory", str(row_id), conn=conn)
     return len(rows)
 
@@ -1128,39 +1171,23 @@ TEXT_MATCH_CHARS = 200  # Longer queries match by meaning only: a word-for-word 
 TEXT_CAP = 100  # Text matches taken per search.
 FUZZY_MIN = 0.45  # Word similarity from which a near spelling counts ("selam nabe" ~ "selam naber"): SQL and Python.
 FALLBACK_ROWS = 5000  # Rows the Python fallback (no pg_trgm) compares, newest first: a cost cap; older rows match by substring only.
-_FOLD_RANGES = ((0x41, 0x24F), (0x370, 0x3FF), (0x400, 0x52F), (0x531, 0x556), (0x1E00, 0x1EFF))  # Latin, Greek, Cyrillic, Armenian
-_TR_TO_ASCII = {"ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u", "â": "a", "î": "i", "û": "u"}
-
-
-def _fold_table() -> dict[str, str]:
-    """Every cased letter of the ranges above to its small, Turkish-ASCII form (İ/I/ı→i, Ç→c, Ş→s; Д→д; ß stays).
-    One table builds the Python fold and the SQL one, so they cannot differ (a database lower() follows its
-    locale: a C-locale one knows only ASCII)."""
-    table = {"İ": "i"}
-    for first, last in _FOLD_RANGES:
-        for code in range(first, last + 1):
-            char = chr(code)
-            small = char.lower()
-            if len(small) != 1:
-                continue
-            small = _TR_TO_ASCII.get(small, small)
-            if small != char:
-                table[char] = small
-    table.update(_TR_TO_ASCII)
-    return table
-
-
-_FOLD_TABLE = _fold_table()
-_FOLD = str.maketrans(_FOLD_TABLE)
-FOLD_SQL = f"translate(text, '{''.join(_FOLD_TABLE)}', '{''.join(_FOLD_TABLE.values())}')"
+_TR_UPPER, _TR_LOWER = "İIÇŞĞÖÜ", "iıçşğöü"
+_TR_LETTERS, _TR_ASCII = "çğıöşüâîû", "cgiosuaiu"
+_FOLD = str.maketrans(_TR_UPPER + _TR_LETTERS, _TR_LOWER.translate(str.maketrans(_TR_LETTERS, _TR_ASCII)) + _TR_ASCII)
+# The same fold for a row inserted without one (a safety net: every insert path of this module sets `folded` itself).
+FOLD_FALLBACK_SQL = ("lower(translate(translate({col}, '" + _TR_UPPER + "', '" + _TR_LOWER + "'), '" + _TR_LETTERS
+                     + "', '" + _TR_ASCII + "'))")
 _COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
             "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, span_start, "
             "span_end, track, caption, item_order")
 
 
 def fold(text: str) -> str:
-    """The text as the database folds it (FOLD_SQL): small letters, Turkish letters without their marks."""
-    return text.translate(_FOLD)
+    """THE fold of words for matching: Turkish letters without their marks (İ/I/ı→i, Ş/ş→s...), then Python's
+    lower() for every other script (German, Cyrillic...). It is computed here, once, when a row is stored (the
+    `folded` and `caption_folded` columns, which the trigram indexes cover) and for the query: a database lower()
+    follows its locale, so SQL never folds."""
+    return text.translate(_FOLD).lower()
 
 
 def like_pattern(folded: str) -> str:
@@ -1213,16 +1240,17 @@ def _score_sql(params: list, space, vector) -> str:
     return f"case when vector_space = ${len(params) - 1} then 1 - (embedding <=> ${len(params)}::vector) end"
 
 
-async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, space=None, vector=None) -> list[dict]:
+async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, space=None, vector=None,
+                     fuzzy: bool = True) -> list[dict]:
     """This user's rows whose text has `q` (Turkish case folding) or a near spelling of it, best first. Each row has
     'tmatch' ('text' for a substring, 'similar' for a near spelling), 'tscore' (1 for a substring) and 'score'
-    (its meaning score in the current space, else None)."""
+    (its meaning score in the current space, else None). `fuzzy` False: substrings only (a keyword search)."""
     folded = fold(q)
     like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-    params = [user_id, like] + ([folded] if _trgm else [])
+    params = [user_id, like] + ([folded] if _trgm and fuzzy else [])
     score = _score_sql(params, space, vector)
     extra = filters_sql(vector_space, kind, params)
-    if _trgm:
+    if _trgm and fuzzy:
         # `like` and `<%` (word_similarity >= the threshold set here) are the operators the GIN trigram index
         # answers; one row per memory is chosen in SQL, so the cap counts memories, not their pieces.
         group = "coalesce(group_id, 'r' || id::text)"
@@ -1230,21 +1258,21 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
             await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{FUZZY_MIN}', true)")
             rows = await conn.fetch(
                 f"select * from (select distinct on ({group}) {_COLUMNS}, {score} as score, "
-                f"case when {FOLD_SQL} like $2 then 1.0 else word_similarity($3, {FOLD_SQL}) end as tscore "
-                f"from orion_memory where user_id = $1 and not whole and ({FOLD_SQL} like $2 or $3 <% {FOLD_SQL})"
+                f"case when folded like $2 then 1.0 else word_similarity($3, folded) end as tscore "
+                f"from orion_memory where user_id = $1 and not whole and (folded like $2 or $3 <% folded)"
                 f"{extra} order by {group}, tscore desc, created_at desc, id desc) best "
                 f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP}", *params)
         return [{**dict(r), "tmatch": "text" if float(r["tscore"]) >= 1 else "similar"} for r in rows]
     rows = [{**dict(r), "tscore": 1.0, "tmatch": "text"} for r in await conn.fetch(
-        f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and not whole and {FOLD_SQL} like $2"
+        f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and not whole and folded like $2"
         f"{extra} order by created_at desc, id desc limit {TEXT_CAP}", *params)]
-    if len(rows) >= TEXT_CAP:
+    if len(rows) >= TEXT_CAP or not fuzzy:
         return rows
     plain = [user_id, like]
     extra = filters_sql(vector_space, kind, plain)
     near = []
     for r in await conn.fetch(
-            f"select id, {FOLD_SQL} as folded from orion_memory where user_id = $1 and not whole and not ({FOLD_SQL} like $2)"
+            f"select id, folded from orion_memory where user_id = $1 and not whole and not (folded like $2)"
             f"{extra} order by created_at desc, id desc limit {FALLBACK_ROWS}", *plain):
         similarity = word_similarity(folded, r["folded"])
         if similarity >= FUZZY_MIN:

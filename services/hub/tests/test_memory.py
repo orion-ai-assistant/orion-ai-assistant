@@ -40,7 +40,7 @@ class FakeConn:
         self.inserted.extend(rows)
 
     async def fetch(self, sql, *args):
-        if 'where group_id is null' in sql:  # The group backfill: nothing to do.
+        if 'where group_id is null' in sql or 'where id > $1' in sql:  # The group and fold backfills: nothing to do.
             return []
         if 'content_hash = any' in sql:  # The batched duplicate check: the known texts among the asked hashes.
             import hashlib
@@ -308,7 +308,7 @@ def test_an_empty_or_too_long_note_is_a_turkish_400(monkeypatch, text, message):
 
 class ListConn(FakeConn):
     async def fetch(self, sql, *args):
-        if 'where group_id is null' in sql:
+        if 'where group_id is null' in sql or 'where id > $1' in sql:
             return []
         self.fetch_args = args
         if 'group by vector_space' in sql:

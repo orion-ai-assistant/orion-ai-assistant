@@ -143,16 +143,27 @@ class RankTests(PostgresMemoryCase):
                     self.assertEqual(pasted, dropped)
         self.assertEqual({kind for text, kind in calls if len(text) > memory.TEXT_MATCH_CHARS}, {'document'})
 
-    async def test_python_and_sql_fold_the_same_letters(self):
-        samples = ['İSTANBUL ÇIĞ ÖĞRENCİ ÜNLÜ', 'ışık Işık şeker', 'Straße ÄÖÜ äöü', 'ДОМ Привет ЁЖ', 'ΣΟΦΙΑ Ελλάδα',
-                   'Ǆ ǅ ǆ', 'ÂÎÛ âîû', 'plain ASCII 123 %_']
+    async def test_the_words_are_folded_once_in_python_for_any_script(self):
+        samples = ['İSTANBUL ÇIĞ ÖĞRENCİ ÜNLÜ', 'ışık Işık şeker', 'Straße ÄÖÜ äöü', 'ДОМ Привет ЁЖ', 'ΣΟΦΙΑ Ελλάδα']
         conn = await registry._connect()
         try:
-            for text in samples:
-                self.assertEqual(await conn.fetchval(f"select {memory.FOLD_SQL.replace('text', '$1::text', 1)}", text),
-                                 memory.fold(text), text)
+            async with conn.transaction():
+                for k, text in enumerate(samples):
+                    await memory.insert_item(conn, 'alice', SPACE, f'g{k}', {'kind': 'text', 'source_kind': 'manual'},
+                                             [{'text': text, 'vector': vec(0.5, 2 + k)}])
+            stored = {r['text']: r['folded'] for r in await conn.fetch('select text, folded from orion_memory')}
+            self.assertEqual(stored, {t: memory.fold(t) for t in samples})
+            # An old row (no folded yet) is folded by the one-time backfill, with the same function.
+            await conn.execute("update orion_memory set folded = null")
+            await conn.execute("delete from orion_memory_meta where key = 'folded_built'")
+            await memory._fold_columns(conn)
+            stored = {r['text']: r['folded'] for r in await conn.fetch('select text, folded from orion_memory')}
         finally:
             await conn.close()
+        self.assertEqual(stored, {t: memory.fold(t) for t in samples})
+        self.assertEqual(memory.fold('ДОМ'), 'дом')
+        found = await memory_groups.list_groups('alice', self.settings, q='дом', limit=10)
+        self.assertEqual([g['match'] for g in found['groups'] if g['match'] == 'text'], ['text'])
 
     async def test_one_fuzzy_threshold_for_sql_and_python(self):
         self.assertFalse(hasattr(memory, 'FUZZY_MIN_PY'))
