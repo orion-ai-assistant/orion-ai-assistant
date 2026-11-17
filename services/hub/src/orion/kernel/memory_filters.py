@@ -16,7 +16,6 @@ from orion.kernel import memory
 EXCLUDE_Z = 2.0  # Standing this many spreads above a "benzemesin" input's mean against all memories: out.
 MIN_POOL = 8  # Fewer memories than this: too few to measure (no cue, nothing left out by meaning).
 SPREAD_FLOOR = 0.02  # The least spread a query's pool is taken to have (a tiny memory).
-CAPTION_FOLD = memory.FOLD_SQL.replace("(text,", "(coalesce(caption, ''),")
 
 
 def calibrate(scores: list[float]) -> tuple[float, float] | None:
@@ -75,7 +74,7 @@ async def keyword_groups(conn, user_id: str, keyword: str) -> set[str]:
     like = memory.like_pattern(folded)
     return {r["g"] for r in await conn.fetch(
         f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
-        f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like)}
+        f"(folded like $2 or caption_folded like $2)", user_id, like)}
 
 
 async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
@@ -91,7 +90,7 @@ async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
         like = memory.like_pattern(folded)
         for r in await conn.fetch(
                 f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
-                f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like):
+                f"(folded like $2 or caption_folded like $2)", user_id, like):
             out.add(r["g"])
         if space:
             _, vector, _ = await memory._query_vector(term, settings)

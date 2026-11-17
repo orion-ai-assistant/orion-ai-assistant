@@ -171,12 +171,12 @@ def text_pieces(text: str, core_tokens: int = TEXT_CORE_TOKENS,
 
 
 def chat_pieces(messages: list[str], core_tokens: int = TEXT_CORE_TOKENS,
-                context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str, int]]:
-    """(core, window, first) of each piece of a chat transcript, split on message boundaries: a turn (a user message
+                context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str, int, int]]:
+    """(core, window, first, last) of each piece of a chat transcript, split on message boundaries: a turn (a user message
     with the answers that follow it) is kept whole while it fits a core; a longer turn is split between its
     messages; one message alone longer than a core is split inside (chunk_text: paragraphs, then sentences). Cores
     pack whole turns up to core_tokens; windows are windows_of the cores. `first`: the index in `messages` of the
-    message the core starts with (exact, however many messages repeat the same words). `messages`: one string per
+    message the core starts with and `last` the one it ends in (exact, however many messages repeat the same words). `messages`: one string per
     message ("Kullanıcı: ...", "Asistan: ..."), a user message starting a turn."""
     from orion.worker.services.router import chunk_text, estimate_tokens
     turns: list[list[tuple[int, str]]] = []
@@ -184,32 +184,33 @@ def chat_pieces(messages: list[str], core_tokens: int = TEXT_CORE_TOKENS,
         if not turns or message.startswith("Kullanıcı:"):
             turns.append([])
         turns[-1].append((index, message))
-    units: list[tuple[int, str]] = []  # (the message it starts in, text)
+    units: list[tuple[int, int, str]] = []  # (the message it starts in, the one it ends in, text)
     for turn in turns:
         whole = "\n\n".join(m for _, m in turn)
         if estimate_tokens(whole) <= core_tokens:
-            units.append((turn[0][0], whole))
+            units.append((turn[0][0], turn[-1][0], whole))
             continue
         for index, message in turn:
             if estimate_tokens(message) <= core_tokens:
-                units.append((index, message))
+                units.append((index, index, message))
             else:
-                units.extend((index, chunk) for chunk in chunk_text(message, core_tokens))
-    cores: list[tuple[str, int]] = []
-    current, first, tokens = [], 0, 0
-    for index, unit in units:
+                units.extend((index, index, chunk) for chunk in chunk_text(message, core_tokens))
+    cores: list[tuple[str, int, int]] = []
+    current, first, last, tokens = [], 0, 0, 0
+    for index, end, unit in units:
         cost = estimate_tokens(unit)
         if current and tokens + cost > core_tokens:
-            cores.append(("\n\n".join(current), first))
+            cores.append(("\n\n".join(current), first, last))
             current, tokens = [], 0
         if not current:
             first = index
         current.append(unit)
+        last = end
         tokens += cost
     if current:
-        cores.append(("\n\n".join(current), first))
-    texts = [core for core, _ in cores]
-    return [(core, window, first) for (core, first), window in zip(cores, windows_of(texts, context_tokens))]
+        cores.append(("\n\n".join(current), first, last))
+    texts = [core for core, _, _ in cores]
+    return [(core, window, first, last) for (core, first, last), window in zip(cores, windows_of(texts, context_tokens))]
 
 
 # --- Audio ----------------------------------------------------------------------------------------------------------

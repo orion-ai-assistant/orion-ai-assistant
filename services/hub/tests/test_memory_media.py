@@ -241,7 +241,7 @@ def test_audio_pieces_cut_130_seconds_into_three_wav_pieces_with_real_pyav():
 
 class DeleteConn(Conn):
     async def fetch(self, sql, *args):
-        if 'where group_id is null' in sql:
+        if 'where group_id is null' in sql or 'where id > $1' in sql:
             return []
         self.delete_args = args
         return [{'id': 7, 'text': 'kedi.jpg', 'media_id': IMG}, {'id': 8, 'text': 'not', 'media_id': None}]

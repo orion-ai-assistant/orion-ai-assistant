@@ -143,16 +143,27 @@ class RankTests(PostgresMemoryCase):
                     self.assertEqual(pasted, dropped)
         self.assertEqual({kind for text, kind in calls if len(text) > memory.TEXT_MATCH_CHARS}, {'document'})
 
-    async def test_python_and_sql_fold_the_same_letters(self):
-        samples = ['İSTANBUL ÇIĞ ÖĞRENCİ ÜNLÜ', 'ışık Işık şeker', 'Straße ÄÖÜ äöü', 'ДОМ Привет ЁЖ', 'ΣΟΦΙΑ Ελλάδα',
-                   'Ǆ ǅ ǆ', 'ÂÎÛ âîû', 'plain ASCII 123 %_']
+    async def test_the_words_are_folded_once_in_python_for_any_script(self):
+        samples = ['İSTANBUL ÇIĞ ÖĞRENCİ ÜNLÜ', 'ışık Işık şeker', 'Straße ÄÖÜ äöü', 'ДОМ Привет ЁЖ', 'ΣΟΦΙΑ Ελλάδα']
         conn = await registry._connect()
         try:
-            for text in samples:
-                self.assertEqual(await conn.fetchval(f"select {memory.FOLD_SQL.replace('text', '$1::text', 1)}", text),
-                                 memory.fold(text), text)
+            async with conn.transaction():
+                for k, text in enumerate(samples):
+                    await memory.insert_item(conn, 'alice', SPACE, f'g{k}', {'kind': 'text', 'source_kind': 'manual'},
+                                             [{'text': text, 'vector': vec(0.5, 2 + k)}])
+            stored = {r['text']: r['folded'] for r in await conn.fetch('select text, folded from orion_memory')}
+            self.assertEqual(stored, {t: memory.fold(t) for t in samples})
+            # An old row (no folded yet) is folded by the one-time backfill, with the same function.
+            await conn.execute("update orion_memory set folded = null")
+            await conn.execute("delete from orion_memory_meta where key = 'folded_v2'")
+            await memory._fold_columns(conn)
+            stored = {r['text']: r['folded'] for r in await conn.fetch('select text, folded from orion_memory')}
         finally:
             await conn.close()
+        self.assertEqual(stored, {t: memory.fold(t) for t in samples})
+        self.assertEqual(memory.fold('ДОМ'), 'дом')
+        found = await memory_groups.list_groups('alice', self.settings, q='дом', limit=10)
+        self.assertEqual([g['match'] for g in found['groups'] if g['match'] == 'text'], ['text'])
 
     async def test_one_fuzzy_threshold_for_sql_and_python(self):
         self.assertFalse(hasattr(memory, 'FUZZY_MIN_PY'))
@@ -194,7 +205,7 @@ class RankTests(PostgresMemoryCase):
             windows.append(text)
             return [[1.0] + [0.0] * 767]
         target = (SimpleNamespace(router_model_group='e'), SPACE, True)
-        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=[target])):
             await memory.delete_items('alice', [rows[1]], self.settings)
             await asyncio.gather(*memory._reembed_tasks)
         self.assertEqual(len(windows), 2)  # The piece before and the piece after.
@@ -214,10 +225,11 @@ class RankTests(PostgresMemoryCase):
         messages = ['Kullanıcı: tamam', 'Asistan: ' + 'cevap ' * 400, 'Kullanıcı: tamam', 'Asistan: ' + 'başka ' * 400,
                     'Kullanıcı: tamam', 'Asistan: kısa']
         pieces = memory_pieces.chat_pieces(messages)
-        firsts = [first for _, _, first in pieces]
+        firsts = [first for _, _, first, _ in pieces]
         self.assertEqual(firsts, sorted(firsts))
         self.assertEqual(firsts[0], 0)
-        for core, _, first in pieces:  # Exact: the core starts inside the message it points at.
+        for core, _, first, last in pieces:
+            self.assertGreaterEqual(last, first)  # Exact: the core starts inside the message it points at.
             self.assertIn(core[:30], messages[first], (first, core[:40]))
         self.assertIn(3, firsts)  # Not confused with the earlier message that repeats the same words.
 
@@ -248,3 +260,199 @@ class RankTests(PostgresMemoryCase):
             self.assertTrue(await conn.fetchval("select 1 from orion_memory_meta where key = 'groups_backfilled'"))
         finally:
             await conn.close()
+
+    async def test_chat_pieces_keep_their_end_message_and_old_rows_are_backfilled(self):
+        messages = ['Kullanıcı: tamam', 'Asistan: ' + 'cevap ' * 400, 'Kullanıcı: tamam', 'Asistan: ' + 'başka ' * 400]
+        pieces = memory_pieces.chat_pieces(messages)
+        self.assertEqual(pieces[-1][3], 3)
+        self.assertTrue(all(a[3] <= b[3] and a[2] <= b[2] for a, b in zip(pieces, pieces[1:])))
+        conn = await registry._connect()
+        try:
+            ids = [await conn.fetchval(
+                "insert into orion_chat_messages (chat_id, role, content_json, created_at) values ('chat', 'user', '{}', "
+                "timestamptz '2026-10-31' + $1 * interval '1 minute') returning id", k) for k in range(6)]
+            first = await self.add('parça bir', group='g', source='chat_save', chat='chat', message=ids[1])
+            second = await self.add('parça iki', group='g', source='chat_save', chat='chat', message=ids[4], minute=1)
+            await conn.execute("update orion_memory set item_id = 'it', item_order = id where group_id = 'g'")
+            await conn.execute("delete from orion_memory_meta where key = 'message_last_backfilled'")
+            self.assertEqual(await memory.backfill_message_last(conn), 2)
+            self.assertEqual(await memory.backfill_message_last(conn), 0)  # Once.
+            lasts = {r['id']: r['source_message_last'] for r in
+                     await conn.fetch('select id, source_message_last from orion_memory')}
+        finally:
+            await conn.close()
+        self.assertEqual(lasts[first], ids[3])   # Up to the message before the next piece starts.
+        self.assertEqual(lasts[second], ids[5])  # The last piece: to the chat's last message at save time.
+
+    async def test_a_deleted_pieces_words_leave_the_neighbours_in_every_model(self):
+        other = 'jina-v5'
+        originals, copies = [], []
+        for k, text in enumerate(('birinci parça', 'ikinci parça', 'üçüncü parça')):
+            originals.append(await self.add(text, score=0.9, axis=2 + k, group='g', minute=k))
+            copies.append(await self.add(text, score=0.9, axis=2 + k, group='g', minute=k, space=other,
+                                         copied_from=originals[-1]))
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = coalesce(copied_from, id) "
+                               "where group_id = 'g'")
+        finally:
+            await conn.close()
+
+        async def embed(text, settings, kind, local):  # A window that holds 'ikinci' is near the query.
+            return [[1.0] + [0.0] * 767 if 'ikinci' in text else [0.0, 0.0, 0.0, 0.0, 1.0] + [0.0] * 763]
+        targets = [(SimpleNamespace(router_model_group='a'), SPACE, True),
+                   (SimpleNamespace(router_model_group='b'), other, False)]
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=targets)):
+            await memory.delete_items('alice', [originals[1]], self.settings)
+            await asyncio.gather(*memory._reembed_tasks)
+        conn = await registry._connect()
+        try:
+            rows = await conn.fetch("select vector_space, 1 - (embedding <=> $1::vector) as s from orion_memory",
+                                    memory._vector(self.query))
+        finally:
+            await conn.close()
+        self.assertEqual(len(rows), 4)  # Both neighbours, in both models.
+        self.assertTrue(all(abs(r['s']) < 1e-6 for r in rows), [dict(r) for r in rows])
+        self.assertEqual({r['vector_space'] for r in rows}, {SPACE, other})
+
+    async def test_a_model_that_cannot_be_reached_drops_its_stale_neighbour_copy(self):
+        other = 'jina-v5'
+        a = await self.add('birinci', score=0.9, axis=2, group='g', minute=0)
+        await self.add('birinci', score=0.9, axis=2, group='g', minute=0, space=other, copied_from=a)
+        b = await self.add('ikinci', score=0.9, axis=3, group='g', minute=1)
+        await self.add('ikinci', score=0.9, axis=3, group='g', minute=1, space=other, copied_from=b)
+        c = await self.add('üçüncü', score=0.9, axis=4, group='g', minute=2)
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = coalesce(copied_from, id) "
+                               "where group_id = 'g'")
+        finally:
+            await conn.close()
+
+        async def embed(text, settings, kind, local):
+            return [[0.0] * 768]
+        targets = [(SimpleNamespace(router_model_group='a'), SPACE, True)]
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_targets', AsyncMock(return_value=targets)):
+            await memory.delete_items('alice', [b], self.settings)
+            await asyncio.gather(*memory._reembed_tasks)
+        conn = await registry._connect()
+        try:
+            spaces = [r['vector_space'] for r in await conn.fetch('select vector_space from orion_memory where id <> $1 '
+                                                                    'order by id', c)]
+        finally:
+            await conn.close()
+        self.assertEqual(spaces, [SPACE])  # The other model's copy of the neighbour is gone, not left stale.
+
+    async def recount(self, space):
+        """The summary by the old way: one pass over the user's rows."""
+        conn = await registry._connect()
+        try:
+            rows = await conn.fetch(
+                "with r as materialized (select coalesce(group_id, 'r' || id::text) as g, vector_space as s, kind, "
+                "coalesce(item_id, coalesce(copied_from, id)::text) as i, whole, coalesce(copied_from, id) as c "
+                "from orion_memory where user_id = 'alice') "
+                "select 'total' as part, '' as key, count(distinct g) as n from r "
+                "union all select 'space', s, count(distinct g) from r group by s "
+                "union all select 'kind', kind, count(distinct i) from r where not whole group by kind "
+                "union all select 'movable', s, count(distinct c) from r where s <> $1 and c not in "
+                "(select c from r where s = $1) group by s "
+                "union all select 'copied', s, count(distinct c) from r where s <> $1 and c in "
+                "(select c from r where s = $1) group by s", space)
+        finally:
+            await conn.close()
+        out = {'total': 0, 'space': {}, 'kind': {}, 'movable': {}, 'copied': {}}
+        for r in rows:
+            if r['part'] == 'total':
+                out['total'] = r['n']
+            else:
+                out[r['part']][r['key']] = r['n']
+        return out
+
+    async def test_the_summary_counters_follow_every_kind_of_write(self):
+        other = 'jina-v5'
+
+        async def check(step):
+            conn = await registry._connect()
+            try:
+                got = await memory_groups._summary(conn, 'alice', SPACE)
+            finally:
+                await conn.close()
+            want = await self.recount(SPACE)
+            self.assertEqual((got['total'], got['per_vector_space'], got['per_kind'], got['movable'], got['copied']),
+                             (want['total'], want['space'], want['kind'], want['movable'], want['copied']), step)
+        await check('empty')
+        a = await self.add('bir', group='g1', minute=1)
+        b = await self.add('iki', group='g1', minute=2, kind='image', media_id='m' * 64)
+        await self.add('bir', group='g1', minute=1, space=other, copied_from=a)
+        await self.add('üç', group='g2', minute=3, space=other)
+        await self.add('dört', group='g3', minute=4, user='bob')
+        await check('inserts')
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set group_id = 'g2' where id = $1", b)  # A part moves to another memory.
+            await check('regroup')
+            await conn.execute("update orion_memory set vector_space = $1 where group_id = 'g2' and vector_space <> $1", SPACE)
+            await check('respace')
+            await conn.execute("update orion_memory set text = text")  # Nothing counted changes.
+            await check('text update')
+        finally:
+            await conn.close()
+        await memory.delete_items('alice', [a])
+        await check('delete')
+        await memory_groups.delete_groups('alice', ['g2'])
+        await check('delete group')
+        conn = await registry._connect()
+        try:
+            await conn.execute('truncate orion_memory')
+        finally:
+            await conn.close()
+        await check('truncate')
+
+    async def test_a_file_name_and_a_caption_are_matched_as_words_not_as_meaning(self):
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await memory.insert_item(conn, 'alice', SPACE, 'g1', {'kind': 'text', 'source_kind': 'file', 'title': 'test.txt'},
+                                         [{'text': 'bambaşka içerik', 'vector': vec(0.12, 2)}])
+                await memory.insert_item(conn, 'alice', SPACE, 'g2', {'kind': 'text', 'source_kind': 'manual', 'caption': 'Deniz tatili'},
+                                         [{'text': 'notum', 'vector': vec(0.1, 3)}])
+        finally:
+            await conn.close()
+        page = await memory_groups.list_groups('alice', self.settings, q='test.txt', limit=10)
+        card = next(g for g in page['groups'] if g['group_id'] == 'g1')
+        self.assertEqual((card['match'], card['score']), ('text', 0.12))  # Marked as a word hit; the % stays the meaning's.
+        tool = await self.tool([{'keyword': 'TEST.TXT'}])
+        self.assertEqual(len(tool['results']), 1)
+        caption = await memory_groups.list_groups('alice', self.settings, q='deniz', limit=10)
+        self.assertEqual(next(g for g in caption['groups'] if g['group_id'] == 'g2')['match'], 'text')
+
+    async def test_the_kind_filter_ranks_only_that_kinds_rows_in_list_panel_tool_and_map(self):
+        text = await self.add('metin parçası', score=0.8, axis=2, group='g1', minute=1)
+        image = await self.add('foto.png', score=0.3, axis=3, group='g1', minute=2, kind='image', media_id='a' * 64)
+        await self.add('başka metin', score=0.5, axis=4, group='g2', minute=3)
+        other = await self.add('başka foto', score=0.2, axis=5, group='g3', minute=4, kind='image', media_id='b' * 64)
+        page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
+        self.assertEqual([(g['group_id'], g['score'], g['matched_part']) for g in page['groups']],
+                         [('g1', 0.3, image), ('g3', 0.2, other)])  # g1 by its image's own %, not its 0.8 text.
+        panel = await memory_groups.part_scores('alice', 'g1', self.settings, q='x', kind='image')
+        self.assertEqual((panel['score'], panel['best']), (0.3, image))
+        tool = await self.tool([{'text': 'x'}])
+        self.assertEqual(tool['results'][0]['id'], text)
+        from orion.worker.tools.memory import tools as memory_tools
+        from orion.worker.tools._base import ToolContext
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            only = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='x')], kind='image'), ToolContext('alice', 'chat', 't', None))
+        self.assertEqual([(r['id'], r['score']) for r in only['results']], [(image, 30), (other, 20)])
+        graph = await memory_groups.map_graph('alice', self.settings, kind='image')
+        self.assertEqual({n['group_id'] for n in graph['nodes']}, {'g1', 'g3'})
+        self.assertEqual((await memory_groups.map_graph('alice', self.settings))['total'], 3)
+
+    async def test_the_card_names_every_source_of_the_memory(self):
+        await self.add('bir not', group='g', source='manual', minute=1)
+        await self.add('foto.png', group='g', source='manual', kind='image', media_id='c' * 64, minute=2, axis=3)
+        await self.add('dosya parçası', group='g', source='file', title='a.txt', minute=3, axis=4)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        card = page['groups'][0]
+        self.assertEqual(card['source_kinds'], ['manual', 'file'])
+        self.assertEqual(card['sources_label'], 'Metin, Dosya, Görsel')
