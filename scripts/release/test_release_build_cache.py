@@ -342,6 +342,16 @@ def test_prune_keeps_newest_pinned_and_the_accepted_run(tmp_path):
     assert freed >= 30 and (base / 'notes.json').exists()
 
 
+def test_prune_recognizes_mixed_case_token_names(tmp_path):
+    """Regression: names from secrets.token_urlsafe (upper case, '_') were never matched, so nothing was pruned."""
+    base = tmp_path / 'lifecycle-tests'
+    base.mkdir()
+    names = ['stage05-2f0LZr6_', 'stage05-NxOKUO6B', 'stage05-K0JWG1RW', 'stage05-n0hI75HY']
+    runs = [sandbox(base, name, age_hours=10 + i) for i, name in enumerate(names)]
+    kept, doomed, _ = sandbox_prune.prune(base, keep=1, say=lambda *a: None)
+    assert [p.exists() for p in runs] == [True, False, False, False]
+
+
 def test_prune_dry_run_deletes_nothing_and_all_prefixes_applies_the_rule_to_every_family(tmp_path):
     base = tmp_path / 'lifecycle-tests'
     base.mkdir()

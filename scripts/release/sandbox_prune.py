@@ -24,7 +24,9 @@ import time
 
 import build_cache
 
-FAMILY = re.compile(r'^(?P<family>.+)-[a-z0-9_]{8}$')  # tempfile.mkdtemp(prefix='<family>-')
+# '<family>-<random>': the random part is secrets.token_urlsafe (upper case too) or tempfile.mkdtemp (lower case).
+# It once demanded exactly 8 lower-case characters, matched nothing, and 50 GB of sandboxes piled up.
+FAMILY = re.compile(r'^(?P<family>.+)-[A-Za-z0-9_]+$')
 DEFAULT_FAMILY = 'stage05'
 MIN_AGE_SECONDS = 3600
 # NEW_PROCESS_GROUP | NO_WINDOW: a hidden console of its own, never the caller's. Not DETACHED_PROCESS: the
