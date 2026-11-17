@@ -29,7 +29,11 @@ class AISettings(BaseModel):
     llm_timeout_seconds: int = Field(default=120, ge=1, le=3600)
     system_prompt: str = "You are Orion. Reply friendly and concisely. You MUST answer directly. Do NOT output your thinking process or explain your step-by-step reasoning. Just give the final answer."
     embed_timeout_seconds: int = Field(default=60, ge=1, le=3600)
-    
+    # Memory: the new structure (collections, docs/hafiza-tasarimi.md §16) per user, off until tried; and how long a
+    # removed memory waits in the trash before it is deleted for good.
+    memory_v2: bool = False
+    memory_trash_days: int = Field(default=30, ge=1, le=3650)
+
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tool_rounds: int = Field(default=32, ge=1, le=128)

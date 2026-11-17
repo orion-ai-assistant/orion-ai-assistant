@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from .._base import ToolContext, ToolInput
 
@@ -28,6 +28,7 @@ class MemoryQuery(ToolInput):
 
 
 class MemorySearchInput(ToolInput):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
     queries: list[MemoryQuery] = Field(
         default_factory=list, max_length=8,
         description="What to search for: each query is a text or a memory id, liked or unliked. Example, 'like the "
@@ -43,6 +44,12 @@ class MemorySearchInput(ToolInput):
     model: str = Field(default="all", max_length=100,
                        description="Embedding model filter: 'all' (default: memories of other models are still found "
                                    "by their words), 'active' (only memories the active model can search by meaning).")
+    in_: list[str] = Field(
+        default_factory=list, max_length=10, alias="in",
+        description="Only these collections: 'me' (who the user is), 'experiences' (dated events), 'chats' (past "
+                    "conversations), 'documents' (files) or a project/album by its name. A personal question: me, "
+                    "experiences; something said before: chats. Empty: the whole memory. Ignored while the user's "
+                    "memory has no collections.")
     page: int = Field(default=1, ge=1, le=100,
                       description="Result page: 1 = the best ones, 2 = the next ones... Look further only if "
                                   "'more' is true.")
@@ -157,8 +164,9 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
         found = await memory_groups.search_queries(
             context.user_id, await get_runtime_settings(None, context.user_id), queries,
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
-            vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size)
-    except (memory.MemoryUnavailable, memory_groups.QueryError) as exc:
+            vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size,
+            **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip()]) else {}))
+    except (memory.MemoryUnavailable, ValueError) as exc:  # QueryError and an unknown collection are ValueErrors.
         return {"error": str(exc)}
     labels = found.get("labels") or []
     words = ", ".join(q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None)

@@ -126,15 +126,18 @@ async def latest_search(key: str, work):
 @router.get("/api/v1/memory")
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", exclude: list[str] = Query(default=[]),
-                      current_user: str = Depends(get_current_user)):
-    """A page of memories: cards of the rows saved together (memory_groups.list_groups)."""
+                      collection: list[str] = Query(default=[]), current_user: str = Depends(get_current_user)):
+    """A page of memories: cards of the rows saved together (memory_groups.list_groups). `collection`: only these
+    collections (with the user's memory_v2 on)."""
     from orion.kernel import memory, memory_groups
     try:
         work = memory_groups.list_groups(
             current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
             max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20],
-            exclude=[t[:200] for t in exclude[:5]])
+            exclude=[t[:200] for t in exclude[:5]], collections=[c[:120] for c in collection[:10]] or None)
         found = await (latest_search(current_user, work) if q.strip() else work)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     windows = await query_note(q)
@@ -221,6 +224,18 @@ async def memory_move_start(payload: MemoryMove, request: Request, current_user:
                                                await get_runtime_settings(request.app.state.redis, current_user))}
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/collections/revert")
+async def memory_collections_revert(request: Request, current_user: str = Depends(get_current_user)):
+    """Undo the collections (docs/hafiza-tasarimi.md §13): memory_v2 off for this user, the rows' collection emptied,
+    the collections gone. The memories themselves are untouched."""
+    from orion.kernel import memory, memory_collections
+    try:
+        await update_runtime_settings(request.app.state.redis, {"memory_v2": "false"}, current_user)
+        return await memory_collections.revert(current_user)
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -323,6 +338,7 @@ class MemorySearch(BaseModel):
     exclude: list[str] = Field(default_factory=list, max_length=5)  # "benzemesin" texts (also as inputs).
     exclude_vectors: list[list[float]] = Field(default_factory=list, max_length=5)  # "benzemesin" files, made.
     labels: list[str] = Field(default_factory=list, max_length=8)  # The inputs' names an earlier answer gave.
+    collections: list[str] = Field(default_factory=list, max_length=10)  # Only these collections (memory_v2).
 
 
 @router.post("/api/v1/memory/search")
@@ -348,7 +364,8 @@ async def search_memory_by_file(payload: MemorySearch, request: Request, current
             space, vector, kind = await memory.file_query_vector(payload.name, mime, raw, settings)
         found = await memory_groups.list_groups(
             current_user, settings, "", max(1, min(payload.limit, 100)), max(0, payload.offset),
-            payload.filter_space[:100], payload.kind[:20], vector=vector, vector_space_of_query=space)
+            payload.filter_space[:100], payload.kind[:20], vector=vector, vector_space_of_query=space,
+            collections=[c[:120] for c in payload.collections] or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
@@ -430,7 +447,8 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
             current_user, settings, vectors, input_labels(kinds, len(vectors), names), space, mode,
             payload.q[:memory.MAX_QUERY_CHARS], limit=max(1, min(payload.limit, 100)), offset=max(0, payload.offset),
             vector_space=payload.filter_space[:100], kind=payload.kind[:20], exclude=exclude,
-            exclude_vectors=[memory._vector(v) for v in exclude_vectors])
+            exclude_vectors=[memory._vector(v) for v in exclude_vectors],
+            collections=[c[:120] for c in payload.collections] or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:

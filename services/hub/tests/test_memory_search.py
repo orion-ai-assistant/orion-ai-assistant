@@ -111,7 +111,8 @@ class PostgresMemoryCase(unittest.IsolatedAsyncioTestCase):
             await registry._ensure_tables(conn)
             await media_store.ensure_table(conn)
             await memory.ensure_memory_table(conn)
-            await conn.execute('truncate orion_memory, orion_memory_jobs, orion_chats, orion_media cascade')
+            await conn.execute('truncate orion_memory, orion_memory_jobs, orion_chats, orion_media, orion_mem_collection, '
+                               'orion_mem_collection_item, orion_mem_source cascade')
             await conn.execute("insert into orion_chats(id,user_id) values('chat','alice')")
         finally:
             await conn.close()

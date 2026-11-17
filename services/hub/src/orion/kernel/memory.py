@@ -151,6 +151,7 @@ async def ensure_memory_table(conn) -> None:
             # Every row is stored with a group now: the one-time grouping of old rows runs until it has run once
             # (a marker), not as a scan of the whole table at every start.
             await conn.execute("create table if not exists orion_memory_meta (key text primary key, value text)")
+            await _migrate(conn)
             if not await conn.fetchval("select value from orion_memory_meta where key = 'groups_backfilled'"):
                 from orion.kernel.memory_groups import backfill_groups
                 await backfill_groups(conn)
@@ -169,6 +170,88 @@ async def ensure_memory_table(conn) -> None:
     await _enable_trigrams(conn)
     _table_ready = True
     _schedule_index_build()
+
+
+SCHEMA_VERSION = 2  # orion_memory_meta 'schema_version'. 2: collections and sources.
+
+
+async def _migrate(conn) -> None:
+    """The numbered schema steps (docs/hafiza-tasarimi.md §16), each after a dump of the memory tables when there are
+    rows to keep (memory_backup). Additive only (columns, tables, triggers; nothing is dropped or rewritten) and
+    in one transaction: a step that fails leaves the schema as it was and runs again at the next start. A failed
+    dump is logged and the step still runs: it cannot lose a row, and refusing it would leave the memory unusable."""
+    version = int(await conn.fetchval("select value from orion_memory_meta where key = 'schema_version'") or 1)
+    if version >= SCHEMA_VERSION:
+        return
+    if await conn.fetchval("select exists (select 1 from orion_memory)"):
+        from orion.kernel import memory_backup
+        await memory_backup.backup(f"schema-{version}-to-{SCHEMA_VERSION}")
+    async with conn.transaction():
+        if version < 2:
+            await _schema_2(conn)
+        await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
+                           "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
+    logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
+
+
+async def _schema_2(conn) -> None:
+    """The collections (`collection_id`: a row's main collection, null = not sorted yet, searched as before) and the
+    source links of facts and events (§5). Every table has user_id; every read filters by it."""
+    await conn.execute("alter table orion_memory add column if not exists collection_id text")
+    await conn.execute("""
+        create table if not exists orion_mem_collection (
+            user_id text not null,
+            id text not null,                 -- 'ben', 'yasadiklarim', 'sohbetler', 'belgeler' or 'p_<hex>'
+            kind text not null,               -- builtin | project | album
+            name text not null,
+            deleted_at timestamptz,
+            created_at timestamptz not null default now(),
+            primary key (user_id, id))""")
+    await conn.execute("""
+        create table if not exists orion_mem_collection_item (
+            user_id text not null,
+            collection_id text not null,
+            group_id text not null,
+            position bigint,
+            added_at timestamptz not null default now(),
+            primary key (user_id, collection_id, group_id))""")
+    await conn.execute("create index if not exists idx_orion_mem_collection_item_group on orion_mem_collection_item "
+                       "(user_id, group_id)")
+    await conn.execute("""
+        create table if not exists orion_mem_source (
+            id bigserial primary key,
+            user_id text not null,
+            target_type text not null,        -- fact | event
+            target_id bigint not null,
+            chat_id text, first_message bigint, last_message bigint,
+            item_id text,                     -- taken from an item (a file, a note)
+            by_user boolean not null default false,
+            created_at timestamptz not null default now())""")
+    await conn.execute("create index if not exists idx_orion_mem_source_chat on orion_mem_source (user_id, chat_id)")
+    await conn.execute("create index if not exists idx_orion_mem_source_item on orion_mem_source (user_id, item_id)")
+    await conn.execute("create index if not exists idx_orion_mem_source_target on orion_mem_source "
+                       "(user_id, target_type, target_id)")
+    # A part added to a memory joins the memory's collection; a new memory of a user who has collections (memory_v2
+    # was turned on) is sorted by its first row: a file goes to Belgeler, the rest stays unsorted for now. One rule
+    # for every insert path (saves, parts added later, copies of memory_move, video jobs). A user without collections
+    # costs one primary-key probe.
+    await conn.execute("""
+        create or replace function orion_memory_collection() returns trigger language plpgsql as $$
+        begin
+            if new.collection_id is null and new.group_id is not null
+               and exists (select 1 from orion_mem_collection where user_id = new.user_id) then
+                select collection_id into new.collection_id from orion_memory
+                    where user_id = new.user_id and group_id = new.group_id and collection_id is not null limit 1;
+                if new.collection_id is null and new.source_kind = 'file' and not exists (
+                        select 1 from orion_memory where user_id = new.user_id and group_id = new.group_id) then
+                    new.collection_id := 'belgeler';
+                end if;
+            end if;
+            return new;
+        end $$""")
+    await conn.execute("drop trigger if exists orion_memory_collection on orion_memory")
+    await conn.execute("create trigger orion_memory_collection before insert on orion_memory for each row "
+                       "execute function orion_memory_collection()")
 
 
 ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
@@ -282,7 +365,10 @@ def _index_plan() -> list[tuple[str, str]]:
             ("idx_orion_memory_hash", "create index concurrently if not exists idx_orion_memory_hash on orion_memory "
                                      "(user_id, vector_space, content_hash)"),
             ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
-                                     "using hnsw (embedding vector_cosine_ops)")]
+                                     "using hnsw (embedding vector_cosine_ops)"),
+            # The collection a new part inherits from its memory (the insert trigger): sorted rows only, small.
+            ("idx_orion_memory_collection", "create index concurrently if not exists idx_orion_memory_collection on "
+                                            "orion_memory (user_id, group_id) where collection_id is not null")]
     # The minority kinds get an index of their own: a Görsel search in a memory that is mostly text would otherwise
     # walk the text-filled graph for its few images.
     for kind in ("image", "audio", "video"):
@@ -1358,10 +1444,11 @@ def word_similarity(query: str, text: str) -> float:
     return best
 
 
-def filters_sql(vector_space: str, kind: str, params: list) -> str:
-    """SQL conditions (after the user's) for the page's model and kind filters; their values are appended to
-    `params` (the caller's, numbered from its length)."""
-    sql = ""
+def filters_sql(vector_space: str, kind: str, params: list, collections: list[str] | None = None) -> str:
+    """SQL conditions (after the user's, `$1`) for the page's model, kind and collection filters; their values are
+    appended to `params` (the caller's, numbered from its length)."""
+    from orion.kernel.memory_collections import filter_sql
+    sql = filter_sql(collections, params)
     if vector_space and vector_space != "all":
         params.append(vector_space)
         sql += f" and vector_space = ${len(params)}"
@@ -1382,7 +1469,7 @@ def _score_sql(params: list, space, vector) -> str:
 
 
 async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, space=None, vector=None,
-                     fuzzy: bool = True) -> list[dict]:
+                     fuzzy: bool = True, collections: list[str] | None = None) -> list[dict]:
     """This user's rows whose text has `q` (Turkish case folding) or a near spelling of it, best first. Each row has
     'tmatch' ('text' for a substring, 'similar' for a near spelling), 'tscore' (1 for a substring) and 'score'
     (its meaning score in the current space, else None). `fuzzy` False: substrings only (a keyword search)."""
@@ -1390,7 +1477,7 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     params = [user_id, like] + ([folded] if _trgm and fuzzy else [])
     score = _score_sql(params, space, vector)
-    extra = filters_sql(vector_space, kind, params)
+    extra = filters_sql(vector_space, kind, params, collections)
     if _trgm and fuzzy:
         # `like` and `<%` (word_similarity >= the threshold set here) are the operators the GIN trigram index
         # answers; one row per memory is chosen in SQL, so the cap counts memories, not their pieces.
@@ -1410,7 +1497,7 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     if len(rows) >= TEXT_CAP or not fuzzy:
         return rows
     plain = [user_id, like]
-    extra = filters_sql(vector_space, kind, plain)
+    extra = filters_sql(vector_space, kind, plain, collections)
     near = []
     for r in await conn.fetch(
             f"select id, folded from orion_memory where user_id = $1 and not whole and not (folded like $2)"
