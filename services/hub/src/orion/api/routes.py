@@ -313,7 +313,7 @@ class MemorySearch(BaseModel):
     offset: int = 0
     # Several inputs at once: files (name + data URL) and texts; `vectors` are the query vectors an earlier answer
     # gave (the next page). mode "together": one query, the normalized mean of the inputs; "each": every input
-    # ranked on its own and fused as OR (memory_groups.fuse_inputs).
+    # ranked on its own and ranked by its best input (memory_groups.rank_matches).
     inputs: list[MemorySearchInput] = Field(default_factory=list, max_length=8)
     vectors: list[list[float]] = Field(default_factory=list, max_length=8)
     q: str = Field(default="", max_length=1_000_000)  # The texts, for the words' own matches.
@@ -386,7 +386,6 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
     import json
     from orion.kernel import memory, memory_groups
     from orion.kernel.media_store import decode_data_url
-    from orion.kernel.memory_pieces import mean_vector
     mode = payload.mode if payload.mode in ("together", "each") else "together"
     try:
         space, vectors, kinds, names = payload.vector_space or None, [], [], []
@@ -426,12 +425,10 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
                 names.append(input_name(one))
         if not vectors:
             raise HTTPException(400, "Aranacak bir şey yok: en az bir \"benzesin\" metni ya da dosyası ekle.")
-        combined = mean_vector(vectors)
-        found = await memory_groups.list_groups(
-            current_user, settings, payload.q[:memory.MAX_QUERY_CHARS], max(1, min(payload.limit, 100)), max(0, payload.offset),
-            payload.filter_space[:100], payload.kind[:20], vector=memory._vector(combined),
-            vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors], mode=mode,
-            input_labels=input_labels(kinds, len(vectors), names), exclude=exclude,
+        found, combined = await memory_groups.search_vectors(
+            current_user, settings, vectors, input_labels(kinds, len(vectors), names), space, mode,
+            payload.q[:memory.MAX_QUERY_CHARS], limit=max(1, min(payload.limit, 100)), offset=max(0, payload.offset),
+            vector_space=payload.filter_space[:100], kind=payload.kind[:20], exclude=exclude,
             exclude_vectors=[memory._vector(v) for v in exclude_vectors])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -529,7 +526,7 @@ async def memory_item_frame(item_id: int, request: Request, at: float | None = N
 async def delete_memory_item(item_id: int, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory
     try:
-        deleted = await memory.delete_items(current_user, [item_id])
+        deleted = await memory.delete_items(current_user, [item_id], await get_runtime_settings(None, current_user))
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if not deleted:
@@ -579,7 +576,8 @@ async def memory_item_media(item_id: int, request: Request, current_user: str = 
 async def delete_memory_items(payload: MemoryDelete, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory, memory_groups
     try:
-        deleted = [row["id"] for row in await memory.delete_items(current_user, payload.ids)]
+        deleted = [row["id"] for row in await memory.delete_items(
+            current_user, payload.ids, await get_runtime_settings(None, current_user))]
         deleted += [row["id"] for row in await memory.delete_whole_items(current_user, payload.item_ids)]
         deleted += [row["id"] for row in await memory_groups.delete_groups(current_user, payload.group_ids)]
     except memory.MemoryUnavailable as exc:

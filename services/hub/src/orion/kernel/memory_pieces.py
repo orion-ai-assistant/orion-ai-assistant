@@ -149,58 +149,67 @@ def _tail(text: str, tokens: int) -> str:
     return text[space + 1 if 0 <= space < start + 40 else start:].strip()
 
 
+def windows_of(cores: list[str], context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[str]:
+    """THE window of each core: the core with the end of the previous core and the start of the next one. A piece
+    is embedded as its window, so everything that cuts text (text_pieces, chat_pieces) and everything that rebuilds
+    the windows of stored cores (a model move, a neighbour re-embedded after a delete) calls this one."""
+    windows = []
+    for index, core in enumerate(cores):
+        before = _tail(cores[index - 1], context_tokens) if index else ""
+        after = _head(cores[index + 1], context_tokens) if index + 1 < len(cores) else ""
+        windows.append("\n\n".join(part for part in (before, core, after) if part))
+    return windows
+
+
 def text_pieces(text: str, core_tokens: int = TEXT_CORE_TOKENS,
                 context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str]]:
     """(core, window) of each piece of a text: cores are whole paragraphs packed to ~core_tokens (chunk_text), the
     window adds the end of the previous core and the start of the next one."""
     from orion.worker.services.router import chunk_text
     cores = chunk_text(text, core_tokens) or ([text.strip()] if text.strip() else [])
-    pieces = []
-    for index, core in enumerate(cores):
-        before = _tail(cores[index - 1], context_tokens) if index else ""
-        after = _head(cores[index + 1], context_tokens) if index + 1 < len(cores) else ""
-        pieces.append((core, "\n\n".join(part for part in (before, core, after) if part)))
-    return pieces
+    return list(zip(cores, windows_of(cores, context_tokens)))
 
 
 def chat_pieces(messages: list[str], core_tokens: int = TEXT_CORE_TOKENS,
-                context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str]]:
-    """(core, window) of each piece of a chat transcript, split on message boundaries: a turn (a user message with
-    the answers that follow it) is kept whole while it fits a core; a longer turn is split between its messages; one
-    message alone longer than a core is split inside (chunk_text: paragraphs, then sentences). Cores pack whole turns up
-    to core_tokens; windows add the neighbours' tail and head, as text_pieces does. `messages`: one string per message
-    ("Kullanıcı: ...", "Asistan: ..."), a user message starting a turn."""
+                context_tokens: int = TEXT_CONTEXT_TOKENS) -> list[tuple[str, str, int]]:
+    """(core, window, first) of each piece of a chat transcript, split on message boundaries: a turn (a user message
+    with the answers that follow it) is kept whole while it fits a core; a longer turn is split between its
+    messages; one message alone longer than a core is split inside (chunk_text: paragraphs, then sentences). Cores
+    pack whole turns up to core_tokens; windows are windows_of the cores. `first`: the index in `messages` of the
+    message the core starts with (exact, however many messages repeat the same words). `messages`: one string per
+    message ("Kullanıcı: ...", "Asistan: ..."), a user message starting a turn."""
     from orion.worker.services.router import chunk_text, estimate_tokens
-    turns: list[list[str]] = []
-    for message in messages:
+    turns: list[list[tuple[int, str]]] = []
+    for index, message in enumerate(messages):
         if not turns or message.startswith("Kullanıcı:"):
             turns.append([])
-        turns[-1].append(message)
-    units: list[str] = []
+        turns[-1].append((index, message))
+    units: list[tuple[int, str]] = []  # (the message it starts in, text)
     for turn in turns:
-        whole = "\n\n".join(turn)
+        whole = "\n\n".join(m for _, m in turn)
         if estimate_tokens(whole) <= core_tokens:
-            units.append(whole)
+            units.append((turn[0][0], whole))
             continue
-        for message in turn:
-            units.extend([message] if estimate_tokens(message) <= core_tokens
-                         else chunk_text(message, core_tokens))
-    cores, current, tokens = [], [], 0
-    for unit in units:
+        for index, message in turn:
+            if estimate_tokens(message) <= core_tokens:
+                units.append((index, message))
+            else:
+                units.extend((index, chunk) for chunk in chunk_text(message, core_tokens))
+    cores: list[tuple[str, int]] = []
+    current, first, tokens = [], 0, 0
+    for index, unit in units:
         cost = estimate_tokens(unit)
         if current and tokens + cost > core_tokens:
-            cores.append("\n\n".join(current))
+            cores.append(("\n\n".join(current), first))
             current, tokens = [], 0
+        if not current:
+            first = index
         current.append(unit)
         tokens += cost
     if current:
-        cores.append("\n\n".join(current))
-    pieces = []
-    for index, core in enumerate(cores):
-        before = _tail(cores[index - 1], context_tokens) if index else ""
-        after = _head(cores[index + 1], context_tokens) if index + 1 < len(cores) else ""
-        pieces.append((core, "\n\n".join(part for part in (before, core, after) if part)))
-    return pieces
+        cores.append(("\n\n".join(current), first))
+    texts = [core for core, _ in cores]
+    return [(core, window, first) for (core, first), window in zip(cores, windows_of(texts, context_tokens))]
 
 
 # --- Audio ----------------------------------------------------------------------------------------------------------

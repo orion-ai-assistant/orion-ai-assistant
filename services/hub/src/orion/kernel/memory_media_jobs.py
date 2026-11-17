@@ -21,7 +21,7 @@ from orion.kernel import memory_pieces as mp
 
 logger = logging.getLogger(__name__)
 
-STALE = 90
+STALE = memory.JOB_STALE_SECONDS
 KEEP_FINISHED = 600  # Seconds a finished job is still listed (the page shows how it ended).
 _tasks: set[asyncio.Task] = set()
 _COLUMNS = "id, group_id, item_id, name, kind, state, done, total, message, cancel, started_at, finished_at"

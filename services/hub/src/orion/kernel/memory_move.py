@@ -19,7 +19,7 @@ from orion.kernel.memory import CONTENT_KEY
 
 logger = logging.getLogger(__name__)
 
-STALE = 90
+STALE = memory.JOB_STALE_SECONDS
 SPACE_CHECK_EVERY = 25  # Rows between checks that the active model is still the one the job embeds with.
 _tasks: set[asyncio.Task] = set()
 
@@ -194,10 +194,8 @@ def text_windows(rows: list[dict]) -> dict[int, str]:
             items.setdefault(r["item_id"], []).append(r)
     for members in items.values():
         members.sort(key=memory.order_key)
-        for index, r in enumerate(members):
-            before = mp._tail(members[index - 1]["text"], mp.TEXT_CONTEXT_TOKENS) if index else ""
-            after = mp._head(members[index + 1]["text"], mp.TEXT_CONTEXT_TOKENS) if index + 1 < len(members) else ""
-            windows[r["id"]] = "\n\n".join(part for part in (before, r["text"], after) if part)
+        for r, window in zip(members, mp.windows_of([m["text"] for m in members])):
+            windows[r["id"]] = window
     return windows
 
 
@@ -270,7 +268,13 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
         rows = [dict(r) for r in await conn.fetch(
             f"select {columns} from orion_memory r where user_id = $1 and vector_space = $2 and not {_HAS_COPY} "
             "order by id", user_id, source, space)]
-        windows = text_windows(rows)
+        # The windows come from every piece of each text item (also those already copied: a window holds its
+        # neighbours), so a move rebuilds exactly the windows the pieces were first embedded with.
+        item_ids = sorted({r["item_id"] for r in rows if r["kind"] == "text" and r.get("item_id")})
+        whole_items = [dict(r) for r in await conn.fetch(
+            f"select {columns} from orion_memory where user_id = $1 and vector_space = $2 and kind = 'text' "
+            "and not whole and item_id = any($3::text[])", user_id, source, item_ids)] if item_ids else []
+        windows = text_windows(whole_items)
         existing = await conn.fetchval(
             f"select count(distinct {CONTENT_KEY}) from orion_memory r where user_id = $1 and vector_space = $2 "
             f"and {_HAS_COPY} and not whole", user_id, source, space)

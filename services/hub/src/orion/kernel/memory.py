@@ -19,6 +19,32 @@ from orion.kernel.chat_search import message_text
 logger = logging.getLogger(__name__)
 
 SETUP_MESSAGE = "Hafıza için Bileşenler'de embedding bileşenini kur ve aç."
+ROUTER_DOWN_MESSAGE = "Router'a ulaşılamıyor: hafıza araması şimdilik kapalı. Router çalışınca yeniden dene."
+
+
+def unreachable(exc: BaseException) -> bool:
+    """Whether `exc` (or what caused it) is a failure to reach the Router at all (refused, timed out), not an
+    answer saying the embedding component is missing or off."""
+    import asyncio
+    import socket
+    kinds: tuple = (OSError, TimeoutError, asyncio.TimeoutError, socket.gaierror)  # ConnectionError is an OSError
+    try:
+        import aiohttp
+        kinds += (aiohttp.ClientConnectionError,)
+    except ImportError:
+        pass
+    try:
+        import httpx
+        kinds += (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.NetworkError)
+    except ImportError:
+        pass
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, kinds):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
 NO_VECTOR_MESSAGE = "Hafıza kullanılamıyor: veritabanında pgvector (vector eklentisi) yok."
 SCHEMA_LOCK = 51730201  # Its own number: 51730102-51730104 belong to the media tables and their migration.
 
@@ -121,8 +147,14 @@ async def ensure_memory_table(conn) -> None:
                     "select count(*) from done"):
                 pass
             await _version_triggers(conn)
-            from orion.kernel.memory_groups import backfill_groups
-            await backfill_groups(conn)
+            # Every row is stored with a group now: the one-time grouping of old rows runs until it has run once
+            # (a marker), not as a scan of the whole table at every start.
+            await conn.execute("create table if not exists orion_memory_meta (key text primary key, value text)")
+            if not await conn.fetchval("select value from orion_memory_meta where key = 'groups_backfilled'"):
+                from orion.kernel.memory_groups import backfill_groups
+                await backfill_groups(conn)
+                await conn.execute("insert into orion_memory_meta (key, value) values ('groups_backfilled', 'yes') "
+                                   "on conflict do nothing")
         finally:
             await conn.execute("select pg_advisory_unlock($1)", SCHEMA_LOCK)
     except MemoryUnavailable:
@@ -168,6 +200,12 @@ INDEX_DELAY = 5.0  # Seconds after the first use before the background index bui
 _index_task = None
 
 
+# The trigram index is named by its expression: a changed fold builds a new index and drops the old ones.
+def trgm_index() -> str:
+    import hashlib
+    return "idx_orion_memory_trgm_" + hashlib.sha1(FOLD_SQL.encode()).hexdigest()[:8]
+
+
 def _index_plan() -> list[tuple[str, str]]:
     plan = [("idx_orion_memory_item", "create index concurrently if not exists idx_orion_memory_item on orion_memory "
                                       "(user_id, item_id)"),
@@ -178,8 +216,8 @@ def _index_plan() -> list[tuple[str, str]]:
             ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
                                      "using hnsw (embedding vector_cosine_ops)")]
     if _trgm:
-        plan.append(("idx_orion_memory_trgm", f"create index concurrently if not exists idx_orion_memory_trgm on "
-                                              f"orion_memory using gin (({FOLD_SQL}) gin_trgm_ops)"))
+        plan.append((trgm_index(), f"create index concurrently if not exists {trgm_index()} on "
+                                   f"orion_memory using gin (({FOLD_SQL}) gin_trgm_ops)"))
     return plan
 
 
@@ -245,6 +283,11 @@ async def _build_indexes() -> None:
                 finally:
                     watcher.cancel()
                 logger.info("Memory: index %s ready after %.0fs", name, time.monotonic() - started)
+                if name == trgm_index():
+                    for old in await conn.fetch("select c.relname from pg_class c where c.relkind = 'i' and "
+                                                "c.relname ~ '^idx_orion_memory_trgm' and c.relname <> $1",
+                                                trgm_index()):
+                        await conn.execute(f'drop index concurrently if exists "{old["relname"]}"')
         finally:
             await conn.execute("reset maintenance_work_mem")
             await conn.execute("select pg_advisory_unlock($1)", INDEX_LOCK)
@@ -300,7 +343,7 @@ async def embedding_target(settings) -> tuple[object, str, bool]:
     try:
         models = [m for m in (await get_router_catalog(include_voices=False))["models"] if m.get("capability") == "embed"]
     except Exception as exc:
-        raise MemoryUnavailable(SETUP_MESSAGE) from exc
+        raise MemoryUnavailable(ROUTER_DOWN_MESSAGE) from exc  # No catalog: the Router itself cannot be reached.
     if not models:
         raise MemoryUnavailable(SETUP_MESSAGE)
     chosen = next((m for m in models if m.get("provider") == "local"), models[0])
@@ -319,6 +362,8 @@ async def _embed(text: str, settings, kind: str, local: bool) -> list[list[float
         vectors = await embed_text(text, settings, kind)
     except Exception as exc:
         logger.warning("Memory embedding failed: %s", exc)
+        if unreachable(exc):
+            raise MemoryUnavailable(ROUTER_DOWN_MESSAGE) from exc
         raise MemoryUnavailable(SETUP_MESSAGE if local else f"Embedding alınamadı: {exc}") from exc
     if any(len(v) != 768 for v in vectors):
         raise MemoryUnavailable("Embedding modeli 768 boyutlu değil; hafıza şimdilik yalnız 768 boyutlu modelleri destekler.")
@@ -416,20 +461,6 @@ def chat_paragraphs(messages: list[dict], ids: list | None = None) -> list[tuple
 def chat_text(messages: list[dict]) -> str:
     """The readable user and assistant text of a chat, one paragraph per message."""
     return "\n\n".join(text for _, text in chat_paragraphs(messages))
-
-
-def chunk_anchor(chunk: str, paragraphs: list[tuple[object, str]]):
-    """The id of the message a chunk starts with: the first paragraph whose start is in the chunk, else the one
-    the chunk starts inside (a long paragraph split at sentences)."""
-    for message_id, text in paragraphs:
-        head = text[:80].strip()
-        if head and head in chunk:
-            return message_id
-    head = chunk[:60].strip()
-    for message_id, text in paragraphs:
-        if head and head in text:
-            return message_id
-    return None
 
 
 async def _chat_messages(chat_id: str) -> tuple[list[dict], list[int]]:
@@ -716,13 +747,13 @@ async def text_item_pieces(conn, user_id: str, space: str, text: str, target, lo
                 known += 1
                 continue
             if row and group:
-                pieces.append({"text": core, "vector": json.loads(row["embedding"])})
+                pieces.append({"text": core, "vector": json.loads(row["embedding"]), "split_index": index})
                 continue
             if row:
                 known += 1
                 continue
         for vector in await _embed(window, target, "document", local):
-            pieces.append({"text": core, "vector": vector})
+            pieces.append({"text": core, "vector": vector, "split_index": index})
             break  # A window longer than the context is cut by embed_text; its first part stands for it.
     return pieces, known
 
@@ -792,11 +823,12 @@ async def save_chat(user_id: str, chat_id: str, title: str, settings) -> dict:
             import asyncio
             from orion.kernel.memory_pieces import chat_pieces
             # Sections split on message boundaries (a user message stays with its answer).
-            split = await asyncio.to_thread(chat_pieces, [t for _, t in paragraphs])
+            chat_split = await asyncio.to_thread(chat_pieces, [t for _, t in paragraphs])
+            split = [(core, window) for core, window, _ in chat_split]
             pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, group=group, split=split)
             if pieces:
-                for piece in pieces:
-                    piece["message_id"] = chunk_anchor(piece["text"], paragraphs)
+                for piece in pieces:  # Each piece points at the message its core starts with (exact).
+                    piece["message_id"] = paragraphs[chat_split[piece["split_index"]][2]][0]
                 item = {"kind": "text", "source_kind": "chat_save", "title": title, "chat_id": chat_id,
                         "message_id": pieces[0]["message_id"]}
                 async with conn.transaction():
@@ -997,32 +1029,53 @@ async def current_space(settings) -> str | None:
         return None
 
 
+JOB_STALE_SECONDS = 90  # A background job whose heartbeat is older lost its process (memory_move, memory_media_jobs).
 KINDS = ("text", "image", "audio", "video")
 MAX_QUERY_CHARS = 1_000_000  # A request-size guard only: a pasted passage is searched whole (_query_vector).
 QUERY_WINDOWS = 48  # Windows of a long query embedded at most (a cost cap: more are sampled evenly over the text).
 QUERY_CACHE = 32  # Recent query vectors kept (the detail's part scores ask again with the same text)
 TEXT_MATCH_CHARS = 200  # Longer queries match by meaning only: a word-for-word match of a passage means little.
-PAGE = 10  # The tool's page: results 1-10, 11-20, ...
 TEXT_CAP = 100  # Text matches taken per search.
-FUZZY_MIN = 0.45  # pg_trgm word similarity from which a near spelling counts ("selam nabe" ~ "selam naber").
-FUZZY_MIN_PY = 0.6  # The same for the Python fallback (its measure is a little more lenient).
-FALLBACK_ROWS = 5000  # Rows the Python fallback compares, newest first.
-TEXT_BONUS = 0.5  # The tool ranks a text match this much above its meaning score (good text matches: 0.5-0.75).
-_TR_UPPER, _TR_LOWER = "İIÇŞĞÖÜ", "iıçşğöü"
-_TR_LETTERS, _TR_ASCII = "çğıöşüâîû", "cgiosuaiu"
-# Turkish case folding that does not depend on the database's locale (a C-locale lower() knows only ASCII, and
-# pg_trgm there splits words at ç, ş, ı...): the Turkish capitals to small letters, those to ASCII, lower() then.
-# "nasilsin" so finds "nasılsın" too.
-FOLD_SQL = f"lower(translate(translate(text, '{_TR_UPPER}', '{_TR_LOWER}'), '{_TR_LETTERS}', '{_TR_ASCII}'))"
-_FOLD = str.maketrans(_TR_UPPER + _TR_LETTERS, _TR_LOWER.translate(str.maketrans(_TR_LETTERS, _TR_ASCII)) + _TR_ASCII)
+FUZZY_MIN = 0.45  # Word similarity from which a near spelling counts ("selam nabe" ~ "selam naber"): SQL and Python.
+FALLBACK_ROWS = 5000  # Rows the Python fallback (no pg_trgm) compares, newest first: a cost cap; older rows match by substring only.
+_FOLD_RANGES = ((0x41, 0x24F), (0x370, 0x3FF), (0x400, 0x52F), (0x531, 0x556), (0x1E00, 0x1EFF))  # Latin, Greek, Cyrillic, Armenian
+_TR_TO_ASCII = {"ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u", "â": "a", "î": "i", "û": "u"}
+
+
+def _fold_table() -> dict[str, str]:
+    """Every cased letter of the ranges above to its small, Turkish-ASCII form (İ/I/ı→i, Ç→c, Ş→s; Д→д; ß stays).
+    One table builds the Python fold and the SQL one, so they cannot differ (a database lower() follows its
+    locale: a C-locale one knows only ASCII)."""
+    table = {"İ": "i"}
+    for first, last in _FOLD_RANGES:
+        for code in range(first, last + 1):
+            char = chr(code)
+            small = char.lower()
+            if len(small) != 1:
+                continue
+            small = _TR_TO_ASCII.get(small, small)
+            if small != char:
+                table[char] = small
+    table.update(_TR_TO_ASCII)
+    return table
+
+
+_FOLD_TABLE = _fold_table()
+_FOLD = str.maketrans(_FOLD_TABLE)
+FOLD_SQL = f"translate(text, '{''.join(_FOLD_TABLE)}', '{''.join(_FOLD_TABLE.values())}')"
 _COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
             "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, span_start, "
             "span_end, track, caption, item_order")
 
 
 def fold(text: str) -> str:
-    """Turkish lower case without Turkish letters: İ/I/ı→i, Ş/ş→s..., then lower() for the rest."""
-    return text.translate(_FOLD).lower()
+    """The text as the database folds it (FOLD_SQL): small letters, Turkish letters without their marks."""
+    return text.translate(_FOLD)
+
+
+def like_pattern(folded: str) -> str:
+    """A LIKE pattern that finds `folded` anywhere (its wildcards escaped)."""
+    return "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
 def _trigrams(text: str) -> set[str]:
@@ -1049,16 +1102,17 @@ def word_similarity(query: str, text: str) -> float:
     return best
 
 
-def _filters(vector_space: str, kind: str, first: int) -> tuple[str, list]:
-    """SQL conditions (after the user's) for the page's model and kind filters, numbered from `first`."""
-    sql, args = "", []
+def filters_sql(vector_space: str, kind: str, params: list) -> str:
+    """SQL conditions (after the user's) for the page's model and kind filters; their values are appended to
+    `params` (the caller's, numbered from its length)."""
+    sql = ""
     if vector_space and vector_space != "all":
-        args.append(vector_space)
-        sql += f" and vector_space = ${first + len(args) - 1}"
+        params.append(vector_space)
+        sql += f" and vector_space = ${len(params)}"
     if kind and kind != "all":
-        args.append(kind)
-        sql += f" and kind = ${first + len(args) - 1}"
-    return sql, args
+        params.append(kind)
+        sql += f" and kind = ${len(params)}"
+    return sql
 
 
 def _score_sql(params: list, space, vector) -> str:
@@ -1077,8 +1131,7 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     params = [user_id, like] + ([folded] if _trgm else [])
     score = _score_sql(params, space, vector)
-    extra, args = _filters(vector_space, kind, len(params) + 1)
-    params += args
+    extra = filters_sql(vector_space, kind, params)
     if _trgm:
         # `like` and `<%` (word_similarity >= the threshold set here) are the operators the GIN trigram index
         # answers; one row per memory is chosen in SQL, so the cap counts memories, not their pieces.
@@ -1097,13 +1150,14 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
         f"{extra} order by created_at desc, id desc limit {TEXT_CAP}", *params)]
     if len(rows) >= TEXT_CAP:
         return rows
-    extra, args = _filters(vector_space, kind, 3)
+    plain = [user_id, like]
+    extra = filters_sql(vector_space, kind, plain)
     near = []
     for r in await conn.fetch(
             f"select id, {FOLD_SQL} as folded from orion_memory where user_id = $1 and not whole and not ({FOLD_SQL} like $2)"
-            f"{extra} order by created_at desc, id desc limit {FALLBACK_ROWS}", user_id, like, *args):
+            f"{extra} order by created_at desc, id desc limit {FALLBACK_ROWS}", *plain):
         similarity = word_similarity(folded, r["folded"])
-        if similarity >= FUZZY_MIN_PY:
+        if similarity >= FUZZY_MIN:
             near.append((similarity, r["id"]))
     near = sorted(near, reverse=True)[:TEXT_CAP - len(rows)]
     if near:
@@ -1134,10 +1188,12 @@ def query_windows(q: str) -> tuple[list[str], int]:
 
 
 async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str | None]:
-    """(current vector space, query vector, reason when the search by meaning is off). A long passage searches with
-    the normalized mean of its windows' vectors, the way a stored long text's whole vector is made; the last
-    QUERY_CACHE vectors are kept (the same text asked again, e.g. for a memory's part scores, is not embedded
-    again)."""
+    """(current vector space, query vector, reason when the search by meaning is off): THE vector of a text, whether
+    it was typed, pasted or read from a dropped file. A short text is a question (embedded as a query); a longer
+    one is a passage compared with stored passages: embedded as the stored windows are (documents), the way
+    stored text is split (query_windows), and the normalized mean of those vectors searches, as a stored long
+    text's whole vector is made. A text that is stored as it is (a dropped file) so finds its own copy first.
+    The last QUERY_CACHE vectors are kept (the same text asked again, e.g. for a memory's part scores)."""
     import asyncio
     import hashlib
     try:
@@ -1149,28 +1205,20 @@ async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str |
         _query_cache[key] = _query_cache.pop(key)
         return space, _query_cache[key], None
     try:
-        windows, _ = await asyncio.to_thread(query_windows, q) if len(q) > TEXT_MATCH_CHARS else ([q], 1)
+        passage = len(q) > TEXT_MATCH_CHARS
+        windows, _ = await asyncio.to_thread(query_windows, q) if passage else ([q], 1)
+        task = "document" if passage else "query"
         if len(windows) == 1:
-            vector = _vector((await _embed(windows[0], target, "query", local))[0])
+            vector = _vector((await _embed(windows[0], target, task, local))[0])
         else:
             from orion.kernel.memory_pieces import mean_vector
-            vector = _vector(mean_vector([(await _embed(w, target, "query", local))[0] for w in windows]))
+            vector = _vector(mean_vector([(await _embed(w, target, task, local))[0] for w in windows]))
     except MemoryUnavailable as exc:
         return space, None, str(exc)
     _query_cache[key] = vector
     while len(_query_cache) > QUERY_CACHE:
         _query_cache.pop(next(iter(_query_cache)))
     return space, vector, None
-
-
-async def _nearest(conn, user_id, space, vector, kind, count, offset=0) -> list[dict]:
-    """The `count` rows of the current space nearest the query vector, from `offset`. No threshold: an image's score
-    against a text is low (0.2-0.4) even when it is the right one, so only the order counts."""
-    extra, args = _filters("all", kind, 6)
-    return [dict(r) for r in await ann_fetch(conn,
-        f"select {_COLUMNS}, 1 - (embedding <=> $3::vector) as score from orion_memory "
-        f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit $4 offset $5",
-        user_id, space, vector, count, offset, *args)]
 
 
 async def delete_rows(conn, user_id: str, where: str, *args) -> list[dict]:
@@ -1237,9 +1285,75 @@ async def delete_whole_items(user_id: str, item_ids: list[str]) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows if not r.get("whole")]
 
 
-async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
+async def _neighbours_of(conn, user_id: str, ids: list[int]) -> list[int]:
+    """The text pieces next to the pieces `ids` are about to delete (in their items, in every vector space): the
+    surviving piece before and after each. Their stored vectors were made from windows that hold the deleted text."""
+    rows = [dict(r) for r in await conn.fetch(
+        "select id, item_id, vector_space, copied_from, item_order from orion_memory where user_id = $1 and kind = 'text' "
+        "and not whole and item_id in (select item_id from orion_memory where user_id = $1 and id = any($2::bigint[]) "
+        "and item_id is not null and kind = 'text')", user_id, ids)]
+    asked = {content_key(r) for r in rows if r["id"] in set(ids)}
+    lists: dict[tuple, list[dict]] = {}
+    for r in sorted((r for r in rows if r.get("item_id")), key=order_key):
+        lists.setdefault((r["item_id"], r["vector_space"]), []).append(r)
+    found: set[int] = set()
+    for members in lists.values():
+        kept = [m for m in members if content_key(m) not in asked]
+        positions = [i for i, m in enumerate(members) if content_key(m) in asked]
+        for i in positions:
+            before = next((m for m in reversed(members[:i]) if m in kept), None)
+            after = next((m for m in members[i + 1:] if m in kept), None)
+            found.update(m["id"] for m in (before, after) if m is not None)
+    return sorted(found)
+
+
+_reembed_tasks: set = set()
+
+
+def _schedule_reembed(user_id: str, ids: list[int], settings) -> None:
+    import asyncio
+    try:
+        task = asyncio.get_running_loop().create_task(_reembed(user_id, ids, settings), name="memory-reembed")
+    except RuntimeError:
+        return
+    _reembed_tasks.add(task)
+    task.add_done_callback(_reembed_tasks.discard)
+
+
+async def _reembed(user_id: str, ids: list[int], settings) -> None:
+    """Make the vectors of text pieces `ids` again from their windows as they are now (a neighbour was deleted),
+    in the active model's space; the items' whole vectors follow."""
+    from orion.kernel.memory_pieces import windows_of
+    try:
+        target, space, local = await embedding_target(settings)
+        conn = await _connect()
+        try:
+            wanted = {r["id"]: r["item_id"] for r in await conn.fetch(
+                "select id, item_id from orion_memory where user_id = $1 and id = any($2::bigint[]) "
+                "and vector_space = $3", user_id, ids, space)}
+            for item in sorted(set(wanted.values())):
+                pieces = sorted((dict(r) for r in await conn.fetch(
+                    "select id, text, copied_from, item_order from orion_memory where user_id = $1 and item_id = $2 "
+                    "and vector_space = $3 and kind = 'text' and not whole", user_id, item, space)), key=order_key)
+                for piece, window in zip(pieces, windows_of([p["text"] for p in pieces])):
+                    if wanted.get(piece["id"]) != item:
+                        continue
+                    vector = (await _embed(window, target, "document", local))[0]
+                    await conn.execute("update orion_memory set embedding = $3::vector where user_id = $1 and id = $2",
+                                       user_id, piece["id"], _vector(vector))
+                async with conn.transaction():
+                    await refresh_wholes(conn, user_id, [item])
+        finally:
+            await conn.close()
+    except Exception as exc:
+        logger.warning("Memory: neighbours of a deleted piece could not be embedded again: %s", exc)
+
+
+async def delete_items(user_id: str, ids: list[int], settings=None) -> list[dict]:
     """Delete this user's rows among `ids` together with their copies in other vector spaces (one memory, one
-    delete); returns the asked rows that were deleted (id, text). Other users' ids are ignored."""
+    delete); returns the asked rows that were deleted (id, text). Other users' ids are ignored. A deleted text
+    piece leaves its words in its neighbours' windows, so with `settings` those neighbours are embedded again in
+    the background (their vectors follow the text that is left)."""
     ids = [int(i) for i in ids][:500]
     if not ids:
         return []
@@ -1247,11 +1361,14 @@ async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
     try:
         await ensure_memory_table(conn)
         async with conn.transaction():
+            neighbours = await _neighbours_of(conn, user_id, ids)
             rows = await delete_rows(
                 conn, user_id, f"{CONTENT_KEY} in (select {CONTENT_KEY} from orion_memory where user_id = $1 "
                                "and id = any($2::bigint[]))", ids)
     finally:
         await conn.close()
+    if neighbours and settings is not None:
+        _schedule_reembed(user_id, neighbours, settings)
     asked = set(ids)
     return [{"id": r["id"], "text": r["text"]} for r in rows if r["id"] in asked]
 
@@ -1263,13 +1380,6 @@ def group_key(row) -> str:
 
 def content_key(row) -> int:
     return row.get("copied_from") or row["id"]
-
-
-def unshadowed(n: int) -> str:
-    """SQL: the row is in the space ${n}, or that space has no copy of it (a memory is listed once)."""
-    return (f"(vector_space = ${n} or not exists (select 1 from orion_memory c where c.user_id = orion_memory.user_id "
-            f"and c.vector_space = ${n} and coalesce(c.copied_from, c.id) = "
-            f"coalesce(orion_memory.copied_from, orion_memory.id)))")
 
 
 def prefer_space(rows: list[dict], space) -> list[dict]:
@@ -1306,47 +1416,10 @@ def item_positions(parts: list[dict]) -> dict[int, tuple[int, int]]:
     return positions
 
 
-GROUP_ROW_COLUMNS = ("id, text, kind, vector_space, source_kind, source_chat_title, group_id, copied_from, media_id, "
-                     "created_at, item_id, whole, span_start, span_end, track, item_order")
-
-
-async def group_context(conn, user_id: str, rows: list[dict], space) -> dict[int, dict]:
-    """For each row: what was saved with it, briefly. {row id: {"parts", "index", "source_kind", "title",
-    "others": [{"id", "kind", "text"}] (at most 3, other kinds first)}}."""
-    groups = {r.get("group_id") for r in rows if r.get("group_id")}
-    members: dict[str, list[dict]] = {}
-    if groups:
-        for r in await conn.fetch(f"select {GROUP_ROW_COLUMNS} from orion_memory where user_id = $1 "
-                                  "and group_id = any($2::text[]) order by id", user_id, list(groups)):
-            members.setdefault(r["group_id"], []).append(dict(r))
-    context = {}
-    for row in rows:
-        parts = pieces_only(prefer_space(members.get(row.get("group_id"), []) or [row], space))
-        keys = [content_key(p) for p in parts]
-        mine = content_key(row)
-        item = row.get("item_id")
-        others = [p for p in parts if content_key(p) != mine and not (item and p.get("item_id") == item)]
-        others.sort(key=lambda p: (p["kind"] == (row.get("kind") or "text"), order_key(p)))
-        mine_part = next((p for p in parts if content_key(p) == mine), None)
-        position = item_positions(parts).get(mine_part["id"]) if mine_part else None
-        siblings = [p for p in parts if item and p.get("item_id") == item and p.get("track") == row.get("track")]
-        context[row["id"]] = {
-            "key": group_key(row), "parts": len(parts), "index": keys.index(mine) + 1 if mine in keys else None,
-            "source_kind": row.get("source_kind"), "title": row.get("source_chat_title"),
-            "piece": position[0] if position else None,
-            "pieces": position[1] if position else (len(siblings) or None),
-            "others": [{"id": p["id"], "kind": p["kind"], "text": " ".join(p["text"].split())[:100]}
-                       for p in others[:3]]}
-    return context
-
-
-SEARCH_FILE_TEXT = 4000  # Characters of a text file a search by file reads (the first piece is what is embedded).
-
-
 async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple[str, str, str]:
     """(vector space, vector, kind) to search memory with a file: an image as it is; an audio by its first window;
-    a video by frames spread over all of it (as many as one request takes); a text file by its first piece, as a
-    document (it is compared with stored documents). ValueError (Turkish) for a file the model cannot take."""
+    a video by frames spread over all of it (as many as one request takes); a text file as a pasted text is
+    (_query_vector). ValueError (Turkish) for a file the model cannot take."""
     import asyncio
     from orion.kernel import memory_pieces as mp
     from orion.worker.services.router import audio_part, image_part
@@ -1356,10 +1429,11 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
     if not raw:
         raise ValueError("Dosya boş.")
     target, space, local = await embedding_target(settings)
-    if kind == "text":
-        text = text_of_file(raw)[:SEARCH_FILE_TEXT]
-        pieces = mp.text_pieces(text)
-        return space, _vector((await _embed(pieces[0][1] if pieces else text, target, "document", local))[0]), kind
+    if kind == "text":  # The vector a pasted text gets (_query_vector).
+        space, vector, reason = await _query_vector(text_of_file(raw), settings)
+        if vector is None:
+            raise MemoryUnavailable(reason or NO_VECTOR_MESSAGE)
+        return space, vector, kind
     support = media_support(local, getattr(target, "router_model_group", "") or "Embedding modeli")
     if not support[kind]:
         raise ValueError(file_refusal(kind, support).replace("Dosya eklenmedi", "Bu dosyayla aranamaz"))
