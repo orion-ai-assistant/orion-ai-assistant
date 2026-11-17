@@ -403,7 +403,7 @@ async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dic
     """The best row of each of (at least) `need` nearest memories, best first: the nearest rows through the vector
     index, then grouped. The rows taken widen (x4) while they hold fewer memories than needed and the index still
     has more (one long text has thousands of rows). params: [user, space, vector, ...filters]."""
-    count = max(200, need * 8)
+    count = max(100, need * 4)
     while True:
         rows = await memory.ann_fetch(
             conn, f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
@@ -522,15 +522,30 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         else:
             params = [user_id]
             extra = _filters(vector_space, kind, params)
-            groups = [r["g"] for r in await conn.fetch(
-                f"select {GROUP_KEY} as g, max(created_at) as at from orion_memory where user_id = $1{extra} "
-                f"group by g order by at desc, g desc limit {int(limit)} offset {int(offset)}", *params)]
-            matching = await conn.fetchval(
-                f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1{extra}", *params)
+            # The newest memories: the user's newest rows by the (user, created_at) index, grouped here; the rows
+            # taken widen while they hold fewer memories than the page needs (one long text has thousands of rows).
+            need, count, groups = int(offset) + int(limit), max(100, (int(offset) + int(limit)) * 4), []
+            while True:
+                found = await conn.fetch(
+                    f"select {GROUP_KEY} as g from orion_memory where user_id = $1{extra} "
+                    f"order by created_at desc, id desc limit {count}", *params)
+                groups = list(dict.fromkeys(r["g"] for r in found))
+                if len(groups) >= need or len(found) < count:
+                    break
+                count *= 4
+            groups = groups[int(offset):need]
+            summary = await _summary(conn, user_id, space)
+            if kind == "all":  # The counts are the cached summary's: no scan of all rows for the number.
+                matching = (summary["total"] if vector_space == "all"
+                            else summary["per_vector_space"].get(vector_space, 0))
+            else:
+                matching = await conn.fetchval(
+                    f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1{extra}", *params)
             more = offset + len(groups) < int(matching or 0)
         hits = await text_candidates(conn, user_id, groups, q) if searching and q else set()
         members = await _group_rows(conn, user_id, groups, full=hits if hits is not None else True)
-        summary = await _summary(conn, user_id, space)
+        if searching:
+            summary = await _summary(conn, user_id, space)
     finally:
         await conn.close()
     cards = []
@@ -634,30 +649,54 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     return found
 
 
+_summary_cache: dict = {}  # (user, space) -> (write counter, counts): recomputed only after a write of that user.
+SUMMARY_CACHE = 256
+
+
 async def _summary(conn, user_id: str, space) -> dict:
-    total = await conn.fetchval(f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1", user_id)
-    per_space = {r["key"]: int(r["n"]) for r in await conn.fetch(
-        f"select vector_space as key, count(distinct {GROUP_KEY}) as n from orion_memory where user_id = $1 "
-        "group by vector_space", user_id)}
-    per_kind = {r["key"]: int(r["n"]) for r in await conn.fetch(
-        f"select kind as key, count(distinct {ITEM_KEY}) as n from orion_memory where user_id = $1 and not whole "
-        "group by kind",
-        user_id)}
-    summary = {"total": int(total or 0), "per_vector_space": per_space, "per_kind": per_kind,
-               "current_vector_space": space, "not_searchable": int(total or 0), "movable": {}, "copied": {}}
-    if space:
-        summary["not_searchable"] = int(await conn.fetchval(
-            f"select count(*) from (select {GROUP_KEY} from orion_memory where user_id = $1 group by 1 "
-            "having bool_and(vector_space <> $2)) t", user_id, space) or 0)
-        has_copy = ("exists (select 1 from orion_memory c where c.user_id = r.user_id and c.vector_space = $2 "
-                    "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))")
-        for name, negate in (("movable", "not "), ("copied", "")):
-            summary[name] = {row["key"]: int(row["n"]) for row in await conn.fetch(
-                f"select vector_space as key, count(distinct coalesce(r.copied_from, r.id)) as n from orion_memory r "
-                f"where r.user_id = $1 and r.vector_space <> $2 and {negate}{has_copy} group by vector_space",
-                user_id, space)}
+    """The page's counts. They scan all of the user's rows, so they are kept until the user's next write
+    (memory.memory_version: a counter bumped by the table's triggers); the running job is always read fresh."""
     from orion.kernel.memory_move import job_status
-    summary["job"] = await job_status(conn, user_id)
+    version = await memory.memory_version(conn, user_id)
+    key = (user_id, space)
+    cached = _summary_cache.get(key)
+    if cached is None or cached[0] != version:
+        cached = (version, await _count_summary(conn, user_id, space))
+        _summary_cache.pop(key, None)
+        _summary_cache[key] = cached
+        while len(_summary_cache) > SUMMARY_CACHE:
+            _summary_cache.pop(next(iter(_summary_cache)))
+    return {**cached[1], "job": await job_status(conn, user_id)}
+
+
+async def _count_summary(conn, user_id: str, space) -> dict:
+    """Every count of the summary from one pass over the user's rows (one materialized read, then the groupings)."""
+    sql = (f"with r as materialized (select {GROUP_KEY} as g, vector_space as s, kind, {ITEM_KEY} as i, whole, "
+           "coalesce(copied_from, id) as c from orion_memory where user_id = $1) "
+           "select 'total' as part, '' as key, count(distinct g) as n from r "
+           "union all select 'space', s, count(distinct g) from r group by s "
+           "union all select 'kind', kind, count(distinct i) from r where not whole group by kind")
+    rows = await conn.fetch(sql, user_id)
+    total = next((int(x["n"]) for x in rows if x["part"] == "total"), 0)
+    per_space = {x["key"]: int(x["n"]) for x in rows if x["part"] == "space"}
+    per_kind = {x["key"]: int(x["n"]) for x in rows if x["part"] == "kind"}
+    summary = {"total": total, "per_vector_space": per_space, "per_kind": per_kind,
+               "current_vector_space": space, "not_searchable": total, "movable": {}, "copied": {}}
+    if space:
+        extra = await conn.fetch(
+            f"with r as materialized (select {GROUP_KEY} as g, vector_space as s, coalesce(copied_from, id) as c "
+            "from orion_memory where user_id = $1), has as materialized (select distinct c from r where s = $2) "
+            "select 'nosearch' as part, '' as key, count(*) as n from (select g from r group by g "
+            "having bool_and(s <> $2)) t "
+            "union all select 'movable', s, count(distinct c) from r where s <> $2 and c not in (select c from has) "
+            "group by s "
+            "union all select 'copied', s, count(distinct c) from r where s <> $2 and c in (select c from has) "
+            "group by s", user_id, space)
+        for x in extra:
+            if x["part"] == "nosearch":
+                summary["not_searchable"] = int(x["n"])
+            else:
+                summary[x["part"]][x["key"]] = int(x["n"])
     return summary
 
 

@@ -120,9 +120,7 @@ async def ensure_memory_table(conn) -> None:
                     "done as (update orion_memory m set text = m.text from todo where m.id = todo.id returning 1) "
                     "select count(*) from done"):
                 pass
-            await conn.execute("create index if not exists idx_orion_memory_hash on orion_memory "
-                               "(user_id, vector_space, content_hash)")
-            await _ann_index(conn)
+            await _version_triggers(conn)
             from orion.kernel.memory_groups import backfill_groups
             await backfill_groups(conn)
         finally:
@@ -134,21 +132,131 @@ async def ensure_memory_table(conn) -> None:
         raise MemoryUnavailable(NO_VECTOR_MESSAGE) from exc
     await _enable_trigrams(conn)
     _table_ready = True
+    _schedule_index_build()
 
 
-ANN_EF = 200  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
+ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
 ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks the graph to fill a filtered query.
 
 
-async def _ann_index(conn) -> None:
-    """One HNSW index (cosine) over every row's vector. The vector column has one size (768), so spaces share it;
-    a query's user/space filter is applied during the scan (iterative scan, pgvector 0.8). Without HNSW support
-    (pgvector < 0.5) searches stay exact."""
+async def _version_triggers(conn) -> None:
+    """A per-user write counter (orion_memory_version): bumped once per statement that inserts, updates or deletes
+    rows of a user, so the page's summary (counts over all the user's rows) is computed once per change and cached
+    (memory_groups._summary), not scanned for on every request."""
+    await conn.execute("create table if not exists orion_memory_version (user_id text primary key, n bigint not null "
+                       "default 0)")
+    for event, table in (("insert", "new"), ("update", "new"), ("delete", "old")):
+        await conn.execute(f"""
+            create or replace function orion_memory_bump_{event}() returns trigger language plpgsql as $$
+            begin
+                insert into orion_memory_version (user_id, n) select distinct user_id, 1 from {table}_rows
+                on conflict (user_id) do update set n = orion_memory_version.n + 1;
+                return null;
+            end $$""")
+        await conn.execute(f"drop trigger if exists orion_memory_bump_{event} on orion_memory")
+        await conn.execute(f"create trigger orion_memory_bump_{event} after {event} on orion_memory "
+                           f"referencing {table} table as {table}_rows for each statement "
+                           f"execute function orion_memory_bump_{event}()")
+
+
+async def memory_version(conn, user_id: str) -> int:
+    return int(await conn.fetchval("select n from orion_memory_version where user_id = $1", user_id) or 0)
+
+
+INDEX_LOCK = 51730202
+INDEX_DELAY = 5.0  # Seconds after the first use before the background index build starts.
+_index_task = None
+
+
+def _index_plan() -> list[tuple[str, str]]:
+    plan = [("idx_orion_memory_item", "create index concurrently if not exists idx_orion_memory_item on orion_memory "
+                                      "(user_id, item_id)"),
+            ("idx_orion_memory_newest", "create index concurrently if not exists idx_orion_memory_newest on "
+                                        "orion_memory (user_id, created_at desc, id desc)"),
+            ("idx_orion_memory_hash", "create index concurrently if not exists idx_orion_memory_hash on orion_memory "
+                                     "(user_id, vector_space, content_hash)"),
+            ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
+                                     "using hnsw (embedding vector_cosine_ops)")]
+    if _trgm:
+        plan.append(("idx_orion_memory_trgm", f"create index concurrently if not exists idx_orion_memory_trgm on "
+                                              f"orion_memory using gin (({FOLD_SQL}) gin_trgm_ops)"))
+    return plan
+
+
+def _schedule_index_build() -> None:
+    """The big indexes (HNSW, trigram, hash) are built in the background after the Hub is up, with CREATE INDEX
+    CONCURRENTLY (reads and writes go on; searches are exact scans until an index is ready). Once per process."""
+    global _index_task
+    import asyncio
+    if _index_task is not None:
+        return
     try:
-        await conn.execute("create index if not exists idx_orion_memory_ann on orion_memory "
-                           "using hnsw (embedding vector_cosine_ops)")
+        _index_task = asyncio.get_running_loop().create_task(_build_indexes(), name="memory-index-build")
+    except RuntimeError:
+        pass
+
+
+async def _index_progress(name: str) -> None:
+    import asyncio
+    conn = await _connect()
+    if conn is None:
+        return
+    try:
+        while True:
+            await asyncio.sleep(30)
+            row = await conn.fetchrow(
+                "select phase, blocks_done, blocks_total, tuples_done, tuples_total from pg_stat_progress_create_index "
+                "where relid = 'orion_memory'::regclass limit 1")
+            if row:
+                logger.info("Memory: index %s: %s (blocks %s/%s, tuples %s/%s)", name, row["phase"],
+                            row["blocks_done"], row["blocks_total"], row["tuples_done"], row["tuples_total"])
+    except Exception:
+        pass
+    finally:
+        await conn.close()
+
+
+async def _build_indexes() -> None:
+    import asyncio
+    import time
+    await asyncio.sleep(INDEX_DELAY)
+    conn = await _connect()
+    if conn is None:
+        return
+    try:
+        if not await conn.fetchval("select pg_try_advisory_lock($1)", INDEX_LOCK):
+            return  # Another Hub process is building them.
+        try:
+            await conn.execute("set maintenance_work_mem = '256MB'")
+            for name, ddl in _index_plan():
+                state = await conn.fetchrow("select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
+                                            "where c.relname = $1", name)
+                if state and state["indisvalid"]:
+                    continue
+                if state:  # A build that was cut off leaves an invalid index behind.
+                    await conn.execute(f"drop index concurrently if exists {name}")
+                logger.info("Memory: building index %s in the background", name)
+                started, watcher = time.monotonic(), asyncio.create_task(_index_progress(name))
+                try:
+                    await conn.execute(ddl)
+                except Exception as exc:
+                    logger.warning("Memory: index %s could not be built (%s); searches stay exact scans", name, exc)
+                    continue
+                finally:
+                    watcher.cancel()
+                logger.info("Memory: index %s ready after %.0fs", name, time.monotonic() - started)
+        finally:
+            await conn.execute("reset maintenance_work_mem")
+            await conn.execute("select pg_advisory_unlock($1)", INDEX_LOCK)
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
-        logger.info("No HNSW index for the memory (pgvector too old?): %s", exc)
+        logger.info("Memory: background index build stopped: %s", exc)
+    finally:
+        try:
+            await conn.close()
+        except Exception:
+            pass
 
 
 async def ann_fetch(conn, sql: str, *args) -> list:
@@ -173,9 +281,6 @@ async def _enable_trigrams(conn) -> None:
     try:
         if not await conn.fetchval("select 1 from pg_extension where extname = 'pg_trgm'"):
             await conn.execute("create extension if not exists pg_trgm")
-        # The index of the word search (_text_rows): the folded text, the very expression it queries.
-        await conn.execute(f"create index if not exists idx_orion_memory_trgm on orion_memory "
-                           f"using gin (({FOLD_SQL}) gin_trgm_ops)")
         _trgm = True
     except Exception as exc:
         logger.info("pg_trgm unavailable, near spellings are matched in Python: %s", exc)
@@ -1094,12 +1199,13 @@ async def refresh_wholes(conn, user_id: str, items: list[str]) -> None:
     none) of a track loses that track's whole vector. The mean is made by the database (pgvector's avg, then
     normalized: the direction is what a whole vector is), no embedding is read out."""
     from orion.kernel.media_store import unlink_many
-    # How many pieces each track has left, and its mean, in one pass over the items' rows.
+    wholes = await conn.fetch("select id, item_id, vector_space, track, media_id from orion_memory "
+                              "where user_id = $1 and item_id = any($2::text[]) and whole", user_id, items)
+    if not wholes:
+        return
     counts = {(r["item_id"], r["vector_space"], r["track"]): r["n"] for r in await conn.fetch(
         "select item_id, vector_space, track, count(*) as n from orion_memory "
         "where user_id = $1 and item_id = any($2::text[]) and not whole group by 1, 2, 3", user_id, items)}
-    wholes = await conn.fetch("select id, item_id, vector_space, track, media_id from orion_memory "
-                              "where user_id = $1 and item_id = any($2::text[]) and whole", user_id, items)
     gone = [w for w in wholes if counts.get((w["item_id"], w["vector_space"], w["track"]), 0) < 2]
     if gone:
         await conn.execute("delete from orion_memory where id = any($1::bigint[])", [w["id"] for w in gone])

@@ -34,7 +34,7 @@ def standing(score, stats) -> float | None:
 
 
 POOL_ROWS = 1000  # Nearest rows looked at for the memories that stand out (exclusions).
-SAMPLE_ROWS = 2000  # Newest rows a query's typical score is measured on (never every row of the user).
+SAMPLE_ROWS = 1000  # Newest rows a query's typical score is measured on (never every row of the user).
 
 
 async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:

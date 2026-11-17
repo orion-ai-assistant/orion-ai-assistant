@@ -53,6 +53,10 @@ async def connect(dsn):
     async def _connect():
         return await asyncpg.connect(dsn)
     memory._connect = _connect
+
+    async def current_space(settings):  # The Router probe of the real one is not what is measured here.
+        return SPACE
+    memory.current_space = current_space
     return await asyncpg.connect(dsn)
 
 
@@ -98,7 +102,14 @@ async def measure(dsn: str) -> None:
     conn = await connect(dsn)
     started = time.perf_counter()
     await memory.ensure_memory_table(conn)  # new code: adds hash column, HNSW and trigram indexes (once)
-    print(f"ensure_memory_table: {time.perf_counter() - started:.1f}s (index build included on first run)")
+    print(f"ensure_memory_table: {time.perf_counter() - started:.1f}s (no index build: it runs in the background)")
+    if hasattr(memory, "_build_indexes"):  # New code: the background build, awaited here to time it.
+        if memory._index_task is not None:  # The Hub's own scheduled build: replaced by this awaited one.
+            memory._index_task.cancel()
+        memory.INDEX_DELAY = 0
+        started = time.perf_counter()
+        await memory._build_indexes()
+        print(f"background index build (concurrently): {time.perf_counter() - started:.1f}s")
     await conn.execute("analyze orion_memory")
     rng = random.Random(11)
     vector = unit_vectors(1, rng)[0]
