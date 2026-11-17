@@ -381,6 +381,64 @@ class MemorySearchTests(PostgresMemoryCase):
                 await routes.memory_item_text(rows[7], request, 'bob')
         self.assertEqual(refused.exception.status_code, 404)
 
+    async def test_the_list_the_panel_and_the_tool_show_one_score_for_a_memory(self):
+        """One computation (memory_groups.group_match): the list card's score and best part, the detail panel's
+        part scores (the endpoint the panel asks, with the vector the search used) and the chat tool's score are
+        the same numbers, for a text query, several queries searched on their own, a long pasted passage and a file
+        (a vector)."""
+        from orion.kernel.memory_pieces import mean_vector
+        await self.add('ilgisiz', score=0.1, axis=9, group='h')
+        first = await self.add('sütlü kahve içtik', score=0.3, axis=2, group='g', minute=1)
+        await self.add('martılar uçtu', score=0.28, axis=3, group='g', minute=2)
+        whole = await self.add('tamamı', score=0.5, axis=4, group='g', minute=3)
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = 1 where group_id = 'g'")
+            await conn.execute('update orion_memory set whole = true where id = $1', whole)
+        finally:
+            await conn.close()
+        other = [0.0] * 768
+        other[3] = 1.0
+        long_query = 'martılar ' * 120
+        vectors = {'kahve': self.query, 'martı': other, long_query.strip(): other}
+
+        async def query_vector(q, settings):
+            return SPACE, memory._vector(vectors[q.strip()]), None
+        guard = patch.object(memory, '_query_vector', query_vector)
+        guard.start()
+        self.addCleanup(guard.stop)
+
+        async def check(queries, mode, vecs, words):
+            found = await memory_groups.search_queries('alice', self.settings, queries, mode=mode)
+            card = next(c for c in found['groups'] if c['group_id'] == 'g')
+            index = card.get('query_index', 0)
+            vector = vecs[index] if mode == 'each' and len(vecs) > 1 else mean_vector(vecs)
+            panel = await memory_groups.part_scores('alice', 'g', self.settings, q=words,
+                                                    vector=memory._vector(vector), space=SPACE)
+            self.assertEqual(panel['score'], card['score'])
+            self.assertEqual((panel['best'], panel['via_whole']), (card['matched_part'], card['via_whole']))
+            self.assertEqual((panel['best_score'], panel['whole_score']), (card['best_score'], card['whole_score']))
+            self.assertEqual(panel['parts'][str(card['matched_part'])]['score'], card['best_score'])
+            tool = await self.tool(queries=queries, mode='separate' if mode == 'each' else 'together')
+            row = next(r for r in tool['results'] if r['id'] == card['matched_part'])
+            self.assertEqual(row['score'], round(card['score'] * 100))
+            return card
+
+        single = await check([{'text': 'kahve'}], 'together', [self.query], 'kahve')
+        self.assertEqual(single['best_score'], 0.3)
+        # Several queries on their own: each memory shows its winning query's numbers, panel included.
+        each = await check([{'text': 'kahve'}, {'text': 'martı'}], 'each', [self.query, other], 'kahve martı')
+        self.assertIn(each['query_index'], (0, 1))
+        await check([{'text': 'kahve'}, {'text': 'martı'}], 'together', [self.query, other], 'kahve martı')
+        await check([{'text': long_query.strip()}], 'together', [other], long_query.strip())
+        # A file or a memory id: a vector query.
+        via_id = await memory_groups.list_groups('alice', self.settings, vector=memory._vector(other),
+                                                 vector_space_of_query=SPACE, limit=10)
+        card = next(c for c in via_id['groups'] if c['group_id'] == 'g')
+        panel = await memory_groups.part_scores('alice', 'g', self.settings, vector=memory._vector(other), space=SPACE)
+        self.assertEqual((panel['score'], panel['best']), (card['score'], card['matched_part']))
+        self.assertEqual(first, first)
+
     async def add_rows(self):
         conn = await registry._connect()
         try:

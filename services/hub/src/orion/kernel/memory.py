@@ -1079,21 +1079,6 @@ async def delete_items(user_id: str, ids: list[int]) -> list[dict]:
     return [{"id": r["id"], "text": r["text"]} for r in rows if r["id"] in asked]
 
 
-def _ranked(meaning: list[dict], texts: list[dict]) -> list[dict]:
-    """Meaning and text matches in one order: the meaning score, a substring match TEXT_BONUS higher, a near
-    spelling 80 % of that (pg_trgm's word similarity of a real typo is only ~0.4-0.6); rows of another space have
-    only their text match."""
-    pool = {r["id"]: {**r, "tmatch": None, "tscore": 0.0} for r in meaning}
-    for r in texts:
-        known = pool.get(r["id"], {})
-        pool[r["id"]] = {**r, "score": r["score"] if r["score"] is not None else known.get("score")}
-
-    def rank(r):
-        bonus = {"text": TEXT_BONUS, "similar": 0.8 * TEXT_BONUS}.get(r["tmatch"], 0.0)
-        return (float(r["score"]) if r["score"] is not None else 0.0) + bonus + 0.01 * float(r["tscore"])
-    return sorted(pool.values(), key=lambda r: (-rank(r), -r["id"]))
-
-
 def group_key(row) -> str:
     """The memory (card) a row belongs to: its group, or the row alone for a row saved before groups."""
     return row.get("group_id") or f"r{row['id']}"
@@ -1108,17 +1093,6 @@ def unshadowed(n: int) -> str:
     return (f"(vector_space = ${n} or not exists (select 1 from orion_memory c where c.user_id = orion_memory.user_id "
             f"and c.vector_space = ${n} and coalesce(c.copied_from, c.id) = "
             f"coalesce(orion_memory.copied_from, orion_memory.id)))")
-
-
-def _one_per_content(ranked: list[dict]) -> list[dict]:
-    """The best-ranked row of each content (a row and its copies in other spaces count once)."""
-    seen, kept = set(), []
-    for r in ranked:
-        key = content_key(r)
-        if key not in seen:
-            seen.add(key)
-            kept.append(r)
-    return kept
 
 
 def prefer_space(rows: list[dict], space) -> list[dict]:
@@ -1189,25 +1163,6 @@ async def group_context(conn, user_id: str, rows: list[dict], space) -> dict[int
     return context
 
 
-def promote_pieces(ranked: list[dict]) -> list[dict]:
-    """An item's whole vector ranks the item; what is shown is its best piece: a whole row is replaced by the best
-    piece of its item (and track) further down the list, marked `via_whole`. A whole row whose pieces are not in the
-    list stays, standing for the item."""
-    shown, used = [], set()
-    for index, r in enumerate(ranked):
-        if r["id"] in used:
-            continue
-        if r.get("whole") and r.get("item_id"):
-            best = next((p for p in ranked[index + 1:] if p.get("item_id") == r["item_id"] and not p.get("whole")
-                         and p.get("track") == r.get("track") and p["id"] not in used), None)
-            if best is not None:
-                used.add(best["id"])
-                shown.append({**best, "via_whole": True, "whole_score": r.get("score")})
-                continue
-        shown.append(r)
-    return shown
-
-
 SEARCH_FILE_TEXT = 4000  # Characters of a text file a search by file reads (the first piece is what is embedded).
 
 
@@ -1261,85 +1216,6 @@ async def file_query_vector(name: str, mime: str, raw: bytes, settings) -> tuple
         logger.warning("Memory search by file %s failed: %s", name, exc)
         raise ValueError("Embedding modeli bu dosyayı işleyemedi.") from exc
     return space, _vector(vector), kind
-
-
-async def search(user_id: str, query: str, settings, page: int = 1, kind: str = "all",
-                 exclude: list[str] | None = None, also: list[str] | None = None) -> dict:
-    """One page (PAGE rows, best first, no threshold) of this user's memory (rows, best first). With a
-    query: rows by meaning (current vector space) and text matches (substring or near spelling, any space) in one
-    order. Without one: the newest rows (of `kind`). {"rows", "more", "other_spaces"[, "reason"]}."""
-    from orion.kernel import memory_filters as mf
-    query = (query or "").strip()
-    negatives = [t.strip() for t in exclude or [] if t.strip()][:5]
-    kind = kind if kind in KINDS else "all"
-    page = max(1, int(page))
-    start = (page - 1) * PAGE
-    excluded, stats = 0, None
-    if query:
-        space, vector, reason = await _query_vector(query, settings)
-        extra = [t.strip()[:MAX_QUERY_CHARS] for t in also or [] if t.strip()][:4]
-        if vector is not None and extra:
-            # Several texts searched together: the normalized mean of their query vectors (as the page does).
-            import json
-            from orion.kernel.memory_pieces import mean_vector
-            vectors = [json.loads(vector)]
-            for text in extra:
-                _, more, _ = await _query_vector(text, settings)
-                if more is not None:
-                    vectors.append(json.loads(more))
-            vector = _vector(mean_vector(vectors))
-    else:
-        space, vector, reason = await current_space(settings), None, None
-    conn = await _connect()
-    try:
-        await ensure_memory_table(conn)
-        if query:
-            meaning = await _nearest(conn, user_id, space, vector, kind,
-                                     start + PAGE + 1 + (200 if negatives else 0)) if vector else []
-            texts = await _text_rows(conn, user_id, query, "all", kind, space, vector)
-            ranked = promote_pieces(_one_per_content(_ranked(meaning, texts)))
-            if negatives:
-                out = await mf.excluded_groups(conn, user_id, space, negatives, settings)
-                kept = [r for r in ranked if group_key(r) not in out]
-                excluded, ranked = len(ranked) - len(kept), kept
-            stats = mf.calibrate(list((await mf.group_scores(conn, user_id, space, vector, kind)).values()))                 if vector else None
-        else:
-            extra, args = _filters("all", kind, 4)
-            params = [user_id, PAGE + 1, start, *args]
-            if space:
-                params.append(space)
-                extra += f" and {unshadowed(len(params))}"
-            ranked = [None] * start + [{**dict(r), "score": None, "tmatch": None} for r in await conn.fetch(
-                f"select {_COLUMNS} from orion_memory where user_id = $1 and not whole{extra} "
-                f"order by created_at desc, id desc "
-                f"limit $2 offset $3", *params)]
-        page_rows = [r for r in ranked[start:start + PAGE] if r is not None]
-        groups = await group_context(conn, user_id, page_rows, space)
-        # Rows of another space that have no copy in this one: the search reaches them by text only.
-        other = await conn.fetchval(
-            "select count(*) from orion_memory r where user_id = $1 and vector_space <> $2 and not exists "
-            "(select 1 from orion_memory c where c.user_id = $1 and c.vector_space = $2 "
-            "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))", user_id, space) if space else 0
-    finally:
-        await conn.close()
-    rows = []
-    for r in page_rows:
-        # Every row of the space has a meaning score (no threshold), so a text match is what the label says.
-        match = (r["tmatch"] or "meaning") if query else None
-        rows.append({"id": r["id"], "text": r["text"], "date": local_time(r["created_at"]),
-                     "kind": r.get("kind") or "text", "media_id": r.get("media_id"),
-                     "score": None if r["score"] is None else round(float(r["score"]), 3), "match": match,
-                     "group": groups.get(r["id"]), "whole": bool(r.get("whole")), "track": r.get("track"),
-                     "via_whole": bool(r.get("via_whole")),
-                     "above": None if not query or stats is None or r["score"] is None
-                     else round(float(r["score"]) - stats[0], 3),
-                     "span": None if r.get("span_start") is None else (float(r["span_start"]), float(r["span_end"]))})
-    result = {"rows": rows, "more": len(ranked) > start + PAGE, "other_spaces": int(other or 0)}
-    if negatives:
-        result["excluded"], result["exclude_terms"] = excluded, negatives
-    if query and reason:
-        result["reason"] = reason
-    return result
 
 
 OPEN_FRAMES = {"piece": 4, "whole": 6}  # Frames shown to the chat model for a video segment / a whole video.
