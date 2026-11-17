@@ -118,7 +118,7 @@ class PostgresMemoryCase(unittest.IsolatedAsyncioTestCase):
         self.query = [1.0] + [0.0] * 767
         self.settings = SimpleNamespace(router_model_group='chat')
 
-        async def query_vector(q, settings):
+        async def query_vector(q, settings, space=None):
             return SPACE, memory._vector(self.query), None
 
         async def space(settings):
@@ -406,7 +406,7 @@ class MemorySearchTests(PostgresMemoryCase):
         long_query = 'martılar ' * 120
         vectors = {'kahve': self.query, 'martı': other, long_query.strip(): other}
 
-        async def query_vector(q, settings):
+        async def query_vector(q, settings, space=None):
             return SPACE, memory._vector(vectors[q.strip()]), None
         guard = patch.object(memory, '_query_vector', query_vector)
         guard.start()
@@ -569,7 +569,7 @@ class MemorySearchTests(PostgresMemoryCase):
     async def add_file(self, name, mime, raw, support=GEMMA, group=None):
         self.embedded = getattr(self, 'embedded', 0)
 
-        async def target(settings):
+        async def target(settings, space=None):
             return settings, SPACE, True
 
         async def embed(text, settings, kind, local):

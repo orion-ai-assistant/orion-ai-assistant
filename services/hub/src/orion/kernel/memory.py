@@ -446,15 +446,23 @@ async def embedding_targets(settings) -> list[tuple[object, str, bool]]:
     return found
 
 
-async def embedding_target(settings) -> tuple[object, str, bool]:
-    """(settings aimed at the embedding model, its vector space, whether it is local)."""
-    return (await embedding_targets(settings))[0]
+async def embedding_target(settings, space: str | None = None) -> tuple[object, str, bool]:
+    """(settings aimed at the embedding model, its vector space, whether it is local): the one searches and new
+    memories use, or, with `space`, the model of that vector space (MemoryUnavailable when the Router has none:
+    its query vector cannot be made, the page then searches by words only)."""
+    targets = await embedding_targets(settings)
+    if space:
+        found = next((t for t in targets if t[1] == space), None)
+        if found is None:
+            raise MemoryUnavailable(f"{space} modeli şu an kullanılamıyor: bu modelle anlamla aranamıyor.")
+        return found
+    return targets[0]
 
 
 async def _embed(text: str, settings, kind: str, local: bool) -> list[list[float]]:
     from orion.worker.services.router import embed_text
     try:
-        vectors = await embed_text(text, settings, kind)
+        vectors = await embed_text(text, settings, kind, local=local)
     except Exception as exc:
         logger.warning("Memory embedding failed: %s", exc)
         if unreachable(exc):
@@ -1438,8 +1446,8 @@ def query_windows(q: str) -> tuple[list[str], int]:
     return pieces, total
 
 
-async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str | None]:
-    """(current vector space, query vector, reason when the search by meaning is off): THE vector of a text, whether
+async def _query_vector(q: str, settings, space: str | None = None) -> tuple[str | None, str | None, str | None]:
+    """(vector space, query vector, reason when the search by meaning is off): THE vector of a text, whether
     it was typed, pasted or read from a dropped file. A short text is a question (embedded as a query); a longer
     one is a passage compared with stored passages: embedded as the stored windows are (documents), the way
     stored text is split (query_windows), and the normalized mean of those vectors searches, as a stored long
@@ -1448,7 +1456,7 @@ async def _query_vector(q: str, settings) -> tuple[str | None, str | None, str |
     import asyncio
     import hashlib
     try:
-        target, space, local = await embedding_target(settings)
+        target, space, local = await embedding_target(settings, space)
     except MemoryUnavailable as exc:
         return None, None, str(exc)
     key = (space, hashlib.sha256(q.encode("utf-8", "replace")).hexdigest())

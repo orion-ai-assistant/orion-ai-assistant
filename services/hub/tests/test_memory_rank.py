@@ -39,7 +39,7 @@ class RankTests(PostgresMemoryCase):
         return {'a': self.query, 'b': other}
 
     async def patch_vectors(self, table):
-        async def query_vector(q, settings):
+        async def query_vector(q, settings, space=None):
             return SPACE, memory._vector(table[q.strip()]), None
         guard = patch.object(memory, '_query_vector', query_vector)
         guard.start()
@@ -696,3 +696,66 @@ class RankTests(PostgresMemoryCase):
             self.assertIn('Ekran', hit['label'])  # A snippet around the matched words, not the transcript's start.
         # The no-query note stays short.
         self.assertLess(len(images['note']), 200)
+
+    async def test_each_models_prompts_reach_the_server_even_when_the_provider_lookup_fails(self):
+        sent = []
+
+        async def generate(text, settings):
+            sent.append(text)
+            return [0.0] * 768
+        profiles = {
+            'gemma': {'context': 2048, 'query_prefix': 'task: search result | query: ', 'document_prefix': 'title: none | text: ',
+                      'vector_space': 'embeddinggemma-2'},
+            'jina': {'context': 2048, 'query_prefix': 'Query: ', 'document_prefix': 'Document: ', 'vector_space': 'jina-v5'},
+        }
+
+        async def no_provider(*args, **kwargs):
+            raise RuntimeError('router down')
+        for name, profile in profiles.items():
+            with self.subTest(name), patch('orion.worker.services.router.generate_embeddings', generate), \
+                    patch('orion.worker.services.router.get_model_provider', no_provider), \
+                    patch('services.shared.local_parts.embedding_profile', lambda *a, **k: profile):
+                sent.clear()
+                await memory._embed('merhaba', self.settings, 'query', True)
+                await memory._embed('merhaba', self.settings, 'document', True)
+                self.assertEqual(sent, [profile['query_prefix'] + 'merhaba', profile['document_prefix'] + 'merhaba'])
+
+    async def test_a_page_filtered_to_another_model_searches_with_that_models_query_vector(self):
+        other = 'jina-v5'
+        mine = await self.add('benim notum', score=0.5, axis=2, group='g1')
+        theirs = await self.add('jina notu', score=0.7, axis=3, group='g2', space=other)
+        seen = []
+
+        async def embed(text, settings, kind, local):
+            seen.append(settings.router_model_group)
+            return [self.query]
+        targets = [(SimpleNamespace(router_model_group='gemma', model_copy=None), SPACE, True),
+                   (SimpleNamespace(router_model_group='jina'), other, True)]
+        with patch.object(memory, '_embed', embed), patch.object(memory, '_query_vector', REAL_QUERY_VECTOR), \
+                patch.object(memory, 'embedding_targets', AsyncMock(return_value=targets)):
+            memory._query_cache.clear()
+            page = await memory_groups.list_groups('alice', self.settings, q='x', vector_space=other, limit=10)
+            panel = await memory_groups.part_scores('alice', 'g2', self.settings, q='x', space=other)
+            memory._query_cache.clear()
+            seen.clear()
+            gone = await memory_groups.list_groups('alice', self.settings, q='x', vector_space='yok-model', limit=10)
+        self.assertEqual([(g['matched_part'], g['score']) for g in page['groups']], [(theirs, 0.7)])
+        self.assertEqual(panel['score'], 0.7)
+        self.assertEqual(page['semantic'], True)
+        self.assertEqual(gone['semantic'], False)  # No model for it: words only, no made-up percentages.
+        self.assertEqual(mine, mine)
+
+    async def test_every_part_keeps_its_own_title_and_the_memory_name_is_the_first(self):
+        async def embed(text, settings, kind, local):
+            return [[1.0] + [0.0] * 767]
+        target = (SimpleNamespace(router_model_group='e'), SPACE, True)
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+            first = await memory.add_note_to('alice', 'ilk not', self.settings, title='Ana başlık')
+            await memory.add_note_to('alice', 'ikinci not', self.settings, group=first['group_id'], title='Ek not')
+            await memory.add_note_to('alice', 'üçüncü not', self.settings, group=first['group_id'])
+        detail = await memory_groups.group_detail('alice', first['group_id'], self.settings)
+        self.assertEqual([(p['text'], p['title']) for p in detail['parts']],
+                         [('ilk not', 'Ana başlık'), ('ikinci not', 'Ek not'), ('üçüncü not', None)])
+        self.assertEqual(detail['title'], 'Ana başlık')
+        doc = await memory_groups.item_document('alice', detail['parts'][1]['id'], self.settings)
+        self.assertEqual(doc['name'], 'Ek not.txt')

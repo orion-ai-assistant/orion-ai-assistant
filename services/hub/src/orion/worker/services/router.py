@@ -631,14 +631,18 @@ def chunk_text(text: str, target_tokens: int = 400) -> list[str]:
     return chunks
 
 
-async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document", title: str = "") -> list[list[float]]:
+async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document", title: str = "",
+                     local: bool | None = None) -> list[list[float]]:
     """One vector per piece of `text`. `kind` is "document" (what is stored) or "query" (what is searched with).
     The local model's prefix is added and text past its context is split; a cloud model gets the text as it is.
-    `title` (documents only) goes into models whose document prefix takes one (EmbeddingGemma: "title: ... | text: ")."""
-    try:
-        local = await get_model_provider(settings.router_model_group, "embed") == "local"
-    except Exception:
-        local = False
+    `title` (documents only) goes into models whose document prefix takes one (EmbeddingGemma: "title: ... | text: ").
+    `local`: whether the model is the local one, when the caller knows (memory does): a failed provider lookup then
+    cannot silently drop the model's prompts, which would store vectors the queries no longer match."""
+    if local is None:
+        try:
+            local = await get_model_provider(settings.router_model_group, "embed") == "local"
+        except Exception:
+            local = False
     prefix, context = "", 0
     if local:
         from services.shared import local_parts

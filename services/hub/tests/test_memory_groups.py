@@ -181,7 +181,7 @@ class MemoryGroupTests(PostgresMemoryCase):
     async def test_a_chat_save_stores_its_group_chat_and_the_message_each_chunk_starts_with(self):
         ids = await self.chat(('user', 'Benim adım Ayşe.'), ('assistant', 'Memnun oldum.'))
 
-        async def target(settings):
+        async def target(settings, space=None):
             return settings, SPACE, True
 
         async def embed(text, settings, kind, local):
@@ -199,7 +199,7 @@ class MemoryGroupTests(PostgresMemoryCase):
                       "values ('chat', $1, $2, $3) returning id", role, json.dumps({'role': role, **body}),
                       body.get('display_text') or body.get('content') or '')
 
-        async def target(settings):
+        async def target(settings, space=None):
             return settings, SPACE, True
 
         async def embed(text, settings, kind, local):
@@ -367,7 +367,7 @@ class MemoryGroupTests(PostgresMemoryCase):
     # --- adding parts to a memory ---------------------------------------------------------------------------------
 
     def add_patches(self):
-        async def target(settings):
+        async def target(settings, space=None):
             return settings, SPACE, True
 
         async def embed(text, settings, kind, local):
@@ -419,7 +419,7 @@ class MemoryGroupTests(PostgresMemoryCase):
     # --- move ---------------------------------------------------------------------------------------------------
 
     def move_patches(self, support=JINA, embed=None):
-        async def target(settings):
+        async def target(settings, space=None):
             return SimpleNamespace(router_model_group='local-embed'), SPACE, True
 
         async def text_vector(text, settings, kind, local):
@@ -585,7 +585,7 @@ def test_a_long_query_is_embedded_as_the_mean_of_its_windows_sampled_evenly(monk
     from orion.kernel import memory
     seen = []
 
-    async def target(settings):
+    async def target(settings, space=None):
         return None, 'space', True
 
     async def embed(text, target, kind, local):
