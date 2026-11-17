@@ -55,7 +55,10 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("alter table orion_memory add column if not exists media_id text")
             await conn.execute("alter table orion_memory add column if not exists media_mime text")
             await conn.execute("alter table orion_memory add column if not exists media_seconds real")
-            await conn.execute("create index if not exists idx_orion_memory_user on orion_memory (user_id, vector_space)")
+            # (user, space, id): also serves "this user's newest rows" without sorting all of them.
+            await conn.execute("create index if not exists idx_orion_memory_user_id on orion_memory "
+                               "(user_id, vector_space, id)")
+            await conn.execute("drop index if exists idx_orion_memory_user")
             for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint",
                            "item_id text", "whole boolean not null default false", "span_start real", "span_end real",
                            "track text", "caption text", "item_order bigint"):
@@ -100,6 +103,24 @@ async def ensure_memory_table(conn) -> None:
                 )""")
             await conn.execute("create index if not exists idx_orion_memory_media_jobs_user on orion_memory_media_jobs "
                                "(user_id, started_at)")
+            # sha256 of the text, kept by a trigger (every insert path has it; the generated-column form is refused
+            # because convert_to is not immutable): the duplicate check is one indexed lookup, not a text compare.
+            await conn.execute("alter table orion_memory add column if not exists content_hash text")
+            await conn.execute("""
+                create or replace function orion_memory_hash() returns trigger language plpgsql as $$
+                begin
+                    new.content_hash := encode(sha256(convert_to(new.text, 'UTF8')), 'hex');
+                    return new;
+                end $$""")
+            await conn.execute("drop trigger if exists orion_memory_hash on orion_memory")
+            await conn.execute("create trigger orion_memory_hash before insert or update of text on orion_memory "
+                               "for each row execute function orion_memory_hash()")
+            while await conn.fetchval(  # Old rows, in batches (one statement would hold every row's lock at once).
+                    "with todo as (select id from orion_memory where content_hash is null limit 5000), "
+                    "done as (update orion_memory m set text = m.text from todo where m.id = todo.id returning 1) "
+                    "select count(*) from done"):
+                pass
+            await _version_triggers(conn)
             from orion.kernel.memory_groups import backfill_groups
             await backfill_groups(conn)
         finally:
@@ -111,6 +132,146 @@ async def ensure_memory_table(conn) -> None:
         raise MemoryUnavailable(NO_VECTOR_MESSAGE) from exc
     await _enable_trigrams(conn)
     _table_ready = True
+    _schedule_index_build()
+
+
+ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
+ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks the graph to fill a filtered query.
+
+
+async def _version_triggers(conn) -> None:
+    """A per-user write counter (orion_memory_version): bumped once per statement that inserts, updates or deletes
+    rows of a user, so the page's summary (counts over all the user's rows) is computed once per change and cached
+    (memory_groups._summary), not scanned for on every request."""
+    await conn.execute("create table if not exists orion_memory_version (user_id text primary key, n bigint not null "
+                       "default 0)")
+    for event, table in (("insert", "new"), ("update", "new"), ("delete", "old")):
+        await conn.execute(f"""
+            create or replace function orion_memory_bump_{event}() returns trigger language plpgsql as $$
+            begin
+                insert into orion_memory_version (user_id, n) select distinct user_id, 1 from {table}_rows
+                on conflict (user_id) do update set n = orion_memory_version.n + 1;
+                return null;
+            end $$""")
+        await conn.execute(f"drop trigger if exists orion_memory_bump_{event} on orion_memory")
+        await conn.execute(f"create trigger orion_memory_bump_{event} after {event} on orion_memory "
+                           f"referencing {table} table as {table}_rows for each statement "
+                           f"execute function orion_memory_bump_{event}()")
+
+
+async def memory_version(conn, user_id: str) -> int:
+    return int(await conn.fetchval("select n from orion_memory_version where user_id = $1", user_id) or 0)
+
+
+INDEX_LOCK = 51730202
+INDEX_DELAY = 5.0  # Seconds after the first use before the background index build starts.
+_index_task = None
+
+
+def _index_plan() -> list[tuple[str, str]]:
+    plan = [("idx_orion_memory_item", "create index concurrently if not exists idx_orion_memory_item on orion_memory "
+                                      "(user_id, item_id)"),
+            ("idx_orion_memory_newest", "create index concurrently if not exists idx_orion_memory_newest on "
+                                        "orion_memory (user_id, created_at desc, id desc)"),
+            ("idx_orion_memory_hash", "create index concurrently if not exists idx_orion_memory_hash on orion_memory "
+                                     "(user_id, vector_space, content_hash)"),
+            ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
+                                     "using hnsw (embedding vector_cosine_ops)")]
+    if _trgm:
+        plan.append(("idx_orion_memory_trgm", f"create index concurrently if not exists idx_orion_memory_trgm on "
+                                              f"orion_memory using gin (({FOLD_SQL}) gin_trgm_ops)"))
+    return plan
+
+
+def _schedule_index_build() -> None:
+    """The big indexes (HNSW, trigram, hash) are built in the background after the Hub is up, with CREATE INDEX
+    CONCURRENTLY (reads and writes go on; searches are exact scans until an index is ready). Once per process."""
+    global _index_task
+    import asyncio
+    if _index_task is not None:
+        return
+    try:
+        _index_task = asyncio.get_running_loop().create_task(_build_indexes(), name="memory-index-build")
+    except RuntimeError:
+        pass
+
+
+async def _index_progress(name: str) -> None:
+    import asyncio
+    conn = await _connect()
+    if conn is None:
+        return
+    try:
+        while True:
+            await asyncio.sleep(30)
+            row = await conn.fetchrow(
+                "select phase, blocks_done, blocks_total, tuples_done, tuples_total from pg_stat_progress_create_index "
+                "where relid = 'orion_memory'::regclass limit 1")
+            if row:
+                logger.info("Memory: index %s: %s (blocks %s/%s, tuples %s/%s)", name, row["phase"],
+                            row["blocks_done"], row["blocks_total"], row["tuples_done"], row["tuples_total"])
+    except Exception:
+        pass
+    finally:
+        await conn.close()
+
+
+async def _build_indexes() -> None:
+    import asyncio
+    import time
+    await asyncio.sleep(INDEX_DELAY)
+    conn = await _connect()
+    if conn is None:
+        return
+    try:
+        if not await conn.fetchval("select pg_try_advisory_lock($1)", INDEX_LOCK):
+            return  # Another Hub process is building them.
+        try:
+            await conn.execute("set maintenance_work_mem = '256MB'")
+            for name, ddl in _index_plan():
+                state = await conn.fetchrow("select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
+                                            "where c.relname = $1", name)
+                if state and state["indisvalid"]:
+                    continue
+                if state:  # A build that was cut off leaves an invalid index behind.
+                    await conn.execute(f"drop index concurrently if exists {name}")
+                logger.info("Memory: building index %s in the background", name)
+                started, watcher = time.monotonic(), asyncio.create_task(_index_progress(name))
+                try:
+                    await conn.execute(ddl)
+                except Exception as exc:
+                    logger.warning("Memory: index %s could not be built (%s); searches stay exact scans", name, exc)
+                    continue
+                finally:
+                    watcher.cancel()
+                logger.info("Memory: index %s ready after %.0fs", name, time.monotonic() - started)
+        finally:
+            await conn.execute("reset maintenance_work_mem")
+            await conn.execute("select pg_advisory_unlock($1)", INDEX_LOCK)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.info("Memory: background index build stopped: %s", exc)
+    finally:
+        try:
+            await conn.close()
+        except Exception:
+            pass
+
+
+async def ann_fetch(conn, sql: str, *args) -> list:
+    """`conn.fetch` of a nearest-neighbour query with the ANN settings of this query only (transaction local, so a
+    pooled connection keeps no setting): a larger ef_search and, where pgvector has it, iterative scan so the
+    user's filter cannot leave the result short."""
+    async with conn.transaction():
+        await conn.execute(f"select set_config('hnsw.ef_search', '{ANN_EF}', true)")
+        try:
+            async with conn.transaction():  # A savepoint: older pgvector does not know these settings.
+                await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true), "
+                                   f"set_config('hnsw.max_scan_tuples', '{ANN_MAX_SCAN}', true)")
+        except Exception:
+            pass
+        return await conn.fetch(sql, *args)
 
 
 async def _enable_trigrams(conn) -> None:
@@ -535,14 +696,22 @@ async def text_item_pieces(conn, user_id: str, space: str, text: str, target, lo
     pieces, known = [], 0
     if split is None:
         split = await asyncio.to_thread(text_pieces, text)
+    seen: dict[str, dict] = {}
+    if skip_known and split:
+        import hashlib
+        hashes = sorted({hashlib.sha256(core.encode("utf-8")).hexdigest() for core, _ in split})
+        # One lookup for every core (index user, space, content_hash): the row of this group first, else any.
+        for r in await conn.fetch(
+                "select distinct on (content_hash) content_hash, text, group_id, embedding::text as embedding "
+                "from orion_memory where user_id = $1 and vector_space = $2 and content_hash = any($3::text[]) "
+                "and media_id is null and not whole order by content_hash, (group_id = $4) desc nulls last, id",
+                user_id, space, hashes, group or ""):
+            seen[r["text"]] = dict(r)
     for index, (core, window) in enumerate(split):
         if progress is not None and await progress(index, len(split)):
             raise asyncio.CancelledError("stopped")
         if skip_known:
-            row = await conn.fetchrow(
-                "select group_id, embedding::text as embedding from orion_memory where user_id = $1 "
-                "and vector_space = $2 and text = $3 and media_id is null and not whole "
-                "order by (group_id = $4) desc nulls last limit 1", user_id, space, core, group or "")
+            row = seen.get(core)
             if row and group and row["group_id"] == group:
                 known += 1
                 continue
@@ -911,11 +1080,17 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     extra, args = _filters(vector_space, kind, len(params) + 1)
     params += args
     if _trgm:
-        rows = await conn.fetch(
-            f"select {_COLUMNS}, {score} as score, case when {FOLD_SQL} like $2 then 1.0 "
-            f"else word_similarity($3, {FOLD_SQL}) end as tscore from orion_memory where user_id = $1 "
-            f"and not whole and ({FOLD_SQL} like $2 or word_similarity($3, {FOLD_SQL}) >= {FUZZY_MIN}){extra} "
-            f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP}", *params)
+        # `like` and `<%` (word_similarity >= the threshold set here) are the operators the GIN trigram index
+        # answers; one row per memory is chosen in SQL, so the cap counts memories, not their pieces.
+        group = "coalesce(group_id, 'r' || id::text)"
+        async with conn.transaction():
+            await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{FUZZY_MIN}', true)")
+            rows = await conn.fetch(
+                f"select * from (select distinct on ({group}) {_COLUMNS}, {score} as score, "
+                f"case when {FOLD_SQL} like $2 then 1.0 else word_similarity($3, {FOLD_SQL}) end as tscore "
+                f"from orion_memory where user_id = $1 and not whole and ({FOLD_SQL} like $2 or $3 <% {FOLD_SQL})"
+                f"{extra} order by {group}, tscore desc, created_at desc, id desc) best "
+                f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP}", *params)
         return [{**dict(r), "tmatch": "text" if float(r["tscore"]) >= 1 else "similar"} for r in rows]
     rows = [{**dict(r), "tscore": 1.0, "tmatch": "text"} for r in await conn.fetch(
         f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and not whole and {FOLD_SQL} like $2"
@@ -992,9 +1167,9 @@ async def _nearest(conn, user_id, space, vector, kind, count, offset=0) -> list[
     """The `count` rows of the current space nearest the query vector, from `offset`. No threshold: an image's score
     against a text is low (0.2-0.4) even when it is the right one, so only the order counts."""
     extra, args = _filters("all", kind, 6)
-    return [dict(r) for r in await conn.fetch(
+    return [dict(r) for r in await ann_fetch(conn,
         f"select {_COLUMNS}, 1 - (embedding <=> $3::vector) as score from orion_memory "
-        f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector, id limit $4 offset $5",
+        f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit $4 offset $5",
         user_id, space, vector, count, offset, *args)]
 
 
@@ -1002,14 +1177,12 @@ async def delete_rows(conn, user_id: str, where: str, *args) -> list[dict]:
     """Delete this user's rows matching `where` (SQL after the user's condition, parameters from $2) and drop their
     media links, inside the caller's transaction; the whole vectors of the items that lost a piece follow
     (refresh_wholes). Returns (id, text, content_key, group_id, item_id) of each."""
-    from orion.kernel.media_store import unlink_media
+    from orion.kernel.media_store import unlink_many
     rows = await conn.fetch(
         f"delete from orion_memory where user_id = $1 and ({where}) "
         f"returning id, text, media_id, group_id, item_id, whole, {CONTENT_KEY} as content_key", user_id, *args)
     rows = [dict(r) for r in rows]
-    for r in rows:
-        if r["media_id"]:
-            await unlink_media(r["media_id"], "memory", str(r["id"]), conn=conn)
+    await unlink_many([(r["media_id"], r["id"]) for r in rows if r["media_id"]], "memory", conn=conn)
     items = {r["item_id"] for r in rows if r.get("item_id") and not r.get("whole")}
     if items:
         await refresh_wholes(conn, user_id, sorted(items))
@@ -1022,25 +1195,29 @@ def _parse_vector(value) -> list[float]:
 
 
 async def refresh_wholes(conn, user_id: str, items: list[str]) -> None:
-    """Make the whole vectors of `items` the mean of the pieces they have left (memory_pieces.mean_vector); an item
-    left with one piece (or none) of a track loses that track's whole vector."""
-    from orion.kernel.media_store import unlink_media
-    from orion.kernel.memory_pieces import mean_vector
-    rows = await conn.fetch("select id, item_id, vector_space, track, whole, media_id, embedding::text as v "
-                            "from orion_memory where user_id = $1 and item_id = any($2::text[])", user_id, items)
-    tracks: dict = {}
-    for r in rows:
-        tracks.setdefault((r["item_id"], r["vector_space"], r["track"]), []).append(r)
-    for members in tracks.values():
-        pieces = [r for r in members if not r["whole"]]
-        for whole in (r for r in members if r["whole"]):
-            if len(pieces) < 2:
-                await conn.execute("delete from orion_memory where id = $1", whole["id"])
-                if whole["media_id"]:
-                    await unlink_media(whole["media_id"], "memory", str(whole["id"]), conn=conn)
-            else:
-                await conn.execute("update orion_memory set embedding = $2::vector where id = $1", whole["id"],
-                                   _vector(mean_vector([_parse_vector(p["v"]) for p in pieces])))
+    """Make the whole vectors of `items` the mean of the pieces they have left; an item left with one piece (or
+    none) of a track loses that track's whole vector. The mean is made by the database (pgvector's avg, then
+    normalized: the direction is what a whole vector is), no embedding is read out."""
+    from orion.kernel.media_store import unlink_many
+    wholes = await conn.fetch("select id, item_id, vector_space, track, media_id from orion_memory "
+                              "where user_id = $1 and item_id = any($2::text[]) and whole", user_id, items)
+    if not wholes:
+        return
+    counts = {(r["item_id"], r["vector_space"], r["track"]): r["n"] for r in await conn.fetch(
+        "select item_id, vector_space, track, count(*) as n from orion_memory "
+        "where user_id = $1 and item_id = any($2::text[]) and not whole group by 1, 2, 3", user_id, items)}
+    gone = [w for w in wholes if counts.get((w["item_id"], w["vector_space"], w["track"]), 0) < 2]
+    if gone:
+        await conn.execute("delete from orion_memory where id = any($1::bigint[])", [w["id"] for w in gone])
+        await unlink_many([(w["media_id"], w["id"]) for w in gone if w["media_id"]], "memory", conn=conn)
+    kept = [w for w in wholes if w not in gone]
+    if kept:
+        await conn.execute(
+            "update orion_memory w set embedding = l2_normalize(m.v) from (select item_id, vector_space, track, "
+            "avg(embedding) as v from orion_memory where user_id = $1 and item_id = any($2::text[]) and not whole "
+            "group by 1, 2, 3) m where w.id = any($3::bigint[]) and w.item_id = m.item_id "
+            "and w.vector_space = m.vector_space and w.track is not distinct from m.track",
+            user_id, items, [w["id"] for w in kept])
 
 
 async def delete_whole_items(user_id: str, item_ids: list[str]) -> list[dict]:

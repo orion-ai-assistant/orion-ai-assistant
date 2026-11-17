@@ -211,6 +211,21 @@ async def unlink_media(media_id, owner_kind, owner_id, *, conn=None):
             await conn.close()
 
 
+async def unlink_many(links, owner_kind, *, conn):
+    """Drop many links of one owner kind in one statement: `links` is [(media_id, owner_id)]. Returns how many
+    were removed (the files go with their last links, as in unlink_media)."""
+    links = [(m, str(o)) for m, o in links]
+    for _, owner_id in links:
+        _check_owner(owner_kind, owner_id)
+    if not links:
+        return 0
+    removed = await conn.fetch(
+        """delete from orion_media_links l using unnest($2::text[], $3::text[]) as d(media_id, owner_id)
+           where l.owner_kind = $1 and l.media_id = d.media_id and l.owner_id = d.owner_id returning 1""",
+        owner_kind, [m for m, _ in links], [o for _, o in links])
+    return len(removed)
+
+
 async def store_attachments(chat_id, user_id, items):
     """Commit every attachment before admission to Redis. Fail without losing input."""
     conn = await _connection()
