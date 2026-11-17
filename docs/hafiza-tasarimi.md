@@ -408,6 +408,12 @@ Seçenekler:
 Önerim: **karışık modda A (RRF), tek tür süzgecinde B**, ikisi aynı fonksiyonda; arayüz her sonuçta gerçek %'yi ve
 "sıra: anlam #3, kelime #1" gibi kısa bir açıklamayı gösterir. B tek başına seçilirse türler arası kayma ölçülmeli.
 
+**Karar:** Şimdilik ne A ne B. Sıra = gösterilen gerçek % (bugünkü davranış). Kelime eşleşmesi sırayı değiştirmez,
+yalnızca eşleşen kelime vurgulanır. Kelimeyle bulmak isteyen `keyword` sorgusunu kullanır (sayfada ve araçta).
+Neden: A'da sıra ile % çelişir. B ise sabit bir β ister, yani test verisine göre ayarlanan bir sayı. İkisi de
+"sıra = %" ve "ayarlanmış sabit yok" kurallarına aykırı. Gerçek kullanımda kelimeyle bulunamayan önemli sonuçlar
+görülürse bu karar ölçümle yeniden açılır. Benzemesin: süzgeç (aşağıdaki 1).
+
 **Tarih:** sorguda zaman niyeti yoksa (`when`/`as_of` yok, tarih sözcüğü yok) yalnızca eşit puanlarda yeni olan öne.
 Zaman niyeti varsa önce süzgeç (aralık dışı elenir), aralık içinde yakınlık küçük ve üstten sınırlı bir artı.
 
