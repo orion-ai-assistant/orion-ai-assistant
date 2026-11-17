@@ -553,18 +553,19 @@ async def _fold_columns(conn) -> None:
     await conn.execute("drop trigger if exists orion_memory_fold on orion_memory")
     await conn.execute("create trigger orion_memory_fold before insert on orion_memory for each row "
                        "execute function orion_memory_fold()")
-    if await conn.fetchval("select value from orion_memory_meta where key = 'folded_built'"):
+    if await conn.fetchval("select value from orion_memory_meta where key = 'folded_v2'"):
         return
     last = 0
     while True:
-        rows = await conn.fetch("select id, text, caption from orion_memory where id > $1 order by id limit 2000", last)
+        rows = await conn.fetch("select id, text, caption, source_kind, source_chat_title from orion_memory "
+                                "where id > $1 order by id limit 2000", last)
         if not rows:
             break
         last = rows[-1]["id"]
         await conn.executemany("update orion_memory set folded = $2, caption_folded = $3 where id = $1",
-                               [(r["id"], fold(r["text"]), None if r["caption"] is None else fold(r["caption"]))
+                               [(r["id"], fold(row_match_text({**r, "text": r["text"]})), None if r["caption"] is None else fold(r["caption"]))
                                 for r in rows])
-    await conn.execute("insert into orion_memory_meta (key, value) values ('folded_built', 'yes') on conflict do nothing")
+    await conn.execute("insert into orion_memory_meta (key, value) values ('folded_v2', 'yes') on conflict do nothing")
 
 
 async def backfill_message_last(conn) -> int:
@@ -811,7 +812,7 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
             space, _vector(piece["vector"]), item.get("source_kind") or "manual", item.get("title") or None,
             item["kind"], item.get("media_id"), item.get("mime"), piece.get("seconds"), group, item.get("chat_id"),
             piece.get("message_id", item.get("message_id")), item_id, bool(piece.get("whole")), piece.get("span_start"), piece.get("span_end"),
-            piece.get("track"), caption, order, piece.get("message_last", item.get("message_last")), fold(text),
+            piece.get("track"), caption, order, piece.get("message_last", item.get("message_last")), fold(match_text(text, item.get("title"), caption, item.get("source_kind") or "manual")),
             None if caption is None else fold(caption))
         if item.get("media_id"):
             await link_media(item["media_id"], "memory", str(row_id), conn=conn)
@@ -839,8 +840,8 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
         row_id = await conn.fetchval(
             ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
             row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
-            row["span_end"], row["track"], caption or None, order, None, fold(row["text"]),
-            fold(caption) if caption else None)
+            row["span_end"], row["track"], caption or None, order, None,
+            fold(match_text(row["text"], name, caption, source_kind)), fold(caption) if caption else None)
         await link_media(media_id, "memory", str(row_id), conn=conn)
     return len(rows)
 
@@ -1188,6 +1189,22 @@ def fold(text: str) -> str:
     `folded` and `caption_folded` columns, which the trigram indexes cover) and for the query: a database lower()
     follows its locale, so SQL never folds."""
     return text.translate(_FOLD).lower()
+
+
+def match_text(text: str, title: str | None = None, caption: str | None = None, source_kind: str | None = None) -> str:
+    """THE words a row is matched by (lexical, keyword and spelling matches, `folded` column): its text, the file's
+    name (the title of a file's rows) and the user's caption. Names and captions are not embedded into the meaning
+    vector (noise there); they only count here."""
+    parts = [text or ""]
+    if source_kind == "file" and title:
+        parts.append(title)
+    if caption:
+        parts.append(caption)
+    return "\n".join(parts)
+
+
+def row_match_text(row) -> str:
+    return match_text(row.get("text"), row.get("source_chat_title"), row.get("caption"), row.get("source_kind"))
 
 
 def like_pattern(folded: str) -> str:

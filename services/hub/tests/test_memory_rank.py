@@ -155,7 +155,7 @@ class RankTests(PostgresMemoryCase):
             self.assertEqual(stored, {t: memory.fold(t) for t in samples})
             # An old row (no folded yet) is folded by the one-time backfill, with the same function.
             await conn.execute("update orion_memory set folded = null")
-            await conn.execute("delete from orion_memory_meta where key = 'folded_built'")
+            await conn.execute("delete from orion_memory_meta where key = 'folded_v2'")
             await memory._fold_columns(conn)
             stored = {r['text']: r['folded'] for r in await conn.fetch('select text, folded from orion_memory')}
         finally:
@@ -407,3 +407,52 @@ class RankTests(PostgresMemoryCase):
         finally:
             await conn.close()
         await check('truncate')
+
+    async def test_a_file_name_and_a_caption_are_matched_as_words_not_as_meaning(self):
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await memory.insert_item(conn, 'alice', SPACE, 'g1', {'kind': 'text', 'source_kind': 'file', 'title': 'test.txt'},
+                                         [{'text': 'bambaşka içerik', 'vector': vec(0.12, 2)}])
+                await memory.insert_item(conn, 'alice', SPACE, 'g2', {'kind': 'text', 'source_kind': 'manual', 'caption': 'Deniz tatili'},
+                                         [{'text': 'notum', 'vector': vec(0.1, 3)}])
+        finally:
+            await conn.close()
+        page = await memory_groups.list_groups('alice', self.settings, q='test.txt', limit=10)
+        card = next(g for g in page['groups'] if g['group_id'] == 'g1')
+        self.assertEqual((card['match'], card['score']), ('text', 0.12))  # Marked as a word hit; the % stays the meaning's.
+        tool = await self.tool([{'keyword': 'TEST.TXT'}])
+        self.assertEqual(len(tool['results']), 1)
+        caption = await memory_groups.list_groups('alice', self.settings, q='deniz', limit=10)
+        self.assertEqual(next(g for g in caption['groups'] if g['group_id'] == 'g2')['match'], 'text')
+
+    async def test_the_kind_filter_ranks_only_that_kinds_rows_in_list_panel_tool_and_map(self):
+        text = await self.add('metin parçası', score=0.8, axis=2, group='g1', minute=1)
+        image = await self.add('foto.png', score=0.3, axis=3, group='g1', minute=2, kind='image', media_id='a' * 64)
+        await self.add('başka metin', score=0.5, axis=4, group='g2', minute=3)
+        other = await self.add('başka foto', score=0.2, axis=5, group='g3', minute=4, kind='image', media_id='b' * 64)
+        page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
+        self.assertEqual([(g['group_id'], g['score'], g['matched_part']) for g in page['groups']],
+                         [('g1', 0.3, image), ('g3', 0.2, other)])  # g1 by its image's own %, not its 0.8 text.
+        panel = await memory_groups.part_scores('alice', 'g1', self.settings, q='x', kind='image')
+        self.assertEqual((panel['score'], panel['best']), (0.3, image))
+        tool = await self.tool([{'text': 'x'}])
+        self.assertEqual(tool['results'][0]['id'], text)
+        from orion.worker.tools.memory import tools as memory_tools
+        from orion.worker.tools._base import ToolContext
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            only = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='x')], kind='image'), ToolContext('alice', 'chat', 't', None))
+        self.assertEqual([(r['id'], r['score']) for r in only['results']], [(image, 30), (other, 20)])
+        graph = await memory_groups.map_graph('alice', self.settings, kind='image')
+        self.assertEqual({n['group_id'] for n in graph['nodes']}, {'g1', 'g3'})
+        self.assertEqual((await memory_groups.map_graph('alice', self.settings))['total'], 3)
+
+    async def test_the_card_names_every_source_of_the_memory(self):
+        await self.add('bir not', group='g', source='manual', minute=1)
+        await self.add('foto.png', group='g', source='manual', kind='image', media_id='c' * 64, minute=2, axis=3)
+        await self.add('dosya parçası', group='g', source='file', title='a.txt', minute=3, axis=4)
+        page = await memory_groups.list_groups('alice', self.settings, limit=10)
+        card = page['groups'][0]
+        self.assertEqual(card['source_kinds'], ['manual', 'file'])
+        self.assertEqual(card['sources_label'], 'Metin, Dosya, Görsel')

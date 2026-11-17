@@ -125,6 +125,23 @@ def item_counts(parts: list[dict]) -> dict:
     return {kind: n for kind, n in counts.items() if n}
 
 
+SOURCE_LABELS = {"manual": "Metin", "chat_save": "Sohbet", "assistant": "Asistan", "file": "Dosya"}
+KIND_LABELS = {"text": "Metin", "image": "Görsel", "audio": "Ses", "video": "Video"}
+
+
+def source_kinds(parts: list[dict]) -> list[str]:
+    """The distinct source_kind of a memory's parts, in the order they were added (the header names them all)."""
+    return list(dict.fromkeys(p["source_kind"] for p in parts if p.get("source_kind")))
+
+
+def sources_label(parts: list[dict]) -> str:
+    """The header's source line: where the text came from, then the kinds added beside it ("Metin, Görsel")."""
+    labels = [SOURCE_LABELS.get(p["source_kind"], p["source_kind"]) for p in parts
+              if p["kind"] == "text" and p.get("source_kind")]
+    labels += [KIND_LABELS.get(p["kind"], p["kind"]) for p in parts if p["kind"] != "text"]
+    return ", ".join(dict.fromkeys(labels))
+
+
 def card(group: str, rows: list[dict], prefer, active, full: bool = False, matched: int | None = None) -> dict:
     """One memory as the page shows it. `full`: every part with its whole text and the spaces it is in (the detail
     panel); else the text of one text part (the matched one, else the first) and the first piece of each media
@@ -139,6 +156,7 @@ def card(group: str, rows: list[dict], prefer, active, full: bool = False, match
     positions = item_positions(parts)
     item = {"group_id": group, "kind": next(iter(counts)) if len(counts) == 1 else "mixed", "counts": counts,
             "part_count": len(parts), "source_kind": first["source_kind"], "title": first["source_chat_title"],
+            "source_kinds": source_kinds(parts), "sources_label": sources_label(parts),
             "created_at": min(r["created_at"] for r in rows).isoformat(), "vector_spaces": spaces,
             "searchable": bool(active_keys), "missing_in_active": sum(1 for p in parts if content_key(p) not in active_keys)}
     texts = [p for p in parts if p["kind"] == "text"]
@@ -222,18 +240,19 @@ def strength_of(score, stats) -> str | None:
     return "strong" if z >= STRONG_Z else ("medium" if z >= MEDIUM_Z else "weak")
 
 
-async def _group_scores(conn, user_id: str, groups: list[str], space, vector) -> dict[str, float]:
+async def _group_scores(conn, user_id: str, groups: list[str], space, vector, kind: str = "all") -> dict[str, float]:
     """The best row score of each of these memories in `space` (the memory's score: group_match's)."""
     real = [g for g in groups if not g.startswith("r")]
     loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
     return {r["g"]: float(r["s"]) for r in await conn.fetch(
         f"select {GROUP_KEY} as g, max(1 - (embedding <=> $4::vector)) as s from orion_memory where user_id = $1 "
         "and vector_space = $5 and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
-        "group by 1", user_id, real, loose, vector, space)}
+        + ("" if kind == "all" else "and kind = $6 ") + "group by 1",
+        user_id, real, loose, vector, space, *([] if kind == "all" else [kind]))}
 
 
 async def rank_matches(conn, user_id: str, space, vectors: list[str], lists: list[list[dict]], texts: list[dict],
-                       labels: list[str] | None = None) -> list[dict]:
+                       labels: list[str] | None = None, kind: str = "all") -> list[dict]:
     """THE order of a search's memories: by the meaning score the card shows (its best row's cosine with the query
     vector; with several inputs searched one by one, the best of them, `query_index`/`via` say which). A word match
     only marks the memory ("match": text or similar; no bonus), and a memory found by its words alone is scored the
@@ -257,7 +276,7 @@ async def rank_matches(conn, user_id: str, space, vectors: list[str], lists: lis
     unscored = [g for g, e in pool.items() if e["score"] is None]
     if unscored and vectors:
         for index, vector in enumerate(vectors):
-            for g, score in (await _group_scores(conn, user_id, unscored, space, vector)).items():
+            for g, score in (await _group_scores(conn, user_id, unscored, space, vector, kind)).items():
                 if pool[g]["score"] is None or score > pool[g]["score"]:
                     pool[g].update(score=score, query_index=index)
     names = list(labels or [])
@@ -281,7 +300,7 @@ def text_hit(q: str, text: str) -> tuple[str | None, float]:
 
 
 def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", candidates: set[int] | None = None,
-                stats=None) -> dict:
+                stats=None, kind: str = "all") -> dict:
     """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
     the chat tool all show, and the one the order is made of. `rows`: the memory's rows; `scores`: each row's cosine
     with the query vector the search used (_scores); `q`: the words, for the word matches (a text match only marks
@@ -292,6 +311,8 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
     in it), "strength"}. The memory's rows are taken one per content in `space` (prefer_space), whole vectors
     included: a whole vector ranks the memory but is not a part."""
     parts = prefer_space(rows, space)
+    if kind != "all":  # With a kind chosen only that kind's rows count: the same rows the ranking looked at.
+        parts = [p for p in parts if p["kind"] == kind]
     if len(q or "") > memory.TEXT_MATCH_CHARS:  # A pasted passage: meaning only.
         q = ""
     pieces = [p for p in parts if not p.get("whole")]
@@ -301,7 +322,7 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
     found, best, best_key, kinds = {}, None, None, set()
     for p in pieces:
         score = scores.get(p["id"])
-        hit, tscore = text_hit(q, p["text"]) if q and (candidates is None or p["id"] in candidates) else (None, 0.0)
+        hit, tscore = text_hit(q, memory.row_match_text(p)) if q and (candidates is None or p["id"] in candidates) else (None, 0.0)
         found[p["id"]] = {"score": None if score is None else round(float(score), 4), "match": hit or "meaning",
                           "matched": bool(hit) or (score is not None and cutoff is not None and score >= cutoff)}
         if hit:
@@ -435,9 +456,9 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             # One definition of a word match, the one the panel's marks use (text_hit): the query's candidates
             # from the database are confirmed by it, so the order, the card and the panel agree.
             texts = [{**r, "tmatch": hit, "tscore": ts} for r in texts
-                     for hit, ts in [text_hit(q, r["text"])] if hit]
+                     for hit, ts in [text_hit(q, memory.row_match_text(r))] if hit]
             ranked = await rank_matches(conn, user_id, space if searchable else None, inputs, lists, texts,
-                                        input_labels)
+                                        input_labels, kind)
             excluded, dropped = 0, []
             if leave_out:
                 ranked = [e for e in ranked if e["group"] not in leave_out]
@@ -504,7 +525,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         matched = None
         parts_match = None
         if entry:
-            parts_match = group_match(rows, space, scores, q, hits, stats.get(entry["query_index"]))
+            parts_match = group_match(rows, space, scores, q, hits, stats.get(entry["query_index"]), kind)
             row = entry["row"]
             # The part the memory is shown by is the panel's best part: one computation.
             matched = parts_match["best"] if parts_match["best"] is not None else row["id"]
@@ -561,7 +582,7 @@ def _best_part(rows: list[dict], part_id, prefer) -> dict | None:
 
 
 async def part_scores(user_id: str, group: str, settings, q: str = "", vector: str | None = None,
-                      space: str | None = None) -> dict | None:
+                      space: str | None = None, kind: str = "all") -> dict | None:
     """Each part's own match in one memory for the page's search (group_match), by the query text `q` or a query
     vector already made (a search by file, with its `space`). None for a memory this user does not have."""
     q = (q or "").strip()
@@ -578,11 +599,11 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
         whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
         hits = await text_candidates(conn, user_id, [group], q) if q else set()
-        stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector)).values()))             if vector is not None and space else None
+        stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector, kind)).values()))             if vector is not None and space else None
     finally:
         await conn.close()
     in_space = prefer_space(rows, space)
-    found = group_match(rows, space, scores, q, hits, stats)
+    found = group_match(rows, space, scores, q, hits, stats, kind)
     found["all_score"] = None if whole_memory is None else round(whole_memory, 4)
     # The page shows each part once (the copy in the preferred space): its match is the match of its content.
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}
@@ -754,7 +775,8 @@ def _label(item: dict) -> str:
     return " ".join(label.split())
 
 
-async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, vector_space: str = "") -> dict:
+async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, vector_space: str = "",
+                    kind: str = "all") -> dict:
     """The newest `limit` memories of a vector space (the active model's unless `vector_space` names another) as
     nodes and, per node, edges to its `k` nearest others (cosine of the memories' mean vectors) at or above the
     space's floor (map_floor), all computed by pgvector. Each edge's `w` places it between the floor (0) and the
@@ -764,13 +786,15 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
     if not space:
         raise memory.MemoryUnavailable(memory.SETUP_MESSAGE)
     limit, k = max(1, min(int(limit), MAP_NODES)), max(1, min(int(k), 10))
+    kind = kind if kind in KINDS else "all"
+    by_kind = "" if kind == "all" else f" and kind = '{kind}'"  # Validated above: one of KINDS.
     picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
-              f"where user_id = $1 and vector_space = $2 and not whole group by 1 order by at desc, g desc limit $3")
+              f"where user_id = $1 and vector_space = $2 and not whole{by_kind} group by 1 order by at desc, g desc limit $3")
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
         total = await conn.fetchval(f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1 "
-                                    "and vector_space = $2", user_id, space)
+                                    "and vector_space = $2" + by_kind, user_id, space)
         groups = [r["g"] for r in await conn.fetch(f"select g from ({picked}) p", user_id, space, limit)]
         # Every pair once (<= 45k at 300 nodes): the space's own spread.
         stats = await conn.fetchrow(

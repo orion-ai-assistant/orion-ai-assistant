@@ -246,7 +246,7 @@ async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> in
                 source["source_chat_title"], source["kind"], source["media_id"], source["media_mime"],
                 source["media_seconds"], source["group_id"], source["copied_from"] or source["id"],
                 source["source_chat_id"], source["source_message_id"], source["created_at"], item, True, None, None,
-                track, source["caption"], source["item_order"], source.get("source_message_last"), memory.fold(source["text"]),
+                track, source["caption"], source["item_order"], source.get("source_message_last"), memory.fold(memory.row_match_text(source)),
                 None if source["caption"] is None else memory.fold(source["caption"]))
             if source["media_id"]:
                 await link_media(source["media_id"], "memory", str(new_id), conn=conn)
@@ -310,7 +310,7 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
                                 r["source_chat_title"], r["kind"], r["media_id"], r["media_mime"], r["media_seconds"],
                                 group, r["copied_from"] or r["id"], r["source_chat_id"], r["source_message_id"],
                                 r["created_at"], r["item_id"], False, r["span_start"], r["span_end"], r["track"],
-                                r["caption"], r["item_order"], r.get("source_message_last"), memory.fold(r["text"]),
+                                r["caption"], r["item_order"], r.get("source_message_last"), memory.fold(memory.row_match_text(r)),
                                 None if r["caption"] is None else memory.fold(r["caption"]))
                             if r["media_id"]:
                                 await link_media(r["media_id"], "memory", str(new_id), conn=conn)

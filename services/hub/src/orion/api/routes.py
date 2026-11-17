@@ -173,14 +173,14 @@ async def memory_group(group_id: str, request: Request, offset: int = Query(0, g
 
 
 @router.get("/api/v1/memory/map")
-async def memory_map(request: Request, k: int = 5, limit: int = 300, vector_space: str = "",
+async def memory_map(request: Request, k: int = 5, limit: int = 300, vector_space: str = "", kind: str = "all",
                      current_user: str = Depends(get_current_user)):
     """A model's memories (the active one's by default) as a graph: each one's nearest neighbours above the
     space's own floor (pgvector)."""
     from orion.kernel import memory, memory_groups
     try:
         return await memory_groups.map_graph(current_user, await get_runtime_settings(request.app.state.redis, current_user),
-                                             k, limit, vector_space[:100])
+                                             k, limit, vector_space[:100], kind[:20])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 
@@ -445,6 +445,7 @@ async def _search_memory_multi(payload: MemorySearch, settings, current_user: st
 
 
 class MemoryMatch(BaseModel):
+    kind: str = Field(default="all", max_length=20)  # The page's kind filter: only that kind's parts count.
     q: str = Field(default="", max_length=1_000_000)
     vector: list[float] | None = Field(default=None, max_length=4096)
     vector_space: str = Field(default="", max_length=100)
@@ -464,7 +465,8 @@ async def memory_group_match(group_id: str, payload: MemoryMatch, request: Reque
     try:
         found = await memory_groups.part_scores(
             current_user, group_id[:64], await get_runtime_settings(request.app.state.redis, current_user),
-            payload.q[:memory.MAX_QUERY_CHARS], vector, payload.vector_space or None)
+            payload.q[:memory.MAX_QUERY_CHARS], vector, payload.vector_space or None,
+            payload.kind[:20])
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
     if found is None:
