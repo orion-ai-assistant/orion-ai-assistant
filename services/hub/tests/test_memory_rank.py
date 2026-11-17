@@ -456,3 +456,39 @@ class RankTests(PostgresMemoryCase):
         card = page['groups'][0]
         self.assertEqual(card['source_kinds'], ['manual', 'file'])
         self.assertEqual(card['sources_label'], 'Metin, Dosya, Görsel')
+
+    async def test_a_kind_filter_uses_only_that_kinds_parts_everywhere_for_a_mixed_memory(self):
+        """A chat memory with text (0.30, 0.20) and images (0.41, 0.05): under the text filter its rank, card, panel
+        header (best part, all-memory %, matched count) and the tool see only the text; images come back unscored."""
+        t1 = await self.add('sohbet metni bir', score=0.30, axis=2, group='g', source='chat_save', minute=1)
+        t2 = await self.add('sohbet metni iki', score=0.20, axis=3, group='g', source='chat_save', minute=2)
+        i1 = await self.add('a.png', score=0.41, axis=4, group='g', kind='image', media_id='a' * 64, minute=3)
+        i2 = await self.add('b.png', score=0.05, axis=5, group='g', kind='image', media_id='b' * 64, minute=4)
+        await self.add('başka not', score=0.10, axis=6, group='h', minute=5)
+        for kind, best, own in (('text', t1, {t1, t2}), ('image', i1, {i1, i2}), ('all', i1, {t1, t2, i1, i2})):
+            with self.subTest(kind):
+                page = await memory_groups.list_groups('alice', self.settings, q='x', kind=kind, limit=10)
+                card = next(g for g in page['groups'] if g['group_id'] == 'g')
+                panel = await memory_groups.part_scores('alice', 'g', self.settings, q='x', kind=kind)
+                self.assertEqual((panel['best'], panel['score'], panel['matched']),
+                                 (card['matched_part'], card['score'], card['matched_parts']))
+                self.assertEqual(panel['best'], best)
+                scored = {int(i) for i, v in panel['parts'].items() if v['score'] is not None}
+                self.assertEqual(scored, own)
+                if kind != 'all':
+                    others = {int(i): v for i, v in panel['parts'].items() if int(i) not in own}
+                    self.assertTrue(others and all(v['score'] is None and not v['matched'] for v in others.values()))
+                if kind != 'all':  # The mean of that kind's piece vectors against the query.
+                    pair = {'text': ((0.30, 2), (0.20, 3)), 'image': ((0.41, 4), (0.05, 5))}[kind]
+                    total = [a + b for a, b in zip(vec(*pair[0]), vec(*pair[1]))]
+                    cosine = total[0] / __import__('math').sqrt(sum(x * x for x in total))
+                    self.assertAlmostEqual(panel['all_score'], cosine, places=3)
+        text_tool = await self.tool([{'text': 'x'}])
+        self.assertEqual(text_tool['results'][0]['id'], i1)
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            only = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='x')], kind='text'), ToolContext('alice', 'chat', 't', None))
+        row = next(r for r in only['results'] if r['id'] == t1)
+        self.assertEqual(row['score'], 30)

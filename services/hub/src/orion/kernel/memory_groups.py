@@ -344,18 +344,19 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
             "strength": strength_of(score, stats)}
 
 
-async def all_score(conn, user_id: str, group: str, space, vector) -> float | None:
+async def all_score(conn, user_id: str, group: str, space, vector, kind: str = "all") -> float | None:
     """The memory's score over all its content: the query's cosine with the mean of every piece vector it has in
     `space` (all items and tracks; whole vectors left out, they are means already). The mean's length does not change
     a cosine, so this is the same as against the normalized mean, as stored whole vectors are made; pgvector
-    averages in the database, nothing is read out."""
+    averages in the database, nothing is read out. With a `kind` chosen: the mean of that kind's pieces only."""
     if vector is None or not space:
         return None
     where = "group_id = $2" if not group.startswith("r") else "group_id is null and id = $2::text::bigint"
     key = group if not group.startswith("r") else group[1:]
     value = await conn.fetchval(
         f"select 1 - (avg(embedding) <=> $3::vector) from orion_memory where user_id = $1 and vector_space = $4 "
-        f"and not whole and {where}", user_id, key, vector, space)
+        f"and not whole and {where}" + ("" if kind == "all" else " and kind = $5"),
+        user_id, key, vector, space, *([] if kind == "all" else [kind]))
     return None if value is None else float(value)
 
 
@@ -597,7 +598,7 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
         if not rows:
             return None
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
-        whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
+        whole_memory = await all_score(conn, user_id, group, space, vector, kind) if vector is not None else None
         hits = await text_candidates(conn, user_id, [group], q) if q else set()
         stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector, kind)).values()))             if vector is not None and space else None
     finally:
@@ -609,6 +610,10 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}
     found["parts"] = {str(r["id"]): by_content[content_key(r)] for r in rows
                       if content_key(r) in by_content and by_content[content_key(r)] is not None}
+    if kind != "all":  # Parts of the other kinds are not in this search: no score, never matched (shown dimmed).
+        for r in rows:
+            found["parts"].setdefault(str(r["id"]), {"score": None, "match": "meaning", "matched": False,
+                                                     "filtered": True})
     if found["best"] is not None:
         found["best_part"] = _best_part(rows, found["best"], space)
     return found
