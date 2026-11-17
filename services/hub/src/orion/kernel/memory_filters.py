@@ -15,7 +15,7 @@ from orion.kernel import memory
 
 EXCLUDE_Z = 2.0  # Standing this many spreads above a "benzemesin" input's mean against all memories: out.
 MIN_POOL = 8  # Fewer memories than this: too few to measure (no cue, nothing left out by meaning).
-SPREAD_FLOOR = 0.02
+SPREAD_FLOOR = 0.02  # The least spread a query's pool is taken to have (a tiny memory).
 CAPTION_FOLD = memory.FOLD_SQL.replace("(text,", "(coalesce(caption, ''),")
 
 
@@ -40,25 +40,25 @@ SAMPLE_ROWS = 1000  # Newest rows a query's typical score is measured on (never 
 async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:
     """Best similarity to `vector` in `space` of the memories among the POOL_ROWS nearest rows (pieces and whole
     vectors): the ones that can stand out, found through the vector index, not by scoring every row."""
-    from orion.kernel.memory_groups import GROUP_KEY, _filters
+    from orion.kernel.memory_groups import GROUP_KEY
     params = [user_id, space, vector]
-    extra = _filters("all", kind, params)
+    extra = memory.filters_sql("all", kind, params)
     rows = await memory.ann_fetch(
         conn, f"select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from orion_memory "
         f"where user_id = $1 and vector_space = $2{extra} order by embedding <=> $3::vector limit {POOL_ROWS}",
         *params)
     best: dict[str, float] = {}
-    for r in rows:  # nearest first
-        best.setdefault(r["g"], float(r["s"]))
+    for r in rows:  # the index may return rows a little out of order: a memory's best row is its highest
+        best[r["g"]] = max(best.get(r["g"], -1.0), float(r["s"]))
     return best
 
 
 async def sample_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:
     """Each memory's best similarity among the user's SAMPLE_ROWS newest rows: the typical scores of this query,
     for calibrate (a bounded read, however large the memory has grown)."""
-    from orion.kernel.memory_groups import GROUP_KEY, _filters
+    from orion.kernel.memory_groups import GROUP_KEY
     params = [user_id, space, vector]
-    extra = _filters("all", kind, params)
+    extra = memory.filters_sql("all", kind, params)
     rows = await conn.fetch(
         f"select g, max(s) as s from (select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from "
         f"orion_memory where user_id = $1 and vector_space = $2{extra} order by id desc limit {SAMPLE_ROWS}) t "
@@ -72,7 +72,7 @@ async def keyword_groups(conn, user_id: str, keyword: str) -> set[str]:
     folded = memory.fold(keyword)
     if not folded:
         return set()
-    like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    like = memory.like_pattern(folded)
     return {r["g"] for r in await conn.fetch(
         f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
         f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like)}
@@ -88,7 +88,7 @@ async def excluded_groups(conn, user_id: str, space, terms: list[str], settings,
     found = list(vectors or [])
     for term in terms:
         folded = memory.fold(term)
-        like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        like = memory.like_pattern(folded)
         for r in await conn.fetch(
                 f"select distinct {GROUP_KEY} as g from orion_memory where user_id = $1 and "
                 f"({memory.FOLD_SQL} like $2 or {CAPTION_FOLD} like $2)", user_id, like):

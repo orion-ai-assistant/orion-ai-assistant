@@ -196,18 +196,21 @@ class MemorySearchTests(PostgresMemoryCase):
         city = await self.add("İstanbul'a gittim", score=0.3, axis=4, minute=3)
         light = await self.add('IŞIK yandı', score=0.3, axis=5, minute=4)
         await self.add('Bugün hava çok güzel', score=0.6, axis=6, minute=5)
+        # The word match marks a result, it does not move it: look the memory up, whatever its place.
+        def row(found, row_id):
+            return next(r for r in found['results'] if r['id'] == row_id)
         found = await self.tool(sorgu='selam nabe')  # A partial word: a plain substring.
-        self.assertEqual((found['results'][0]['id'], found['results'][0]['match']), (hello, 'text'))
+        self.assertEqual(row(found, hello)['match'], 'text')
         typo = await self.tool(sorgu='selam nabr nasilsin')
-        self.assertEqual((typo['results'][0]['id'], typo['results'][0]['match']), (hello, 'spelling'))
+        self.assertEqual(row(typo, hello)['match'], 'spelling')
         merhba = await self.tool(sorgu='merhba')
-        self.assertEqual(merhba['results'][0]['id'], merhaba, merhba)
+        self.assertEqual(row(merhba, merhaba)['match'], 'spelling')
         exact = await self.tool(sorgu='İSTANBUL')
-        self.assertEqual((exact['results'][0]['id'], exact['results'][0]['match']), (city, 'text'))
-        self.assertEqual((await self.tool(sorgu='ışık'))['results'][0]['id'], light)
-        page = await memory_groups.list_groups('alice', self.settings, q='selam nabr nasilsin', limit=1)
-        self.assertEqual((page['groups'][0]['matched_part'], page['groups'][0]['match']), (hello, 'similar'))
-        self.assertTrue(page['more'])
+        self.assertEqual(row(exact, city)['match'], 'text')
+        self.assertEqual(row(await self.tool(sorgu='ışık'), light)['match'], 'text')
+        page = await memory_groups.list_groups('alice', self.settings, q='selam nabr nasilsin', limit=10)
+        card = next(g for g in page['groups'] if g['matched_part'] == hello)
+        self.assertEqual(card['match'], 'similar')
 
     async def test_near_spellings_with_pg_trgm(self):
         await self.check_near_spellings()
@@ -226,10 +229,11 @@ class MemorySearchTests(PostgresMemoryCase):
         mine = await self.add('kedim MAVİŞ uyuyor', score=0.4, axis=3)
         await self.add('alakasız', score=0.9, axis=4)
         page = await memory_groups.list_groups('alice', self.settings, q='maviş', limit=10)
-        # A text match ranks its memory TEXT_BONUS higher: "kedim MAVİŞ" (0.4 + bonus) before the 0.9 one.
+        # The order is the shown %: a word match only marks its card (the 0.9 one first, then the 0.4 'text' one;
+        # the other model's memory has no score here and comes last).
         self.assertEqual([(g['matched_part'], g['match']) for g in page['groups']],
-                         [(mine, 'text'), (page['groups'][1]['matched_part'], 'meaning'), (other, 'text')])
-        self.assertEqual(page['groups'][1]['score'], 0.9)
+                         [(page['groups'][0]['matched_part'], 'meaning'), (mine, 'text'), (other, 'text')])
+        self.assertEqual((page['groups'][0]['score'], page['groups'][2]['score']), (0.9, None))
         jina = await memory_groups.list_groups('alice', self.settings, q='maviş', vector_space='jina-v5')
         self.assertEqual([(g['matched_part'], g['match']) for g in jina['groups']], [(other, 'text')])
 
@@ -657,7 +661,7 @@ def test_the_open_media_tool_is_on_by_default_and_its_schema_pages():
 
 
 def test_python_word_similarity_finds_partial_words_and_typos():
-    assert memory.word_similarity('selam nabe', 'kullanıcı: selam naber nasılsın') >= memory.FUZZY_MIN_PY
-    assert memory.word_similarity('merhba', 'merhaba dünya') >= memory.FUZZY_MIN_PY
-    assert memory.word_similarity('kedi', 'bugün hava çok güzel') < memory.FUZZY_MIN_PY
+    assert memory.word_similarity('selam nabe', 'kullanıcı: selam naber nasılsın') >= memory.FUZZY_MIN
+    assert memory.word_similarity('merhba', 'merhaba dünya') >= memory.FUZZY_MIN
+    assert memory.word_similarity('kedi', 'bugün hava çok güzel') < memory.FUZZY_MIN
     assert memory.fold('İSTANBUL IŞIK Çiğdem') == 'istanbul isik cigdem'

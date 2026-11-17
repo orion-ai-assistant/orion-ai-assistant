@@ -278,12 +278,13 @@ class MemoryPiecesTests(PostgresMemoryCase):
         best = next(p for p in pieces if 'kedi' in p['text'])
         self.assertEqual(card['best_part']['id'], best['id'])
         self.assertEqual((card['best_part']['piece'], card['best_part']['pieces']), (len(pieces), len(pieces)))
-        # The piece before it was embedded with the start of the 'kedi' piece in its window: it matches by meaning.
-        self.assertEqual(card['matched_parts'], 2)
+        # Which other parts count as matched is measured against the query's pool (mf.calibrate): a pool this small
+        # cannot tell, so only the best part (and word hits) are marked.
+        self.assertEqual(card['matched_parts'], 1)
         scores = await memory_groups.part_scores('alice', card['group_id'], self.settings, q='kedi')
         self.assertTrue(scores['parts'][str(best['id'])]['best'])
         self.assertEqual(scores['parts'][str(best['id'])]['match'], 'text')
-        self.assertEqual(scores['matched'], 2)
+        self.assertEqual(scores['matched'], card['matched_parts'])  # The panel and the card count the same.
         before = pieces[pieces.index(best) - 1]
         self.assertEqual(scores['parts'][str(before['id'])]['match'], 'meaning')
         self.assertIsNotNone(scores['whole_score'])

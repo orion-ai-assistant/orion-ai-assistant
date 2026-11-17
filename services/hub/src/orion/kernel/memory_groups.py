@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 
-from orion.kernel import memory, registry
+from orion.kernel import memory, memory_filters as mf, registry
 from orion.kernel.memory import (CONTENT_KEY, KINDS, content_key, group_key, item_positions, order_key, pieces_only,
                                  prefer_space)
 
@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 GROUP_KEY = "coalesce(group_id, 'r' || id::text)"
 GAPS = {"chat_save": 180, "file": 60}  # Seconds between rows that still count as one save (media embed slowly).
 NOTE_GAP = 3  # A note's chunks are inserted together; two notes a few seconds apart are two memories.
-STRONG, WEAK = 0.8, 0.55  # Share of the best result's rank from which a card is strong / below which it is weak.
-WEAK_SCORE = {"text": 0.25, "image": 0.12, "audio": 0.12}  # Meaning score below which a match is weak anyway.
+STRONG_Z, MEDIUM_Z = 3.0, 2.0  # A result stands out of its query's own pool (mf.standing) by this many spreads.
 CARD_TEXT = 600
 PREVIEW_MEDIA = 6
 MAP_NODES = 300
@@ -190,9 +189,6 @@ async def _group_rows(conn, user_id: str, groups: list[str], full=True) -> dict[
     return found
 
 
-TEXT_CANDIDATE_SIMILARITY = 0.3  # Looser than FUZZY_MIN_PY: the database only picks who is read by text_hit.
-
-
 async def text_candidates(conn, user_id: str, groups: list[str], q: str) -> set[int] | None:
     """Ids of the rows of these memories whose words may match `q` (a substring or a near spelling); text_hit then
     decides on those only, not on every piece. None: no trigram support, every row is checked."""
@@ -203,9 +199,9 @@ async def text_candidates(conn, user_id: str, groups: list[str], q: str) -> set[
         return None
     real = [g for g in groups if not g.startswith("r")]
     loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
-    like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    like = memory.like_pattern(folded)
     async with conn.transaction():
-        await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{TEXT_CANDIDATE_SIMILARITY}', true)")
+        await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{memory.FUZZY_MIN}', true)")
         rows = await conn.fetch(
             f"select id from orion_memory where user_id = $1 and (group_id = any($2::text[]) or "
             f"(group_id is null and id = any($3::bigint[]))) and ({memory.FOLD_SQL} like $4 or $5 <% {memory.FOLD_SQL})",
@@ -213,155 +209,118 @@ async def text_candidates(conn, user_id: str, groups: list[str], q: str) -> set[
     return {r["id"] for r in rows}
 
 
-def _filters(vector_space: str, kind: str, params: list) -> str:
-    sql = ""
-    if vector_space and vector_space != "all":
-        params.append(vector_space)
-        sql += f" and vector_space = ${len(params)}"
-    if kind and kind != "all":
-        params.append(kind)
-        sql += f" and kind = ${len(params)}"
-    return sql
+_filters = memory.filters_sql
+EACH_POOL = 200  # Memories taken per input before they are merged (mode "each").
 
 
-def _rank(entry: dict) -> float:
-    bonus = {"text": memory.TEXT_BONUS, "similar": 0.8 * memory.TEXT_BONUS}.get(entry["tmatch"], 0.0)
-    return (float(entry["score"]) if entry["score"] is not None else 0.0) + bonus + 0.01 * float(entry["tscore"])
+def strength_of(score, stats) -> str | None:
+    """strong / medium / weak by how far `score` stands above this query's own pool (mf.standing: the query's
+    typical score against the user's memories); None when the pool is too small to tell."""
+    z = mf.standing(score, stats)
+    if z is None:
+        return None
+    return "strong" if z >= STRONG_Z else ("medium" if z >= MEDIUM_Z else "weak")
 
 
-def _strength(entry: dict, top: float) -> str:
-    share = _rank(entry) / top if top > 0 else 0.0
-    row = entry["row"]
-    low = (not entry["tmatch"] and entry["score"] is not None
-           and float(entry["score"]) < WEAK_SCORE.get(row.get("kind") or "text", 0.25))
-    if share < WEAK or low:
-        return "weak"
-    return "strong" if share >= STRONG else "medium"
+async def _group_scores(conn, user_id: str, groups: list[str], space, vector) -> dict[str, float]:
+    """The best row score of each of these memories in `space` (the memory's score: group_match's)."""
+    real = [g for g in groups if not g.startswith("r")]
+    loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
+    return {r["g"]: float(r["s"]) for r in await conn.fetch(
+        f"select {GROUP_KEY} as g, max(1 - (embedding <=> $4::vector)) as s from orion_memory where user_id = $1 "
+        "and vector_space = $5 and (group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[]))) "
+        "group by 1", user_id, real, loose, vector, space)}
 
 
-EACH_POOL = 200  # Memories taken per input before fusing (mode "each").
-SPREAD_FLOOR = 0.02  # The least spread an input's similarities are taken to have (a tiny memory pool).
-EACH_STRONG, EACH_MEDIUM = 3.0, 2.0  # Standing out from an input's own pool by this many spreads.
-
-
-def fuse_inputs(lists: list[list[dict]], labels: list[str] | None = None) -> list[dict]:
-    """Several inputs searched one by one ("each"), fused as OR: a memory ranks by the input it stands out for
-    most. Each input's similarities are calibrated against that input's own pool (z = (score - mean) / spread),
-    since an image's and a text's similarities live on different scales and an input that matches nothing
-    (an unrelated picture) has a flat pool where nothing stands out. Rank fusion summed every input's ranks, so
-    such an input acted like AND and pushed a strong single-input match down. Each memory keeps the row and raw
-    score of its winning input (the card's number), `via` (that input's label) and `fused` (the z, the order)."""
-    import statistics
+async def rank_matches(conn, user_id: str, space, vectors: list[str], lists: list[list[dict]], texts: list[dict],
+                       labels: list[str] | None = None) -> list[dict]:
+    """THE order of a search's memories: by the meaning score the card shows (its best row's cosine with the query
+    vector; with several inputs searched one by one, the best of them, `query_index`/`via` say which). A word match
+    only marks the memory ("match": text or similar; no bonus), and a memory found by its words alone is scored the
+    same way, so no number is made up for it. Memories without a score (another model's rows) come last, newest
+    first. `lists`: each input's nearest memories (_nearest_groups); `texts`: confirmed word matches."""
     pool: dict[str, dict] = {}
     for index, rows in enumerate(lists):
-        if not rows:
-            continue
-        scores = [float(r["score"]) for r in rows]
-        mean = statistics.fmean(scores)
-        spread = max(statistics.pstdev(scores) if len(scores) > 1 else 0.0, SPREAD_FLOOR)
-        label = labels[index] if labels and index < len(labels) else f"girdi {index + 1}"
         for r in rows:
-            z = (float(r["score"]) - mean) / spread
             g = group_key(r)
             entry = pool.get(g)
-            if entry is None or z > entry["fused"]:
-                pool[g] = {**r, "fused": z, "via": label, "above": float(r["score"]) - mean}
-    return sorted(pool.values(), key=lambda e: (-e["fused"], -e["id"]))
-
-
-def merge_matches(meaning: list[dict], texts: list[dict], keep_order: bool = False) -> list[dict]:
-    """Meaning and text matches per memory, best first: {"group", "row" (the part that matched), "score", "tmatch",
-    "tscore", "match" (text, similar or meaning), "strength"}. A memory ranks by its best row (memory._ranked's
-    measure): a piece, or an item's whole vector."""
-    pool: dict[str, dict] = {}
-    for r in meaning:
-        pool.setdefault(group_key(r), {"group": group_key(r), "row": r, "score": r["score"], "tmatch": None,
-                                       "tscore": 0.0})
+            if entry is None or float(r["score"]) > entry["score"]:
+                pool[g] = {"group": g, "row": r, "score": float(r["score"]), "query_index": index,
+                           "tmatch": entry["tmatch"] if entry else None, "tscore": entry["tscore"] if entry else 0.0}
     order = {"text": 2, "similar": 1}
     for r in texts:
         g = group_key(r)
-        entry = pool.setdefault(g, {"group": g, "row": r, "score": r["score"], "tmatch": None, "tscore": 0.0})
-        if entry["score"] is None and r["score"] is not None:
-            entry["score"] = r["score"]
-        better = (order[r["tmatch"]], float(r["tscore"])) > (order.get(entry["tmatch"], 0), float(entry["tscore"]))
-        if better:
-            entry.update(tmatch=r["tmatch"], tscore=float(r["tscore"]), row=r)
-    if keep_order:  # Already fused (fuse_inputs): the order stands, strength by how far it stands out.
-        ranked = list(pool.values())
-        for e in ranked:
-            z = float(e["row"].get("fused") or 0.0)
-            e["match"] = e["tmatch"] or "meaning"
-            e["via"] = e["row"].get("via")
-            e["strength"] = "strong" if z >= EACH_STRONG else ("medium" if z >= EACH_MEDIUM else "weak")
-        return ranked
-    ranked = sorted(pool.values(), key=lambda e: (-_rank(e), -e["row"]["id"]))
-    top = _rank(ranked[0]) if ranked else 0.0
-    for e in ranked:
-        e["match"] = e["tmatch"] or "meaning"  # The score says how close the meaning is; this, what the words did.
-        e["strength"] = _strength(e, top)
-    return ranked
+        entry = pool.setdefault(g, {"group": g, "row": r, "score": None, "query_index": 0, "tmatch": None,
+                                    "tscore": 0.0})
+        if (order[r["tmatch"]], float(r["tscore"])) > (order.get(entry["tmatch"], 0), entry["tscore"]):
+            entry.update(tmatch=r["tmatch"], tscore=float(r["tscore"]))
+    unscored = [g for g, e in pool.items() if e["score"] is None]
+    if unscored and vectors:
+        for index, vector in enumerate(vectors):
+            for g, score in (await _group_scores(conn, user_id, unscored, space, vector)).items():
+                if pool[g]["score"] is None or score > pool[g]["score"]:
+                    pool[g].update(score=score, query_index=index)
+    names = list(labels or [])
+    for e in pool.values():
+        e["match"] = e["tmatch"] or "meaning"
+        if len(vectors) > 1:
+            e["via"] = names[e["query_index"]] if e["query_index"] < len(names) else f"girdi {e['query_index'] + 1}"
+    return sorted(pool.values(), key=lambda e: (e["score"] is None, -(e["score"] or 0.0), -e["row"]["id"]))
 
 
 def text_hit(q: str, text: str) -> tuple[str | None, float]:
     """What the words of `q` do in `text`: ("text", 1) for a substring (Turkish folding), ("similar", s) for a near
-    spelling (memory.word_similarity >= FUZZY_MIN_PY), else (None, 0)."""
+    spelling (memory.word_similarity >= memory.FUZZY_MIN), else (None, 0)."""
     folded, target = memory.fold(q), memory.fold(text or "")
     if not folded:
         return None, 0.0
     if folded in target:
         return "text", 1.0
     similarity = memory.word_similarity(folded, target)
-    return ("similar", similarity) if similarity >= memory.FUZZY_MIN_PY else (None, 0.0)
+    return ("similar", similarity) if similarity >= memory.FUZZY_MIN else (None, 0.0)
 
 
-def score_parts(parts: list[dict], scores: dict[int, float], q: str = "", candidates: set[int] | None = None) -> dict:
-    """Each part's own match for a search: {"parts": {id: {"score", "match", "matched", "best"}}, "best": id,
-    "matched": how many parts matched, "whole_score"}. A part matched when its words hit the query or its meaning
-    is close to its memory's best (STRONG share of the best part's score, and not weak for its kind: WEAK_SCORE).
-    `parts` are the memory's rows in one space each (prefer_space), whole vectors included; the best part is a
-    piece (an item's whole vector ranks the memory but is not a part)."""
-    if len(q or "") > memory.TEXT_MATCH_CHARS:  # A pasted passage: meaning only (list_groups does the same).
+def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", candidates: set[int] | None = None,
+                stats=None) -> dict:
+    """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
+    the chat tool all show, and the one the order is made of. `rows`: the memory's rows; `scores`: each row's cosine
+    with the query vector the search used (_scores); `q`: the words, for the word matches (a text match only marks
+    a part, it never lifts it); `stats`: the query's pool (mf.calibrate), for `strength` and for which parts count
+    as matched. Returns {"parts": {id: {"score", "match", "matched", "best"}}, "best" (the piece with the highest
+    score), "matched" (how many parts), "whole_score", "best_score", "score" (the memory's: its best row's, a piece or
+    the whole text's: what ranks it), "via_whole", "match" (text, similar or meaning: what the words did anywhere
+    in it), "strength"}. The memory's rows are taken one per content in `space` (prefer_space), whole vectors
+    included: a whole vector ranks the memory but is not a part."""
+    parts = prefer_space(rows, space)
+    if len(q or "") > memory.TEXT_MATCH_CHARS:  # A pasted passage: meaning only.
         q = ""
-    found, best, best_rank, whole = {}, None, None, None
     pieces = [p for p in parts if not p.get("whole")]
-    for p in parts:
-        if p.get("whole") and p["id"] in scores:
-            whole = max(whole or -1.0, scores[p["id"]])
-    top = max((scores[p["id"]] for p in pieces if p["id"] in scores), default=None)
+    wholes = [scores[p["id"]] for p in parts if p.get("whole") and p["id"] in scores]
+    whole = max(wholes) if wholes else None
+    cutoff = None if stats is None else stats[0] + MEDIUM_Z * stats[1]
+    found, best, best_key, kinds = {}, None, None, set()
     for p in pieces:
         score = scores.get(p["id"])
         hit, tscore = text_hit(q, p["text"]) if q and (candidates is None or p["id"] in candidates) else (None, 0.0)
-        rank = (score or 0.0) + {"text": memory.TEXT_BONUS, "similar": 0.8 * memory.TEXT_BONUS}.get(hit, 0.0) \
-            + 0.01 * tscore
-        close = (score is not None and top is not None and top > 0 and score >= STRONG * top
-                 and score >= WEAK_SCORE.get(p["kind"], 0.25 if p["kind"] == "text" else 0.12))
         found[p["id"]] = {"score": None if score is None else round(float(score), 4), "match": hit or "meaning",
-                          "matched": bool(hit) or close}
-        if best_rank is None or rank > best_rank:
-            best, best_rank = p["id"], rank
+                          "matched": bool(hit) or (score is not None and cutoff is not None and score >= cutoff)}
+        if hit:
+            kinds.add(hit)
+        key = (-1.0 if score is None else float(score), tscore)
+        if best_key is None or key > best_key:
+            best, best_key = p["id"], key
     if best is not None:
         found[best]["best"] = True
         found[best]["matched"] = True
-    return {"parts": found, "best": best, "matched": sum(1 for v in found.values() if v["matched"]),
-            "whole_score": None if whole is None else round(float(whole), 4)}
-
-
-def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", candidates: set[int] | None = None) -> dict:
-    """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
-    the chat tool all show. `rows`: the memory's rows; `scores`: each row's cosine with the query vector the
-    search used (_scores); `q`: the words, for the word matches. Returns score_parts' {"parts", "best", "matched",
-    "whole_score"} plus "score" (the memory's: its best row's, a piece or the whole text's: what ranks it),
-    "best_score" (the best piece's) and "via_whole" (the whole text's score is the higher one)."""
-    in_space = _in_space(rows, space)
-    found = score_parts(in_space, scores, q, candidates)
-    best = found["parts"].get(found["best"]) if found["best"] is not None else None
-    best_score = None if best is None else best["score"]
-    whole = found["whole_score"]
+    best_score = None if best is None else found[best]["score"]
+    whole = None if whole is None else round(float(whole), 4)
     scored = [x for x in (best_score, whole) if x is not None]
-    found["best_score"] = best_score
-    found["score"] = max(scored) if scored else None
-    found["via_whole"] = whole is not None and (best_score is None or whole > best_score)
-    return found
+    score = max(scored) if scored else None
+    return {"parts": found, "best": best, "matched": sum(1 for v in found.values() if v["matched"]),
+            "whole_score": whole, "best_score": best_score, "score": score,
+            "via_whole": whole is not None and (best_score is None or whole > best_score),
+            "match": "text" if "text" in kinds else ("similar" if kinds else "meaning"),
+            "strength": strength_of(score, stats)}
 
 
 async def all_score(conn, user_id: str, group: str, space, vector) -> float | None:
@@ -391,11 +350,6 @@ async def _scores(conn, user_id: str, groups: list[str], space, vector) -> dict[
         user_id, real, loose, vector, space)}
 
 
-def _in_space(rows: list[dict], space) -> list[dict]:
-    """A memory's rows one per content, in `space` when they have a copy there, whole vectors included."""
-    return prefer_space(rows, space)
-
-
 MAX_CANDIDATES = 20000  # Most nearest rows a search widens to while it still lacks enough memories.
 
 
@@ -409,8 +363,9 @@ async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dic
             conn, f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
             f"and vector_space = $2{extra} order by embedding <=> $3::vector limit {count}", *params)
         best: dict[str, dict] = {}
-        for r in rows:  # nearest first: the first row of a memory is its best
-            best.setdefault(group_key(r), dict(r))
+        for r in rows:  # the index may return rows a little out of order: a memory's best row is its highest
+            if group_key(r) not in best or float(r["score"]) > float(best[group_key(r)]["score"]):
+                best[group_key(r)] = dict(r)
         if len(best) >= need or len(rows) < count or count >= MAX_CANDIDATES:
             return sorted(best.values(), key=lambda r: (-float(r["score"]), -r["id"]))
         count = min(count * 4, MAX_CANDIDATES)
@@ -425,12 +380,11 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       meaning: bool = True) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
-    meaning score (a piece or an item's whole vector) plus a text-match bonus (as the tool ranks), each with `match`
-    (meaning, text, similar: what the words did; `score` says the meaning), `score`, `strength` (strong, medium,
-    weak: next to the best result), `best_part` (the piece that matched best, its place and time) and
+    meaning score (a piece or an item's whole vector) alone: the order is the shown %, a word match only marks
+    the card (rank_matches), each with `match` (meaning, text, similar: what the words did), `score`, `strength`
+    (strong, medium, weak: against this query's own pool; null when the pool is too small), `best_part` (the piece that matched best, its place and time) and
     `matched_parts`. `vector` (with its space): a query vector already made (a search by file). `vectors` with
-    mode "each": several inputs searched one by one and fused as OR (fuse_inputs; `input_labels` name them); the cards' scores are each part's best
-    score against any input. ("together" is the caller's one combined vector in `vector`.) `leave_out`: memories
+    mode "each": several inputs searched one by one, a memory ranked by its best input (rank_matches; `input_labels` name them). ("together" is the caller's one combined vector in `vector`.) `leave_out`: memories
     never listed (the memory a search by one of its own parts started from). `only_groups`: only these memories
     (a keyword's). `meaning` False: words only (a keyword search)."""
     q = (q or "").strip()
@@ -455,32 +409,27 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         vector_space = space or "all"
     prefer = vector_space if vector_space != "all" else space
     conn = await memory._connect()
-    more, search, scores = False, {}, {}
+    more, search, scores, stats = False, {}, {}, {}
     try:
         await memory.ensure_memory_table(conn)
         if searching:
             searchable = vector is not None and vector_space in ("all", space)
-            meaning = []
-            if searchable and vectors and len(vectors) > 1 and mode == "each":
-                lists = []
-                for one in vectors:
-                    params = [user_id, space, one]
-                    extra = _filters("all", kind, params)
-                    lists.append((await _nearest_groups(conn, params, extra, EACH_POOL))[:EACH_POOL])
-                meaning = fuse_inputs(lists, input_labels)
-            elif searchable:
-                params = [user_id, space, vector]
+            each = bool(searchable and vectors and len(vectors) > 1 and mode == "each")
+            inputs = list(vectors) if each else ([vector] if searchable else [])
+            lists = []
+            for one in inputs:
+                params = [user_id, space, one]
                 extra = _filters("all", kind, params)
-                meaning = await _nearest_groups(
-                    conn, params, extra, offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0))
+                need = EACH_POOL if each else offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0)
+                lists.append((await _nearest_groups(conn, params, extra, need))[:need])
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
                                             vector if searchable else None) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             # One definition of a word match, the one the panel's marks use (text_hit): the query's candidates
             # from the database are confirmed by it, so the order, the card and the panel agree.
             texts = [{**r, "tmatch": hit, "tscore": ts} for r in texts
                      for hit, ts in [text_hit(q, r["text"])] if hit]
-            each = bool(vectors and len(vectors) > 1 and mode == "each")
-            ranked = merge_matches(meaning, texts, keep_order=each)
+            ranked = await rank_matches(conn, user_id, space if searchable else None, inputs, lists, texts,
+                                        input_labels)
             excluded, dropped = 0, []
             if leave_out:
                 ranked = [e for e in ranked if e["group"] not in leave_out]
@@ -492,33 +441,23 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                 kept = [e for e in ranked if e["group"] not in out]
                 dropped = [e for e in ranked if e["group"] in out][:10]
                 excluded, ranked = len(ranked) - len(kept), kept
-            # A neutral cue: how far each score is above this query's typical score against every memory.
-            stats = None
-            if searchable and not each:
-                stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector, kind)).values()))
-            for e in ranked:
-                if each:
-                    e["above"] = e["row"].get("above")
-                elif stats is not None and e["score"] is not None:
-                    e["above"] = float(e["score"]) - stats[0]
             more = len(ranked) > offset + limit
             picked = ranked[offset:offset + limit]
             search = {e["group"]: e for e in picked}
             groups = [e["group"] for e in picked]
             matching = len(ranked)
-            if searchable and each:
-                # A memory's rows are scored with the input that gave it its place (its `via`): the number the card
-                # shows is that input's, and so is every part's in the panel.
-                names = list(input_labels or [])
-                by_input: dict[int, list[str]] = {}
-                for e in picked:
-                    by_input.setdefault(names.index(e["via"]) if e.get("via") in names else 0, []).append(e["group"])
-                for index, gs in by_input.items():
-                    scores.update(await _scores(conn, user_id, gs, space, vectors[min(index, len(vectors) - 1)]))
+            # Each input that gave a memory its place: the vector its rows are scored with (the number the card and
+            # every part in the panel show) and the pool its strength is measured against.
+            by_input: dict[int, list[str]] = {}
+            for e in picked:
+                if e["score"] is not None:
+                    by_input.setdefault(e["query_index"], []).append(e["group"])
+            for index, gs in by_input.items():
+                scores.update(await _scores(conn, user_id, gs, space, inputs[index]))
+                stats[index] = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, inputs[index], kind)).values()))
+                if each:
                     for g in gs:
-                        search[g]["query_index"] = index
-            elif searchable:
-                scores = await _scores(conn, user_id, groups, space, vector)
+                        search[g]["query_index_shown"] = index
         else:
             params = [user_id]
             extra = _filters(vector_space, kind, params)
@@ -557,7 +496,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         matched = None
         parts_match = None
         if entry:
-            parts_match = group_match(rows, space, scores, q, hits)
+            parts_match = group_match(rows, space, scores, q, hits, stats.get(entry["query_index"]))
             row = entry["row"]
             # The part the memory is shown by is the panel's best part: one computation.
             matched = parts_match["best"] if parts_match["best"] is not None else row["id"]
@@ -566,16 +505,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             # The memory's score is group_match's (the panel shows the same); a memory the vectors did not reach
             # (another model's, found by its words) keeps the search's own.
             own = parts_match["score"] if parts_match["score"] is not None else entry["score"]
-            best_hit = parts_match["parts"].get(parts_match["best"]) if parts_match["best"] is not None else None
-            item.update(match=best_hit["match"] if best_hit else entry["match"], strength=entry["strength"],
-                        matched_part=matched,
+            item.update(match=parts_match["match"], strength=parts_match["strength"], matched_part=matched,
                         score=None if own is None else round(float(own), 4),
                         best_score=parts_match["best_score"], whole_score=parts_match["whole_score"],
                         matched_parts=max(1, parts_match["matched"]), via_whole=parts_match["via_whole"])
-            if entry.get("query_index") is not None:
-                item["query_index"] = entry["query_index"]
-            if entry.get("above") is not None:
-                item["above"] = round(float(entry["above"]), 4)  # Score minus this query's typical score.
+            if entry.get("query_index_shown") is not None:
+                item["query_index"] = entry["query_index_shown"]
             if entry.get("via"):
                 item["via"] = entry["via"]  # Which input it matched ("metin", "görsel"): its score is that one's.
             best = _best_part(rows, matched, prefer)
@@ -619,7 +554,7 @@ def _best_part(rows: list[dict], part_id, prefer) -> dict | None:
 
 async def part_scores(user_id: str, group: str, settings, q: str = "", vector: str | None = None,
                       space: str | None = None) -> dict | None:
-    """Each part's own match in one memory for the page's search (score_parts), by the query text `q` or a query
+    """Each part's own match in one memory for the page's search (group_match), by the query text `q` or a query
     vector already made (a search by file, with its `space`). None for a memory this user does not have."""
     q = (q or "").strip()
     if vector is None and q:
@@ -635,10 +570,11 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
         whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
         hits = await text_candidates(conn, user_id, [group], q) if q else set()
+        stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector)).values()))             if vector is not None and space else None
     finally:
         await conn.close()
-    in_space = _in_space(rows, space)
-    found = group_match(rows, space, scores, q, hits)
+    in_space = prefer_space(rows, space)
+    found = group_match(rows, space, scores, q, hits, stats)
     found["all_score"] = None if whole_memory is None else round(whole_memory, 4)
     # The page shows each part once (the copy in the preferred space): its match is the match of its content.
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}
@@ -919,7 +855,7 @@ async def _resolve_legacy_source(conn, user_id: str, rows: list[dict]) -> tuple[
     chats (the assistant chat first), that carries one of its files, else that holds the start of one of its texts.
     The found source is stored on the rows of the group, so this runs once."""
     def like(text: str) -> str:
-        return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        return memory.like_pattern(text)
 
     order = sorted(rows, key=lambda r: (not r.get("media_id"), r["id"]))  # A file id is the surest probe.
     found = None
@@ -1077,6 +1013,18 @@ async def row_vector(user_id: str, row_id: int, space: str | None) -> dict | Non
     return {"vector": vector, "group": group_key(dict(row)), "kind": row["kind"], "text": row["text"]}
 
 
+async def search_vectors(user_id: str, settings, vectors: list[list[float]], labels: list[str], space: str, mode: str,
+                         q: str = "", **page) -> tuple[dict, list[float]]:
+    """THE multi-input search (the page's and the chat tool's): inputs already made into query vectors. "together"
+    searches with their normalized mean, "each" ranks by the best input of every memory (rank_matches). `page`:
+    list_groups's limit, offset, vector_space, kind, exclude... Returns (list_groups's answer, the combined vector)."""
+    from orion.kernel.memory_pieces import mean_vector
+    combined = mean_vector(vectors)
+    found = await list_groups(user_id, settings, q, vector=memory._vector(combined), vector_space_of_query=space,
+                              vectors=[memory._vector(v) for v in vectors], mode=mode, input_labels=labels, **page)
+    return found, combined
+
+
 class QueryError(ValueError):
     """A query the search cannot run (an unknown id, an id without a vector of the active model): its message says
     which, in English, for the chat model."""
@@ -1086,12 +1034,11 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
                          vector_space: str = "all", limit: int = 10, offset: int = 0) -> dict:
     """The page's search for the chat model: several queries, each a text or a memory row id (that row's vector, as
     a dropped file), `like` true (results like it) or false (memories like it are left out); mode "together" (one
-    query: the normalized mean of the like-queries) or "each" (each ranked on its own, fused as OR: fuse_inputs).
+    query: the normalized mean of the like-queries) or "each" (each ranked on its own, ranked by its best input: rank_matches).
     The memory a like-id belongs to is not listed (it would come first, matching itself). Answers list_groups's
     page, plus "labels" (each like-query's label: '"text"' or 'id 12', the names `via` uses) and "left_out"
     (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`)."""
     import json
-    from orion.kernel.memory_pieces import mean_vector
     keywords = [q for q in queries if (q.get("keyword") or "").strip()]
     queries = [q for q in queries if not (q.get("keyword") or "").strip()]
     likes = [q for q in queries if q.get("like", True)]
@@ -1171,10 +1118,9 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
         found = await list_groups(user_id, settings, words, limit, offset, leave_out=leave_out, **common)
         found["labels"] = []
         return found
-    found = await list_groups(
-        user_id, settings, words, limit, offset, vector=memory._vector(mean_vector(vectors)),
-        vector_space_of_query=space, vectors=[memory._vector(v) for v in vectors],
-        mode="each" if mode == "each" else "together", input_labels=labels, leave_out=leave_out, **common)
+    found, _ = await search_vectors(
+        user_id, settings, vectors, labels, space, "each" if mode == "each" else "together", words, limit=limit,
+        offset=offset, leave_out=leave_out, **common)
     found["labels"] = labels
     if reason:
         found["semantic_reason"] = reason

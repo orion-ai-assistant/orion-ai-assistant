@@ -178,7 +178,9 @@ async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
                     groups.append(found["group"])
             deleted = await memory_groups.delete_groups(context.user_id, groups) if groups else []
         else:
-            deleted = await memory.delete_items(context.user_id, args.ids)
+            from orion.kernel.config import get_runtime_settings
+            deleted = await memory.delete_items(context.user_id, args.ids,
+                                                await get_runtime_settings(None, context.user_id))
     except memory.MemoryUnavailable as exc:
         return {"error": str(exc)}
     if not deleted:

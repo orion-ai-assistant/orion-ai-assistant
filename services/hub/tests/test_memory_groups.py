@@ -79,7 +79,7 @@ class MemoryGroupTests(PostgresMemoryCase):
         found = await memory_groups.list_groups('alice', self.settings, q='görsel', limit=10)
         self.assertEqual([(c['group_id'], c['matched_part']) for c in found['groups']], [('g1', image), ('g2', chunks[2])])
         self.assertEqual(found['groups'][1]['text_index'], 3)  # The chunk that matched, not the first.
-        self.assertEqual((found['groups'][0]['strength'], found['groups'][1]['strength']), ('strong', 'weak'))
+        self.assertEqual((found['groups'][0]['strength'], found['groups'][1]['strength']), (None, None))  # A pool of two: too small to tell.
 
     async def test_a_copy_in_the_active_model_lists_the_memory_once_and_deleting_a_part_takes_its_copies(self):
         original = await self.add('kedimin adı Maviş', space=OTHER, group='g1', axis=2)
@@ -127,9 +127,9 @@ class MemoryGroupTests(PostgresMemoryCase):
         found = await self.tool(memory_tools.search_memory, memory_tools.MemorySearchInput,
                                 queries=[memory_tools.MemoryQuery(text='kalp resmi')])
         rows = {row['id']: row for row in found['results']}
-        # One result per memory, shown by its best part (here the text, its words are spelled like the query).
-        self.assertEqual((rows[text]['memory_has'], rows[text]['match']), ('1 text, 1 image', 'spelling'))
-        self.assertNotIn(image, rows)
+        # One result per memory, shown by its best part by meaning (the image, 0.6); the words only mark the memory.
+        self.assertEqual((rows[image]['memory_has'], rows[image]['match']), ('1 text, 1 image', 'spelling'))
+        self.assertNotIn(text, rows)
         self.assertTrue(rows[chunk]['label'].startswith('notlar.md: '))
         self.assertIn('memory_context', found['note'])
 
@@ -555,12 +555,11 @@ def test_an_unrelated_input_never_demotes_a_strong_single_input_match():
             enumerate(['elif', 'pamuk'] + names)]
     labels = routes.input_labels(['image', 'query'], 2)
     assert labels == ['görsel', 'metin']
-    fused = mg.fuse_inputs([image, text], labels)
-    assert fused[0]['group_id'] == 'elif' and fused[0]['via'] == 'metin' and fused[0]['score'] == 0.52
-    ranked = mg.merge_matches(fused, [], keep_order=True)
-    assert ranked[0]['strength'] == 'strong' and ranked[0]['via'] == 'metin'
-    # The noise of each input stays out of the strong ones (Pamuk does stand out for the picture: it may show).
-    assert not [e for e in ranked if e['group'].startswith('m') and e['strength'] != 'weak']
+    ranked = asyncio.run(mg.rank_matches(None, 'u', 's', [[0.0], [0.0]], [image, text], [], labels))
+    # A memory ranks by its best input's score, the shown %: Elif's 0.52 (the text input) before Pamuk's 0.48.
+    assert [e['group'] for e in ranked[:2]] == ['elif', 'pamuk']
+    assert ranked[0]['via'] == 'metin' and ranked[0]['score'] == 0.52 and ranked[0]['query_index'] == 1
+    assert [e['score'] for e in ranked] == sorted((e['score'] for e in ranked), reverse=True)
     assert routes.input_labels(['image', 'image', 'query'], 3) == ['görsel 1', 'görsel 2', 'metin']
     # Named when the name is known: a text in quotes, a file by its name ("Ayrı" cards say which input it was).
     assert routes.input_labels(['image', 'query'], 2, ['kus.png', '"kuş"']) == ['kus.png', '"kuş"']
@@ -575,8 +574,9 @@ def test_a_long_pasted_query_is_cut_not_refused_and_matches_by_meaning_only():
     body = routes.MemorySearch(inputs=[{'text': long}], q=long)
     assert len(body.q) == len(long)
     parts = [{'id': 1, 'kind': 'text', 'text': long, 'whole': False}]
-    found = mg.score_parts(parts, {1: 0.4}, long)
-    assert found['parts'][1]['match'] == 'meaning'
+    parts[0]['vector_space'] = 's'
+    found = mg.group_match(parts, 's', {1: 0.4}, long)
+    assert found['parts'][1]['match'] == 'meaning' and found['match'] == 'meaning'
 
 
 
@@ -600,6 +600,6 @@ def test_a_long_query_is_embedded_as_the_mean_of_its_windows_sampled_evenly(monk
     assert 'Paragraf 0' in windows[0] and any('Paragraf 19' in w for w in windows[-3:])  # Across the whole text.
     space, vector, reason = asyncio.run(memory._query_vector(passage, None))
     assert (space, reason, len(seen)) == ('space', None, memory.QUERY_WINDOWS)
-    assert {kind for _, kind in seen} == {'query'}
+    assert {kind for _, kind in seen} == {'document'}  # A passage is embedded as the stored windows are.
     # Asked again (the detail's part scores): from the cache, nothing embedded.
     assert asyncio.run(memory._query_vector(passage, None))[1] == vector and len(seen) == memory.QUERY_WINDOWS

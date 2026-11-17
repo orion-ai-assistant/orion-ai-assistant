@@ -1,0 +1,250 @@
+"""One order, one %: the page's list, the detail panel and the chat tool rank a memory by the same score (memory_groups
+.rank_matches / group_match); the text and window helpers they share. Real throwaway PostgreSQL (see
+test_memory_search.PostgresMemoryCase)."""
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from orion.api import routes
+from orion.kernel import memory, memory_groups, memory_move, memory_pieces, registry
+from orion.kernel.memory_pieces import mean_vector
+
+from test_memory_search import SPACE, PostgresMemoryCase, vec
+
+REAL_QUERY_VECTOR = memory._query_vector  # The case patches it with hand-made vectors.
+
+
+class RankTests(PostgresMemoryCase):
+    async def tool(self, queries, mode='together'):
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        queries = [memory_tools.MemoryQuery(**q) for q in queries]
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            return await memory_tools.search_memory(memory_tools.MemorySearchInput(queries=queries, mode=mode),
+                                                    ToolContext('alice', 'chat', 't', None))
+
+    async def seed(self):
+        """Ten memories with distinct scores (a pool big enough for a strength), one with a word in it."""
+        ids = {}
+        for k in range(10):
+            ids[k] = await self.add(f'not {k}' + (' maviş' if k == 7 else ''), score=0.9 - k * 0.08, axis=2 + k,
+                                    group=f'g{k}', minute=k)
+        return ids
+
+    def vectors_for(self, queries):
+        """Each query text is a vector: 'a' is the base axis, 'b' leans to another axis."""
+        other = [0.0] * 768
+        other[4] = 1.0
+        return {'a': self.query, 'b': other}
+
+    async def patch_vectors(self, table):
+        async def query_vector(q, settings):
+            return SPACE, memory._vector(table[q.strip()]), None
+        guard = patch.object(memory, '_query_vector', query_vector)
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    async def test_the_order_is_the_shown_percent_and_a_word_match_only_marks(self):
+        ids = await self.seed()
+        for k in range(12):  # A pool of ordinary memories the best ones stand out of.
+            await self.add(f'sıradan {k}', score=0.05, axis=20 + k, group=f's{k}', minute=20 + k)
+        page = await memory_groups.list_groups('alice', self.settings, q='maviş', limit=30)
+        scores = [g['score'] for g in page['groups']]
+        self.assertEqual(scores, sorted(scores, reverse=True))  # No bonus: the word match does not lift its card.
+        marked = next(g for g in page['groups'] if g['matched_part'] == ids[7])
+        self.assertEqual(marked['match'], 'text')
+        self.assertEqual([g['match'] for g in page['groups']].count('text'), 1)
+        self.assertEqual(page['groups'][0]['matched_part'], ids[0])
+        # The strength is measured against the query's own pool, never an absolute number.
+        self.assertIn(page['groups'][0]['strength'], ('strong', 'medium'))
+        self.assertEqual(page['groups'][-1]['strength'], 'weak')
+
+    async def test_a_memory_found_only_by_its_words_is_ranked_by_its_real_score(self):
+        low = await self.add('maviş burada', score=0.2, axis=2, group='a')
+        high = await self.add('başka şey', score=0.5, axis=3, group='b')
+        await self.add('maviş bir parça', score=0.1, axis=4, group='a')  # The group's best row is the 0.2 one.
+        page = await memory_groups.list_groups('alice', self.settings, q='maviş', limit=10)
+        self.assertEqual([(g['group_id'], g['score']) for g in page['groups']], [('b', 0.5), ('a', 0.2)])
+        self.assertEqual((page['groups'][1]['match'], page['groups'][1]['matched_part']), ('text', low))
+        self.assertEqual(page['groups'][0]['matched_part'], high)
+
+    async def test_list_panel_and_tool_agree_on_order_and_percent_for_every_kind_of_query(self):
+        ids = await self.seed()
+        long_text = 'martılar ' * 120
+        other = self.vectors_for(None)['b']
+        await self.patch_vectors({'a': self.query, 'b': other, long_text.strip(): other})
+        cases = [
+            ('single text', [{'text': 'a'}], 'together', [self.query], 'a'),
+            ('together', [{'text': 'a'}, {'text': 'b'}], 'together', [self.query, other], 'a b'),
+            ('separate', [{'text': 'a'}, {'text': 'b'}], 'each', [self.query, other], 'a b'),
+            ('long pasted text', [{'text': long_text.strip()}], 'together', [other], long_text.strip()),
+        ]
+        for name, queries, mode, vecs, words in cases:
+            with self.subTest(name):
+                found = await memory_groups.search_queries('alice', self.settings, queries, mode=mode, limit=20)
+                cards = found['groups']
+                shown = [c['score'] for c in cards]
+                self.assertEqual(shown, sorted(shown, reverse=True))
+                tool = await self.tool(queries, 'separate' if mode == 'each' else 'together')
+                self.assertEqual([r['id'] for r in tool['results']],
+                                 [c['matched_part'] for c in cards[:len(tool['results'])]])
+                self.assertEqual([r['score'] for r in tool['results']],
+                                 [round(c['score'] * 100) for c in cards[:len(tool['results'])]])
+                for card in cards[:4]:
+                    index = card.get('query_index', 0)
+                    vector = vecs[index] if mode == 'each' and len(vecs) > 1 else mean_vector(vecs)
+                    panel = await memory_groups.part_scores('alice', card['group_id'], self.settings, q=words,
+                                                            vector=memory._vector(vector), space=SPACE)
+                    self.assertEqual((panel['score'], panel['best'], panel['match'], panel['strength']),
+                                     (card['score'], card['matched_part'], card['match'], card['strength']))
+        # An id query: the vector of a stored row, its own memory left out.
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            found = await memory_groups.search_queries('alice', self.settings, [{'id': ids[3]}], limit=20)
+            tool = await self.tool([{'id': ids[3]}])
+        self.assertNotIn(ids[3], [c['matched_part'] for c in found['groups']])
+        self.assertEqual([r['id'] for r in tool['results']], [c['matched_part'] for c in found['groups']][:10])
+        self.assertEqual([r['score'] for r in tool['results']],
+                         [round(c['score'] * 100) for c in found['groups']][:10])
+
+    async def test_the_stored_copy_of_a_file_is_first_even_when_the_index_returns_rows_out_of_order(self):
+        """pgvector's iterative scan may return rows a little out of order: a memory's score must be its highest row,
+        not the first one seen."""
+        exact = await self.add('met.txt parçası', score=1.0, axis=2, group='file')
+        await self.add('met.txt ikinci parça', score=0.19, axis=3, group='file', minute=1)
+        await self.add('başka bir not', score=0.19, axis=4, group='other', minute=2)
+        real = memory.ann_fetch
+
+        async def shuffled(conn, sql, *args):
+            return list(reversed(await real(conn, sql, *args)))
+        with patch.object(memory, 'ann_fetch', shuffled):
+            page = await memory_groups.list_groups('alice', self.settings, vector=memory._vector(self.query),
+                                                   vector_space_of_query=SPACE, limit=10)
+        self.assertEqual([(g['group_id'], g['score']) for g in page['groups']], [('file', 1.0), ('other', 0.19)])
+        self.assertEqual(page['groups'][0]['matched_part'], exact)
+
+    async def test_a_text_file_and_the_same_text_pasted_make_one_vector(self):
+        calls = []
+
+        async def embed(text, settings, kind, local):
+            calls.append((text, kind))
+            seed = sum(map(ord, text)) % 97 + 1
+            return [[float((i * seed) % 13 + 1) for i in range(768)]]
+        target = (SimpleNamespace(router_model_group='e'), SPACE, True)
+        memory._query_cache.clear()
+        with patch.object(memory, '_embed', embed), patch.object(memory, '_query_vector', REAL_QUERY_VECTOR), \
+                patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+            for text in ('kısa bir soru', 'Uzun bir metin. ' * 60):
+                with self.subTest(len(text)):
+                    memory._query_cache.clear()
+                    pasted = (await memory._query_vector(text, self.settings))[1]
+                    memory._query_cache.clear()
+                    dropped = (await memory.file_query_vector('a.txt', 'text/plain', text.encode(), self.settings))[1]
+                    self.assertEqual(pasted, dropped)
+        self.assertEqual({kind for text, kind in calls if len(text) > memory.TEXT_MATCH_CHARS}, {'document'})
+
+    async def test_python_and_sql_fold_the_same_letters(self):
+        samples = ['İSTANBUL ÇIĞ ÖĞRENCİ ÜNLÜ', 'ışık Işık şeker', 'Straße ÄÖÜ äöü', 'ДОМ Привет ЁЖ', 'ΣΟΦΙΑ Ελλάδα',
+                   'Ǆ ǅ ǆ', 'ÂÎÛ âîû', 'plain ASCII 123 %_']
+        conn = await registry._connect()
+        try:
+            for text in samples:
+                self.assertEqual(await conn.fetchval(f"select {memory.FOLD_SQL.replace('text', '$1::text', 1)}", text),
+                                 memory.fold(text), text)
+        finally:
+            await conn.close()
+
+    async def test_one_fuzzy_threshold_for_sql_and_python(self):
+        self.assertFalse(hasattr(memory, 'FUZZY_MIN_PY'))
+        self.assertFalse(hasattr(memory, 'TEXT_BONUS'))
+        hit, score = memory_groups.text_hit('selam nabe', 'Kullanıcı: selam naber nasılsın')
+        self.assertEqual(hit, 'text')
+
+    async def test_embedding_errors_tell_an_unreachable_router_from_a_missing_component(self):
+        async def down(*args, **kwargs):
+            raise RuntimeError('Model listelerine şu an erişilemiyor.')
+        with patch('orion.kernel.router_models.get_router_catalog', down):
+            with self.assertRaises(memory.MemoryUnavailable) as caught:
+                await memory.embedding_target(self.settings)
+        self.assertEqual(str(caught.exception), memory.ROUTER_DOWN_MESSAGE)
+        with patch('orion.kernel.router_models.get_router_catalog', AsyncMock(return_value={'models': []})):
+            with self.assertRaises(memory.MemoryUnavailable) as caught:
+                await memory.embedding_target(self.settings)
+        self.assertEqual(str(caught.exception), memory.SETUP_MESSAGE)
+
+        async def refused(*args, **kwargs):
+            raise ConnectionRefusedError('refused')
+        with patch('orion.worker.services.router.embed_text', refused):
+            with self.assertRaises(memory.MemoryUnavailable) as caught:
+                await memory._embed('x', self.settings, 'query', True)
+        self.assertEqual(str(caught.exception), memory.ROUTER_DOWN_MESSAGE)
+
+    async def test_deleting_a_piece_embeds_its_neighbours_again_from_the_text_that_is_left(self):
+        rows = []
+        for k, text in enumerate(('birinci parça', 'ikinci parça', 'üçüncü parça')):
+            rows.append(await self.add(text, score=0.5, axis=2 + k, group='g', minute=k))
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory set item_id = 'it', item_order = id where group_id = 'g'")
+        finally:
+            await conn.close()
+        windows = []
+
+        async def embed(text, settings, kind, local):
+            windows.append(text)
+            return [[1.0] + [0.0] * 767]
+        target = (SimpleNamespace(router_model_group='e'), SPACE, True)
+        with patch.object(memory, '_embed', embed), patch.object(memory, 'embedding_target', AsyncMock(return_value=target)):
+            await memory.delete_items('alice', [rows[1]], self.settings)
+            await asyncio.gather(*memory._reembed_tasks)
+        self.assertEqual(len(windows), 2)  # The piece before and the piece after.
+        self.assertTrue(all('ikinci' not in w for w in windows))
+        self.assertEqual(windows, memory_pieces.windows_of(['birinci parça', 'üçüncü parça']))
+
+    async def test_the_windows_of_a_move_are_the_windows_the_pieces_were_cut_with(self):
+        text = '\n\n'.join(f'Paragraf {k}. ' + 'söz ' * 160 for k in range(12))
+        split = memory_pieces.text_pieces(text)
+        self.assertGreater(len(split), 2)
+        rows = [{'id': i, 'kind': 'text', 'item_id': 'it', 'whole': False, 'text': core, 'item_order': 1,
+                 'copied_from': None} for i, (core, _) in enumerate(split, 1)]
+        moved = memory_move.text_windows(rows)
+        self.assertEqual([moved[i] for i in range(1, len(split) + 1)], [window for _, window in split])
+
+    async def test_a_chat_piece_starts_at_its_own_message_even_when_messages_repeat(self):
+        messages = ['Kullanıcı: tamam', 'Asistan: ' + 'cevap ' * 400, 'Kullanıcı: tamam', 'Asistan: ' + 'başka ' * 400,
+                    'Kullanıcı: tamam', 'Asistan: kısa']
+        pieces = memory_pieces.chat_pieces(messages)
+        firsts = [first for _, _, first in pieces]
+        self.assertEqual(firsts, sorted(firsts))
+        self.assertEqual(firsts[0], 0)
+        for core, _, first in pieces:  # Exact: the core starts inside the message it points at.
+            self.assertIn(core[:30], messages[first], (first, core[:40]))
+        self.assertIn(3, firsts)  # Not confused with the earlier message that repeats the same words.
+
+    async def test_the_last_link_takes_the_media_file_with_it(self):
+        from orion.kernel import media_store
+        raw = b'\x89PNG-test-bytes'
+        media_id = __import__('hashlib').sha256(raw).hexdigest()
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await media_store.hold_media(conn, media_id, 'image/png', raw)
+        finally:
+            await conn.close()
+        await media_store.link_media(media_id, 'memory', '1')
+        await media_store.link_media(media_id, 'memory', '2')
+        await media_store.unlink_media(media_id, 'memory', '1')
+        conn = await registry._connect()
+        try:
+            self.assertEqual(await conn.fetchval('select count(*) from orion_media where id = $1', media_id), 1)
+            await media_store.unlink_media(media_id, 'memory', '2', conn=conn)
+            self.assertEqual(await conn.fetchval('select count(*) from orion_media where id = $1', media_id), 0)
+        finally:
+            await conn.close()
+
+    async def test_the_group_backfill_runs_once_and_is_skipped_after(self):
+        conn = await registry._connect()
+        try:
+            self.assertTrue(await conn.fetchval("select 1 from orion_memory_meta where key = 'groups_backfilled'"))
+        finally:
+            await conn.close()
