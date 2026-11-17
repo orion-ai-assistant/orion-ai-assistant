@@ -23,7 +23,7 @@ PREVIEW_MEDIA = 6
 MAP_NODES = 300
 _ROW = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
         "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, span_start, span_end, "
-        "track, caption, item_order")
+        "track, caption, item_order, lossless")
 ITEM_KEY = f"coalesce(item_id, {CONTENT_KEY}::text)"
 
 
@@ -1230,6 +1230,6 @@ async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     else:
         name = readable_name(pieces[0]["text"]) or f"Hafıza kaydı {row['id']}"
         name += ".txt"
-    return {"name": name, "text": "\n\n".join(p["text"] for p in pieces),
-            "pieces": [{"id": p["id"], "text": p["text"]} for p in pieces], "asked": asked,
+    return {"name": name, "text": memory.join_pieces(pieces),
+            "pieces": [{"id": p["id"], "text": p["text"], "lossless": bool(p.get("lossless"))} for p in pieces], "asked": asked,
             "source_kind": row.get("source_kind"), "title": title}

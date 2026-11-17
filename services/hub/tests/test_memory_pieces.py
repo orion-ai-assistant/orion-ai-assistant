@@ -96,10 +96,11 @@ def test_text_pieces_tile_the_text_and_windows_reach_into_the_neighbours():
     assert len(pieces) > 2
     cores = [core for core, _ in pieces]
     assert '\n\n'.join(cores).split() == '\n\n'.join(paragraphs).split()  # The cores are the text, once.
+    assert ''.join(cores) == '\n\n'.join(paragraphs)  # Exactly: nothing stripped, nothing added.
     core, window = pieces[1]
     assert window.startswith(pieces[0][0][-40:].split()[-1]) or pieces[0][0].split()[-1] in window
-    assert pieces[2][0].split()[0] in window and core in window
-    assert pieces[0][1].startswith(pieces[0][0])  # The first has nothing before it.
+    assert pieces[2][0].split()[0] in window and core.strip() in window
+    assert pieces[0][1].startswith(pieces[0][0].strip())  # The first has nothing before it.
 
 
 def test_window_frames_take_the_frames_inside_spread_evenly():

@@ -230,7 +230,7 @@ class RankTests(PostgresMemoryCase):
         self.assertEqual(firsts[0], 0)
         for core, _, first, last in pieces:
             self.assertGreaterEqual(last, first)  # Exact: the core starts inside the message it points at.
-            self.assertIn(core[:30], messages[first], (first, core[:40]))
+            self.assertIn(core.strip()[:30], messages[first], (first, core[:40]))
         self.assertIn(3, firsts)  # Not confused with the earlier message that repeats the same words.
 
     async def test_the_last_link_takes_the_media_file_with_it(self):
@@ -529,3 +529,25 @@ class RankTests(PostgresMemoryCase):
             page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
         self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
         self.assertEqual(memory.filters_sql('all', 'image', []), " and kind = 'image'")
+
+    async def test_cores_concatenate_to_the_original_text_byte_for_byte(self):
+        import random
+        rng = random.Random(7)
+        samples = [
+            '"a": "Došlo k chybě",\n"common.success": "Úspěch",\n' * 300,                      # one huge paragraph of lines
+            '{"x": "مجدداً",\n"settings.auth.newPassword": "كلمة"}\n' * 200,                   # RTL
+            'satır bir\r\nsatır iki\r\n\r\n\r\nüçüncü 😀 paragraf\r\n' * 150,                   # CRLF, blank runs, emoji
+            '\n\n  baş boşluk\n\n' + 'kelime ' * 3000 + '\n\nson\n\n\n',                         # edges, one long line
+            '😀👍🏽' * 900,                                                                    # no spaces at all
+            ''.join(rng.choice('ab c\n\r\t.!?。ç😀') for _ in range(20000)),                    # arbitrary
+        ]
+        for text in samples:
+            with self.subTest(len(text)):
+                self.assertEqual(''.join(core for core, _ in memory_pieces.text_pieces(text)), text)
+        messages = ['Kullanıcı: ' + 'merhaba\n' * 500, 'Asistan: ' + 'cevap, ' * 900 + '\n\nikinci', 'Kullanıcı: kısa', 'Asistan: tamam']
+        pieces = memory_pieces.chat_pieces(messages)
+        self.assertEqual(''.join(core for core, _, _, _ in pieces), '\n\n'.join(messages))
+        # The item's text comes back through join_pieces exactly; old (stripped) pieces still get a blank line.
+        rows = [{'text': core, 'lossless': True} for core, _ in memory_pieces.text_pieces(samples[0])]
+        self.assertEqual(memory.join_pieces(rows), samples[0])
+        self.assertEqual(memory.join_pieces([{'text': 'a'}, {'text': 'b'}]), 'a\n\nb')

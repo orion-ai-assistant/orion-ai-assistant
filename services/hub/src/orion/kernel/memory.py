@@ -87,7 +87,8 @@ async def ensure_memory_table(conn) -> None:
             await conn.execute("drop index if exists idx_orion_memory_user")
             for column in ("group_id text", "copied_from bigint", "source_chat_id text", "source_message_id bigint",
                            "item_id text", "whole boolean not null default false", "span_start real", "span_end real",
-                           "track text", "caption text", "item_order bigint", "source_message_last bigint", "folded text",
+                           "track text", "caption text", "item_order bigint", "source_message_last bigint", "lossless boolean not null default false",
+                           "folded text",
                            "caption_folded text"):
                 await conn.execute(f"alter table orion_memory add column if not exists {column}")
             await conn.execute("create index if not exists idx_orion_memory_group on orion_memory (user_id, group_id)")
@@ -788,9 +789,9 @@ def whole_label(item: dict, pieces: list[dict]) -> str:
 ROW_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, "
     "media_id, media_mime, media_seconds, group_id, source_chat_id, source_message_id, item_id, whole, span_start, "
-    "span_end, track, caption, item_order, source_message_last, folded, caption_folded) "
+    "span_end, track, caption, item_order, source_message_last, folded, caption_folded, lossless) "
     "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, "
-    "$22, $23) "
+    "$22, $23, $24) "
     "returning id")
 
 
@@ -828,7 +829,7 @@ async def insert_item(conn, user_id: str, space: str, group: str, item: dict, pi
             item["kind"], item.get("media_id"), item.get("mime"), piece.get("seconds"), group, item.get("chat_id"),
             piece.get("message_id", item.get("message_id")), item_id, bool(piece.get("whole")), piece.get("span_start"), piece.get("span_end"),
             piece.get("track"), caption, order, piece.get("message_last", item.get("message_last")), fold(match_text(text, item.get("title"), caption, item.get("source_kind") or "manual")),
-            None if caption is None else fold(caption))
+            None if caption is None else fold(caption), item["kind"] == "text" and not piece.get("whole"))
         if item.get("media_id"):
             await link_media(item["media_id"], "memory", str(row_id), conn=conn)
         stored += 1
@@ -856,7 +857,7 @@ async def reuse_item(conn, user_id: str, space: str, group: str, media_id: str, 
             ROW_SQL, user_id, row["text"], space, row["embedding"], source_kind, name or None, row["kind"], media_id,
             row["media_mime"], row["media_seconds"], group, chat_id, None, item_id, row["whole"], row["span_start"],
             row["span_end"], row["track"], caption or None, order, None,
-            fold(match_text(row["text"], name, caption, source_kind)), fold(caption) if caption else None)
+            fold(match_text(row["text"], name, caption, source_kind)), fold(caption) if caption else None, False)
         await link_media(media_id, "memory", str(row_id), conn=conn)
     return len(rows)
 
@@ -1220,6 +1221,18 @@ def match_text(text: str, title: str | None = None, caption: str | None = None, 
 
 def row_match_text(row) -> str:
     return match_text(row.get("text"), row.get("source_chat_title"), row.get("caption"), row.get("source_kind"))
+
+
+def join_pieces(pieces: list[dict]) -> str:
+    """The text of an item from its pieces in order. Pieces stored since cores are cut without loss (`lossless`) are
+    exact slices: they join with nothing between and give back the saved text byte for byte; older pieces were
+    stripped when cut (their blank lines are gone), so they are joined with a blank line, the closest there is."""
+    out = ""
+    for index, piece in enumerate(pieces):
+        out += piece["text"]
+        if index + 1 < len(pieces) and not piece.get("lossless"):
+            out += "\n\n"
+    return out
 
 
 def like_pattern(folded: str) -> str:

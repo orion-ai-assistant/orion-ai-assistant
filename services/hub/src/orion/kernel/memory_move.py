@@ -26,9 +26,9 @@ _tasks: set[asyncio.Task] = set()
 COPY_SQL = (
     "insert into orion_memory (user_id, text, vector_space, embedding, source_kind, source_chat_title, kind, media_id, "
     "media_mime, media_seconds, group_id, copied_from, source_chat_id, source_message_id, created_at, item_id, whole, "
-    "span_start, span_end, track, caption, item_order, source_message_last, folded, caption_folded) "
+    "span_start, span_end, track, caption, item_order, source_message_last, folded, caption_folded, lossless) "
     "values ($1, $2, $3, $4::vector, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, "
-    "$22, $23, $24, $25) returning id")
+    "$22, $23, $24, $25, $26) returning id")
 _HAS_COPY = ("exists (select 1 from orion_memory c where c.user_id = r.user_id and c.vector_space = $3 "
              "and coalesce(c.copied_from, c.id) = coalesce(r.copied_from, r.id))")
 
@@ -247,7 +247,7 @@ async def rebuild_wholes(conn, user_id: str, space: str, items: list[str]) -> in
                 source["media_seconds"], source["group_id"], source["copied_from"] or source["id"],
                 source["source_chat_id"], source["source_message_id"], source["created_at"], item, True, None, None,
                 track, source["caption"], source["item_order"], source.get("source_message_last"), memory.fold(memory.row_match_text(source)),
-                None if source["caption"] is None else memory.fold(source["caption"]))
+                None if source["caption"] is None else memory.fold(source["caption"]), False)
             if source["media_id"]:
                 await link_media(source["media_id"], "memory", str(new_id), conn=conn)
             made += 1
@@ -265,7 +265,7 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
         await memory.ensure_memory_table(conn)
         columns = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
                    "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, "
-                   "span_start, span_end, track, caption, item_order")
+                   "span_start, span_end, track, caption, item_order, lossless")
         rows = [dict(r) for r in await conn.fetch(
             f"select {columns} from orion_memory r where user_id = $1 and vector_space = $2 and not {_HAS_COPY} "
             "order by id", user_id, source, space)]
@@ -311,7 +311,7 @@ async def run(user_id: str, source: str, space: str, target, local: bool, suppor
                                 group, r["copied_from"] or r["id"], r["source_chat_id"], r["source_message_id"],
                                 r["created_at"], r["item_id"], False, r["span_start"], r["span_end"], r["track"],
                                 r["caption"], r["item_order"], r.get("source_message_last"), memory.fold(memory.row_match_text(r)),
-                                None if r["caption"] is None else memory.fold(r["caption"]))
+                                None if r["caption"] is None else memory.fold(r["caption"]), bool(r.get("lossless")))
                             if r["media_id"]:
                                 await link_media(r["media_id"], "memory", str(new_id), conn=conn)
                             if r["item_id"]:

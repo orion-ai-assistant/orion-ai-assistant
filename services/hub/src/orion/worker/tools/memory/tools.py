@@ -246,7 +246,7 @@ async def _open_document(row_id: int, context: ToolContext, settings, earlier: d
         # Too long for the context at once: the asked part with two neighbours each side reaches the model; the
         # user has the whole file.
         lo, hi = max(0, asked - 2), min(len(pieces), asked + 3)
-        sent = "\n\n".join(p["text"] for p in pieces[lo:hi]).encode("utf-8")
+        sent = memory.join_pieces(pieces[lo:hi]).encode("utf-8")
         sent_sha = hashlib.sha256(sent).hexdigest()
         conn = await memory._connect()
         try:
