@@ -456,3 +456,76 @@ class RankTests(PostgresMemoryCase):
         card = page['groups'][0]
         self.assertEqual(card['source_kinds'], ['manual', 'file'])
         self.assertEqual(card['sources_label'], 'Metin, Dosya, Görsel')
+
+    async def test_a_kind_filter_uses_only_that_kinds_parts_everywhere_for_a_mixed_memory(self):
+        """A chat memory with text (0.30, 0.20) and images (0.41, 0.05): under the text filter its rank, card, panel
+        header (best part, all-memory %, matched count) and the tool see only the text; images come back unscored."""
+        t1 = await self.add('sohbet metni bir', score=0.30, axis=2, group='g', source='chat_save', minute=1)
+        t2 = await self.add('sohbet metni iki', score=0.20, axis=3, group='g', source='chat_save', minute=2)
+        i1 = await self.add('a.png', score=0.41, axis=4, group='g', kind='image', media_id='a' * 64, minute=3)
+        i2 = await self.add('b.png', score=0.05, axis=5, group='g', kind='image', media_id='b' * 64, minute=4)
+        await self.add('başka not', score=0.10, axis=6, group='h', minute=5)
+        for kind, best, own in (('text', t1, {t1, t2}), ('image', i1, {i1, i2}), ('all', i1, {t1, t2, i1, i2})):
+            with self.subTest(kind):
+                page = await memory_groups.list_groups('alice', self.settings, q='x', kind=kind, limit=10)
+                card = next(g for g in page['groups'] if g['group_id'] == 'g')
+                panel = await memory_groups.part_scores('alice', 'g', self.settings, q='x', kind=kind)
+                self.assertEqual((panel['best'], panel['score'], panel['matched']),
+                                 (card['matched_part'], card['score'], card['matched_parts']))
+                self.assertEqual(panel['best'], best)
+                scored = {int(i) for i, v in panel['parts'].items() if v['score'] is not None}
+                self.assertEqual(scored, own)
+                if kind != 'all':
+                    others = {int(i): v for i, v in panel['parts'].items() if int(i) not in own}
+                    self.assertTrue(others and all(v['score'] is None and not v['matched'] for v in others.values()))
+                if kind != 'all':  # The mean of that kind's piece vectors against the query.
+                    pair = {'text': ((0.30, 2), (0.20, 3)), 'image': ((0.41, 4), (0.05, 5))}[kind]
+                    total = [a + b for a, b in zip(vec(*pair[0]), vec(*pair[1]))]
+                    cosine = total[0] / __import__('math').sqrt(sum(x * x for x in total))
+                    self.assertAlmostEqual(panel['all_score'], cosine, places=3)
+        text_tool = await self.tool([{'text': 'x'}])
+        self.assertEqual(text_tool['results'][0]['id'], i1)
+        from orion.worker.tools._base import ToolContext
+        from orion.worker.tools.memory import tools as memory_tools
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            only = await memory_tools.search_memory(memory_tools.MemorySearchInput(
+                queries=[memory_tools.MemoryQuery(text='x')], kind='text'), ToolContext('alice', 'chat', 't', None))
+        row = next(r for r in only['results'] if r['id'] == t1)
+        self.assertEqual(row['score'], 30)
+
+    async def test_matched_words_come_back_as_spans_in_text_title_and_caption(self):
+        conn = await registry._connect()
+        try:
+            async with conn.transaction():
+                await memory.insert_item(
+                    conn, 'alice', SPACE, 'g1', {'kind': 'text', 'source_kind': 'file', 'title': 'Test.TXT', 'caption': 'bir test daha'},
+                    [{'text': 'İlk satır test.\nİkinci TEST burada', 'vector': vec(0.2, 2)}])
+        finally:
+            await conn.close()
+        page = await memory_groups.list_groups('alice', self.settings, q='test', limit=10)
+        spans = page['groups'][0]['spans']
+        text = 'İlk satır test.\nİkinci TEST burada'
+        got = [(s['field'], {'text': text, 'title': 'Test.TXT', 'caption': 'bir test daha'}[s['field']][s['start']:s['end']])
+               for s in spans]
+        self.assertEqual(got, [('text', 'test'), ('text', 'TEST'), ('title', 'Test'), ('caption', 'test')])
+        panel = await memory_groups.part_scores('alice', 'g1', self.settings, q='test')
+        self.assertEqual(list(panel['parts'].values())[0]['spans'], spans)
+        near = await memory_groups.list_groups('alice', self.settings, q='tset satir', limit=10)
+        self.assertTrue(all(s['end'] > s['start'] for s in near['groups'][0].get('spans', [])))
+
+    async def test_a_kind_filter_finds_every_image_when_the_index_scan_stops_short(self):
+        """95% text: a filtered index scan can end at its scan limit before the images do. The search must still
+        return all of them (an exact scan settles it)."""
+        for k in range(38):
+            await self.add(f'metin {k}', score=0.9 - k * 0.01, axis=2 + k % 700, group=f't{k}', minute=k)
+        images = [await self.add(f'foto{k}.png', score=0.2 + k * 0.01, axis=300 + k, group=f'i{k}', minute=50 + k,
+                                 kind='image', media_id=f'{k:064d}') for k in range(2)]
+        real = memory.ann_fetch
+
+        async def capped(conn, sql, *args):  # Like a graph scan that gave up: the nearest rows, then the filter.
+            rows = await real(conn, sql.replace(" and kind = 'image'", ""), *args)
+            return [r for r in rows[:10] if r['kind'] == 'image']
+        with patch.object(memory, 'ann_fetch', capped):
+            page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
+        self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
+        self.assertEqual(memory.filters_sql('all', 'image', []), " and kind = 'image'")

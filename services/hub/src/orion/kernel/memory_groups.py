@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from orion.kernel import memory, memory_filters as mf, registry
 from orion.kernel.memory import (CONTENT_KEY, KINDS, content_key, group_key, item_positions, order_key, pieces_only,
@@ -299,6 +300,34 @@ def text_hit(q: str, text: str) -> tuple[str | None, float]:
     return ("similar", similarity) if similarity >= memory.FUZZY_MIN else (None, 0.0)
 
 
+MAX_SPANS = 20
+
+
+def match_spans(q: str, row: dict) -> list[dict]:
+    """Where the words of `q` sit in what a row shows: [{"field": "text" | "title" | "caption", "start", "end"}],
+    offsets into that field's own string (fold() keeps every letter's place, so folded offsets are the text's).
+    A substring hit gives each place it occurs; a near spelling the words whose letters are close to a word of `q`.
+    The title counts for a file's rows (its name), the caption for any."""
+    folded = memory.fold(q or "")
+    if not folded.strip():
+        return []
+    fields = [("text", row.get("text") or "")]
+    if row.get("source_kind") == "file" and row.get("source_chat_title"):
+        fields.append(("title", row["source_chat_title"]))
+    if row.get("caption"):
+        fields.append(("caption", row["caption"]))
+    spans = []
+    for name, value in fields:
+        target = memory.fold(value)
+        found = [(m.start(), m.end()) for m in re.finditer(re.escape(folded), target)][:MAX_SPANS]
+        if not found:
+            wanted = [w for w in re.findall(r"\w+", folded) if len(w) >= 3]
+            found = [(m.start(), m.end()) for m in re.finditer(r"\w+", target)
+                     if any(memory.word_similarity(w, m.group()) >= memory.FUZZY_MIN for w in wanted)][:MAX_SPANS]
+        spans += [{"field": name, "start": a, "end": b} for a, b in found]
+    return spans
+
+
 def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", candidates: set[int] | None = None,
                 stats=None, kind: str = "all") -> dict:
     """THE match of one memory with one query: the single computation the list's cards, the detail panel's marks and
@@ -326,6 +355,8 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
         found[p["id"]] = {"score": None if score is None else round(float(score), 4), "match": hit or "meaning",
                           "matched": bool(hit) or (score is not None and cutoff is not None and score >= cutoff)}
         if hit:
+            found[p["id"]]["spans"] = match_spans(q, p)
+        if hit:
             kinds.add(hit)
         key = (-1.0 if score is None else float(score), tscore)
         if best_key is None or key > best_key:
@@ -344,18 +375,19 @@ def group_match(rows: list[dict], space, scores: dict[int, float], q: str = "", 
             "strength": strength_of(score, stats)}
 
 
-async def all_score(conn, user_id: str, group: str, space, vector) -> float | None:
+async def all_score(conn, user_id: str, group: str, space, vector, kind: str = "all") -> float | None:
     """The memory's score over all its content: the query's cosine with the mean of every piece vector it has in
     `space` (all items and tracks; whole vectors left out, they are means already). The mean's length does not change
     a cosine, so this is the same as against the normalized mean, as stored whole vectors are made; pgvector
-    averages in the database, nothing is read out."""
+    averages in the database, nothing is read out. With a `kind` chosen: the mean of that kind's pieces only."""
     if vector is None or not space:
         return None
     where = "group_id = $2" if not group.startswith("r") else "group_id is null and id = $2::text::bigint"
     key = group if not group.startswith("r") else group[1:]
     value = await conn.fetchval(
         f"select 1 - (avg(embedding) <=> $3::vector) from orion_memory where user_id = $1 and vector_space = $4 "
-        f"and not whole and {where}", user_id, key, vector, space)
+        f"and not whole and {where}" + ("" if kind == "all" else " and kind = $5"),
+        user_id, key, vector, space, *([] if kind == "all" else [kind]))
     return None if value is None else float(value)
 
 
@@ -379,15 +411,24 @@ async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dic
     index, then grouped. The rows taken widen (x4) while they hold fewer memories than needed and the index still
     has more (one long text has thousands of rows). params: [user, space, vector, ...filters]."""
     count = max(100, need * 4)
+    filtered = " kind = " in extra
+    exact = False
     while True:
-        rows = await memory.ann_fetch(
-            conn, f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
-            f"and vector_space = $2{extra} order by embedding <=> $3::vector limit {count}", *params)
+        sql = (f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
+               f"and vector_space = $2{extra} order by embedding <=> $3::vector limit {count}")
+        rows = await (memory.exact_fetch if exact else memory.ann_fetch)(conn, sql, *params)
         best: dict[str, dict] = {}
         for r in rows:  # the index may return rows a little out of order: a memory's best row is its highest
             if group_key(r) not in best or float(r["score"]) > float(best[group_key(r)]["score"]):
                 best[group_key(r)] = dict(r)
-        if len(best) >= need or len(rows) < count or count >= MAX_CANDIDATES:
+        if len(best) >= need or count >= MAX_CANDIDATES:
+            return sorted(best.values(), key=lambda r: (-float(r["score"]), -r["id"]))
+        if len(rows) < count:
+            if filtered and not exact:
+                # The index scan stopped short of `count`: with a kind filter that can be its scan limit, not the end
+                # of the kind's rows. An exact scan settles it (only here, only when too few memories were found).
+                exact = True
+                continue
             return sorted(best.values(), key=lambda r: (-float(r["score"]), -r["id"]))
         count = min(count * 4, MAX_CANDIDATES)
 
@@ -534,6 +575,9 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             # The memory's score is group_match's (the panel shows the same); a memory the vectors did not reach
             # (another model's, found by its words) keeps the search's own.
             own = parts_match["score"] if parts_match["score"] is not None else entry["score"]
+            best_found = parts_match["parts"].get(parts_match["best"]) if parts_match["best"] is not None else None
+            if best_found and best_found.get("spans"):
+                item["spans"] = best_found["spans"]  # Where the words sit in the shown part (text, title, caption).
             item.update(match=parts_match["match"], strength=parts_match["strength"], matched_part=matched,
                         score=None if own is None else round(float(own), 4),
                         best_score=parts_match["best_score"], whole_score=parts_match["whole_score"],
@@ -597,7 +641,7 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
         if not rows:
             return None
         scores = await _scores(conn, user_id, [group], space, vector) if vector is not None else {}
-        whole_memory = await all_score(conn, user_id, group, space, vector) if vector is not None else None
+        whole_memory = await all_score(conn, user_id, group, space, vector, kind) if vector is not None else None
         hits = await text_candidates(conn, user_id, [group], q) if q else set()
         stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector, kind)).values()))             if vector is not None and space else None
     finally:
@@ -609,6 +653,10 @@ async def part_scores(user_id: str, group: str, settings, q: str = "", vector: s
     by_content = {content_key(p): found["parts"].get(p["id"]) for p in in_space if p["id"] in found["parts"]}
     found["parts"] = {str(r["id"]): by_content[content_key(r)] for r in rows
                       if content_key(r) in by_content and by_content[content_key(r)] is not None}
+    if kind != "all":  # Parts of the other kinds are not in this search: no score, never matched (shown dimmed).
+        for r in rows:
+            found["parts"].setdefault(str(r["id"]), {"score": None, "match": "meaning", "matched": False,
+                                                     "filtered": True})
     if found["best"] is not None:
         found["best_part"] = _best_part(rows, found["best"], space)
     return found

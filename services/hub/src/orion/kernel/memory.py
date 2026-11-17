@@ -282,6 +282,12 @@ def _index_plan() -> list[tuple[str, str]]:
                                      "(user_id, vector_space, content_hash)"),
             ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on orion_memory "
                                      "using hnsw (embedding vector_cosine_ops)")]
+    # The minority kinds get an index of their own: a Görsel search in a memory that is mostly text would otherwise
+    # walk the text-filled graph for its few images.
+    for kind in ("image", "audio", "video"):
+        plan.append((f"idx_orion_memory_ann_{kind}", f"create index concurrently if not exists idx_orion_memory_ann_{kind} "
+                                                     f"on orion_memory using hnsw (embedding vector_cosine_ops) "
+                                                     f"where kind = '{kind}'"))
     if _trgm:
         plan.append(("idx_orion_memory_folded_trgm", "create index concurrently if not exists "
                                                      "idx_orion_memory_folded_trgm on orion_memory "
@@ -384,6 +390,15 @@ async def ann_fetch(conn, sql: str, *args) -> list:
                                    f"set_config('hnsw.max_scan_tuples', '{ANN_MAX_SCAN}', true)")
         except Exception:
             pass
+        return await conn.fetch(sql, *args)
+
+
+async def exact_fetch(conn, sql: str, *args) -> list:
+    """`conn.fetch` of a nearest-neighbour query WITHOUT the vector index (transaction local): an exact scan, for the
+    rare search whose filtered index scan ran out before the filter's rows did."""
+    async with conn.transaction():
+        await conn.execute("select set_config('enable_indexscan', 'off', true), "
+                           "set_config('enable_bitmapscan', 'off', true)")
         return await conn.fetch(sql, *args)
 
 
@@ -1243,7 +1258,9 @@ def filters_sql(vector_space: str, kind: str, params: list) -> str:
     if vector_space and vector_space != "all":
         params.append(vector_space)
         sql += f" and vector_space = ${len(params)}"
-    if kind and kind != "all":
+    if kind in KINDS:  # A literal (validated): the planner can then use the kind's own partial vector index.
+        sql += f" and kind = '{kind}'"
+    elif kind and kind != "all":
         params.append(kind)
         sql += f" and kind = ${len(params)}"
     return sql
