@@ -29,9 +29,9 @@ class AISettings(BaseModel):
     llm_timeout_seconds: int = Field(default=120, ge=1, le=3600)
     system_prompt: str = "You are Orion. Reply friendly and concisely. You MUST answer directly. Do NOT output your thinking process or explain your step-by-step reasoning. Just give the final answer."
     embed_timeout_seconds: int = Field(default=60, ge=1, le=3600)
-    # Memory: the new structure (collections, docs/hafiza-tasarimi.md §16) per user, off until tried; and how long a
-    # removed memory waits in the trash before it is deleted for good.
-    memory_v2: bool = False
+    # Memory: the new structure (collections, docs/hafiza-tasarimi.md §16). Internal, ON for everyone, no UI (docs §17c); the field
+    # stays only so tests and an emergency fallback can turn it off. And how long a removed memory waits in the trash.
+    memory_v2: bool = True
     memory_trash_days: int = Field(default=30, ge=1, le=3650)
     # With memory_v2: new messages of the "Asistanla konuş" chat (only that one) are read in the background for things worth remembering (memory_extract). The
     # candidates only go to the quality-gate report until the user turns automatic writing on (its own switch, not a setting).
@@ -43,7 +43,7 @@ class AISettings(BaseModel):
     memory_profile: bool = True
     # "Hafıza değişikliklerini otomatik onayla": a card (remember / replace / relation change / delete) is applied at once, without a
     # press; it is still listed in "Son eklenenler" with undo, and a delete still goes to the trash.
-    memory_auto_approve: bool = False
+    memory_auto_approve: bool = True
     # The profile ("Profil", about the user) in (estimated) tokens: pinned lines always go in, the rest newest first. Past the
     # soft limit nothing happens; past the hard limit the background model compacts the non-pinned part to `compact_to`.
     memory_profile_soft_tokens: int = Field(default=600, ge=100, le=8000)

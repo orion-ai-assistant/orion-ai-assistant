@@ -661,6 +661,16 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 assistant_entry["metrics"] = metrics
             if last_usage_raw[0]:
                 assistant_entry["usage"] = {**last_usage_raw[0], "at": utc_now()}  # The token meter's last real count.
+            elif stopped and (final_text or conversation.rounds):
+                # Stopped before the Router reported any usage (it only does, when it does, in its last chunk): a rough count,
+                # marked `estimated`, so the token meter moves at once; the real one replaces it on the next answer.
+                try:
+                    from orion.kernel.memory import estimate_tokens
+                    assistant_entry["usage"] = {
+                        "prompt_tokens": estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str)),
+                        "completion_tokens": estimate_tokens(final_text), "estimated": True, "at": utc_now()}
+                except Exception:
+                    logging.warning("Could not estimate the usage of a stopped turn", exc_info=True)
             if thinking_text:
                 assistant_entry["thinking"] = thinking_text
             if display_parts:

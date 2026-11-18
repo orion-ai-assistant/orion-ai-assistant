@@ -173,7 +173,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 10  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership. 10: no chats index (windows, Sohbetler, its tables).
+SCHEMA_VERSION = 11  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership. 10: no chats index (windows, Sohbetler, its tables). 11: facts keep how exact their start is (`since_precision`).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
 
@@ -212,6 +212,8 @@ async def _migrate(conn) -> None:
             await _schema_9(conn)
         if version < 10:
             await _schema_10(conn)
+        if version < 11:
+            await conn.execute("alter table orion_mem_fact add column if not exists since_precision text")
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
@@ -1556,6 +1558,45 @@ async def add_note_to(user_id: str, text: str, settings, source_kind: str = "man
                 added = await insert_item(conn, user_id, space, group,
                                           {"kind": "text", "source_kind": source_kind, "title": title}, pieces)
         return {"added": added, "group_id": group}
+    finally:
+        await conn.close()
+
+
+async def edit_note(user_id: str, group: str, text: str, settings, title: str | None = None) -> dict:
+    """Edit a note's text IN PLACE (the memory page's note detail): the same memory (group id, collections, trash rules), its
+    saved date kept, its text pieces replaced by the new ones (embedded again). `title`: a new name (None keeps it). Only notes
+    (text the user or the assistant saved) are edited: ValueError for a file, a media item or a chat summary; LookupError when
+    this user has no such memory; ValueError for an empty/too long text. {"group_id", "added"}."""
+    import asyncio
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Not metni boş olamaz.")
+    if len(text) > MAX_NOTE:
+        raise ValueError(f"Not çok uzun: en fazla {MAX_NOTE} karakter olabilir.")
+    conn = await _connect()
+    try:
+        await ensure_memory_table(conn)
+        group = await join_group(conn, user_id, group)
+        rows = await conn.fetch(f"select source_kind, kind, media_id, created_at, source_chat_title from orion_memory "
+                                f"where user_id = $1 and group_id = $2 and {LIVE} order by id", user_id, group)
+        if not rows or any(r["media_id"] or r["kind"] != "text" or r["source_kind"] not in ("manual", "assistant")
+                           for r in rows):
+            raise ValueError("Yalnızca notlar düzenlenir.")
+        target, space, local = await embedding_target(settings)
+        from orion.kernel import memory_pieces as mp
+        split = await asyncio.to_thread(mp.text_pieces, text)
+        pieces, _ = await text_item_pieces(conn, user_id, space, text, target, local, skip_known=False, group=group,
+                                           split=split)
+        if not pieces:
+            raise ValueError("Not metni boş olamaz.")
+        name = " ".join(title.split())[:MAX_TITLE] or None if title is not None else rows[0]["source_chat_title"]
+        async with conn.transaction():
+            await delete_rows(conn, user_id, "group_id = $2", group)
+            added = await insert_item(conn, user_id, space, group,
+                                      {"kind": "text", "source_kind": rows[0]["source_kind"], "title": name}, pieces)
+            await conn.execute("update orion_memory set created_at = $3 where user_id = $1 and group_id = $2",
+                               user_id, group, min(r["created_at"] for r in rows))
+        return {"group_id": group, "added": added}
     finally:
         await conn.close()
 

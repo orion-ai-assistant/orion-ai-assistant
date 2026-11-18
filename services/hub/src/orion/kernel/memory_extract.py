@@ -598,6 +598,7 @@ Answer with ONE JSON object and nothing else:
   {"op": "set_relation", "entity": "e1", "relation": "eski sevgilim", "since": "YYYY-MM-DD", "messages": [20, 21], "bucket": "direct", "unsupported_risk": "low"},
   {"op": "add_note", "text": "...", "messages": [20, 21], "bucket": "direct", "unsupported_risk": "low"}]}
 "since", "recurring", "body", "end_date", "mood", "place" are optional.
+- "since" (add_fact, supersede, set_relation): WHEN THE USER'S TEXT SAYS when the fact started, you MUST set it, as exactly as it was said: "YYYY-MM-DD", "YYYY-MM" when only the month is known (\"Tarçın'ı Nisan 2023'te sahiplendim\" -> "since": "2023-04"), or "YYYY" for a year only. Count relative words ("geçen yıl", "3 yıl önce") from the time of the message. Never guess a date the user did not say: leave "since" out then (a fact without it counts from the day it was saved).
 - "set_relation": a known person's relation to the user changed ("sevgilimden ayrıldım" -> the person you know as "sevgilim" is now "eski sevgilim"; a new partner is a new entity with relation "sevgilim"). Their facts stay with them. It only changes what is already known, so it is always shown to the user as a card.
 - "add_note": only for something the user asked to be remembered that is not a fact or an event (a list, a reminder, free text), in their words.
 - Never put a relative time word ("dün", "geçen perşembe") into a title, a fact or a note: it goes stale. Keep it in "said_as" (an event) and give the date.
@@ -795,7 +796,7 @@ async def build_candidates(conn, user_id: str, parsed: dict, messages: list[dict
                 if not spec["target"] or spec["self"] or not relation:
                     raise ValueError("unknown_person_or_relation")
                 op["entity"], op["relation"] = spec, relation
-                op["since"] = str(me._day(raw.get("since"))) if raw.get("since") else None
+                op["since"] = me.since_text(raw.get("since"))
                 c["ambiguous_entity"] = bool(spec["ambiguous"])
                 c["dedupe"] = "conflicts_with:relation"  # A change of what is known: always a card.
                 key = f"relation|{spec['target']}|{memory.fold(relation)}"
@@ -829,7 +830,7 @@ async def build_candidates(conn, user_id: str, parsed: dict, messages: list[dict
                 op["entity"] = spec
                 op["category"] = category
                 op["statement"] = me.check_statement(str(raw.get("statement") or ""), category)
-                op["since"] = str(me._day(raw.get("since"))) if raw.get("since") else None
+                op["since"] = me.since_text(raw.get("since"))
                 op["recurring"] = me.recurring_of(raw.get("recurring")) if raw.get("recurring") else None
                 c["sensitive"] = me.is_sensitive(category)
                 c["ambiguous_entity"] = bool(spec["ambiguous"])

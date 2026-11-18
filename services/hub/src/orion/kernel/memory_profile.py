@@ -24,9 +24,6 @@ changes at most once a day). The last built block is stored (`generated`: fact i
 changed, for the page. A pinned line tied to a fact that was since replaced or removed is not injected (it says `replaced` /
 `gone` on the page: the user pins the new one); a pinned line tied to a locked fact cannot be made at all.
 
-"Why is this line here" (`why`): a line is there because the user pinned it (`pinned`) or because it is one of their own facts
-(`own_fact`, with its category); the source of the fact is read with the fact's history (`why()`).
-
 The Router's request log: the request carries `x-orion-memory-profile: tokens=N; facts=1,2,3` (see `log_header`) so the Router
 can label the log entry with them (the block's text stays in the Router's log, nothing is hidden), and the Hub logs the same
 line (never the content).
@@ -36,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import date, timedelta
 
 from orion.kernel import memory, memory_entities as me
 
@@ -84,6 +82,27 @@ def require(settings) -> None:
 # A fact "lives" when the current version of its lineage does (a replaced version keeps no vector row of its own).
 _HEAD_LIVE = ("exists (select 1 from orion_mem_fact h where h.user_id = f.user_id and h.lineage = f.lineage and "
               f"h.superseded_by is null and {me._live('h')})")
+
+
+SHORT_MONTHS = ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
+
+
+def short_date(on: date, end: date | None, precision: str = "day", year: bool = True) -> str:
+    """A date the way the "Yakında" line shows it, Turkish and short: "17 Kas 2026", "9–15 Kas 2026", "28 Kas–2 Ara 2026",
+    "Kas 2026" (month only), "2026"; "approx" adds ", yaklaşık". `year=False` leaves the year out (a yearly date). Never ISO."""
+    rough = ", yaklaşık" if precision == "approx" else ""
+    y = f" {on.year}" if year else ""
+    if precision == "year":
+        return f"{on.year}{rough}"
+    if precision == "month":
+        return f"{SHORT_MONTHS[on.month - 1]}{y}{rough}"
+    if end is None or end == on:
+        return f"{on.day} {SHORT_MONTHS[on.month - 1]}{y}{rough}"
+    if (end.year, end.month) == (on.year, on.month):
+        return f"{on.day}–{end.day} {SHORT_MONTHS[on.month - 1]}{y}{rough}"
+    if end.year == on.year:
+        return f"{on.day} {SHORT_MONTHS[on.month - 1]}–{end.day} {SHORT_MONTHS[end.month - 1]}{y}{rough}"
+    return f"{on.day} {SHORT_MONTHS[on.month - 1]} {on.year}–{end.day} {SHORT_MONTHS[end.month - 1]} {end.year}{rough}"
 
 
 def _line(text: str) -> str:
@@ -140,10 +159,10 @@ async def _candidates(conn, user_id: str) -> list:
 def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int = SOFT_LIMIT,
              compacted: list[str] | None = None) -> dict:
     """The "Profil" block from the pinned lines (state ok) and the candidate facts (newest first), see the module docstring:
-    {"text", "tokens", "fact_ids", "lines": [{"fact_id", "text", "pinned", "why"}], "overflow", "left_out", "over_soft",
+    {"text" (the lines only, for the page), "prompt" (the same with the instruction wrapper, what the model gets), "tokens", "fact_ids", "lines": [{"fact_id", "text", "pinned"}], "overflow", "left_out", "over_soft",
     "needs_compaction"}. `compacted`: the model's short lines for the non-pinned part, used when the facts pass `limit`."""
     header = memory.estimate_tokens(HEADER)
-    lines = [{"fact_id": p.get("fact_id"), "text": p["text"], "pinned": True, "why": "pinned"}
+    lines = [{"fact_id": p.get("fact_id"), "text": p["text"], "pinned": True}
              for p in pinned if p["state"] == "ok"]
     used = header + sum(memory.estimate_tokens(_line(i["text"])) for i in lines)
     overflow = bool(lines) and used > limit
@@ -156,7 +175,7 @@ def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int
         needs = used + total > limit
         if needs and compacted:
             for text in compacted:
-                lines.append({"fact_id": None, "text": text, "pinned": False, "why": "compacted"})
+                lines.append({"fact_id": None, "text": text, "pinned": False, "compacted": True})
                 used += memory.estimate_tokens(_line(text))
             left_out = 0
         else:
@@ -168,9 +187,10 @@ def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int
                     continue
                 used += cost
                 lines.append({"fact_id": f["id"], "text": " ".join(f["statement"].split()), "pinned": False,
-                              "why": "own_fact", "category": f["category"]})
-    text = "\n".join([HEADER, *(_line(i["text"]) for i in lines)]) if lines else ""
-    return {"text": text, "tokens": used if lines else 0,
+                              "category": f["category"]})
+    prompt = "\n".join([HEADER, *(_line(i["text"]) for i in lines)]) if lines else ""
+    text = "\n".join(_line(i["text"]) for i in lines)  # What the page shows: the lines only, never the instruction wrapper.
+    return {"text": text, "prompt": prompt, "tokens": used if lines else 0,
             "fact_ids": [i["fact_id"] for i in lines if i["fact_id"] is not None], "lines": lines,
             "overflow": overflow, "left_out": left_out, "over_soft": bool(lines) and used > soft,
             "needs_compaction": needs and not compacted}
@@ -246,16 +266,17 @@ async def soon(user_id: str, settings) -> dict:
     ahead = int(getattr(settings, "memory_soon_days", SOON_DAYS))
     back = int(getattr(settings, "memory_recent_days", RECENT_DAYS))
     if limit <= 0:
-        return {"text": "", "tokens": 0, "lines": []}
+        return {"text": "", "prompt": "", "tokens": 0, "lines": []}
     today = ev.today_of()
-    items = [(u["next"], f"{u['next']} ({'today' if u['in_days'] == 0 else 'in %d days' % u['in_days']}): {u['statement']}")
+    items = [(u["next"], f"{short_date(date.fromisoformat(u['next']), None, 'day', year=False)} "
+                         f"({'bugün' if u['in_days'] == 0 else '%d gün sonra' % u['in_days']}): {u['statement']}")
              for u in await ev.upcoming(user_id, settings, days=ahead, today=today)]
-    from datetime import timedelta
     first, last = today - timedelta(days=back), today + timedelta(days=ahead)
     listed = await ev.list_events(user_id, settings, first.isoformat(), last.isoformat(), limit=30)
     for e in listed["events"]:
-        when = e["date"] + (f" to {e['end']}" if e.get("end") else "")
-        items.append((e["date"], f"{when}: {e['title']}"))
+        on = date.fromisoformat(e["date"][:10])
+        end = date.fromisoformat(e["end"][:10]) if e.get("end") else None
+        items.append((e["date"], f"{short_date(on, end, e.get('precision') or 'day')}: {e['title']}"))
     items.sort(key=lambda x: x[0])
     used = memory.estimate_tokens(SOON_HEADER)
     lines = []
@@ -266,8 +287,9 @@ async def soon(user_id: str, settings) -> dict:
         used += cost
         lines.append(text)
     if not lines:
-        return {"text": "", "tokens": 0, "lines": []}
-    return {"text": "\n".join([SOON_HEADER, *(_line(t) for t in lines)]), "tokens": used, "lines": lines}
+        return {"text": "", "prompt": "", "tokens": 0, "lines": []}
+    return {"text": "\n".join(_line(t) for t in lines), "prompt": "\n".join([SOON_HEADER, *(_line(t) for t in lines)]),
+            "tokens": used, "lines": lines}
 
 
 async def build(user_id: str, settings, store: bool = True) -> dict:
@@ -309,10 +331,11 @@ async def for_chat(user_id: str, settings) -> dict | None:
         near = await soon(user_id, settings)
     except Exception:
         logger.warning("Memory profile: the 'soon' block could not be built.", exc_info=True)
-        near = {"text": "", "tokens": 0}
-    if not block["text"] and not near["text"]:
+        near = {"prompt": "", "tokens": 0}
+    if not block["prompt"] and not near["prompt"]:
         return None
-    block = {**block, "text": "\n\n".join(t for t in (block["text"], near["text"]) if t),
+    # The instruction wrapper is internal: only the model gets it, the page and its API show the lines.
+    block = {**block, "text": "\n\n".join(t for t in (block["prompt"], near["prompt"]) if t),
              "tokens": block["tokens"] + near["tokens"]}
     logger.info("Memory profile: user=%s tokens=%d facts=%s pinned=%d", user_id, block["tokens"],
                 ",".join(str(i) for i in block["fact_ids"]) or "-", sum(1 for i in block["lines"] if i["pinned"]))
@@ -377,28 +400,8 @@ async def get(user_id: str, settings) -> dict:
             "text": block["text"], "tokens": block["tokens"], "over_soft": block["over_soft"],
             "compacting": user_id in _compacting, "soon": near,
             "overflow": block["overflow"], "left_out": block["left_out"], "pinned": block["pinned"],
-            "generated": [{"fact_id": i["fact_id"], "text": i["text"], "why": i["why"], "category": i.get("category")}
+            "generated": [{"fact_id": i["fact_id"], "text": i["text"], "category": i.get("category")}
                           for i in block["lines"] if not i["pinned"]]}
-
-
-async def why(user_id: str, settings, fact_id: int) -> dict:
-    """Why a line is in the block and where it comes from: {"fact_id", "reason": pinned | own_fact | not_in_block, "statement",
-    "category", "about", "sources": the sources of the current version (chat and messages, item, or the user)}. LookupError
-    for a fact that is not the user's or is removed."""
-    require(settings)
-    block = await build(user_id, settings, store=False)
-    line = next((i for i in block["lines"] if i["fact_id"] == int(fact_id)), None)
-    async with me._db() as conn:
-        row = await conn.fetchrow(f"select f.statement, f.category, f.sensitive, e.name, e.kind from orion_mem_fact f join "
-                                  f"orion_mem_entity e on e.id = f.entity_id and e.user_id = f.user_id where f.user_id = $1 "
-                                  f"and f.id = $2 and {me._live('f')}", user_id, int(fact_id))
-    if row is None or row["sensitive"]:
-        raise LookupError(fact_id)
-    versions = (await me.history(user_id, settings, int(fact_id)))["versions"]
-    current = next((v for v in versions if v["current"]), versions[-1])
-    return {"fact_id": int(fact_id), "reason": line["why"] if line else "not_in_block", "statement": row["statement"],
-            "category": row["category"], "about": "Ben" if row["kind"] == "self" else row["name"],
-            "sources": current["sources"]}
 
 
 async def set_pinned(user_id: str, settings, items: list[dict]) -> dict:
@@ -433,6 +436,35 @@ async def unpin_fact(user_id: str, settings, fact_id: int) -> dict:
     async with me._db() as conn:
         await _save_pinned(conn, user_id, [p for p in await _pinned(conn, user_id) if p["fact_id"] != int(fact_id)])
     return await get(user_id, settings)
+
+
+async def follow_fact(user_id: str, old_id: int, new_id: int, text: str, was: str | None = None) -> None:
+    """A fact was edited (memory_entities.edit_fact): a pinned line tied to it moves to the new fact; its text becomes the new
+    sentence unless the user worded the line themselves (it differs from the fact's old sentence: `was`)."""
+    async with me._db() as conn:
+        items = await _pinned(conn, user_id)
+        if not any(p["fact_id"] == old_id for p in items):
+            return
+        old_sentence = was
+        if old_sentence is None:
+            old_sentence = await conn.fetchval("select statement from orion_mem_fact where user_id = $1 and id = $2",
+                                               user_id, old_id)
+        for p in items:
+            if p["fact_id"] == old_id:
+                if memory.fold(p["text"]) == memory.fold(old_sentence or ""):
+                    p["text"] = " ".join(text.split())
+                p["fact_id"] = new_id
+        await _save_pinned(conn, user_id, _clean_pinned(items))
+
+
+async def add_line(user_id: str, settings, text: str) -> dict:
+    """"Satır ekle": a new fact about the user, written through the ordinary create path (write_by_user, source: the user),
+    and pinned. {"profile": like get(), "fact": the fact}; ValueError for an empty/long sentence, a locked kind or when the
+    pin limit is reached."""
+    require(settings)
+    done = await me.write_by_user(user_id, settings, "", "diğer", text)
+    fact_id = (done.get("fact") or {}).get("id") or done.get("same_as")
+    return {"fact": done.get("fact"), "profile": await pin_fact(user_id, settings, int(fact_id))}
 
 
 async def forget_user(conn, user_id: str) -> None:

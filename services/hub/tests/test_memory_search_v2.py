@@ -98,8 +98,8 @@ class RankingConsistencyTests(V2Case):
     RULES = [('yemeği', 0.80, 5), ('annemin doğum günü 17 kasım', 0.90, 2), ('ilkokula', 0.55, 3), ('kapadokya', 0.70, 4)]
 
     async def seed(self):
-        await self.write('Annemin doğum günü 17 Kasım.', about='Ayşe', relation='anne', category='date')
-        await self.write('Kızım Elif ilkokula başladı.', about='Elif', relation='kızım', category='other')
+        await self.write('Annemin doğum günü 17 Kasım.', about='me', category='date')  # About the user: in Ben.
+        await self.write('Kızım Elif ilkokula başladı.', about='me', category='other')
         await self.write('Kapadokya gezisi, balonlara bindik.', type='event', title='Kapadokya gezisi', date='2026-06-05',
                        end_date='2026-06-08', participants=['Elif'])
         await self.write('Annemin doğum günü yemeği.', type='event', title='Doğum günü yemeği', date='2026-11-17',
@@ -259,7 +259,7 @@ class SearchOptionTests(V2Case):
     async def test_a_past_version_without_an_end_date_ends_when_orion_stopped_counting_it(self):
         old = await self.fact('Ayşe', 'yer', "Ayşe Bursa'da yaşıyor.")
         await me.supersede('alice', self.v2, old, "Ayşe İzmir'de yaşıyor.", origin='user', source={'by_user': True})
-        await sql("update orion_mem_fact set expired_at = timestamptz '2025-03-01' where id = $1", old)
+        await sql("update orion_mem_fact set recorded_at = timestamptz '2025-01-01', expired_at = timestamptz '2025-03-01' where id = $1", old)  # Saved Jan 2025: no `since`, so it counts from then.
         before = await self.find([{'text': 'Bursa'}], when=self.span('2025-02-01'))
         self.assertEqual([p['id'] for p in before['past_facts']], [old])
         after = await self.find([{'text': 'Bursa'}], when=self.span('2025-04-01'))
@@ -438,7 +438,7 @@ class ProfileTests(V2Case):
         block = await mp.build('alice', self.v2)
         self.assertEqual([i['text'] for i in block['lines']],
                          ['Adı Kürşat.', 'Yazılım mühendisi olarak çalışır.', 'Çayı şekersiz içer.', 'Kahve içmeyi sever.'])
-        self.assertTrue(block['text'].startswith(mp.HEADER))
+        self.assertTrue(block['prompt'].startswith(mp.HEADER))
         self.assertLessEqual(block['tokens'], mp.TOKEN_LIMIT)
         self.assertEqual((mp.SOFT_LIMIT, mp.TOKEN_LIMIT), (600, 800))
         with patch.object(mp, '_compact_later') as later:  # Past the hard limit the model is asked to compact (not here).

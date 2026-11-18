@@ -415,7 +415,7 @@ class EventTests(PostgresMemoryCase):
             self.assertIsNone(await conn.fetchval('select recurring from orion_mem_fact'))
         finally:
             await conn.close()
-        self.assertEqual(len((await self.find(**{'in': ['me']}))['results']), 1)
+        self.assertEqual(len((await self.find())['results']), 1)  # (A close person's fact is not in Ben, so: the whole memory.)
         self.assertTrue(fact['added'])
 
     # --- users ----------------------------------------------------------------------------------------------------

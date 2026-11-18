@@ -669,3 +669,32 @@ yerine geçer.
    değişmez, diğerleri en yeni önce; yumuşak 600, sert 800 token; aşılırsa arka plan modeli sabitlenmeyenleri ~400 tokene sıkıştırır,
    elle "Profili düzenle" aynısı) ve "Yakında / güncel" (otomatik, ~150 token: 14 gün içindeki olaylar ve yinelenen tarihler, son 7 gün
    olayları). Sayıların hepsi ayar.
+
+## 17c. Kararlar: tarih, Ben, profil metni, düzenleme, ayarlar (şema 11)
+
+§17 madde 3, 4, 6 ve §17b madde 9'un yerine geçer.
+
+1. **Tarih süzgeci.** Bilgi, başlangıcından (`since`; yoksa kaydedildiği gün) bitişine (`until`; yoksa hâlâ) kadar "aralıkta doğru"dur;
+   `since`i olmayan bilgi "hep doğru" SAYILMAZ (eski sürümlerde de: `_true_within`). Not/dosya kayıt gününe, olay kendi tarih aralığına
+   göre. Arka plan yazıcı, metin başlangıcı söylüyorsa `since`i yazar ("Tarçın'ı Nisan 2023'te sahiplendim" -> `2023-04`); şema 11
+   `orion_mem_fact.since_precision` (day | month | year) tutar, Hub ayı ayın 1'i olarak saklar, API `since_precision` döner.
+2. **Ben yalnız kullanıcıdır.** Ben = kullanıcı hakkındaki bilgiler (about = me) + kullanıcının katıldığı olaylar. Yakın kişilerin
+   bilgileri Ben'de değildir; "Kimin hakkında" ile bulunur (`ben_sql`).
+3. **Profil metni.** Modele giden metin kodda sarmalayıcıyla ("What you know about the user ...", "Coming up and recent ...") kurulur
+   (`prompt`); sayfa API'si (`GET /memory/profile`) yalnız satırları döner (`text`, `soon.text`). "Yakında" satırı Türkçe kısa tarih:
+   "9–15 Kas 2026, yaklaşık: Sevgilimden ayrıldım", yinelenenler "17 Kas (3 gün sonra): ...". ISO ve "to" yok.
+4. **"Neden burada" yok.** `GET /memory/profile/why/{id}` ve satırlardaki `why` alanı kalktı.
+5. **Tek düzenleme API'si.** Bilgi: `PATCH /memory/facts/{id} {statement, mode}`; `correct` = yerinde yeniden yaz, geçmiş yok (vektör yeniden
+   kurulur); `changed` = eski cümle geçmiş (until = bugün), yeni güncel (since = bugün). Sabitlenmiş profil satırı bilgiyi izler.
+   Not: `PATCH /memory/notes/{group_id} {text, title?}` metni yerinde değiştirir (kayıt günü korunur). Profilde "satır ekle":
+   `POST /memory/profile/lines {text}` = kullanıcı hakkında bilgi (aynı yazma yolu) + sabitle.
+6. **`memory_auto_approve` varsayılan AÇIK** (kullanıcılar kartları bilmiyor); ayar durur, kapatılırsa kartlar yine çıkar.
+7. **Sıkıştırma özeti** sohbetin türüne uyar: teknikse dosya/yol, API, komut, karar, açık sorun ve birebir hata iletisi; kişiyse kişisel
+   bilgiler; uzunluk konuşmayla ölçeklenir (üst sınır ~1500 sözcük, 12 000 karakter).
+8. **Durdurulan cevabın token kullanımı.** Durdurulunca akış hemen kapanmaz: Router'ın son `usage` parçası için en çok 1,5 sn (`STOP_USAGE_GRACE`)
+   daha okunur (metin atılır, yalnız usage alınır) ve cevapla birlikte kaydedilir; gelmezse kaba sayım `estimated: true` ile yazılır.
+   Router'ın sonradan düzelttiği kullanımı Hub'a bildiren bir yolu yok (OpenRouter'ınki yalnız Router logunda); gerekirse ayrı iş.
+9. **Ayarlar.** `memory_v2` iç ayar, varsayılan AÇIK, arayüzde yok. Kalan ayarlar: `memory_trash_days`, `memory_background_model`,
+   `memory_profile`, `memory_auto_approve`, `memory_extract_chats`, `memory_profile_soft_tokens`, `memory_profile_tokens`,
+   `memory_profile_compact_tokens`, `memory_soon_tokens`, `memory_soon_days`, `memory_recent_days`, `chat_compact_percent`,
+   `chat_context_tokens` (bağlam uzunluğu Router katalogundan gelir, bu yalnız yedek).

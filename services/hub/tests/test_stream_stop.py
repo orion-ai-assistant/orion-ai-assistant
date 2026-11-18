@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -42,7 +43,7 @@ class StopTests(unittest.IsolatedAsyncioTestCase):
         async def chunks():
             yield (b'data: {"choices":[{"delta":{"content":"start"}}]}\n\n'
                    b'data: {"choices":[{"message":{"content":"start tail"}}]}\n\n')
-            self.fail('Read upstream again after stop')
+            # After a stop the stream is read a moment more, for the final usage chunk only.
 
         response = Response(chunks())
         events = await self.collect(response, AsyncMock(return_value=True))
@@ -60,9 +61,36 @@ class StopTests(unittest.IsolatedAsyncioTestCase):
                 released.set()
 
         response = Response(chunks())
-        events = await asyncio.wait_for(
-            self.collect(response, AsyncMock(return_value=True)), timeout=1
-        )
+        with patch.object(router, 'STOP_USAGE_GRACE', 0.1):
+            events = await asyncio.wait_for(
+                self.collect(response, AsyncMock(return_value=True)), timeout=1
+            )
         self.assertEqual(events, [])
         self.assertTrue(response.closed)
         self.assertTrue(released.is_set())
+
+    async def test_usage_sent_after_stop_is_kept_and_text_is_dropped(self):
+        stopped = []
+
+        async def checker():
+            return bool(stopped)
+
+        async def chunks():
+            yield b'data: {"choices":[{"delta":{"content":"start"}}]}\n\n'
+            await asyncio.sleep(0.3)
+            yield (b'data: {"choices":[{"delta":{"content":" more"}}]}\n\n'
+                   b'data: {"usage":{"prompt_tokens":120,"completion_tokens":7},"choices":[]}\n\n')
+
+        async def stop_soon():
+            await asyncio.sleep(0.15)
+            stopped.append(1)
+
+        response = Response(chunks())
+        task = asyncio.create_task(stop_soon())
+        with patch.object(router, 'STOP_USAGE_GRACE', 1.0):
+            events = await self.collect(response, checker)
+        await task
+        self.assertEqual(events[0], ('content', 'start'))
+        self.assertEqual([e[0] for e in events[1:]], ['usage'])
+        self.assertEqual(json.loads(events[1][1])['prompt_tokens'], 120)
+        self.assertTrue(response.closed)

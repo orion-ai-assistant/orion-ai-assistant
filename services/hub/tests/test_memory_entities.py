@@ -3,6 +3,7 @@ type=fact (replaces and locked kinds only open cards), sensitive facts locked ou
 and the batch card, the trash and purge of facts, and user separation of every new table. On a throwaway real PostgreSQL
 (test_memory_search); embeddings are hand-made vectors (a text with "doğum" is near the query)."""
 import json
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -83,13 +84,31 @@ class EntityTests(PostgresMemoryCase):
         member = await sql("select count(*) from orion_mem_collection_item where group_id = $1", row[0]['group_id'])
         self.assertEqual(member, 0)  # Ben is defined by who a fact is about, not stored as a membership.
         inside = await self.find(**{'in': ['me']})
-        self.assertEqual(len(inside['results']), 1)
-        self.assertEqual(inside['results'][0]['fact'], {'id': fact_id, 'about': 'Ayşe (anne)', 'category': 'tarih',
-                                                         'since': None})
+        self.assertEqual(inside['results'], [])  # Ben = facts about the user only: a close person's fact is not in it.
+        about = await self.find(about='Ayşe')  # It is reached through "Kimin hakkında".
+        self.assertEqual(about['results'][0]['fact'], {'id': fact_id, 'about': 'Ayşe (anne)', 'category': 'tarih',
+                                                        'since': None})
         everything = await self.find()
         self.assertEqual(len(everything['results']), 1)  # The default search is the whole memory, facts included.
         elsewhere = await self.find(**{'in': ['experiences']})
         self.assertEqual(elsewhere['results'], [])
+
+    async def test_editing_a_fact_corrects_in_place_or_keeps_the_old_one_as_history(self):
+        fact_id = (await self.add("Ankara'da yaşıyor.", about='me', category='place'))['added']['fact_id']
+        done = await me.edit_fact('alice', self.v2, fact_id, "Ankara'nın Çankaya semtinde yaşıyor.", 'correct')
+        self.assertEqual((done['fact']['id'], done['fact']['statement']), (fact_id, "Ankara'nın Çankaya semtinde yaşıyor."))
+        self.assertEqual(len((await me.history('alice', self.v2, fact_id))['versions']), 1)  # A mistake: no history.
+        vectors = await sql('select text from orion_memory where group_id = (select group_id from orion_mem_fact '
+                            'where id = $1)', fact_id, fetch=True)
+        self.assertEqual(len(vectors), 1)
+        self.assertIn('Çankaya', vectors[0]['text'])  # Found by the new sentence from now on.
+        changed = await me.edit_fact('alice', self.v2, fact_id, "İstanbul'da yaşıyor.", 'changed')
+        self.assertEqual(changed['replaced'], fact_id)
+        self.assertEqual(changed['fact']['since'], date.today().isoformat())
+        versions = (await me.history('alice', self.v2, changed['fact']['id']))['versions']
+        self.assertEqual(len(versions), 2)
+        with self.assertRaises(ValueError):
+            await me.edit_fact('alice', self.v2, changed['fact']['id'], 'Bir şey.', 'maybe')
 
     async def test_nothing_is_written_without_a_source_or_with_a_refused_value(self):
         entity = await sql_entity('alice', 'Ayşe')
@@ -339,7 +358,7 @@ class EntityTests(PostgresMemoryCase):
         self.assertEqual(await me.proposals('bob', self.v2), [])
         self.assertEqual((await me.decide('bob', self.v2, accept=[asked['proposal_id']]))[0]['state'], 'unknown')
         self.assertEqual(len(await me.proposals('alice', self.v2)), 1)  # Still waiting for alice.
-        mine = await self.find(user='bob', **{'in': ['me']})
+        mine = await self.find(user='bob')  # Whole memory: a close person's fact is not in Ben.
         self.assertEqual([r['fact']['id'] for r in mine['results']], [bob['added']['fact_id']])
         self.assertEqual((await self.find('din', user='bob', sensitive=True))['locked_facts'], [])
         with self.assertRaises(LookupError):  # Bob naming alice's entity id.

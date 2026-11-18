@@ -1,7 +1,7 @@
 """Collections (docs/hafiza-tasarimi.md §3, §13): the three fixed ones (Ben, Yaşadıklarım, Belgeler); the user does not
 make others. Belgeler and Yaşadıklarım are membership rows of `orion_mem_collection_item` (`main`, one per memory,
 never a column of the vector table: sorting would rewrite every vector row and its HNSW entries); Ben is not stored but
-defined (ben_sql): the facts about the user and about the people close to them, and the events the user took part in. Behind
+defined (ben_sql): the facts about the user only (close people's facts are reached through "Kimin hakkında"), and the events the user took part in. Behind
 the per-user setting `memory_v2`: with it off nothing here runs and the memory behaves as before.
 
 The first time a user's memory is used with `memory_v2` on, their collections are made and their files sorted into Belgeler, once
@@ -104,15 +104,15 @@ async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
 
 def ben_sql() -> str:
     """The memories of the Ben collection, as a SQL condition on a row of `orion_memory` (after the user's, `$1` = user id):
-    the current facts about the user and about the people close to them (an entity with a `relation`: how it relates to the
-    user), and the events the user took part in. Defined, not stored, so a relation set later or a person merged is right at once;
+    the current facts about the user (about = me; NOT close people's facts: those are reached through "Kimin hakkında"), and the
+    events the user took part in. Defined, not stored, so a person merged is right at once;
     plain lookups by the user's entity ids, never a scan of the memory."""
     self_ids = "select id::text from orion_mem_entity where user_id = $1 and kind = 'self' and merged_into is null"
     return (
         "coalesce(group_id, 'r' || id::text) in ("
         "select f.group_id from orion_mem_fact f join orion_mem_entity en on en.id = f.entity_id and en.user_id = f.user_id "
         "where f.user_id = $1 and f.superseded_by is null and f.group_id is not null and en.merged_into is null and "
-        "en.deleted_at is null and (en.kind = 'self' or en.relation is not null) "
+        "en.deleted_at is null and en.kind = 'self' "
         "union select e.group_id from orion_mem_event e join orion_mem_link l on l.user_id = e.user_id and "
         f"l.from_type = 'event' and l.from_id = e.id and l.to_type = 'entity' and l.to_id in ({self_ids}) "
         "where e.user_id = $1 and e.superseded_by is null)")

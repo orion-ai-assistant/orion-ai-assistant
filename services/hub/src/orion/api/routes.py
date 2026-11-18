@@ -451,6 +451,21 @@ async def memory_fact_replace(fact_id: int, payload: FactBody, request: Request,
         category=payload.category if payload.category != "diğer" else None, recurring=payload.recurring))
 
 
+class FactEdit(BaseModel):
+    statement: str = Field(min_length=1, max_length=2000)
+    mode: str = Field(max_length=10)  # "correct" (a mistake: rewritten in place, no history) | "changed" (changed over time)
+
+
+@router.put("/api/v1/memory/facts/{fact_id}")  # PUT too: the app's client has no PATCH.
+@router.patch("/api/v1/memory/facts/{fact_id}")
+async def memory_fact_edit(fact_id: int, payload: FactEdit, request: Request, current_user: str = Depends(get_current_user)):
+    """The one way to edit a fact's sentence (memory page detail and profile). `mode` "correct": rewrite in place, no history.
+    "changed": the old sentence becomes history (until = today), the new one is current (since = today). Answers {"fact", "mode"
+    [, "replaced"]} or {"same_as"}; 404 not the user's, 400 already replaced / bad mode / same sentence as another fact."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.edit_fact(current_user, s, fact_id, payload.statement, payload.mode))
+
+
 @router.post("/api/v1/memory/facts/{fact_id}/remove")  # The same as DELETE, with the answer for the app's client.
 @router.delete("/api/v1/memory/facts/{fact_id}")
 async def memory_fact_remove(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
@@ -541,7 +556,7 @@ class ProfilePin(BaseModel):
 async def memory_profile_get(request: Request, current_user: str = Depends(get_current_user)):
     """The profile block as the next "Asistanla konuş" request would carry it in its system prompt ({text, tokens, limit (the
     `memory_profile_tokens` budget, default 800), overflow, left_out}), the pinned lines with their state (ok / replaced / gone /
-    locked) and the generated lines (the user's own facts only) with their fact id, `why` (pinned | own_fact) and category."""
+    locked) and the generated lines (the user's own facts only) with their fact id and category. `text` is the lines only (no instruction wrapper; that stays internal)."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.get(current_user, settings))
 
@@ -570,12 +585,15 @@ async def memory_profile_compact(request: Request, current_user: str = Depends(g
     return await _ben(request, current_user, lambda settings: memory_profile.compact_profile(current_user, settings))
 
 
-@router.get("/api/v1/memory/profile/why/{fact_id}")
-async def memory_profile_why(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
-    """Why a line is in the profile and where the fact comes from: {fact_id, reason (pinned | own_fact | not_in_block),
-    statement, category, about, sources}. 404 for a fact that is not the user's."""
+class ProfileAdd(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/v1/memory/profile/lines")
+async def memory_profile_add_line(payload: ProfileAdd, request: Request, current_user: str = Depends(get_current_user)):
+    """"Satır ekle": creates a fact about the user (the same path as POST /memory/facts) and pins it: {"fact", "profile"}."""
     from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda settings: memory_profile.why(current_user, settings, fact_id))
+    return await _ben(request, current_user, lambda s: memory_profile.add_line(current_user, s, payload.text))
 
 
 @router.delete("/api/v1/memory/profile/pin/{fact_id}")
@@ -799,6 +817,28 @@ async def add_memory_note(payload: MemoryNote, request: Request, current_user: s
         return await memory.add_note_to(current_user, payload.text,
                                         await get_runtime_settings(request.app.state.redis, current_user),
                                         group=payload.group_id or None, title=payload.title)
+    except LookupError as exc:
+        raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+class NoteEdit(BaseModel):
+    text: str = Field(min_length=1, max_length=8 * 1024 * 1024)
+    title: str | None = Field(default=None, max_length=200)
+
+
+@router.patch("/api/v1/memory/notes/{group_id}")
+@router.put("/api/v1/memory/notes/{group_id}")  # PUT too: the app's client has no PATCH.
+async def edit_memory_note(group_id: str, payload: NoteEdit, request: Request, current_user: str = Depends(get_current_user)):
+    """Edit a note's text in place (memory page detail): same memory, same saved date, no history. {"group_id", "added"}; 404 no
+    such memory, 400 not a note (a file, media, a chat summary) or an empty/too long text."""
+    from orion.kernel import memory
+    try:
+        return await memory.edit_note(current_user, group_id, payload.text,
+                                      await get_runtime_settings(request.app.state.redis, current_user), title=payload.title)
     except LookupError as exc:
         raise HTTPException(404, "Hafıza kaydı bulunamadı.") from exc
     except ValueError as exc:

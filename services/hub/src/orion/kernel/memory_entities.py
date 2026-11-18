@@ -124,14 +124,38 @@ def _clean(text: str, limit: int) -> str:
 
 
 def _day(value) -> date | None:
+    """A date: ISO day, or a month / year only ("2023-04", "2023": its first day; see `precision_of`)."""
     if value in (None, ""):
         return None
     if isinstance(value, date):
         return value
+    text = str(value).strip()
+    found = re.fullmatch(r"(\d{4})(?:-(\d{2}))?", text)
     try:
-        return date.fromisoformat(str(value)[:10])
+        if found:
+            return date(int(found.group(1)), int(found.group(2) or 1), 1)
+        return date.fromisoformat(text[:10])
     except ValueError as exc:
-        raise ValueError(f"A date must be ISO (YYYY-MM-DD), got {value!r}.") from exc
+        raise ValueError(f"A date must be ISO (YYYY-MM-DD, YYYY-MM or YYYY), got {value!r}.") from exc
+
+
+def precision_of(value) -> str | None:
+    """How exact a `since` is: "day", "month" ("2023-04": the Hub stores the 1st) or "year"; None for no date."""
+    if value in (None, "") or isinstance(value, date):
+        return "day" if isinstance(value, date) else None
+    text = str(value).strip()
+    return "year" if re.fullmatch(r"\d{4}", text) else "month" if re.fullmatch(r"\d{4}-\d{2}", text) else "day"
+
+
+def since_text(value) -> str | None:
+    """The date as the proposals and the writer carry it: kept as exact as it was given ("2023-04" stays a month)."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    day = _day(value)
+    precision = precision_of(value)
+    return day.isoformat()[:{"year": 4, "month": 7}.get(precision, 10)]
 
 
 def keys_of(name: str, relation: str | None, aliases: list[str]) -> list[str]:
@@ -333,7 +357,7 @@ async def list_entities(user_id: str, settings, q: str = "") -> list[dict]:
 # --- Facts ------------------------------------------------------------------------------------------------------------
 
 _FACT = ("f.id, f.entity_id, f.lineage, f.category, f.statement, f.valid_from, f.valid_to, f.recorded_at, f.expired_at, "
-         "f.superseded_by, f.sensitive, f.origin, f.group_id, f.deleted_at, f.recurring")
+         "f.superseded_by, f.sensitive, f.origin, f.group_id, f.deleted_at, f.recurring, f.since_precision")
 
 
 def _fact_out(r, reveal: bool = False) -> dict:
@@ -341,6 +365,7 @@ def _fact_out(r, reveal: bool = False) -> dict:
     return {"id": r["id"], "entity_id": r["entity_id"], "category": r["category"], "sensitive": bool(r["sensitive"]),
             "locked": locked, "statement": None if locked else r["statement"],
             "since": r["valid_from"].isoformat() if r["valid_from"] else None,
+            "since_precision": (r["since_precision"] or "day") if r["valid_from"] else None,
             "until": r["valid_to"].isoformat() if r["valid_to"] else None,
             "recorded_at": r["recorded_at"].isoformat(), "current": r["superseded_by"] is None,
             "origin": r["origin"], "recurring": r["recurring"]}
@@ -436,6 +461,7 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
     if origin == "extraction" and sensitive:
         raise ValueError("A locked (sensitive) fact is never written automatically.")
     text = check_statement(statement, category)
+    since_precision = precision_of(since)
     since, until = _day(since), _day(until)
     same = memory.fold(text)
     async with _db() as conn:
@@ -454,8 +480,10 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             fact_id = await conn.fetchval(
                 "insert into orion_mem_fact (user_id, entity_id, category, statement, valid_from, valid_to, sensitive, "
-                "origin, group_id, recurring, run_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id",
-                user_id, entity["id"], category, text, since, until, sensitive, origin, group, recurring, run_id)
+                "origin, group_id, recurring, run_id, since_precision) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, "
+                "$12) returning id",
+                user_id, entity["id"], category, text, since, until, sensitive, origin, group, recurring, run_id,
+                since_precision if since else None)
             await conn.execute("update orion_mem_fact set lineage = id where id = $1", fact_id)
             await _source(conn, user_id, fact_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", fact_id)
@@ -494,6 +522,7 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
         if memory.fold(text) == memory.fold(old["statement"]):
             await _source(conn, user_id, old["id"], source)
             return {"same_as": old["id"]}
+        since_precision = precision_of(since)
         since = _day(since)
         twin = next((r for r in await _current(conn, user_id, old["entity_id"])
                      if r["id"] != old["id"] and not r["sensitive"] and memory.fold(r["statement"]) == memory.fold(text)), None)
@@ -510,8 +539,9 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             new_id = await conn.fetchval(
                 "insert into orion_mem_fact (user_id, entity_id, lineage, category, statement, valid_from, sensitive, origin, "
-                "group_id, recurring) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id",
-                user_id, old["entity_id"], old["lineage"], category, text, since, sensitive, origin, group, repeats)
+                "group_id, recurring, since_precision) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id",
+                user_id, old["entity_id"], old["lineage"], category, text, since, sensitive, origin, group, repeats,
+                since_precision if since else None)
             await conn.execute("update orion_mem_fact set valid_to = $3, expired_at = now(), superseded_by = $4 "
                                "where user_id = $1 and id = $2", user_id, old["id"], since, new_id)
             if old["group_id"]:  # Its vector row goes; the text stays in the fact table.
@@ -519,6 +549,62 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
             await _source(conn, user_id, new_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", new_id)
     return {"fact": _fact_out(row, reveal=True), "replaced": old["id"], "entity": _entity_out(entity)}
+
+
+EDIT_MODES = ("correct", "changed")
+
+
+async def edit_fact(user_id: str, settings, fact_id: int, statement: str, mode: str) -> dict:
+    """The user edits a fact's sentence (the one edit API of the page and the profile; PATCH /memory/facts/{id}).
+    `correct`: it was a mistake: the sentence is rewritten in place, no history (its vector row is made again for the new
+    sentence). `changed`: it changed over time: the old sentence becomes history (until = today) and the new one is the
+    current version (since = today); same as `replace`. A pinned profile line tied to the fact follows it. {"fact", "mode"[,
+    "replaced"]} or {"same_as"} for the same sentence. LookupError / ValueError like supersede."""
+    require(settings)
+    if mode not in EDIT_MODES:
+        raise ValueError(f"mode must be one of {EDIT_MODES}")
+    if mode == "changed":
+        done = await supersede(user_id, settings, fact_id, statement, origin="user", source={"by_user": True},
+                               since=date.today())
+        new_id = (done.get("fact") or {}).get("id") or done.get("same_as")
+        if new_id and new_id != fact_id:
+            await _follow_pin(user_id, fact_id, new_id, statement)
+        return {**done, "mode": mode}
+    source = _check_source({"by_user": True})
+    async with _db() as conn:
+        old = await _head(conn, user_id, fact_id)
+        text = check_statement(statement, old["category"])
+        if memory.fold(text) == memory.fold(old["statement"]):
+            return {"same_as": old["id"], "mode": mode}
+        if any(r["id"] != old["id"] and not r["sensitive"] and memory.fold(r["statement"]) == memory.fold(text)
+               for r in await _current(conn, user_id, old["entity_id"])):
+            raise ValueError("Bu cümle zaten başka bir güncel bilgi.")
+        entity = dict(await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2",
+                                          user_id, old["entity_id"]))
+        space = vector = None
+        if not old["sensitive"]:
+            space, vector = await _vector_for(settings, entity, text)
+        async with conn.transaction():
+            old = await _head(conn, user_id, fact_id, lock=True)
+            group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not old["sensitive"] else None
+            await conn.execute("update orion_mem_fact set statement = $3, group_id = $4 where user_id = $1 and id = $2",
+                               user_id, old["id"], text, group)
+            if old["group_id"]:
+                await memory.delete_rows(conn, user_id, "group_id = $2", old["group_id"])
+            await _source(conn, user_id, old["id"], source)
+            row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", old["id"])
+    await _follow_pin(user_id, old["id"], old["id"], text, was=old["statement"])
+    return {"fact": _fact_out(row, reveal=True), "mode": mode, "entity": _entity_out(entity)}
+
+
+async def _follow_pin(user_id: str, old_id: int, new_id: int, text: str, was: str | None = None) -> None:
+    """The profile's pinned line tied to the edited fact follows it (the new fact, and the new sentence unless the user had
+    worded the line themselves)."""
+    from orion.kernel import memory_profile
+    try:
+        await memory_profile.follow_fact(user_id, old_id, new_id, text, was)
+    except Exception:
+        logger.warning("The pinned profile line of fact %s could not follow its edit", old_id, exc_info=True)
 
 
 async def _absorb(conn, user_id: str, old, twin, since, source: dict) -> dict:
@@ -778,13 +864,13 @@ def _end_of(r) -> date | None:
 
 
 def _true_within(r, when: tuple[date | None, date | None] | None) -> bool:
-    """Was this past version true at some time within `when` (the search's date range, either end open)? From its start
-    (unknown = always) to its end."""
+    """Was this past version true at some time within `when` (the search's date range, either end open)? From its `since`
+    (none: the day it was saved, never "always true") to its end (none: still true)."""
     if when is None:
         return True
     first, last = when
-    start, end = r["valid_from"], _end_of(r)
-    return (last is None or start is None or start <= last) and (first is None or end is None or end > first)
+    start, end = r["valid_from"] or r["recorded_at"].date(), _end_of(r)
+    return (last is None or start <= last) and (first is None or end is None or end >= first)
 
 
 PAST_LIMIT = 20  # Past versions listed by one search.
@@ -1124,7 +1210,7 @@ async def propose_supersede(user_id: str, settings, fact_id: int, statement: str
                                      old["entity_id"])
         pid = await propose(user_id, settings, "supersede", {
             "fact_id": old["id"], "entity_id": old["entity_id"], "about": label_of(dict(entity)), "category": cat,
-            "old": old["statement"], "statement": text, "since": since and str(_day(since)),
+            "old": old["statement"], "statement": text, "since": since_text(since),
             "recurring": recurring_of(recurring), "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
     return {"proposal": pid}
 
@@ -1148,7 +1234,7 @@ async def propose_relation(user_id: str, settings, about: str, relation: str, *,
             return {"same_as": entity["id"]}
         pid = await propose(user_id, settings, "set_relation", {
             "entity_id": entity["id"], "about": entity["name"], "old": entity.get("relation"), "statement": new,
-            "since": since and str(_day(since)), "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
+            "since": since_text(since), "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
     return {"proposal": pid}
 
 
@@ -1164,7 +1250,7 @@ async def propose_add(user_id: str, settings, about: str, kind: str, relation: s
         entity, _ = await resolve_entity(conn, user_id, about, kind, relation, create=False)
     pid = await propose(user_id, settings, "add", {
         "about": about, "entity_id": entity["id"] if entity else None, "kind": kind, "relation": relation,
-        "category": cat, "statement": text, "since": since and str(_day(since)), "recurring": recurring_of(recurring),
+        "category": cat, "statement": text, "since": since_text(since), "recurring": recurring_of(recurring),
         "source": {"chat_id": chat_id}}, reason, chat_id)
     return {"proposal": pid}
 

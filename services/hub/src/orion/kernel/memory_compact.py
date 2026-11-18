@@ -23,10 +23,17 @@ from orion.kernel import memory, memory_collections, memory_entities as me, memo
 
 logger = logging.getLogger(__name__)
 
-COMPACT_NOTE = ("compaction: the summary REPLACES the older messages for the assistant. Make it a faithful continuation summary "
-                "in the language of the conversation: what was decided, what is open, names, numbers and the user's wishes, "
-                "as short as it can be without losing what the assistant needs to go on. Also file the memory items.")
+COMPACT_NOTE = (
+    "compaction: the \"summary\" REPLACES the older messages for the assistant, so it is the assistant's only memory of them. Write it "
+    "in the language of the conversation as a faithful continuation summary. Keep what the assistant needs to go on, and match "
+    "the kind of conversation. TECHNICAL (code, tools, configs, debugging): keep file names and paths, function/class/API names, "
+    "commands, versions, decisions and the reasons for them, what was done, what is still open, and the EXACT error messages of "
+    "unresolved problems; short code identifiers verbatim. PERSONAL (life, family, feelings, plans): keep the facts the user "
+    "told, names, dates, numbers, what they wish and what is still to do. Mixed: both. Drop greetings, repetition, and anything "
+    "solved and no longer relevant. Length follows the conversation: a short talk gets a few sentences; a long, dense one may use "
+    "up to about 1500 words, never more, and never longer than a fifth of the text it replaces. Also file the memory items.")
 MAX_ROWS = 4000
+SUMMARY_CHARS = 12000  # A hard cap on the stored summary (about 1500 words are asked for).
 _running: set[str] = set()
 
 
@@ -49,8 +56,11 @@ def usage_of(content_json) -> dict | None:
         return None
     if not isinstance(usage, dict) or usage.get("prompt_tokens") is None:
         return None
-    return {"prompt_tokens": int(usage.get("prompt_tokens") or 0), "completion_tokens": int(usage.get("completion_tokens") or 0),
-            "at": usage.get("at")}
+    got = {"prompt_tokens": int(usage.get("prompt_tokens") or 0), "completion_tokens": int(usage.get("completion_tokens") or 0),
+           "at": usage.get("at")}
+    if usage.get("estimated"):
+        got["estimated"] = True  # A stopped answer the Router reported no usage for: a rough count.
+    return got
 
 
 async def state(user_id: str, chat_id: str) -> dict:
@@ -113,7 +123,7 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
         request = [{"role": "system", "content": mx.SYSTEM}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
         text, usage = await mx._call_model(settings, request)
         parsed = mx.parse_output(text)
-        summary = " ".join(str(parsed.get("summary") or "").split()) or None
+        summary = "\n".join(line.rstrip() for line in str(parsed.get("summary") or "").strip().splitlines())[:SUMMARY_CHARS] or None
         if not summary:
             raise mx.BadOutput("the model's answer has no summary")
         last = messages[-1]["id"]
