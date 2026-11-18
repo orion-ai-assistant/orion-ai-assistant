@@ -579,7 +579,9 @@ class RankTests(PostgresMemoryCase):
     async def delete_tool(self, **kwargs):
         from orion.worker.tools._base import ToolContext
         from orion.worker.tools.memory import tools as memory_tools
-        return await memory_tools.delete_memory(memory_tools.MemoryDeleteInput(**kwargs), ToolContext('alice', 'chat', 't', None))
+        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.settings)):
+            return await memory_tools.delete_memory(memory_tools.MemoryDeleteInput(**kwargs),
+                                                    ToolContext('alice', 'chat', 't', None))
 
     async def test_the_chat_model_cannot_delete_without_the_users_press(self):
         a = await self.add('silinecek not', group='g1', minute=1)
