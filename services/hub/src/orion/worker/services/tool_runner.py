@@ -5,6 +5,8 @@ from contextlib import aclosing
 from dataclasses import replace
 from urllib.parse import quote
 
+from pydantic import ValidationError
+
 from orion.contracts.tools import LEGACY_WEB_TOOLS
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
@@ -27,6 +29,22 @@ def google_failure_message(result):
 
 class ToolCancelled(Exception):
     pass
+
+
+def _input_problem(tool, exc) -> str:
+    """A clear, English message for the model from a pydantic/JSON validation error: which fields, what was wrong, what the
+    tool wants (the input model's `usage_hint`)."""
+    if isinstance(exc, ValidationError):
+        parts = []
+        for error in exc.errors():
+            where = ".".join(str(p) for p in error.get("loc", ())) or "arguments"
+            parts.append(f"{where}: {error.get('msg')}")
+        detail = "; ".join(parts)
+    else:
+        detail = f"the arguments are not valid JSON ({exc})"
+    hint = getattr(tool.input_model, "usage_hint", "")
+    return (f"Invalid arguments for {tool.id}: {detail}. Nothing was executed; call it again with corrected arguments."
+            + (f" {hint}" if hint else ""))
 
 
 def google_direct_text(answer, result=None, *, answer_format=None):
@@ -70,7 +88,7 @@ async def execute_tool(tool, arguments, context):
     """Only async, cooperative handlers; cancellation never retries a handler."""
     if await context.cancelled():
         raise ToolCancelled()
-    args = tool.input_model.model_validate_json(arguments)
+    args = tool.input_model.model_validate_json(arguments)  # ValidationError: nothing ran (the runner explains it).
     task = asyncio.create_task(tool.handler(args, context))
     try:
         async with asyncio.timeout(tool.timeout_seconds):
@@ -180,6 +198,8 @@ class ToolConversation:
                 yield "tool_call", json.dumps(item)
                 google_preview = None
                 media_refs = None
+                # False until a handler is started: only a call that may have had side effects blocks a retry.
+                started = False
                 try:
                     if google_failure:
                         raise ValueError("Google AI Mode failed; further web calls were skipped")
@@ -194,6 +214,7 @@ class ToolConversation:
                                          "or explain missing evidence; do not call web tools again.")
                     if name in {"research_web", "google_ai_mode"}:
                         self.research_used = True
+                    started = True
                     if name == 'google_ai_mode' and settings.google_ai_direct_stream:
                         async with aclosing(stream_tool_answer(registry.tools[name], arguments, context)) as updates:
                             async for update, value in updates:
@@ -234,6 +255,11 @@ class ToolConversation:
                         self.direct_tool_call_id = call["id"]
                     else:
                         item.update(status="cancelled", result={"error": {"type": "cancelled", "message": "Tool execution cancelled"}})
+                except ValidationError as exc:
+                    # The arguments were refused before the handler ran: nothing executed, a corrected call is allowed.
+                    started = False
+                    item.update(status="error", result={"error": {
+                        "type": "ValidationError", "message": _input_problem(registry.tools[name], exc)[:2000]}})
                 except Exception as exc:
                     item.update(status="error", result={"error": {"type": type(exc).__name__, "message": str(exc)[:2000] or "Tool timed out"}})
                 outcome = item.get('result')
@@ -241,7 +267,7 @@ class ToolConversation:
                     outcome.get('error') or outcome.get('status') in {'failed', 'error', 'timeout', 'unknown'}
                 ):
                     item['status'] = 'error'
-                if item['status'] == 'error':
+                if item['status'] == 'error' and started:
                     self.failed_tools.add(name)
                 result_message = {"role": "tool", "tool_call_id": call["id"],
                                   "content": json.dumps(item["result"], ensure_ascii=False)}

@@ -79,6 +79,19 @@ class DateTests(unittest.TestCase):
         vague = self.resolve('2025-07', precision='approx', said_as='geçen yaz')  # Not a word of the table: kept.
         self.assertEqual(vague['on'], date(2025, 7, 1))
 
+    def test_vague_phrases_are_a_rough_period_never_a_made_up_day(self):
+        for words in ('geçen gün', 'geçenlerde', 'Geçen günlerde', 'the other day'):
+            got = self.resolve(None, said_as=words)
+            self.assertEqual((got['precision'], got['on'], got['end']), ('approx', date(2026, 10, 19), date(2026, 11, 17)),
+                             words)
+            self.assertEqual(got['said_as'], words)
+        # The model's own guess ("yesterday") is not used for a vague phrase.
+        guessed = self.resolve('2026-11-17', said_as='geçen gün', precision='day')
+        self.assertEqual((guessed['precision'], guessed['on']), ('approx', date(2026, 10, 19)))
+        self.assertIn('not used', guessed['note'])
+        week = self.resolve(None, said_as='geçen hafta')
+        self.assertEqual((week['precision'], week['on'], week['end']), ('approx', date(2026, 11, 9), date(2026, 11, 15)))
+
     def test_no_date_is_refused_with_todays_date_for_the_model(self):
         with self.assertRaises(ValueError) as caught:
             self.resolve(None)

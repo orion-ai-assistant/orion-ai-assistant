@@ -316,7 +316,9 @@ def check_statement(statement: str, category: str) -> str:
 
 
 def _embedded(entity: dict, statement: str) -> str:
-    return f"{label_of(entity)}: {statement}"
+    """What is embedded and shown: the statement itself, in the user's words. No label is prepended (it would be a
+    composed text the user never wrote); the entity's name still reaches search as the row's title."""
+    return statement
 
 
 async def _source(conn, user_id: str, target_id: int, source: dict) -> None:
@@ -483,6 +485,23 @@ async def history(user_id: str, settings, fact_id: int, reveal: bool = False) ->
             "versions": [{**_fact_out(v, reveal), "sources": sources.get(v["id"], [])} for v in versions]}
 
 
+async def close_people(conn, user_id: str, people: int = 10, facts: int = 5) -> list[dict]:
+    """The user's own card also lists the people linked to them by a relation ("annem", "iş arkadaşım": the entity's
+    `relation` is how it relates to the user): [{"id", "name", "relation", "facts": [{"id", "category", "statement"}]}],
+    unlocked current facts only, the newest people first. Empty when there are none."""
+    rows = await conn.fetch(
+        f"select {_ENTITY} from orion_mem_entity where user_id = $1 and kind <> 'self' and relation is not null and "
+        "merged_into is null and deleted_at is null order by id desc limit $2", user_id, people)
+    out = []
+    for e in rows:
+        listed = await conn.fetch(
+            f"select {_FACT} from orion_mem_fact f where f.user_id = $1 and f.entity_id = $2 and f.superseded_by is null "
+            f"and not f.sensitive and {_live('f')} order by f.id desc limit $3", user_id, e["id"], facts)
+        out.append({"id": e["id"], "name": e["name"], "relation": e["relation"],
+                    "facts": [{"id": f["id"], "category": f["category"], "statement": f["statement"]} for f in listed]})
+    return out
+
+
 async def entity_card(user_id: str, settings, entity_id: int, reveal: bool = False, conn=None) -> dict:
     """An entity with its current facts by category (a fact says how many past versions it has and how many sources);
     locked facts without their text unless `reveal`. LookupError for an entity that is not this user's."""
@@ -502,7 +521,8 @@ async def entity_card(user_id: str, settings, entity_id: int, reveal: bool = Fal
             "select m.id, m.from_id, m.merged_at, e.name from orion_mem_entity_merge m join orion_mem_entity e on "
             "e.id = m.from_id and e.user_id = m.user_id where m.user_id = $1 and m.into_id = $2 and m.undone_at is null "
             "order by m.id", user_id, entity_id)
-    return {**_entity_out(e), "facts": [{**_fact_out(f, reveal), "past_versions": int(f["past"]),
+        close = await close_people(conn, user_id) if e["kind"] == "self" else None
+    return {**_entity_out(e), **({"close": close} if close else {}), "facts": [{**_fact_out(f, reveal), "past_versions": int(f["past"]),
                                          "sources": int(f["sources"])} for f in facts],
             "merges": [{"id": m["id"], "from_id": m["from_id"], "name": m["name"], "merged_at": m["merged_at"].isoformat()}
                        for m in merges]}
@@ -742,6 +762,9 @@ async def search_card(user_id: str, settings, entity_id: int, events: int = 3, f
                      for f in open_facts[:facts]],
            "recent_events": [{"id": e["id"], "date": e["date"], "precision": e["precision"], "title": e["title"]}
                              for e in listed["events"]]}
+    if card.get("close"):
+        out["close_people"] = [{"name": c["name"], "relation": c["relation"], "facts": [f["statement"] for f in c["facts"]]}
+                               for c in card["close"]]
     if len(open_facts) > facts:
         out["more_facts"] = len(open_facts) - facts
     if any(f["locked"] for f in card["facts"]):

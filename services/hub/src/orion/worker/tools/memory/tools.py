@@ -1,9 +1,9 @@
 import json
 import logging
 from datetime import datetime
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from .._base import ToolContext, ToolInput
 
@@ -338,9 +338,29 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
 
 
 class MemoryAddInput(ToolInput):
+    usage_hint: ClassVar[str] = (
+        "Send, in the user's own language: type=note {text}; type=fact {text: one sentence, about: who/what, "
+        "relation: for a new person how they relate to the user}; type=event {text: what happened, date: YYYY-MM-DD "
+        "(or YYYY-MM / YYYY), said_as: the user's time words, participants: [names], place}. Example event: "
+        '{"type":"event","text":"Mehmet ile parkta kahve içtik.","said_as":"geçen gün","precision":"approx",'
+        '"participants":["Mehmet"],"place":"park"}.')
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lenient(cls, data):
+        """Models send what comes naturally: empty strings / lists / null for unused fields, a `title` without `text`.
+        Empty values are dropped; a missing `text` is taken from `title`."""
+        if not isinstance(data, dict):
+            return data
+        data = {k: v for k, v in data.items() if v is not None and v != "" and v != []}
+        if not str(data.get("text", "")).strip() and str(data.get("title", "")).strip():
+            data["text"] = data["title"]
+        return data
+
     text: str = Field(min_length=1, max_length=2 * 1024 * 1024,
-                      description="What to remember: a self-contained sentence (e.g. 'The user's daughter is called "
-                                  "Elif.') or a longer note.")
+                      description="What to remember, in the user's OWN words and language, never translated: a self-contained "
+                                  "sentence (e.g. 'Kızımın adı Elif.') or a longer note. Always required, for every type "
+                                  "(for an event: what happened).")
     title: str = Field(default="", max_length=120,
                        description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
                                    "a short fact.")
@@ -350,16 +370,18 @@ class MemoryAddInput(ToolInput):
                     "user, filed under 'me' with its history (needs the user's collections to be on). Use fact for "
                     "'my mother's birthday is 17 November'; note for anything longer. event: something that happened on a "
                     "date ('we went to Cappadocia in June', 'today was my mother's birthday'), filed under 'experiences' "
-                    "(needs the user's collections to be on). 'text' is what happened; give 'date'.")
+                    "(needs the user's collections to be on). 'text' is what happened; give 'date' or 'said_as'.")
     about: str = Field(
         default="", max_length=120,
         description="type=fact: who or what the fact is about: a name or relation as the user says it ('Ayşe', "
                     "'my mother'); empty or 'me' for the user. An unknown name makes a new entity; if two entities "
-                    "fit, the answer lists them: pass '#<id>' to choose one.")
+                    "fit, the answer lists them: pass '#<id>' to choose one. Write the name in the user's own language "
+                    "('Annem', 'Mehmet'), never translated ('my mother' stays 'Annem').")
     about_kind: Literal["person", "place", "org", "pet", "thing"] = Field(
         default="person", description="type=fact: what a NEW entity is (ignored for one that exists).")
     relation: str = Field(default="", max_length=120,
-                          description="type=fact: how a new entity relates to the user ('mother', 'colleague').")
+                          description="type=fact: how a NEW person relates to the user, in the user's own language ('annem', "
+                                      "'iş arkadaşım'); it links them to the user. Never translated.")
     category: Literal["identity", "relationship", "preference", "opinion", "work", "place", "date", "other", "health",
                       "sexual_life", "religion", "political", "ethnicity", "union", "biometric_genetic", "legal",
                       "finance", "id_number"] = Field(
@@ -374,16 +396,20 @@ class MemoryAddInput(ToolInput):
         default="", max_length=10,
         description="type=event: when it happened: YYYY-MM-DD (or YYYY-MM, YYYY when only that is known). The Hub checks it "
                     "against the time of the message: a relative word in 'said_as' (today, yesterday, tomorrow, last "
-                    "friday; bugün, dün, yarın, geçen cuma) is resolved by the Hub itself. For anything vaguer ('last "
-                    "summer') give your best date and precision=approx. type=fact with repeats=yearly: the day it repeats "
+                    "friday; bugün, dün, yarın, geçen cuma) is resolved by the Hub itself, and so are the vague ones "
+                    "(geçen gün, geçenlerde, geçen hafta, the other day: stored as a rough period, never a made-up day). "
+                    "NEVER guess an exact day the user did not give: 'geçen parkta' is NOT yesterday. For a vague "
+                    "season or period ('last summer') give your best date and precision=approx; with no date at all "
+                    "pass only said_as. type=fact with repeats=yearly: the day it repeats "
                     "on (YYYY-MM-DD or MM-DD).")
     end_date: str = Field(default="", max_length=10,
                           description="type=event: the last day of a trip or period (YYYY-MM-DD); empty for one day.")
     precision: Literal["", "day", "month", "year", "approx"] = Field(
-        default="", description="type=event: how exact the date is. Empty: what the date's form says (a full date = day).")
+        default="", description="type=event: how exact the date is. Empty: what the date's form says (a full date = day). "
+                    "Use approx (or month/year) whenever the user gave no exact day.")
     said_as: str = Field(default="", max_length=120,
-                         description="type=event: the user's own words for the time ('bugün', 'geçen yaz'), kept with the "
-                                     "event.")
+                         description="type=event: ONLY the user's own words for the time ('bugün', 'geçen gün', 'geçen yaz'), kept "
+                                     "with the event. Keep them even when you give no date.")
     participants: list[str] = Field(
         default_factory=list, max_length=20,
         description="type=event: who took part, as the user names them ('Ayşe', 'my mother'; 'me' for the user). An unknown "
