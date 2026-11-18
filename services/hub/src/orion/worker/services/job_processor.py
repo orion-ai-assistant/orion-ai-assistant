@@ -378,6 +378,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             stopped = False
             llm_done = False
             router_metrics: dict[str, Any] | None = None
+            last_usage_raw: list[dict | None] = [None]  # Its prompt/completion counts, stored on the assistant message.
             last_usage = [0]  # The newest request's real token count (a tool round makes several: the last one is the biggest).
             generation_started_at = time.perf_counter()
             first_token_at: float | None = None
@@ -448,6 +449,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                         try:
                             usage = json.loads(token)
                             last_usage[0] = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+                            last_usage_raw[0] = {"prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                                                 "completion_tokens": int(usage.get("completion_tokens") or 0)}
                         except Exception:
                             pass
                         continue
@@ -656,6 +659,8 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 assistant_entry["audio"] = audio_entry
             if metrics:
                 assistant_entry["metrics"] = metrics
+            if last_usage_raw[0]:
+                assistant_entry["usage"] = {**last_usage_raw[0], "at": utc_now()}  # The token meter's last real count.
             if thinking_text:
                 assistant_entry["thinking"] = thinking_text
             if display_parts:

@@ -289,11 +289,16 @@ async def memory_move_start(payload: MemoryMove, request: Request, current_user:
 @router.get("/api/v1/chats/{chat_id}/compact")
 async def get_chat_compaction(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
     """The compaction of the "Asistanla konuş" chat: {running, compacted_upto (last message id covered), compacted_at,
-    summary_tokens, messages_since, tokens_since}."""
+    summary_tokens, messages_since, tokens_since, summary, compacted_turn_id, last_usage {prompt_tokens, completion_tokens, at},
+    context_tokens (the chat model's context length, 0 = unknown), threshold_percent} for the client's token meter."""
     from orion.kernel import memory, memory_compact
     await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    settings = await get_runtime_settings(request.app.state.redis, current_user)
     try:
-        return await memory_compact.state(current_user, chat_id)
+        got = await memory_compact.state(current_user, chat_id)
+        got["context_tokens"] = await memory_compact.context_length(settings)
+        got["threshold_percent"] = settings.chat_compact_percent
+        return got
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 

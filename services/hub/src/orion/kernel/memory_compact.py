@@ -41,19 +41,41 @@ async def _uncompacted(conn, chat_id: str) -> tuple[list[dict], int]:
     return [m for m in (mx._message(r) for r in rows) if m], upto
 
 
+def usage_of(content_json) -> dict | None:
+    """{"prompt_tokens", "completion_tokens", "at"} of a stored assistant message (None: it has no usage)."""
+    try:
+        usage = json.loads(content_json).get("usage")
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if not isinstance(usage, dict) or usage.get("prompt_tokens") is None:
+        return None
+    return {"prompt_tokens": int(usage.get("prompt_tokens") or 0), "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "at": usage.get("at")}
+
+
 async def state(user_id: str, chat_id: str) -> dict:
-    """{"running", "compacted_upto", "compacted_at", "summary_tokens", "messages_since", "tokens_since"}."""
+    """{"running", "compacted_upto", "compacted_at", "summary_tokens", "messages_since", "tokens_since", "summary" (None before the
+    first compaction), "compacted_turn_id" (turn of the last covered message: the summary starts after it), "last_usage"
+    (the last assistant answer's usage, None when it has none)}."""
     conn = await mx._connect()
     try:
         row = await conn.fetchrow("select summary, compacted_upto, compacted_at from orion_mem_chat_state where user_id = $1 "
                                   "and chat_id = $2", user_id, chat_id)
         messages, _ = await _uncompacted(conn, chat_id)
+        turn_id = None
+        if row and row["compacted_upto"]:
+            turn_id = await conn.fetchval("select turn_id from orion_chat_messages where chat_id = $1 and id = $2",
+                                          chat_id, row["compacted_upto"]) or None
+        last = await conn.fetchrow("select content_json from orion_chat_messages where chat_id = $1 and role = 'assistant' "
+                                   "and strpos(content_json, '\"usage\"') > 0 order by id desc limit 1", chat_id)
     finally:
         await conn.close()
     compacted = bool(row and row["compacted_upto"])
     return {"running": chat_id in _running, "compacted_upto": row["compacted_upto"] if row else None,
             "compacted_at": row["compacted_at"].isoformat() if compacted and row["compacted_at"] else None,
             "summary_tokens": memory.estimate_tokens(row["summary"]) if compacted else 0,
+            "summary": row["summary"] if compacted else None, "compacted_turn_id": turn_id,
+            "last_usage": usage_of(last["content_json"]) if last else None,
             "messages_since": len(messages), "tokens_since": estimate(messages)}
 
 
