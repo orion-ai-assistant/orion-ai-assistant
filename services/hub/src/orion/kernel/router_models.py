@@ -189,6 +189,7 @@ async def validate_model_updates(updates: dict[str, str], user_id: str = 'global
     model_capabilities = {
         "router_model_group": "chat",
         "chat_title_model": "chat",
+        "memory_background_model": "chat",
         "tts_model": "tts",
         "stt_model": "stt",
     }

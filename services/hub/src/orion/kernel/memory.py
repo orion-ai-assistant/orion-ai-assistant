@@ -172,7 +172,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 6  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts.
+SCHEMA_VERSION = 7  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries.
 CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
@@ -209,6 +209,8 @@ async def _migrate(conn) -> None:
             await _schema_5(conn)
         if version < 6:
             await _schema_6(conn)
+        if version < 7:
+            await _schema_7(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
@@ -432,6 +434,71 @@ async def _schema_6(conn) -> None:
     await conn.execute("alter table orion_mem_fact add column if not exists recurring text")  # 'yearly:MM-DD'
     await conn.execute("create index if not exists idx_orion_mem_fact_recurring on orion_mem_fact (user_id) "
                        "where recurring is not null and superseded_by is null")
+
+
+async def _schema_7(conn) -> None:
+    """Extraction (§7.2, §7.4; memory_extract): one row per run over a chat's new messages (`orion_mem_extraction_run`: queued,
+    running, done, cancelled, failed; what the pre-filter said; model, tokens, time; metadata only, never the text), the
+    candidates a run produced (`orion_mem_candidate`: the normalised operation, bucket, unsupported-claim risk, duplicate /
+    conflict status, the verdict the quality gate gives it and, in live mode, what was done), the per-user switch of
+    automatic writing (`orion_mem_extraction_state`: off until the user turns it on) and the chat summary columns of
+    `orion_mem_chat_state`. Facts remember the run that wrote them. Every table has user_id; every read filters by it."""
+    await conn.execute("""
+        create table if not exists orion_mem_extraction_run (
+            id bigserial primary key,
+            user_id text not null,
+            chat_id text not null,
+            first_message bigint, last_message bigint,       -- the messages this run covers (set when it starts)
+            mode text not null default 'shadow',             -- shadow | live
+            prefilter text,                                  -- passed | dropped:<reason>
+            state text not null default 'queued',            -- queued | running | done | cancelled | failed
+            summary_only boolean not null default false,     -- only the chat summary is remade (a message was deleted)
+            model text, tokens_in integer, tokens_out integer,
+            candidates integer not null default 0,
+            error text,
+            attempts integer not null default 0,
+            retry_at timestamptz,                            -- backoff after a failure the next attempt may fix
+            cancel boolean not null default false,
+            created_at timestamptz not null default now(),
+            started_at timestamptz, finished_at timestamptz,
+            updated_at timestamptz not null default now(),
+            duration_ms integer)""")
+    await conn.execute("create index if not exists idx_orion_mem_run_user on orion_mem_extraction_run (user_id, id desc)")
+    await conn.execute("create index if not exists idx_orion_mem_run_chat on orion_mem_extraction_run (user_id, chat_id, id desc)")
+    await conn.execute("create index if not exists idx_orion_mem_run_open on orion_mem_extraction_run (state, id) "
+                       "where state in ('queued', 'running')")
+    await conn.execute("create unique index if not exists idx_orion_mem_run_one_queued on orion_mem_extraction_run "
+                       "(user_id, chat_id) where state = 'queued'")
+    await conn.execute("""
+        create table if not exists orion_mem_candidate (
+            id bigserial primary key,
+            user_id text not null,
+            run_id bigint not null references orion_mem_extraction_run(id) on delete cascade,
+            chat_id text not null,
+            first_message bigint, last_message bigint,       -- the source: user messages of the chat
+            op jsonb not null,                               -- add_fact | add_event | supersede, normalised
+            bucket text not null,                            -- direct | ambiguous | inferred (inferred is never written)
+            unsupported_risk text,                           -- low | medium | high (the model's own call)
+            dedupe text not null default 'new',              -- new | duplicate_of:<fact/event id> | conflicts_with:<fact id>
+            merge_target bigint,                             -- the entity it was matched to (null: a new one)
+            sensitive boolean not null default false,
+            verdict text not null,                           -- would_write | would_card | would_skip
+            reason text,                                     -- why (skip / card)
+            outcome text,                                    -- written | carded | skipped | rejected_by_user (live only)
+            written_type text, written_id bigint,            -- what live mode made
+            created_at timestamptz not null default now())""")
+    await conn.execute("create index if not exists idx_orion_mem_candidate_run on orion_mem_candidate (user_id, run_id)")
+    await conn.execute("create index if not exists idx_orion_mem_candidate_user on orion_mem_candidate (user_id, id desc)")
+    await conn.execute("""
+        create table if not exists orion_mem_extraction_state (
+            user_id text primary key,
+            live boolean not null default false,             -- automatic writing (add-only); off until the user turns it on
+            live_since timestamptz,
+            updated_at timestamptz not null default now())""")
+    for column in ("extracted_upto bigint", "summary text", "summary_upto bigint",
+                   "summary_stale boolean not null default false", "summary_at timestamptz"):
+        await conn.execute(f"alter table orion_mem_chat_state add column if not exists {column}")
+    await conn.execute("alter table orion_mem_fact add column if not exists run_id bigint")
 
 
 ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).

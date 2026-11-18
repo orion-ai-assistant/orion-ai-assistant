@@ -338,10 +338,18 @@ async def llama_stream_chat(
 
 async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) -> str:
     """LLM sohbet isteğini tek seferde (non-streaming) yönlendirir."""
+    return (await llama_chat_usage(messages, settings))[0]
+
+
+async def llama_chat_usage(messages: list[dict[str, Any]], settings: RuntimeSettings,
+                           extra_headers: dict[str, str] | None = None) -> tuple[str, dict[str, Any]]:
+    """llama_chat that also returns the Router's `usage` ({} when it sent none) and takes extra request headers (a
+    background job names its purpose so the Router can keep the text out of its log)."""
     session = await get_session()
 
     urls = _router_urls("/v1/chat/completions")
     headers = await _chat_headers(settings)
+    headers.update(extra_headers or {})
     payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,
@@ -367,7 +375,8 @@ async def llama_chat(messages: list[dict[str, Any]], settings: RuntimeSettings) 
             content = message.get("content") or ""
             if not content:
                 raise ValueError("LLM response missing message content")
-            return content
+            usage = data.get("usage")
+            return content, usage if isinstance(usage, dict) else {}
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             last_error = e
             continue

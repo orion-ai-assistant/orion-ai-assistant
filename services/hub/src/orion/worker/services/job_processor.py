@@ -186,6 +186,8 @@ async def append_history(
             await insert_messages(chat_id=chat_id, messages=messages)
             from orion.kernel import memory_chat_index
             memory_chat_index.after_turn(chat_id, settings)  # Background, after the answer; no-op without memory_v2.
+            from orion.kernel import memory_extract
+            memory_extract.after_turn(chat_id, settings)  # Reads the chat for memories once it is idle; no-op without memory_v2.
             return
         except Exception:
             if pause is None:

@@ -450,7 +450,7 @@ def _check_source(source: dict | None) -> dict:
 
 async def add_event(user_id: str, settings, title: str, when: dict, *, body: str | None = None, mood: str | None = None,
                     participants: list[str] | None = None, place: str | None = None, items: list[str] | None = None,
-                    origin: str, source: dict, album: str | None = None) -> dict:
+                    origin: str, source: dict, album: str | None = None, run_id: int | None = None) -> dict:
     """Write one event, or find that it is already there. `when`: resolve_date's answer; `participants` / `place`: names
     (resolve_entity); `items`: memory group keys of photos etc. to link (this user's, not removed); `album`: a
     collection id the event's memory also joins. {"event": {...}} or {"same_as": id} (an event with the same title and day
@@ -488,8 +488,8 @@ async def add_event(user_id: str, settings, title: str, when: dict, *, body: str
             group = await _store_vector(conn, user_id, text, title, space, vector, source)
             event_id = await conn.fetchval(
                 "insert into orion_mem_event (user_id, title, body, occurred_on, occurred_end, precision, said_as, mood, "
-                "origin, group_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id", user_id, title, body,
-                when["on"], when["end"], when["precision"], when["said_as"], mood, origin, group)
+                "origin, group_id, run_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id", user_id, title,
+                body, when["on"], when["end"], when["precision"], when["said_as"], mood, origin, group, run_id)
             await conn.execute("update orion_mem_event set lineage = id where id = $1", event_id)
             await memory_collections.add_source(
                 conn, user_id, "event", event_id, chat_id=source.get("chat_id"), first_message=source.get("first_message"),

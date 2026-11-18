@@ -352,10 +352,11 @@ async def _current(conn, user_id: str, entity_id: int) -> list:
 
 
 async def add_fact(user_id: str, settings, entity: dict, category: str, statement: str, *, origin: str, source: dict,
-                   since=None, until=None, recurring: str | None = None) -> dict:
+                   since=None, until=None, recurring: str | None = None, run_id: int | None = None) -> dict:
     """Write one fact about `entity` (a dict from resolve_entity), or find that it is already there. Returns
     {"fact": {...}} or {"same_as": id} (the same sentence is already current for this entity: the new source is added to
-    it). `recurring`: the day it repeats every year ("11-17": birthdays, anniversaries; memory_events.upcoming).
+    it). `recurring`: the day it repeats every year ("11-17": birthdays, anniversaries; memory_events.upcoming). `run_id`: the
+    extraction run that wrote it (memory_extract).
     ValueError: no source, an empty/long sentence, a locked kind from an automatic origin. Nothing is written
     when embedding fails (MemoryUnavailable)."""
     require(settings)
@@ -384,8 +385,8 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             fact_id = await conn.fetchval(
                 "insert into orion_mem_fact (user_id, entity_id, category, statement, valid_from, valid_to, sensitive, "
-                "origin, group_id, recurring) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id",
-                user_id, entity["id"], category, text, since, until, sensitive, origin, group, recurring)
+                "origin, group_id, recurring, run_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id",
+                user_id, entity["id"], category, text, since, until, sensitive, origin, group, recurring, run_id)
             await conn.execute("update orion_mem_fact set lineage = id where id = $1", fact_id)
             await _source(conn, user_id, fact_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", fact_id)

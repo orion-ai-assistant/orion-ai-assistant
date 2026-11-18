@@ -492,6 +492,85 @@ async def memory_recent_undo(payload: RecentUndo, request: Request, current_user
     return await _ben(request, current_user, lambda s: memory_recent.undo(current_user, s, payload.type, payload.id))
 
 
+# --- Extraction: reading chats for memories, shadow mode and the quality-gate report (memory_extract; memory_v2) -------------
+
+class ExtractionLive(BaseModel):
+    enabled: bool
+    confirm: bool = False  # Needed to turn automatic writing on: the user has read the report.
+
+
+class ExtractionBacklog(BaseModel):
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+@router.get("/api/v1/memory/extraction")
+async def memory_extraction_status(request: Request, limit: int = 20, current_user: str = Depends(get_current_user)):
+    """The extraction: whether it is on, whether automatic writing is on (off by default), the queue and the newest runs."""
+    from orion.kernel import memory_extract as mx
+
+    async def call(settings):
+        await mx.resume(current_user, settings)
+        return await mx.status(current_user, settings, limit)
+    return await _ben(request, current_user, call)
+
+
+@router.get("/api/v1/memory/extraction/report")
+async def memory_extraction_report(request: Request, run_id: int | None = None, chat_id: str | None = Query(default=None, max_length=120),
+                                   limit: int = 100, verdict: str | None = Query(default=None, max_length=12),
+                                   reveal: bool = False, format: str = Query(default="json", pattern="^(json|text)$"),
+                                   current_user: str = Depends(get_current_user)):
+    """The quality-gate report: what the extraction found and what it would have written (nothing is written in shadow
+    mode). `format=text` is the same as readable lines. Locked (sensitive) sentences only with `reveal=true`."""
+    from orion.kernel import memory_extract as mx
+
+    async def call(settings):
+        rep = await mx.report(current_user, settings, run_id, chat_id, limit, reveal, verdict)
+        return Response(mx.report_text(rep), media_type="text/plain; charset=utf-8") if format == "text" else rep
+    return await _ben(request, current_user, call)
+
+
+@router.post("/api/v1/memory/extraction/backlog")
+async def memory_extraction_backlog(payload: ExtractionBacklog, request: Request, current_user: str = Depends(get_current_user)):
+    """Queue the chats that have messages not read yet (newest first, at most `limit`): how the old chats go through the
+    quality gate. Runs one at a time in the background; cancel any time."""
+    from orion.kernel import memory_extract as mx
+    return await _ben(request, current_user, lambda s: mx.enqueue_backlog(current_user, s, payload.limit))
+
+
+@router.post("/api/v1/memory/extraction/cancel")
+async def memory_extraction_cancel_all(request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_extract as mx
+    return await _ben(request, current_user, lambda s: mx.cancel_all(current_user))
+
+
+@router.post("/api/v1/memory/extraction/runs/{run_id}/cancel")
+async def memory_extraction_cancel(run_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_extract as mx
+    return await _ben(request, current_user, lambda s: mx.cancel_run(current_user, run_id))
+
+
+@router.put("/api/v1/memory/extraction/live")
+async def memory_extraction_live(payload: ExtractionLive, request: Request, current_user: str = Depends(get_current_user)):
+    """Automatic writing (add-only; conflicts become cards) on or off. Off by default; turning it on needs confirm=true."""
+    from orion.kernel import memory_extract as mx
+    return await _ben(request, current_user, lambda s: mx.set_live(current_user, s, payload.enabled, payload.confirm))
+
+
+@router.get("/api/v1/memory/extraction/daily")
+async def memory_extraction_daily(request: Request, current_user: str = Depends(get_current_user)):
+    """The first week after automatic writing was turned on: one summary per day ("Dün hafızaya 4 bilgi, 2 olay eklendi")."""
+    from orion.kernel import memory_extract as mx
+    return await _ben(request, current_user, lambda s: mx.daily_summary(current_user, s))
+
+
+@router.get("/api/v1/chats/{chat_id}/memory/summary")
+async def memory_chat_summary(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """The short summary the extraction keeps of a chat ({"summary": null} until it was read)."""
+    from orion.kernel import memory_extract as mx
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    return await _ben(request, current_user, lambda s: mx.chat_summary(current_user, chat_id))
+
+
 # --- Yaşadıklarım: events, albums (memory_events, memory_albums; behind the user's memory_v2) -------------------------------
 
 class EventBody(BaseModel):

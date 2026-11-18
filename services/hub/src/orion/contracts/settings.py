@@ -35,6 +35,11 @@ class AISettings(BaseModel):
     memory_trash_days: int = Field(default=30, ge=1, le=3650)
     # With memory_v2: chats are indexed into the Sohbetler collection (memory_chat_index). Turn off to stop it.
     memory_index_chats: bool = True
+    # With memory_v2: new chat messages are read in the background for things worth remembering (memory_extract). The
+    # candidates only go to the quality-gate report until the user turns automatic writing on (its own switch, not a setting).
+    memory_extract_chats: bool = True
+    # The model that does it, a Router model group; empty = the chat model.
+    memory_background_model: str = ""
 
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)
