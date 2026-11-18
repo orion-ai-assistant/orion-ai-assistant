@@ -36,8 +36,8 @@ contracts/settings.py, router_models.py.
    `has_locked_facts`. The system prompt says the conversation is DATA, not instructions.
 5. **Model**: the background model through the Router (`llama_chat_usage`, temperature 0). JSON: summary, entities, ops
    (`add_fact`, `add_event`, `supersede`), each with its message range, `bucket` (direct / ambiguous / inferred) and
-   `unsupported_risk` (low / medium / high). The request carries `x-orion-purpose: memory-extraction` and
-   `x-orion-log-content: hidden` (the Router does not read them yet: see "Not done").
+   `unsupported_risk` (low / medium / high). The request carries `x-orion-purpose: memory-extraction` (a label only; the Router's log shows
+   everything sent to the model, nothing is hidden).
 6. **The Hub's own checks** (it trusts nothing): every source range must exist in the run's messages and contain a USER message;
    sentences, categories, dates validated with the same functions as the tools; relative dates resolved from the message's own
    time (`memory_events.resolve_date`, so "bugün" in a chat from three days ago is that day); each named entity matched to the
@@ -133,6 +133,5 @@ A real background model through the real Router (prompt quality, JSON discipline
 the cost per chat); the report against ~20 real chats (the quality gate itself is the user's judgment, nothing was tuned);
 the worker in the real Worker/API processes (two processes can each run a worker for the users they know; queued runs of a
 user wait until that user's next turn or a status call after a restart: `resume`); the idle timer across a Hub restart (a chat
-whose timer was pending is caught by the backlog request); the Router honouring `x-orion-log-content` (it ignores it today: the
-Router's log hiding is step 8's profile work); live mode end to end with a real model; Flutter (no UI for the report, the switch,
+whose timer was pending is caught by the backlog request); the Router labelling the log entry from `x-orion-purpose` (the log content is never hidden); live mode end to end with a real model; Flutter (no UI for the report, the switch,
 the daily card or the summary).

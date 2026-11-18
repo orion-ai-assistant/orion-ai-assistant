@@ -37,8 +37,8 @@ The chain, for one chat:
    summary-only run remakes it.
 
 Logs carry metadata only (chat id prefix, message range, token counts, time, candidate counts); the messages, the answer and
-the candidates' texts are never logged. The request tells the Router its purpose with headers (x-orion-purpose,
-x-orion-log-content) so the Router can keep the text out of its own log.
+the candidates' texts are never logged by the Hub. The request tells the Router its purpose (x-orion-purpose) only as a
+label; the Router's request log shows everything sent to the model, nothing is hidden there.
 
 Every table has user_id and every read filters by it."""
 from __future__ import annotations
@@ -73,7 +73,7 @@ LLM_TIMEOUT = 120
 BACKOFF = (30, 120, 600, 1800)  # Seconds before the next attempt after a failure that may pass.
 MAX_ATTEMPTS = len(BACKOFF) + 1
 BAD_OUTPUT_ATTEMPTS = 2
-HEADERS = {"x-orion-purpose": "memory-extraction", "x-orion-log-content": "hidden"}
+HEADERS = {"x-orion-purpose": "memory-extraction"}  # A label for the Router's log; the log content is never hidden.
 BUCKETS = ("direct", "ambiguous", "inferred")
 RISKS = ("low", "medium", "high")
 SUMMARY_DAYS = 7            # "The first week" after automatic writing is turned on.

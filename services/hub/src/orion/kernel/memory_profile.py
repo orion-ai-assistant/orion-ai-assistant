@@ -19,7 +19,8 @@ page. A pinned line tied to a fact that was since replaced or removed is not inj
 page: the user pins the new one); a pinned line tied to a locked fact cannot be made at all.
 
 The Router's request log: the chat request carries `x-orion-memory-profile: tokens=N; facts=1,2,3` (see `log_header`) so
-the Router can show those instead of the block's text, and the Hub logs the same line (never the content).
+the Router can label the log entry with them (the block's text stays in the Router's log, nothing is hidden), and the Hub
+logs the same line (never the content).
 Every table has user_id; every read filters by it."""
 from __future__ import annotations
 

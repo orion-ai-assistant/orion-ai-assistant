@@ -334,8 +334,9 @@ başına anahtar (`memory_enabled`, ChatGPT'deki geçici sohbet gibi). Anahtar k
    - Her yazılan şeyin en az bir `orion_mem_source` kaydı ve `run_id`'si olur.
 7. **Özet:** aynı geçiş sohbetin kısa özetini günceller. Kaynak mesajlardan biri silinirse `summary_stale`,
    sonraki geçişte yeniden yazılır.
-8. **İş:** her koşu bir iş: sırada/çalışıyor/bitti, iptal edilebilir. Router logunda yalnızca üst veri (sohbet id,
-   mesaj aralığı, token, süre, aday sayıları); içerik gizli.
+8. **İş:** her koşu bir iş: sırada/çalışıyor/bitti, iptal edilebilir. Hub logunda yalnızca üst veri (sohbet id,
+   mesaj aralığı, token, süre, aday sayıları); Router logunda modele giden her şey görünür (karar: hiçbir şey gizlenmez),
+   istek yalnızca "amaç: hafıza çıkarımı" etiketini taşır.
 9. **Model:** Router'da "arka plan modeli" ayarı, varsayılan sohbet modeli (karar 8).
 
 ### 7.3 Görünürlük
@@ -435,8 +436,8 @@ eşleşmesinde de süzgeç.
   olan önce. (4) Bilgi asla yarıda kesilmez; sığmayan bütün olarak düşer.
 - Bilgi değişince, silinince ya da çöp kutusuna gidince hemen yeniden kurulur. Değişmediği sürece metin aynı kalır,
   istem önbelleği bozulmaz.
-- **Router logu** varsayılan olarak yalnızca token sayısı, bilgi id'leri ve zamanı gösterir; içerik gizli,
-  istek başına "içeriği göster" ile açılır.
+- **Router logu** modele giden her şeyi gösterir (profil bloğu dahil, hiçbir şey gizlenmez); profil yalnızca ek
+  bir etiketle ("hafıza profili: N token") işaretlenir.
 
 ## 10. Araçlar (yalın)
 
@@ -566,7 +567,7 @@ Kullanıcının 12 soruya verdiği kararlar (hepsi kabul, eklemeleriyle). Ayrın
 |---|---|---|
 | 1 | Duygu/düşünce | Ayrı koleksiyon yok; `tercih`/`görüş` bilgisi, olayda `mood` (§3). |
 | 2 | Otomatik yazma | Üç kova: açık+net → kalite kapısından sonra otomatik (yalnızca ekleme); belirsiz → kart; çıkarsanan → hiçbir yer. Hassas asla otomatik. Her bilgi kaynaklı. Yazmadan önce yinelenme kontrolü. Çelişki → kart. Son eklenenler + Geri al (§7, §8). |
-| 3 | Profil bloğu | Güncel bilgilerden; sabitlenen düzenlemeler korunur; 300 token + kırpma kuralı; Router logunda içerik gizli (§9.2). |
+| 3 | Profil bloğu | Güncel bilgilerden; sabitlenen düzenlemeler korunur; 300 token + kırpma kuralı; Router logunda profil metni görünür, yalnızca "hafıza profili: N token" etiketi eklenir (§9.2). |
 | 4 | Hassas bilgiler | Çıkarsama yok; liste §11.1; kilitli, yalnız doğrudan sorulunca; profil/çıkarım/log içeriğinde yok; şifreleme kapsam dışı. |
 | 5 | Eski veri | Geçişte aranabilir; geri alınabilir taşıma; vektör tablosu silinmez; taşıma öncesi otomatik yedek (§13). |
 | 6 | Sohbet dizini | Otomatik; çıkarım kapanınca/boşta; süren sohbette yalnız yeni mesajlar; ön-süzgeç; genel + sohbet başına anahtar; iptal edilebilir iş, logda üst veri (§7.1-7.2). |

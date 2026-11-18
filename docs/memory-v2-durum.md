@@ -85,11 +85,10 @@ gerçek `account_settings` (hesap anahtarı önbelleği boşken), havuz boşta k
 
 Hepsi ayrı dallarda, hiçbiri birleştirilmedi/itilmedi:
 - **Router, başlıklar** (`D:/krstlcm Workspace/DevProjects/orion-router`, worktree `orion-router-memory-v2-headers`, dal `memory-v2-headers`, b1ea7f8):
-  `x-orion-log-content: hidden` isteğin logunda yalnız üst veri bırakır (model, birkaç düz parametre, `purpose`, kullanım, metrikler; mesajlar, araçlar
-  ve cevap `[içerik gizli]`, `content_hidden: true`); `x-orion-memory-profile: tokens=N; facts=..` ile sistem mesajındaki profil bloğu loglanan
-  kopyada `[hafıza profili: tokens=N; facts=..]` olur (sağlayıcıya giden metin aynen); `x-orion-log-content: show` açık "içeriği göster" tercihidir
-  (profil dahil her şey loglanır). Bozuk/bilinmeyen değerler yok sayılır; başlıklar sağlayıcıya iletilmez. Yeni 8 test; Router paketi 306 test, 2 hata
-  (biri ana dalda da var, biri yalnız worktree'de dosya yolu). Log sayfası (dashboard) ayrı bir "gizli" rozeti göstermiyor, ham JSON'da işareti var.
+  KARAR: Router logu modele giden HER ŞEYİ gösterir, hiçbir şey gizlenmez veya değiştirilmez (profil bloğu dahil). Dal `log-show-all` (b1ea7f8'in
+  üstüne) bunu uygular: `x-orion-memory-profile: tokens=N; facts=..` ve `x-orion-purpose` yalnızca log kaydına `orion_log` etiketi ekler
+  ("hafıza profili: N token", "amaç: hafıza çıkarımı"); `x-orion-log-content` artık etkisiz. Bozuk değerler yok sayılır; başlıklar sağlayıcıya
+  iletilmez. (b1ea7f8'in ilk hali içeriği gizliyordu; o davranış kaldırıldı.)
 - **Hub, sayfa araması**: `GET /api/v1/memory` artık `about`, `as_of`, `include_past` alır (araçla aynı kod: `list_groups`); cevaba `entity`,
   `entity_candidates`, `past_facts` eklenir; `about` kimseyi bulmazsa `groups: []` + `note`, birden çok kişiyse `entity_candidates` (hata değil: sayfa 409'u
   "eski arama" diye yok sayar). `memory_v2` kapalıyken yok sayılır. 5 yeni test (`PageSearchRouteTests`).
@@ -107,7 +106,7 @@ Hepsi ayrı dallarda, hiçbiri birleştirilmedi/itilmedi:
 - Büyük gerçek veritabanında (on binlerce satır) arka plan indeks kurulumu ve aramanın 150 ms hedefi; ölçümler 20 bin satırlık sahte kümeli
   vektörlerle yapıldı.
 - Profil bloğu: gerçek bir sohbette modelin davranışı, istem önbelleğine etkisi (OpenAI/DeepSeek). Router'ın `x-orion-memory-profile` /
-  `x-orion-log-content` başlıklarını okuması yazıldı (aşağıda) ama canlı Router + gerçek sohbetle denenmedi.
+  `x-orion-purpose` başlıklarını etiket olarak okuması yazıldı (aşağıda) ama canlı Router + gerçek sohbetle denenmedi.
 - Flutter: profil sayfası ve sayfa aramasındaki `about` / `as_of` / `include_past` yazıldı (aşağıda), analiz + birim/widget testleri geçti; çalışan
   Hub'a karşı ve gözle (web/telefon) bakılmadı.
 - Çok süreçli çalışma (API ve Worker süreçlerinin ayrı çıkarım işçileri), Hub yeniden başlarken bekleyen zamanlayıcılar.
