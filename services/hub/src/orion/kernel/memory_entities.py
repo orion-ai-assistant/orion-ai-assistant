@@ -264,7 +264,7 @@ async def list_entities(user_id: str, settings, q: str = "") -> list[dict]:
 # --- Facts ------------------------------------------------------------------------------------------------------------
 
 _FACT = ("f.id, f.entity_id, f.lineage, f.category, f.statement, f.valid_from, f.valid_to, f.recorded_at, f.expired_at, "
-         "f.superseded_by, f.sensitive, f.origin, f.group_id, f.deleted_at")
+         "f.superseded_by, f.sensitive, f.origin, f.group_id, f.deleted_at, f.recurring")
 
 
 def _fact_out(r, reveal: bool = False) -> dict:
@@ -274,7 +274,26 @@ def _fact_out(r, reveal: bool = False) -> dict:
             "since": r["valid_from"].isoformat() if r["valid_from"] else None,
             "until": r["valid_to"].isoformat() if r["valid_to"] else None,
             "recorded_at": r["recorded_at"].isoformat(), "current": r["superseded_by"] is None,
-            "origin": r["origin"]}
+            "origin": r["origin"], "recurring": r["recurring"]}
+
+
+def recurring_of(value: str | None) -> str | None:
+    """The stored 'yearly:MM-DD' of a day a fact repeats on: "2026-11-17", "11-17" or "--11-17" (the year, if any, is
+    dropped). None for an empty value; ValueError for anything else or a day that never exists (29 February is allowed)."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.startswith("yearly:"):
+        text = text[len("yearly:"):]
+    found = re.fullmatch(r"(?:\d{4}-|--)?(\d{2})-(\d{2})", text)
+    if not found:
+        raise ValueError(f"A repeating day must be a date or MM-DD, got {value!r}.")
+    month, day = int(found.group(1)), int(found.group(2))
+    try:
+        date(2024, month, day)  # A leap year: 29 February exists.
+    except ValueError as exc:
+        raise ValueError(f"{value!r} is not a real day.") from exc
+    return f"yearly:{month:02d}-{day:02d}"
 
 
 def check_statement(statement: str, category: str) -> str:
@@ -333,14 +352,16 @@ async def _current(conn, user_id: str, entity_id: int) -> list:
 
 
 async def add_fact(user_id: str, settings, entity: dict, category: str, statement: str, *, origin: str, source: dict,
-                   since=None, until=None) -> dict:
+                   since=None, until=None, recurring: str | None = None) -> dict:
     """Write one fact about `entity` (a dict from resolve_entity), or find that it is already there. Returns
     {"fact": {...}} or {"same_as": id} (the same sentence is already current for this entity: the new source is added to
-    it). ValueError: no source, an empty/long sentence, a locked kind from an automatic origin. Nothing is written
+    it). `recurring`: the day it repeats every year ("11-17": birthdays, anniversaries; memory_events.upcoming).
+    ValueError: no source, an empty/long sentence, a locked kind from an automatic origin. Nothing is written
     when embedding fails (MemoryUnavailable)."""
     require(settings)
     source = _check_source(source)
     category = category_of(category)
+    recurring = recurring_of(recurring)
     sensitive = is_sensitive(category)
     if origin == "extraction" and sensitive:
         raise ValueError("A locked (sensitive) fact is never written automatically.")
@@ -352,6 +373,9 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
         for r in await _current(conn, user_id, entity["id"]):
             if memory.fold(r["statement"]) == same:
                 await _source(conn, user_id, r["id"], source)
+                if recurring and not r["recurring"]:  # The same sentence, now known to repeat: that is all it adds.
+                    await conn.execute("update orion_mem_fact set recurring = $3 where user_id = $1 and id = $2", user_id,
+                                       r["id"], recurring)
                 return {"same_as": r["id"]}
         space = vector = None
         if not sensitive:
@@ -360,8 +384,8 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             fact_id = await conn.fetchval(
                 "insert into orion_mem_fact (user_id, entity_id, category, statement, valid_from, valid_to, sensitive, "
-                "origin, group_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id",
-                user_id, entity["id"], category, text, since, until, sensitive, origin, group)
+                "origin, group_id, recurring) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id",
+                user_id, entity["id"], category, text, since, until, sensitive, origin, group, recurring)
             await conn.execute("update orion_mem_fact set lineage = id where id = $1", fact_id)
             await _source(conn, user_id, fact_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", fact_id)
@@ -383,9 +407,10 @@ async def _head(conn, user_id: str, fact_id: int, lock: bool = False):
 
 
 async def supersede(user_id: str, settings, fact_id: int, statement: str, *, origin: str, source: dict, since=None,
-                    category: str | None = None) -> dict:
+                    category: str | None = None, recurring: str | None = None) -> dict:
     """The fact changed: a new version, the old one closed (`valid_to` = the new `since`, `expired_at` now,
-    `superseded_by`), its vector row removed (only the current version is searched). Same sentence: {"same_as"}.
+    `superseded_by`), its vector row removed (only the current version is searched). Same sentence: {"same_as"}. The new
+    version repeats on the old one's day unless `recurring` says another ("" stops it).
     LookupError for a fact that is not this user's/not live; ValueError when it is already replaced."""
     require(settings)
     source = _check_source(source)
@@ -402,6 +427,7 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
         entity = dict(await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2",
                                           user_id, old["entity_id"]))
         since = _day(since)
+        repeats = old["recurring"] if recurring is None else recurring_of(recurring)
         space = vector = None
         if not sensitive:
             space, vector = await _vector_for(settings, entity, text)
@@ -410,8 +436,8 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             new_id = await conn.fetchval(
                 "insert into orion_mem_fact (user_id, entity_id, lineage, category, statement, valid_from, sensitive, origin, "
-                "group_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id",
-                user_id, old["entity_id"], old["lineage"], category, text, since, sensitive, origin, group)
+                "group_id, recurring) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning id",
+                user_id, old["entity_id"], old["lineage"], category, text, since, sensitive, origin, group, repeats)
             await conn.execute("update orion_mem_fact set valid_to = $3, expired_at = now(), superseded_by = $4 "
                                "where user_id = $1 and id = $2", user_id, old["id"], since, new_id)
             if old["group_id"]:  # Its vector row and its place in the collection go; the text stays in the fact table.
@@ -652,6 +678,7 @@ async def merge_entities(user_id: str, settings, from_id: int, into_id: int, con
             moved = [r["id"] for r in await db.fetch(
                 "update orion_mem_fact set entity_id = $3 where user_id = $1 and entity_id = $2 returning id", user_id,
                 from_id, into_id)]
+            links = await _move_links(db, user_id, from_id, into_id)
             have = {memory.fold(a) for a in [dst["name"], dst["relation"] or "", *dst["aliases"]]}
             added = []
             for name in [src["name"], src["relation"] or "", *src["aliases"]]:
@@ -665,8 +692,27 @@ async def merge_entities(user_id: str, settings, from_id: int, into_id: int, con
                              from_id, into_id)
             merge_id = await db.fetchval(
                 "insert into orion_mem_entity_merge (user_id, from_id, into_id, moved) values ($1, $2, $3, $4) returning id",
-                user_id, from_id, into_id, json.dumps({"facts": moved, "links": [], "aliases": added}))
-    return {"merge_id": merge_id, "into": into_id, "moved_facts": len(moved), "aliases": added}
+                user_id, from_id, into_id, json.dumps({"facts": moved, "links": links, "aliases": added}))
+    return {"merge_id": merge_id, "into": into_id, "moved_facts": len(moved), "moved_links": len(links), "aliases": added}
+
+
+async def _move_links(db, user_id: str, from_id: int, into_id: int) -> list[dict]:
+    """The events linked to entity `from_id` are linked to `into_id` instead (an event already linked to both keeps one
+    link). Returns what moved: [{"event", "role", "dup"}] (`dup`: the survivor was already linked, the link only went)."""
+    moved = []
+    for r in await db.fetch("select from_id, role from orion_mem_link where user_id = $1 and from_type = 'event' and "
+                            "to_type = 'entity' and to_id = $2 order by from_id", user_id, str(from_id)):
+        have = await db.fetchval("select 1 from orion_mem_link where user_id = $1 and from_type = 'event' and from_id = $2 "
+                                 "and to_type = 'entity' and to_id = $3", user_id, r["from_id"], str(into_id))
+        if have:
+            await db.execute("delete from orion_mem_link where user_id = $1 and from_type = 'event' and from_id = $2 and "
+                             "to_type = 'entity' and to_id = $3", user_id, r["from_id"], str(from_id))
+        else:
+            await db.execute("update orion_mem_link set to_id = $4 where user_id = $1 and from_type = 'event' and "
+                             "from_id = $2 and to_type = 'entity' and to_id = $3", user_id, r["from_id"], str(from_id),
+                             str(into_id))
+        moved.append({"event": r["from_id"], "role": r["role"], "dup": bool(have)})
+    return moved
 
 
 async def undo_merge(user_id: str, settings, merge_id: int) -> dict:
@@ -689,6 +735,16 @@ async def undo_merge(user_id: str, settings, merge_id: int) -> dict:
             await conn.execute("update orion_mem_fact set entity_id = $3 where user_id = $1 and entity_id = $4 and "
                                "id = any($2::bigint[])", user_id, [int(i) for i in moved.get("facts", [])], m["from_id"],
                                m["into_id"])
+            for link in moved.get("links", []):  # An event moved on since (replaced by a newer version) keeps its links.
+                if link["dup"]:
+                    await conn.execute("insert into orion_mem_link (user_id, from_type, from_id, to_type, to_id, role) "
+                                       "select $1, 'event', $2, 'entity', $3, $4 where exists (select 1 from orion_mem_event "
+                                       "where user_id = $1 and id = $2) on conflict do nothing", user_id, int(link["event"]),
+                                       str(m["from_id"]), link["role"])
+                else:
+                    await conn.execute("update orion_mem_link set to_id = $5 where user_id = $1 and from_type = 'event' and "
+                                       "from_id = $2 and to_type = 'entity' and to_id = $3 and role is not distinct from $4",
+                                       user_id, int(link["event"]), str(m["into_id"]), link["role"], str(m["from_id"]))
             dst = await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2 for update",
                                       user_id, m["into_id"])
             drop = {memory.fold(a) for a in moved.get("aliases", [])}
@@ -698,7 +754,8 @@ async def undo_merge(user_id: str, settings, merge_id: int) -> dict:
             await conn.execute("update orion_mem_entity set merged_into = null where user_id = $1 and id = $2", user_id,
                                m["from_id"])
             await conn.execute("update orion_mem_entity_merge set undone_at = now() where id = $1", merge_id)
-    return {"merge_id": merge_id, "entity_id": m["from_id"], "restored_facts": len(moved.get("facts", []))}
+    return {"merge_id": merge_id, "entity_id": m["from_id"], "restored_facts": len(moved.get("facts", [])),
+            "restored_links": len(moved.get("links", []))}
 
 
 async def duplicate_pairs(conn, user_id: str) -> list[dict]:
@@ -756,7 +813,7 @@ async def propose(user_id: str, settings, action: str, payload: dict, reason: st
 
 
 async def propose_supersede(user_id: str, settings, fact_id: int, statement: str, *, since=None, chat_id: str | None = None,
-                            reason: str | None = None, category: str | None = None) -> dict:
+                            reason: str | None = None, category: str | None = None, recurring: str | None = None) -> dict:
     """The model found a fact changed: never closes it, opens a card (old -> new). {"proposal": id} or {"same_as": id}
     (the new sentence is the current one already). LookupError / ValueError as supersede (checked now, not at the press)."""
     require(settings)
@@ -771,12 +828,13 @@ async def propose_supersede(user_id: str, settings, fact_id: int, statement: str
         pid = await propose(user_id, settings, "supersede", {
             "fact_id": old["id"], "entity_id": old["entity_id"], "about": label_of(dict(entity)), "category": cat,
             "old": old["statement"], "statement": text, "since": since and str(_day(since)),
-            "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
+            "recurring": recurring_of(recurring), "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
     return {"proposal": pid}
 
 
 async def propose_add(user_id: str, settings, about: str, kind: str, relation: str | None, category: str, statement: str,
-                      *, since=None, chat_id: str | None = None, reason: str | None = None) -> dict:
+                      *, since=None, chat_id: str | None = None, reason: str | None = None,
+                      recurring: str | None = None) -> dict:
     """A fact the model may not write itself (a locked kind): a card with the sentence; the entity is made when the user
     presses Onayla. Ambiguous when the name fits several entities."""
     require(settings)
@@ -786,8 +844,8 @@ async def propose_add(user_id: str, settings, about: str, kind: str, relation: s
         entity, _ = await resolve_entity(conn, user_id, about, kind, relation, create=False)
     pid = await propose(user_id, settings, "add", {
         "about": about, "entity_id": entity["id"] if entity else None, "kind": kind, "relation": relation,
-        "category": cat, "statement": text, "since": since and str(_day(since)), "source": {"chat_id": chat_id}},
-        reason, chat_id)
+        "category": cat, "statement": text, "since": since and str(_day(since)), "recurring": recurring_of(recurring),
+        "source": {"chat_id": chat_id}}, reason, chat_id)
     return {"proposal": pid}
 
 
@@ -881,7 +939,8 @@ async def _carry_out(user_id: str, settings, card: dict, edit: str | None) -> di
     text = (edit or p["statement"]).strip()
     if action == "supersede":
         done = await supersede(user_id, settings, int(p["fact_id"]), text, origin="user" if edit else "model",
-                               source=source, since=p.get("since"), category=p.get("category"))
+                               source=source, since=p.get("since"), category=p.get("category"),
+                               recurring=p.get("recurring"))
         return {"fact_id": (done.get("fact") or {}).get("id") or done.get("same_as")}
     if action == "add":
         async with _db() as conn:
@@ -890,13 +949,14 @@ async def _carry_out(user_id: str, settings, card: dict, edit: str | None) -> di
                 entity, _ = await resolve_entity(conn, user_id, p["about"] if not p.get("entity_id") else f"#{p['entity_id']}",
                                                  p.get("kind") or "person", p.get("relation"))
         done = await add_fact(user_id, settings, entity, p["category"], text, origin="user" if edit else "model",
-                              source=source, since=p.get("since"))
+                              source=source, since=p.get("since"), recurring=p.get("recurring"))
         return {"fact_id": (done.get("fact") or {}).get("id") or done.get("same_as")}
     raise ValueError(f"Unknown proposal action {action!r}")
 
 
 async def write_by_user(user_id: str, settings, about: str, category: str, statement: str, *, kind: str = "person",
-                        relation: str | None = None, since=None, entity_id: int | None = None) -> dict:
+                        relation: str | None = None, since=None, entity_id: int | None = None,
+                        recurring: str | None = None) -> dict:
     """The user writes a fact on the page: no card (their own change), source "by_user"."""
     require(settings)
     async with _db() as conn:
@@ -904,20 +964,21 @@ async def write_by_user(user_id: str, settings, about: str, category: str, state
             await conn.execute("select pg_advisory_xact_lock($1, hashtext($2))", ENTITY_LOCK, user_id)
             entity, _ = await resolve_entity(conn, user_id, f"#{entity_id}" if entity_id else about, kind, relation)
     return await add_fact(user_id, settings, entity, category, statement, origin="user", source={"by_user": True},
-                          since=since)
+                          since=since, recurring=recurring)
 
 
 async def write_by_model(user_id: str, settings, chat_id: str, about: str, kind: str, relation: str | None, category: str,
-                         statement: str, since=None) -> dict:
+                         statement: str, since=None, recurring: str | None = None) -> dict:
     """The model's add_memory(type=fact): written at once when it is a normal, clearly stated fact; a locked kind opens a
     card instead (§8: sensitive at most a card). Sourced by the chat. {"fact"}, {"same_as"} or {"proposal"}."""
     require(settings)
     cat = category_of(category)
     if is_sensitive(cat):
-        return await propose_add(user_id, settings, about, kind, relation, cat, statement, since=since, chat_id=chat_id)
+        return await propose_add(user_id, settings, about, kind, relation, cat, statement, since=since, chat_id=chat_id,
+                                 recurring=recurring)
     async with _db() as conn:
         async with conn.transaction():
             await conn.execute("select pg_advisory_xact_lock($1, hashtext($2))", ENTITY_LOCK, user_id)
             entity, _ = await resolve_entity(conn, user_id, about, kind, relation)
     return await add_fact(user_id, settings, entity, cat, statement, origin="model", source={"chat_id": chat_id},
-                          since=since)
+                          since=since, recurring=recurring)

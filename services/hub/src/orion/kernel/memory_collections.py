@@ -24,7 +24,7 @@ BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "S
 OLD_NAME = "Eski hafıza"
 IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
 CHAT_PREFIX = "chat:"  # A collection name "chat:<chat id>": only the windows of that one chat (Sohbetler, narrowed).
-SORTED_TO = {"file": "belgeler", "fact": "ben"}  # Where a memory's first row sends it when sorted; the rest: Eski hafıza.
+SORTED_TO = {"file": "belgeler", "fact": "ben", "event": "yasadiklarim"}  # Where a memory's first row sends it when sorted; the rest: Eski hafıza.
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 

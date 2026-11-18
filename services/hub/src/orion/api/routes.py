@@ -126,15 +126,18 @@ async def latest_search(key: str, work):
 @router.get("/api/v1/memory")
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", exclude: list[str] = Query(default=[]),
-                      collection: list[str] = Query(default=[]), current_user: str = Depends(get_current_user)):
+                      collection: list[str] = Query(default=[]), when_from: str = "", when_to: str = "",
+                      current_user: str = Depends(get_current_user)):
     """A page of memories: cards of the rows saved together (memory_groups.list_groups). `collection`: only these
-    collections (with the user's memory_v2 on)."""
-    from orion.kernel import memory, memory_groups
+    collections; `when_from` / `when_to`: only memories dated within (YYYY[-MM[-DD]]; events, facts true then, their
+    photos): both with the user's memory_v2 on."""
+    from orion.kernel import memory, memory_events, memory_groups
     try:
+        span = memory_events.parse_range(when_from[:10], when_to[:10])
         work = memory_groups.list_groups(
             current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
             max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20],
-            exclude=[t[:200] for t in exclude[:5]], collections=[c[:120] for c in collection[:10]] or None)
+            exclude=[t[:200] for t in exclude[:5]], collections=[c[:120] for c in collection[:10]] or None, when=span)
         found = await (latest_search(current_user, work) if q.strip() else work)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -307,6 +310,7 @@ class FactBody(BaseModel):
     category: str = Field(default="diğer", max_length=40)
     statement: str = Field(min_length=1, max_length=2000)
     since: str | None = Field(default=None, max_length=10)
+    recurring: str | None = Field(default=None, max_length=12)  # The day it repeats every year ("11-17"); "" stops it.
 
 
 class MergeBody(BaseModel):
@@ -397,7 +401,7 @@ async def memory_fact_create(payload: FactBody, request: Request, current_user: 
     from orion.kernel import memory_entities as me
     return await _ben(request, current_user, lambda s: me.write_by_user(
         current_user, s, payload.about, payload.category, payload.statement, kind=payload.kind,
-        relation=payload.relation, since=payload.since, entity_id=payload.entity_id))
+        relation=payload.relation, since=payload.since, entity_id=payload.entity_id, recurring=payload.recurring))
 
 
 @router.get("/api/v1/memory/facts/{fact_id}")
@@ -415,7 +419,7 @@ async def memory_fact_replace(fact_id: int, payload: FactBody, request: Request,
     from orion.kernel import memory_entities as me
     return await _ben(request, current_user, lambda s: me.supersede(
         current_user, s, fact_id, payload.statement, origin="user", source={"by_user": True}, since=payload.since,
-        category=payload.category if payload.category != "diğer" else None))
+        category=payload.category if payload.category != "diğer" else None, recurring=payload.recurring))
 
 
 @router.post("/api/v1/memory/facts/{fact_id}/remove")  # The same as DELETE, with the answer for the app's client.
@@ -457,6 +461,162 @@ async def memory_proposals_answer(payload: ProposalAnswer, request: Request,
 
 async def _proposal_answer(me, user: str, settings, payload: ProposalAnswer, edits: dict):
     return {"results": await me.decide(user, settings, payload.accept, payload.reject, edits)}
+
+
+# --- Yaşadıklarım: events, albums (memory_events, memory_albums; behind the user's memory_v2) -------------------------------
+
+class EventBody(BaseModel):
+    title: str | None = Field(default=None, max_length=300)
+    body: str | None = Field(default=None, max_length=4000)
+    date: str | None = Field(default=None, max_length=10)  # YYYY-MM-DD, YYYY-MM or YYYY
+    end_date: str | None = Field(default=None, max_length=10)
+    precision: str | None = Field(default=None, max_length=10)  # day | month | year | approx
+    said_as: str | None = Field(default=None, max_length=120)
+    mood: str | None = Field(default=None, max_length=40)
+    participants: list[str] | None = Field(default=None, max_length=20)  # names, relations or "#<entity id>"
+    place: str | None = Field(default=None, max_length=120)
+    items: list[str] = Field(default_factory=list, max_length=100)  # memory group keys (photos...)
+    album: str | None = Field(default=None, max_length=80)
+
+
+class MembersBody(BaseModel):
+    add: list[str] = Field(default_factory=list, max_length=500)
+    remove: list[str] = Field(default_factory=list, max_length=500)
+
+
+class AlbumBody(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@router.get("/api/v1/memory/events")
+async def memory_events_list(request: Request, start: str = "", end: str = "", entity_id: int | None = None, limit: int = 50,
+                             offset: int = 0, current_user: str = Depends(get_current_user)):
+    """The Yaşadıklarım timeline: {"events", "more", "years"}, newest day first; `start` / `end` a range, `entity_id` one
+    person's or place's events."""
+    from orion.kernel import memory_events as ev
+    return await _ben(request, current_user, lambda s: ev.list_events(current_user, s, start[:10], end[:10], entity_id,
+                                                                    limit, offset))
+
+
+@router.get("/api/v1/memory/events/upcoming")
+async def memory_events_upcoming(request: Request, days: int = 30, current_user: str = Depends(get_current_user)):
+    """The yearly recurrences (birthdays, anniversaries) in the next `days` days: {"upcoming": [...]}."""
+    from orion.kernel import memory_events as ev
+
+    async def call(settings):
+        return {"upcoming": await ev.upcoming(current_user, settings, days)}
+    return await _ben(request, current_user, call)
+
+
+@router.post("/api/v1/memory/events")
+async def memory_event_create(payload: EventBody, request: Request, current_user: str = Depends(get_current_user)):
+    """The user writes an event (no card; source: the user): {"event"} or {"same_as"}."""
+    from orion.kernel import memory_albums, memory_events as ev, memory_entities as me
+
+    async def call(settings):
+        when = ev.resolve_date(payload.date, payload.end_date, payload.precision, payload.said_as)
+        album = None
+        if payload.album:
+            async with me._db() as conn:
+                album = await memory_albums.album_id_of(conn, current_user, payload.album)
+        async with me._db() as conn:
+            groups = await ev.groups_exist(conn, current_user, payload.items) if payload.items else []
+        return await ev.add_event(current_user, settings, payload.title or "", when, body=payload.body, mood=payload.mood,
+                                  participants=payload.participants, place=payload.place, items=groups, origin="user",
+                                  source={"by_user": True}, album=album)
+    return await _ben(request, current_user, call)
+
+
+@router.get("/api/v1/memory/events/{event_id}")
+async def memory_event_card(event_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_events as ev
+    return await _ben(request, current_user, lambda s: ev.get_event(current_user, s, event_id))
+
+
+@router.put("/api/v1/memory/events/{event_id}")  # PUT too: the app's client has no PATCH.
+@router.patch("/api/v1/memory/events/{event_id}")
+async def memory_event_update(event_id: int, payload: EventBody, request: Request,
+                              current_user: str = Depends(get_current_user)):
+    """The user corrects an event: a new version, the old one kept as history. What is left out stays as it was."""
+    from orion.kernel import memory_events as ev
+
+    async def call(settings):
+        when = ev.resolve_date(payload.date, payload.end_date, payload.precision, payload.said_as) \
+            if payload.date is not None else None
+        return await ev.replace_event(current_user, settings, event_id, title=payload.title, body=payload.body, when=when,
+                                      mood=payload.mood, participants=payload.participants, place=payload.place)
+    return await _ben(request, current_user, call)
+
+
+@router.post("/api/v1/memory/events/{event_id}/remove")  # The same as DELETE, with the answer for the app's client.
+@router.delete("/api/v1/memory/events/{event_id}")
+async def memory_event_remove(event_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    """Remove an event: {"trash_id"} (undo: POST /memory/trash/restore)."""
+    from orion.kernel import memory_events as ev
+    return await _ben(request, current_user, lambda s: ev.remove_event(current_user, s, event_id))
+
+
+@router.post("/api/v1/memory/events/{event_id}/items")
+async def memory_event_items(event_id: int, payload: MembersBody, request: Request,
+                             current_user: str = Depends(get_current_user)):
+    """Link photos / videos (memory group keys) to an event, or unlink them: {"linked", "unlinked"}."""
+    from orion.kernel import memory_events as ev
+    return await _ben(request, current_user, lambda s: ev.set_items(current_user, s, event_id, payload.add, payload.remove))
+
+
+@router.get("/api/v1/memory/albums")
+async def memory_albums_list(request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_albums as al
+
+    async def call(settings):
+        return {"albums": await al.list_albums(current_user, settings)}
+    return await _ben(request, current_user, call)
+
+
+@router.post("/api/v1/memory/albums")
+async def memory_album_create(payload: AlbumBody, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_albums as al
+    return await _ben(request, current_user, lambda s: al.create_album(current_user, s, payload.name))
+
+
+@router.put("/api/v1/memory/albums/{album_id}")
+@router.patch("/api/v1/memory/albums/{album_id}")
+async def memory_album_rename(album_id: str, payload: AlbumBody, request: Request,
+                              current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_albums as al
+    return await _ben(request, current_user, lambda s: al.rename_album(current_user, s, album_id[:80], payload.name))
+
+
+@router.post("/api/v1/memory/albums/{album_id}/remove")  # The same as DELETE; its memories stay where they are.
+@router.delete("/api/v1/memory/albums/{album_id}")
+async def memory_album_remove(album_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_albums as al
+    return await _ben(request, current_user, lambda s: al.remove_album(current_user, s, album_id[:80]))
+
+
+@router.post("/api/v1/memory/albums/{album_id}/restore")
+async def memory_album_restore(album_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_albums as al
+    return await _ben(request, current_user, lambda s: al.restore_album(current_user, s, album_id[:80]))
+
+
+@router.post("/api/v1/memory/albums/{album_id}/items")
+async def memory_album_items(album_id: str, payload: MembersBody, request: Request,
+                             current_user: str = Depends(get_current_user)):
+    """Put memories (group keys) into an album / take them out (never deletes them): {"added", "removed"}."""
+    from orion.kernel import memory_albums as al
+    return await _ben(request, current_user, lambda s: al.set_members(current_user, s, album_id[:80], payload.add,
+                                                                    payload.remove))
+
+
+@router.get("/api/v1/memory/groups/{group_id}/albums")
+async def memory_group_albums(group_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """The user's albums and projects, each with `member`: is this memory in it."""
+    from orion.kernel import memory_albums as al
+
+    async def call(settings):
+        return {"albums": await al.albums_of(current_user, settings, group_id)}
+    return await _ben(request, current_user, call)
 
 
 @router.post("/api/v1/memory/collections/revert")

@@ -172,7 +172,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 5  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts.
+SCHEMA_VERSION = 6  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts.
 CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
@@ -207,6 +207,8 @@ async def _migrate(conn) -> None:
             await _schema_4(conn)
         if version < 5:
             await _schema_5(conn)
+        if version < 6:
+            await _schema_6(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
@@ -386,6 +388,50 @@ async def _schema_5(conn) -> None:
             created_at timestamptz not null default now(),
             decided_at timestamptz)""")
     await conn.execute("create index if not exists idx_orion_mem_proposal_user on orion_mem_proposal (user_id, state)")
+
+
+async def _schema_6(conn) -> None:
+    """Events and their links (§4, §5; memory_events): a dated experience (`occurred_on`..`occurred_end`, `precision`,
+    what the user said: `said_as`), versioned like a fact (`lineage`; a correction is a new row), its search vector an
+    ordinary `orion_memory` row (source_kind 'event', group `group_id`). `orion_mem_link` ties an event to its
+    participants and place (entities) and to items such as photos (a memory's group key). A fact may repeat every year
+    (`recurring` 'yearly:MM-DD'). Every table has user_id; every read filters by it."""
+    await conn.execute("""
+        create table if not exists orion_mem_event (
+            id bigserial primary key,
+            user_id text not null,
+            lineage bigint,                    -- the first version's id: one lineage = one event over time
+            title text not null,
+            body text,
+            occurred_on date not null,         -- the day (or the first day of the month / year / range)
+            occurred_end date,                 -- the last day of a range, a month, a year; null for one day
+            precision text not null default 'day',   -- day | month | year | approx
+            said_as text,                      -- what was said: "bugün", "geçen yaz"
+            mood text,
+            recorded_at timestamptz not null default now(),
+            expired_at timestamptz,
+            superseded_by bigint references orion_mem_event(id),
+            origin text not null,              -- user | model | extraction
+            run_id bigint,
+            group_id text not null)            -- its memory (vector row) in orion_memory""")
+    await conn.execute("create index if not exists idx_orion_mem_event_day on orion_mem_event (user_id, occurred_on desc, id desc) "
+                       "where superseded_by is null")
+    await conn.execute("create index if not exists idx_orion_mem_event_lineage on orion_mem_event (user_id, lineage)")
+    await conn.execute("create index if not exists idx_orion_mem_event_group on orion_mem_event (user_id, group_id)")
+    await conn.execute("""
+        create table if not exists orion_mem_link (
+            user_id text not null,
+            from_type text not null,           -- event
+            from_id bigint not null,
+            to_type text not null,             -- entity | item
+            to_id text not null,               -- an entity's id, or an item's memory group key
+            role text,                         -- katılan | yer | fotoğraf
+            created_at timestamptz not null default now(),
+            primary key (user_id, from_type, from_id, to_type, to_id))""")
+    await conn.execute("create index if not exists idx_orion_mem_link_to on orion_mem_link (user_id, to_type, to_id)")
+    await conn.execute("alter table orion_mem_fact add column if not exists recurring text")  # 'yearly:MM-DD'
+    await conn.execute("create index if not exists idx_orion_mem_fact_recurring on orion_mem_fact (user_id) "
+                       "where recurring is not null and superseded_by is null")
 
 
 ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
@@ -1669,13 +1715,16 @@ def word_similarity(query: str, text: str) -> float:
 
 
 def filters_sql(vector_space: str, kind: str, params: list, collections: list[str] | None = None,
-                live: bool = True) -> str:
+                live: bool = True, when=None) -> str:
     """SQL conditions (after the user's, `$1`) for the page's model, kind and collection filters, and the rows in the
     trash left out (`live`); their values are appended to `params` (the caller's, numbered from its length). The windows of the
     chats index are only searched when Sohbetler (or one chat, "chat:<id>") is asked for: a search of the whole memory
-    is what it was before they existed."""
+    is what it was before they existed. `when` (memory_events.when_keys): only memories dated within a date range."""
     from orion.kernel.memory_collections import CHAT_PREFIX, filter_sql
     sql = (f" and {LIVE}" if live else "") + filter_sql(collections, params)  # `live` False: the caller checks the trash.
+    if when:
+        from orion.kernel import memory_events
+        sql += memory_events.when_sql(when, params)
     if not any(c == "sohbetler" or c.startswith(CHAT_PREFIX) for c in collections or []):
         sql += f" and source_kind <> '{CHAT_INDEX}'"  # A literal: the general vector and newest indexes skip the chats.
     if vector_space and vector_space != "all":
@@ -1698,7 +1747,7 @@ def _score_sql(params: list, space, vector) -> str:
 
 
 async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, space=None, vector=None,
-                     fuzzy: bool = True, collections: list[str] | None = None) -> list[dict]:
+                     fuzzy: bool = True, collections: list[str] | None = None, when=None) -> list[dict]:
     """This user's rows whose text has `q` (Turkish case folding) or a near spelling of it, best first. Each row has
     'tmatch' ('text' for a substring, 'similar' for a near spelling), 'tscore' (1 for a substring) and 'score'
     (its meaning score in the current space, else None). `fuzzy` False: substrings only (a keyword search)."""
@@ -1706,7 +1755,7 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     like = "%" + folded.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     params = [user_id, like] + ([folded] if _trgm and fuzzy else [])
     score = _score_sql(params, space, vector)
-    extra = filters_sql(vector_space, kind, params, collections)
+    extra = filters_sql(vector_space, kind, params, collections, when=when)
     if _trgm and fuzzy:
         # Words first, near spellings after: a substring match ranks above any near spelling (its score is 1), so the
         # near-spelling search (`<%`, which walks most of the trigram index) only runs when the words alone did not
@@ -1739,7 +1788,7 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     if len(rows) >= TEXT_CAP or not fuzzy:
         return rows
     plain = [user_id, like]
-    extra = filters_sql(vector_space, kind, plain, collections)
+    extra = filters_sql(vector_space, kind, plain, collections, when=when)
     near = []
     for r in await conn.fetch(
             f"select id, folded from orion_memory where user_id = $1 and not whole and not (folded like $2)"

@@ -421,17 +421,23 @@ async def _scores(conn, user_id: str, groups: list[str], space, vector) -> dict[
 MAX_CANDIDATES = 20000  # Most nearest rows a search widens to while it still lacks enough memories.
 
 
-async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dict]:
+async def _nearest_groups(conn, params: list, extra: str, need: int, listed: bool = False) -> list[dict]:
     """The best row of each of (at least) `need` nearest memories, best first: the nearest rows through the vector
     index, then grouped. The rows taken widen (x4) while they hold fewer memories than needed and the index still
-    has more (one long text has thousands of rows). params: [user, space, vector, ...filters]."""
+    has more (one long text has thousands of rows). params: [user, space, vector, ...filters]. `listed`: the filter names
+    its candidates (a date range: memory_events.when_keys): they are ranked exactly, not through the vector index, which
+    walks the whole graph for a filter this selective."""
     count = max(40, need * 2)
     filtered = " kind = " in extra or "collection_id" in extra  # Filters an index scan may run short on.
     exact = False
+    order = "(embedding <=> $3::vector) + 0" if listed else "embedding <=> $3::vector"  # `+ 0`: not the index's order.
     while True:
         sql = (f"select {_ROW}, 1 - (embedding <=> $3::vector) as score from orion_memory where user_id = $1 "
-               f"and vector_space = $2{extra} order by embedding <=> $3::vector limit {count}")
-        rows = await (memory.exact_fetch if exact else memory.ann_fetch)(conn, sql, *params)
+               f"and vector_space = $2{extra} order by {order} limit {count}")
+        if listed:
+            rows = await conn.fetch(sql, *params)
+        else:
+            rows = await (memory.exact_fetch if exact else memory.ann_fetch)(conn, sql, *params)
         best: dict[str, dict] = {}
         for r in rows:  # the index may return rows a little out of order: a memory's best row is its highest
             if group_key(r) not in best or float(r["score"]) > float(best[group_key(r)]["score"]):
@@ -439,7 +445,7 @@ async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dic
         if len(best) >= need or count >= MAX_CANDIDATES:
             return sorted(best.values(), key=lambda r: (-float(r["score"]), -r["id"]))
         if len(rows) < count:
-            if filtered and not exact:
+            if filtered and not exact and not listed:
                 # The index scan stopped short of `count`: with a kind filter that can be its scan limit, not the end
                 # of the kind's rows. An exact scan settles it (only here, only when too few memories were found).
                 exact = True
@@ -455,7 +461,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       exclude: list[str] | None = None, exclude_vectors: list[str] | None = None,
                       leave_out: set[str] | None = None, only_groups: set[str] | None = None,
                       meaning: bool = True, keywords: list[tuple[str, bool]] | None = None,
-                      collections: list[str] | None = None) -> dict:
+                      collections: list[str] | None = None, when=None) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) alone: the order is the shown %, a word match only marks
@@ -468,6 +474,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     `keywords`: [(word, like)]: only memories that contain every like-word and none of the others (mf.keyword_groups),
     found on this call's own connection. `collections`: only memories of these collections (names or ids,
     memory_collections.resolve; ValueError for an unknown one), with the user's `memory_v2` on; ignored with it off.
+    `when`: (from, to) dates (memory_events.parse_range), likewise only with `memory_v2` on: only memories dated within it
+    (events, facts true then, the photos of such events).
     With it on the answer also lists the user's `collections` (their first use sorts their memory, once)."""
     q = (q or "").strip()
     kind = kind if kind in KINDS else "all"
@@ -501,10 +509,15 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         await memory.ensure_memory_table(conn)
         from orion.kernel import memory_collections as mc
         in_ids, listed = None, None
+        if not mc.enabled(settings):
+            when = None
         if mc.enabled(settings):
             await mc.ensure_user(conn, user_id)
             listed = await mc.list_collections(conn, user_id)
             in_ids = await mc.resolve(conn, user_id, collections) if collections else None
+        if when:  # The dated memories, named once: the filter of every query below.
+            from orion.kernel import memory_events
+            when = await memory_events.when_keys(conn, user_id, when)
         for word, like in keywords or ():
             found_groups = await mf.keyword_groups(conn, user_id, word)
             if like:
@@ -518,11 +531,12 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             lists = []
             for one in inputs:
                 params = [user_id, space, one]
-                extra = _filters("all", kind, params, in_ids)
+                extra = _filters("all", kind, params, in_ids, when=when)
                 need = EACH_POOL if each else offset + limit + 1 + len(leave_out) + (EACH_POOL if excluding else 0)
-                lists.append((await _nearest_groups(conn, params, extra, need))[:need])
+                lists.append((await _nearest_groups(conn, params, extra, need, listed=bool(when)))[:need])
             texts = await memory._text_rows(conn, user_id, q, vector_space, kind, space if searchable else None,
-                                            vector if searchable else None, fuzzy=meaning, collections=in_ids)                 if q and len(q) <= memory.TEXT_MATCH_CHARS else []
+                                            vector if searchable else None, fuzzy=meaning, collections=in_ids,
+                                            when=when) if q and len(q) <= memory.TEXT_MATCH_CHARS else []
             # One definition of a word match, the one the panel's marks use (text_hit): the query's candidates
             # from the database are confirmed by it, so the order, the card and the panel agree.
             texts = [{**r, "tmatch": hit, "tscore": ts} for r in texts
@@ -559,7 +573,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                         search[g]["query_index_shown"] = index
         else:
             params = [user_id]
-            extra = _filters(vector_space, kind, params, in_ids)
+            extra = _filters(vector_space, kind, params, in_ids, when=when)
             # The newest memories: the user's newest rows by the (user, created_at) index, grouped here; the rows
             # taken widen while they hold fewer memories than the page needs (one long text has thousands of rows).
             need, count, groups = int(offset) + int(limit), max(100, (int(offset) + int(limit)) * 4), []
@@ -573,7 +587,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                 count *= 4
             groups = groups[int(offset):need]
             summary = await _summary(conn, user_id, space)
-            if kind == "all" and not in_ids:  # The counts are the cached summary's: no scan of all rows for the number.
+            if kind == "all" and not in_ids and not when:  # The counts are the cached summary's: no scan of all rows for the number.
                 matching = (summary["total"] if vector_space == "all"
                             else summary["per_vector_space"].get(vector_space, 0))
             else:
@@ -582,11 +596,15 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             more = offset + len(groups) < int(matching or 0)
         hits = await text_candidates(conn, user_id, groups, q) if searching and q else set()
         members = await _group_rows(conn, user_id, groups, full=hits if hits is not None else True)
-        about = {}
+        about, happened = {}, {}
         fact_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "fact"]
+        event_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "event"]
         if fact_groups:  # Facts say who they are about (one lookup, on this connection).
             from orion.kernel import memory_entities
             about = await memory_entities.facts_on(conn, user_id, fact_groups)
+        if event_groups:  # Events say when, with whom and where (one lookup; none when the page has no event).
+            from orion.kernel import memory_events
+            happened = await memory_events.events_on(conn, user_id, event_groups)
         if searching:
             summary = await _summary(conn, user_id, space)
     finally:
@@ -607,6 +625,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         item = card(g, rows, prefer, space, matched=matched)
         if g in about:
             item["fact"] = about[g]
+        if g in happened:
+            item["event"] = happened[g]
         if entry:
             # The memory's score is group_match's (the panel shows the same); a memory the vectors did not reach
             # (another model's, found by its words) keeps the search's own.
@@ -1187,7 +1207,7 @@ class QueryError(ValueError):
 
 async def search_queries(user_id: str, settings, queries: list[dict], mode: str = "together", kind: str = "all",
                          vector_space: str = "all", limit: int = 10, offset: int = 0,
-                         collections: list[str] | None = None) -> dict:
+                         collections: list[str] | None = None, when=None) -> dict:
     """The page's search for the chat model: several queries, each a text or a memory row id (that row's vector, as
     a dropped file), `like` true (results like it) or false (memories like it are left out); mode "together" (one
     query: the normalized mean of the like-queries) or "each" (each ranked on its own, ranked by its best input: rank_matches).
@@ -1204,7 +1224,8 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
         # Keywords alone: their exact matches, by their words (no meaning).
         words = " ".join(k["keyword"].strip() for k in keywords if k.get("like", True))
         found = await list_groups(user_id, settings, words[:200], limit, offset, vector_space, kind,
-                                  keywords=by_words, meaning=False, collections=collections, exclude=[q["text"].strip()[:200] for q in unlikes
+                                  keywords=by_words, meaning=False, collections=collections, when=when,
+                                  exclude=[q["text"].strip()[:200] for q in unlikes
                                                           if (q.get("text") or "").strip()])
         found["labels"] = []
         return found
@@ -1232,9 +1253,10 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
              if q.get("id") is None and (q.get("text") or "").strip()]
     words = ", ".join(texts)
     common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors,
-                  keywords=by_words, collections=collections)
+                  keywords=by_words, collections=collections, when=when)
     if not likes:
-        found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind, collections=collections)
+        found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind, collections=collections,
+                                  when=when)
         found["labels"] = []
         return found
     if len(likes) == 1 and texts:  # One text: exactly the page's text search (meaning and its words).

@@ -161,9 +161,10 @@ async def purge(user_id: str, trash_ids: list[str] | None = None, settings=None)
                 await _scrub_previews(conn, user_id, gone)
     finally:
         await conn.close()
-    if rows:  # Facts whose memory is gone go with their past versions (nothing for a user without facts).
-        from orion.kernel import memory_entities
+    if rows:  # Facts and events whose memory is gone go with their past versions (nothing for a user without them).
+        from orion.kernel import memory_entities, memory_events
         await memory_entities.after_purge(user_id)
+        await memory_events.after_purge(user_id)
     if neighbours:
         memory._schedule_reembed(user_id, neighbours, settings)
     return {"deleted": [r["id"] for r in rows if not r.get("whole")], "entries": len(trash_ids)}

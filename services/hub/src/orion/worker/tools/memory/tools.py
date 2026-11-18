@@ -27,6 +27,15 @@ class MemoryQuery(ToolInput):
                                    "containing it) are left out.")
 
 
+class MemoryWhen(ToolInput):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+    from_: str = Field(default="", max_length=10, alias="from",
+                       description="Start: YYYY-MM-DD, YYYY-MM (its first day) or YYYY (its first day). Empty: no start.")
+    to: str = Field(default="", max_length=10,
+                    description="End: YYYY-MM-DD, YYYY-MM (its last day) or YYYY (its last day). Empty: no end. For one "
+                                "month or year give the same value in both.")
+
+
 class MemorySearchInput(ToolInput):
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
     queries: list[MemoryQuery] = Field(
@@ -51,6 +60,12 @@ class MemorySearchInput(ToolInput):
                     "one chat. A personal question: me, experiences; something said before: chats. Empty: the whole "
                     "memory except the past conversations (ask for 'chats' to search them). Ignored while the "
                     "user's memory has no collections.")
+    when: MemoryWhen | None = Field(
+        default=None,
+        description="Only memories dated within this range: events (their day or period overlaps it), facts that were true "
+                    "then, and the photos / videos linked to such events. Use it for 'what did I do in March 2026?' with a "
+                    "short query or none. Undated memories (notes, files) are not returned while it is set. Ignored while "
+                    "the user's memory has no collections.")
     sensitive: bool = Field(
         default=False,
         description="true ONLY when the user directly asks about a locked topic (their health, religion, politics, "
@@ -170,9 +185,18 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
                if q.id is not None or q.text.strip() or q.keyword.strip()]
     size = args.page_size
     settings = await get_runtime_settings(None, context.user_id)
+    extra = {}
+    if args.when is not None:
+        from orion.kernel import memory_events
+        try:
+            span = memory_events.parse_range(args.when.from_, args.when.to)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if span:
+            extra["when"] = span
     try:
         found = await memory_groups.search_queries(
-            context.user_id, settings, queries,
+            context.user_id, settings, queries, **extra,
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
             vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size,
             **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip()]) else {}))
@@ -184,6 +208,8 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
     for card, item in zip(found["groups"], results):
         if card.get("fact"):  # A fact: who it is about, its kind and since when (memory_groups adds it to the card).
             item["fact"] = card["fact"]
+        if card.get("event"):  # An event: its day (precision), who took part, where (memory_groups adds it).
+            item["event"] = card["event"]
     result = {"page": args.page, "results": results, "more": found["more"]}
     if args.sensitive and memory_entities.enabled(settings):
         result["locked_facts"] = await memory_entities.search_locked(context.user_id, settings, words)
@@ -207,11 +233,13 @@ class MemoryAddInput(ToolInput):
     title: str = Field(default="", max_length=120,
                        description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
                                    "a short fact.")
-    type: Literal["note", "fact"] = Field(
+    type: Literal["note", "fact", "event"] = Field(
         default="note",
         description="note (default): a note saved as it is. fact: ONE short sentence about a person, place, pet or the "
                     "user, filed under 'me' with its history (needs the user's collections to be on). Use fact for "
-                    "'my mother's birthday is 17 November'; note for anything longer.")
+                    "'my mother's birthday is 17 November'; note for anything longer. event: something that happened on a "
+                    "date ('we went to Cappadocia in June', 'today was my mother's birthday'), filed under 'experiences' "
+                    "(needs the user's collections to be on). 'text' is what happened; give 'date'.")
     about: str = Field(
         default="", max_length=120,
         description="type=fact: who or what the fact is about: a name or relation as the user says it ('Ayşe', "
@@ -231,6 +259,42 @@ class MemoryAddInput(ToolInput):
     since: str = Field(default="", max_length=10,
                        description="type=fact: ISO date (YYYY-MM-DD) from which it is true, if the user said (resolve "
                                    "'since March' yourself); empty if unknown.")
+    date: str = Field(
+        default="", max_length=10,
+        description="type=event: when it happened: YYYY-MM-DD (or YYYY-MM, YYYY when only that is known). The Hub checks it "
+                    "against the time of the message: a relative word in 'said_as' (today, yesterday, tomorrow, last "
+                    "friday; bugün, dün, yarın, geçen cuma) is resolved by the Hub itself. For anything vaguer ('last "
+                    "summer') give your best date and precision=approx. type=fact with repeats=yearly: the day it repeats "
+                    "on (YYYY-MM-DD or MM-DD).")
+    end_date: str = Field(default="", max_length=10,
+                          description="type=event: the last day of a trip or period (YYYY-MM-DD); empty for one day.")
+    precision: Literal["", "day", "month", "year", "approx"] = Field(
+        default="", description="type=event: how exact the date is. Empty: what the date's form says (a full date = day).")
+    said_as: str = Field(default="", max_length=120,
+                         description="type=event: the user's own words for the time ('bugün', 'geçen yaz'), kept with the "
+                                     "event.")
+    participants: list[str] = Field(
+        default_factory=list, max_length=20,
+        description="type=event: who took part, as the user names them ('Ayşe', 'my mother'; 'me' for the user). An unknown "
+                    "name makes a new person; if two entities fit, the answer lists them: pass '#<id>'.")
+    place: str = Field(default="", max_length=120, description="type=event: where it happened ('Cappadocia').")
+    mood: str = Field(default="", max_length=40, description="type=event: how the user felt, if they said.")
+    items: list[int] = Field(
+        default_factory=list, max_length=50,
+        description="type=event: ids of existing memories (from search_memory) that belong to the event, such as its "
+                    "photos or videos.")
+    event: int | None = Field(
+        default=None,
+        description="type=event: the id of an existing event (from search_memory's 'event'): then nothing new is written, "
+                    "'items' are linked to that event.")
+    collection: str = Field(
+        default="", max_length=80,
+        description="Optional: the name of one of the user's albums or projects the new memory also joins. You do not "
+                    "create albums; an unknown name is an error. Needs the user's collections.")
+    repeats: Literal["none", "yearly"] = Field(
+        default="none",
+        description="type=fact: yearly when it falls on the same day every year (a birthday, an anniversary); then 'date' "
+                    "is that day.")
     replaces: int | None = Field(
         default=None,
         description="type=fact: the id of a current fact (from search_memory's 'fact') that this sentence replaces "
@@ -266,12 +330,19 @@ async def add_fact(args: MemoryAddInput, context: ToolContext, settings) -> dict
         return {"error": "A fact needs a source chat; nothing was saved."}
     try:
         category = me.category_of(args.category)
+        recurring = None
+        if args.repeats == "yearly":
+            if not args.date:
+                return {"error": "repeats=yearly needs 'date': the day it repeats on (YYYY-MM-DD or MM-DD)."}
+            recurring = me.recurring_of(args.date)
         if args.replaces is not None:
             done = await me.propose_supersede(context.user_id, settings, args.replaces, args.text, since=args.since or None,
-                                              chat_id=context.chat_id, category=category if args.category != "other" else None)
+                                              chat_id=context.chat_id, category=category if args.category != "other" else None,
+                                              recurring=recurring)
         else:
             done = await me.write_by_model(context.user_id, settings, context.chat_id, args.about, args.about_kind,
-                                           args.relation or None, category, args.text, since=args.since or None)
+                                           args.relation or None, category, args.text, since=args.since or None,
+                                           recurring=recurring)
     except me.Ambiguous as exc:
         return {"error": str(exc), "candidates": exc.candidates}
     except LookupError:
@@ -286,8 +357,63 @@ async def add_fact(args: MemoryAddInput, context: ToolContext, settings) -> dict
     if "same_as" in done:
         return {"same_as": done["same_as"], "note": "This was already known (a new source was added to it)."}
     fact = done["fact"]
-    return {"added": {"fact_id": fact["id"], "about": done["entity"]["name"], "statement": args.text,
-                      "since": fact["since"], "category": fact["category"]}}
+    added = {"fact_id": fact["id"], "about": done["entity"]["name"], "statement": args.text,
+             "since": fact["since"], "category": fact["category"]}
+    if fact.get("recurring"):
+        added["repeats"] = fact["recurring"]
+    return {"added": added}
+
+
+def _span(event: dict) -> str:
+    return event["date"] + (f" to {event['end']}" if event.get("end") else "")
+
+
+async def add_event(args: MemoryAddInput, context: ToolContext, settings) -> dict:
+    """add_memory type=event: written at once with the chat as its source (§8: an event the user said clearly); the date is
+    checked against the message's time. With `event`: only links `items` to that event. {"added": {...}}, {"same_as": id}
+    or {"linked": n}."""
+    from orion.kernel import memory, memory_albums, memory_events as ev, memory_entities as me
+    if not ev.enabled(settings):
+        return {"error": "Events need the user's memory collections (the 'memory_v2' setting), which are off: save "
+                         "it as a note (type=note) instead."}
+    if not context.chat_id:
+        return {"error": "An event needs a source chat; nothing was saved."}
+    try:
+        async with me._db() as conn:
+            groups = await ev.groups_of_rows(conn, context.user_id, args.items) if args.items else []
+            album = await memory_albums.album_id_of(conn, context.user_id, args.collection) if args.collection else None
+        if args.event is not None:
+            if not groups:
+                return {"error": "Give 'items': the ids of the memories to link to that event."}
+            done = await ev.set_items(context.user_id, settings, args.event, add=groups)
+            return {"linked": done["linked"], "event_id": args.event}
+        when = ev.resolve_date(args.date or None, args.end_date or None, args.precision or None, args.said_as or None)
+        done = await ev.add_event(context.user_id, settings, args.title, when, body=args.text, mood=args.mood or None,
+                                  participants=args.participants, place=args.place or None, items=groups, origin="model",
+                                  source={"chat_id": context.chat_id}, album=album)
+    except me.Ambiguous as exc:
+        return {"error": str(exc), "candidates": exc.candidates}
+    except LookupError as exc:
+        return {"error": str(exc.args[0]) if exc.args and isinstance(exc.args[0], str) else
+                "There is no event with that id (the user may have removed it); search_memory again."}
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        return {"error": str(exc)}
+    if "same_as" in done:
+        return {"same_as": done["same_as"], "note": "This event was already known (the new source and links were added to it)."}
+    event = done["event"]
+    added = {"event_id": event["id"], "title": event["title"], "date": _span(event), "precision": event["precision"]}
+    if event.get("said_as"):
+        added["said_as"] = event["said_as"]
+    if event["participants"]:
+        added["with"] = [p["name"] for p in event["participants"]]
+    if event["place"]:
+        added["place"] = event["place"]["name"]
+    if event["items"]:
+        added["photos"] = len(event["items"])
+    result = {"added": added}
+    if when.get("note"):
+        result["date_note"] = when["note"]
+    return result
 
 
 async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
@@ -296,11 +422,34 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
     settings = await get_runtime_settings(None, context.user_id)
     if args.type == "fact":
         return await add_fact(args, context, settings)
+    if args.type == "event":
+        return await add_event(args, context, settings)
+    if args.collection:  # A note that also joins one of the user's albums.
+        return await add_note_to_album(args, context, settings)
     try:
         added = await memory.add_note(context.user_id, args.text, settings, source_kind="assistant", title=args.title)
     except (memory.MemoryUnavailable, ValueError) as exc:
         return {"error": str(exc)}
     return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}
+
+
+async def add_note_to_album(args: MemoryAddInput, context: ToolContext, settings) -> dict:
+    from orion.kernel import memory, memory_albums, memory_collections, memory_entities as me
+    if not memory_collections.enabled(settings):
+        return {"error": "Albums need the user's memory collections (the 'memory_v2' setting), which are off."}
+    try:
+        async with me._db() as conn:
+            album = await memory_albums.album_id_of(conn, context.user_id, args.collection)
+        saved = await memory.add_note_to(context.user_id, args.text, settings, "assistant", title=args.title)
+        if saved.get("group_id"):
+            await memory_albums.set_members(context.user_id, settings, album, add=[saved["group_id"]])
+    except LookupError as exc:
+        return {"error": str(exc.args[0]) if exc.args and isinstance(exc.args[0], str) else str(exc)}
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        return {"error": str(exc)}
+    if not (saved["added"] or saved.get("job")):
+        return {"note": "This was already in memory.", "text": args.text}
+    return {"added": args.text, "album": args.collection}
 
 
 async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
@@ -537,7 +686,8 @@ CHAT_STATES = {
     "cleared": "The chat it came from was cleared; those messages are gone.",
 }
 SOURCES = {"chat_save": "saved from a chat", "file": "added as a file", "manual": "added as a note",
-           "assistant": "added by the assistant", "fact": "a fact about a person, place or the user"}
+           "assistant": "added by the assistant", "fact": "a fact about a person, place or the user",
+           "event": "an event with a date"}
 
 
 async def memory_context(args: MemoryContextInput, context: ToolContext) -> dict:
@@ -569,6 +719,18 @@ async def memory_context(args: MemoryContextInput, context: ToolContext) -> dict
                               "versions": [{"id": v["id"], "statement": v["statement"], "since": v["since"],
                                             "until": v["until"], "current": v["current"]} for v in about["versions"]],
                               "sources": about["sources"]}
+    if found["source_kind"] == "event":  # An event: its date, who took part, where and its photos.
+        from orion.kernel import memory_events
+        event_id = await memory_events.event_of_group(context.user_id, found["group"])
+        about = await memory_events.event_context(context.user_id, await get_runtime_settings(None, context.user_id),
+                                                  event_id) if event_id else None
+        if about:
+            result["event"] = about
+    elif found["source_kind"] != "fact":  # Any other memory (a photo...): the events it belongs to.
+        from orion.kernel import memory_events
+        events = await memory_events.events_of_item(context.user_id, found["group"])
+        if events:
+            result["events"] = events
     if found["rest"]:
         result["rest"] = (f"{found['rest']} more parts; call again with start="
                           f"{found['parts'][-1]['index'] + 1} to continue.")
