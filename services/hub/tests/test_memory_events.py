@@ -579,9 +579,9 @@ class EventTests(PostgresMemoryCase):
                               if a['name'] != mc.OLD_NAME}, {'Ofis': 1})
             self.assertEqual({a['name']: a['member'] for a in (await routes.memory_group_albums(group, request, 'alice'))['albums']
                               if a['name'] != mc.OLD_NAME}, {'Ofis': True})
-            shown = await routes.list_memory(request, '', 20, 0, 'all', 'all', [], [made_album['id']], '', '', 'alice')
+            shown = await routes.list_memory(request, '', 20, 0, 'all', 'all', [], [made_album['id']], '', '', current_user='alice')
             self.assertEqual(len(shown['groups']), 1)
-            dated = await routes.list_memory(request, '', 20, 0, 'all', 'all', [], [], '2026-11', '2026-11', 'alice')
+            dated = await routes.list_memory(request, '', 20, 0, 'all', 'all', [], [], '2026-11', '2026-11', current_user='alice')
             self.assertEqual(len(dated['groups']), 1)
             self.assertEqual(dated['groups'][0]['event']['title'], 'Kadıköy buluşması')
             for call, code in ((lambda: routes.memory_album_rename(made_album['id'], routes.AlbumBody(name='Ben'), request,
