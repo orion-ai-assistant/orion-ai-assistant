@@ -74,7 +74,7 @@ def hub_database(root, get_env):
     saved = _saved_database_passwords(root).get('POSTGRES_PASSWORD')
     return Postgres(Path(root) / '.local_db/postgres/bin' / ('pg_ctl.exe' if os.name == 'nt' else 'pg_ctl'),
                     data_root(root) / '.local_db/postgres/data', get_env('POSTGRES_PORT'),
-                    get_env('POSTGRES_USER'), get_env('POSTGRES_DB'), saved or get_env('POSTGRES_PASSWORD'))
+                    get_env('POSTGRES_USER'), get_env('POSTGRES_DB'), saved or get_env('POSTGRES_PASSWORD'), search=True)
 
 
 def _saved_database_passwords(root):

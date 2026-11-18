@@ -89,10 +89,30 @@ def owned_server(command, data, lock_directory, log):
 
 
 
-# A few users on one PC. Windows reserves shared_buffers in full at start (128 MB by default, per server), so it
-# stays small: the system's file cache keeps the rest of the data, a later vector index included. Each connection
-# slot reserves memory too; the pools here open at most a few dozen.
+# A few users on one PC. Windows reserves shared_buffers in full at start (per server), so the Router's small server
+# stays at 32 MB. Each connection slot reserves memory too; the pools here open at most a few dozen.
 MEMORY_SETTINGS = ('-c', 'shared_buffers=32MB', '-c', 'max_connections=50')
+
+MB = 1 << 20
+
+
+def memory_settings(ram_bytes=None, search=False):
+    """Start arguments for the server's memory. The default (the Router's own small server, which keeps only its
+    accounts and usage) is MEMORY_SETTINGS. The Hub's server (search=True) holds the memory vector index and trigram
+    search, which slow to 1-2 s when the index does not fit: shared_buffers is RAM/16 within 128 MB..1 GB,
+    effective_cache_size (a planner hint, nothing allocated) RAM/2, and the maintenance and per-sort memory grow a
+    little with it. Given on every start, so clusters that already exist get them too."""
+    if not search:
+        return MEMORY_SETTINGS
+    if ram_bytes is None:
+        ram_bytes = psutil.virtual_memory().total
+    ram = ram_bytes // MB
+    shared = min(max(ram // 16, 128), 1024)
+    values = {'shared_buffers': shared, 'effective_cache_size': max(ram // 2, 256),
+              'maintenance_work_mem': min(max(ram // 32, 64), 512), 'work_mem': min(max(ram // 1024, 4), 16),
+              'max_connections': 50}
+    return tuple(a for key, value in values.items()
+                 for a in ('-c', f'{key}={value}' if key == 'max_connections' else f'{key}={value}MB'))
 
 class SettingDenied(LifecycleError):
     """The role may not read this server setting (it lacks pg_read_all_settings)."""
@@ -103,7 +123,8 @@ class NotAccepting(LifecycleError):
 
 
 class Postgres:
-    def __init__(self, ctl, data, port, user, database, password=None):
+    def __init__(self, ctl, data, port, user, database, password=None, search=False):
+        self.search = search  # The Hub's server (vector index, trigram search): memory_settings sizes it from RAM.
         self.ctl, self.data = Path(ctl).resolve(), Path(data).resolve()
         if os.name == 'nt' and not (str(self.ctl) + str(self.data)).isascii():
             from services.shared.windows_postgres import verify_unicode_runtime
@@ -233,14 +254,14 @@ class Postgres:
                 # listen_addresses: never another network, whatever postgresql.conf says.
                 command = [str(self.executable), '-D', str(self.data), '-p', str(self.port), '-c', 'fsync=on',
                            '-c', 'full_page_writes=on', '-c', 'synchronous_commit=on',
-                           '-c', 'listen_addresses=localhost', *MEMORY_SETTINGS]
+                           '-c', 'listen_addresses=localhost', *memory_settings(search=self.search)]
                 self.job, self._server = owned_server(command, self.data, self.directory, log)
                 if not self._ready_soon(40, server=self._server):  # pg_ctl's 30 s start wait + its 10 s readiness check.
                     raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
                 return
             command = [str(self.ctl), 'start', '-D', str(self.data), '-l', str(log),
                        '-o', f'-p {self.port} -c fsync=on -c full_page_writes=on -c synchronous_commit=on '
-                       '-c listen_addresses=localhost ' + ' '.join(MEMORY_SETTINGS), '-w', '-t', '30']
+                       '-c listen_addresses=localhost ' + ' '.join(memory_settings(search=self.search)), '-w', '-t', '30']
             self.job, result = owned_start(command, self.data, self.directory, timeout=35)
             if result.returncode or not self._ready_soon():
                 raise LifecycleError('PostgreSQL failed readiness; dependent services not started')
