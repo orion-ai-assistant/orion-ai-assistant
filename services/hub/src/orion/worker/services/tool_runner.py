@@ -200,6 +200,7 @@ class ToolConversation:
                 media_refs = None
                 # False until a handler is started: only a call that may have had side effects blocks a retry.
                 started = False
+                uncertain = False
                 try:
                     if google_failure:
                         raise ValueError("Google AI Mode failed; further web calls were skipped")
@@ -261,13 +262,17 @@ class ToolConversation:
                     item.update(status="error", result={"error": {
                         "type": "ValidationError", "message": _input_problem(registry.tools[name], exc)[:2000]}})
                 except Exception as exc:
+                    uncertain = True  # Raised mid-run: its side effects are unknown.
                     item.update(status="error", result={"error": {"type": type(exc).__name__, "message": str(exc)[:2000] or "Tool timed out"}})
                 outcome = item.get('result')
                 if item['status'] == 'completed' and isinstance(outcome, dict) and (
                     outcome.get('error') or outcome.get('status') in {'failed', 'error', 'timeout', 'unknown'}
                 ):
                     item['status'] = 'error'
-                if item['status'] == 'error' and started:
+                # Only an uncertain result blocks a retry: a crash or a timeout mid-run. A tool that answered with its own
+                # {"error": ...} refused cleanly (nothing done), so a corrected call is allowed.
+                if item['status'] == 'error' and started and (uncertain or (isinstance(outcome, dict) and outcome.get(
+                        'status') in {'timeout', 'unknown'})):
                     self.failed_tools.add(name)
                 result_message = {"role": "tool", "tool_call_id": call["id"],
                                   "content": json.dumps(item["result"], ensure_ascii=False)}
