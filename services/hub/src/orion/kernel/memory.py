@@ -172,7 +172,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 4  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index.
+SCHEMA_VERSION = 5  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts.
 CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
@@ -205,6 +205,8 @@ async def _migrate(conn) -> None:
             await _schema_3(conn)
         if version < 4:
             await _schema_4(conn)
+        if version < 5:
+            await _schema_5(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
@@ -319,6 +321,71 @@ async def _schema_4(conn) -> None:
             started_at timestamptz not null default now(),
             updated_at timestamptz not null default now(),
             finished_at timestamptz)""")
+
+
+async def _schema_5(conn) -> None:
+    """Entities and facts (§4, §5; memory_entities): the entities (`keys`: their folded name, relation and aliases, for exact
+    matching), the bi-temporal facts (`lineage`: the first version's id, shared by every version), the record of entity
+    merges (to undo them) and the proposals (the cards). Every table has user_id; every read filters by it. A fact's
+    search vector is an ordinary `orion_memory` row (source_kind 'fact'): nothing changes in that table."""
+    await conn.execute("""
+        create table if not exists orion_mem_entity (
+            id bigserial primary key,
+            user_id text not null,
+            kind text not null,                -- person | place | org | pet | thing | self
+            name text not null,
+            relation text,                     -- "annem" (to the user)
+            aliases text[] not null default '{}',
+            keys text[] not null default '{}', -- folded name, relation and aliases
+            merged_into bigint references orion_mem_entity(id),
+            deleted_at timestamptz,
+            created_at timestamptz not null default now())""")
+    await conn.execute("create index if not exists idx_orion_mem_entity_user on orion_mem_entity (user_id) "
+                       "where merged_into is null and deleted_at is null")
+    await conn.execute("""
+        create table if not exists orion_mem_entity_merge (
+            id bigserial primary key,
+            user_id text not null,
+            from_id bigint not null, into_id bigint not null,
+            moved jsonb not null,              -- {"facts": [ids], "links": [], "aliases": [added]}
+            merged_at timestamptz not null default now(),
+            undone_at timestamptz)""")
+    await conn.execute("create index if not exists idx_orion_mem_entity_merge_user on orion_mem_entity_merge "
+                       "(user_id, into_id)")
+    await conn.execute("""
+        create table if not exists orion_mem_fact (
+            id bigserial primary key,
+            user_id text not null,
+            entity_id bigint not null references orion_mem_entity(id),
+            lineage bigint,                    -- the first version's id: one lineage = one fact over time
+            category text not null,
+            statement text not null,
+            valid_from date, valid_to date,    -- when it was true in the world
+            recorded_at timestamptz not null default now(),
+            expired_at timestamptz,            -- when Orion stopped counting it (a newer version replaced it)
+            superseded_by bigint references orion_mem_fact(id),
+            sensitive boolean not null default false,   -- locked: no vector row, only word matches on request
+            origin text not null,              -- user | model | extraction
+            group_id text,                     -- its memory (vector row) in orion_memory; null for a locked fact
+            deleted_at timestamptz)            -- a locked fact removed (others are removed through the trash)""")
+    await conn.execute("create index if not exists idx_orion_mem_fact_entity on orion_mem_fact (user_id, entity_id) "
+                       "where superseded_by is null")
+    await conn.execute("create index if not exists idx_orion_mem_fact_lineage on orion_mem_fact (user_id, lineage)")
+    await conn.execute("create index if not exists idx_orion_mem_fact_group on orion_mem_fact (user_id, group_id) "
+                       "where group_id is not null")
+    await conn.execute("""
+        create table if not exists orion_mem_proposal (
+            id bigserial primary key,
+            user_id text not null,
+            batch_id bigint,                   -- several proposals on one card
+            action text not null,              -- add | supersede | merge_entities (more with step 6)
+            payload jsonb not null,
+            reason text,
+            chat_id text, message_id bigint,
+            state text not null default 'pending',   -- pending | claimed | accepted | edited | rejected
+            created_at timestamptz not null default now(),
+            decided_at timestamptz)""")
+    await conn.execute("create index if not exists idx_orion_mem_proposal_user on orion_mem_proposal (user_id, state)")
 
 
 ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).

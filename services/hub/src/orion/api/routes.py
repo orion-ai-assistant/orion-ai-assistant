@@ -290,6 +290,175 @@ async def put_chat_memory_state(chat_id: str, payload: ChatMemorySwitch, request
         raise HTTPException(503, str(exc)) from exc
 
 
+# --- Ben: entities, facts, proposals (memory_entities; behind the user's memory_v2) -------------------------------------
+
+class EntityBody(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+    kind: str = Field(default="person", max_length=20)
+    relation: str | None = Field(default=None, max_length=120)
+    aliases: list[str] | None = Field(default=None, max_length=20)
+
+
+class FactBody(BaseModel):
+    entity_id: int | None = None  # An existing entity, else `about` (a name; a new entity when unknown).
+    about: str = Field(default="", max_length=120)
+    kind: str = Field(default="person", max_length=20)
+    relation: str | None = Field(default=None, max_length=120)
+    category: str = Field(default="diğer", max_length=40)
+    statement: str = Field(min_length=1, max_length=2000)
+    since: str | None = Field(default=None, max_length=10)
+
+
+class MergeBody(BaseModel):
+    from_id: int
+    into_id: int
+
+
+class ProposalAnswer(BaseModel):
+    accept: list[int] = Field(default_factory=list, max_length=100)
+    reject: list[int] = Field(default_factory=list, max_length=100)
+    edits: dict[str, str] = Field(default_factory=dict, max_length=100)  # proposal id -> the user's own sentence
+
+
+async def _ben(request: Request, user: str, call):
+    """Run `call(settings)` of memory_entities as this user: its errors as the page's answers (404 for what is not the
+    user's, 400 for a refused value, 409 for a name that fits several entities)."""
+    from orion.kernel import memory, memory_entities
+    try:
+        return await call(await get_runtime_settings(request.app.state.redis, user))
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except memory_entities.Ambiguous as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, "Bulunamadı.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/api/v1/memory/entities")
+async def memory_entities_list(request: Request, q: str = "", current_user: str = Depends(get_current_user)):
+    """The Ben tab's list: {"entities": [{id, kind, name, relation, aliases, facts, locked}], "pending": proposals open}."""
+    from orion.kernel import memory_entities as me
+
+    async def call(settings):
+        return {"entities": await me.list_entities(current_user, settings, q[:120]),
+                "pending": len(await me.proposals(current_user, settings, "pending"))}
+    return await _ben(request, current_user, call)
+
+
+@router.post("/api/v1/memory/entities")
+async def memory_entity_create(payload: EntityBody, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.create_entity(
+        current_user, s, payload.name or "", payload.kind, payload.relation, payload.aliases))
+
+
+@router.post("/api/v1/memory/entities/merge")
+async def memory_entities_merge(payload: MergeBody, request: Request, current_user: str = Depends(get_current_user)):
+    """The user merges two entities (their own change, no card); {"merge_id"} undoes it."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.merge_entities(current_user, s, payload.from_id, payload.into_id))
+
+
+@router.post("/api/v1/memory/entities/merges/{merge_id}/undo")
+async def memory_entities_undo_merge(merge_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.undo_merge(current_user, s, merge_id))
+
+
+@router.post("/api/v1/memory/entities/duplicates")
+async def memory_entities_duplicates(request: Request, current_user: str = Depends(get_current_user)):
+    """Entities with the same name or alias as ONE batch card of merge proposals: {"batch_id", "proposals": [ids]}."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.propose_merges(current_user, s))
+
+
+@router.get("/api/v1/memory/entities/{entity_id}")
+async def memory_entity_card(entity_id: int, request: Request, reveal: bool = False,
+                             current_user: str = Depends(get_current_user)):
+    """One entity with its current facts (past version counts, source counts; locked ones without text unless `reveal`)."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.entity_card(current_user, s, entity_id, reveal))
+
+
+@router.put("/api/v1/memory/entities/{entity_id}")  # PUT too: the app's client has no PATCH.
+@router.patch("/api/v1/memory/entities/{entity_id}")
+async def memory_entity_update(entity_id: int, payload: EntityBody, request: Request,
+                               current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.update_entity(
+        current_user, s, entity_id, payload.name, payload.relation, payload.aliases))
+
+
+@router.post("/api/v1/memory/facts")
+async def memory_fact_create(payload: FactBody, request: Request, current_user: str = Depends(get_current_user)):
+    """The user writes a fact (no card; source: the user): {"fact"} or {"same_as"}."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.write_by_user(
+        current_user, s, payload.about, payload.category, payload.statement, kind=payload.kind,
+        relation=payload.relation, since=payload.since, entity_id=payload.entity_id))
+
+
+@router.get("/api/v1/memory/facts/{fact_id}")
+async def memory_fact_history(fact_id: int, request: Request, reveal: bool = False,
+                              current_user: str = Depends(get_current_user)):
+    """Every version of a fact with its sources (locked text only with `reveal`)."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.history(current_user, s, fact_id, reveal))
+
+
+@router.post("/api/v1/memory/facts/{fact_id}/replace")
+async def memory_fact_replace(fact_id: int, payload: FactBody, request: Request,
+                              current_user: str = Depends(get_current_user)):
+    """The user corrects or updates a fact: a new version, the old one kept as history (no card: their own change)."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.supersede(
+        current_user, s, fact_id, payload.statement, origin="user", source={"by_user": True}, since=payload.since,
+        category=payload.category if payload.category != "diğer" else None))
+
+
+@router.post("/api/v1/memory/facts/{fact_id}/remove")  # The same as DELETE, with the answer for the app's client.
+@router.delete("/api/v1/memory/facts/{fact_id}")
+async def memory_fact_remove(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    """Remove a fact with its history: {"trash_id"} (undo: POST /memory/trash/restore) or, for a locked fact,
+    {"restore": id} (undo: POST /memory/facts/{id}/restore)."""
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.remove_fact(current_user, s, fact_id))
+
+
+@router.post("/api/v1/memory/facts/{fact_id}/restore")
+async def memory_fact_restore(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_entities as me
+    return await _ben(request, current_user, lambda s: me.restore_fact(current_user, s, fact_id))
+
+
+@router.get("/api/v1/memory/proposals")
+async def memory_proposals(request: Request, state: str = "pending", ids: str = "",
+                           current_user: str = Depends(get_current_user)):
+    """The cards: proposals in `state` ("" = every state), newest first; `ids` (comma separated) picks some."""
+    from orion.kernel import memory_entities as me
+    wanted = [int(i) for i in ids.split(",") if i.strip().isdigit()][:100] or None
+    return await _ben(request, current_user, lambda s: _proposal_list(me, current_user, s, state, wanted))
+
+
+async def _proposal_list(me, user: str, settings, state: str, ids):
+    return {"proposals": await me.proposals(user, settings, state or None, ids)}
+
+
+@router.post("/api/v1/memory/proposals/answer")
+async def memory_proposals_answer(payload: ProposalAnswer, request: Request,
+                                  current_user: str = Depends(get_current_user)):
+    """The user's answer to one card or a batch card: accept / reject ids, `edits` {id: own sentence} (Düzenle)."""
+    from orion.kernel import memory_entities as me
+    edits = {int(k): v[:2000] for k, v in payload.edits.items() if k.isdigit()}
+    return await _ben(request, current_user, lambda s: _proposal_answer(me, current_user, s, payload, edits))
+
+
+async def _proposal_answer(me, user: str, settings, payload: ProposalAnswer, edits: dict):
+    return {"results": await me.decide(user, settings, payload.accept, payload.reject, edits)}
+
+
 @router.post("/api/v1/memory/collections/revert")
 async def memory_collections_revert(request: Request, current_user: str = Depends(get_current_user)):
     """Undo the collections (docs/hafiza-tasarimi.md §13): memory_v2 off for this user, the rows' collection emptied,

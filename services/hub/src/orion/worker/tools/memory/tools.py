@@ -51,6 +51,12 @@ class MemorySearchInput(ToolInput):
                     "one chat. A personal question: me, experiences; something said before: chats. Empty: the whole "
                     "memory except the past conversations (ask for 'chats' to search them). Ignored while the "
                     "user's memory has no collections.")
+    sensitive: bool = Field(
+        default=False,
+        description="true ONLY when the user directly asks about a locked topic (their health, religion, politics, "
+                    "sex life, ethnicity, union, legal trouble, money or ID documents): then the locked facts that "
+                    "match the query words are added to the answer as 'locked_facts'. Locked facts are never in "
+                    "ordinary results. Ignored while the user's memory has no collections.")
     page: int = Field(default=1, ge=1, le=100,
                       description="Result page: 1 = the best ones, 2 = the next ones... Look further only if "
                                   "'more' is true.")
@@ -158,14 +164,15 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
 
 
 async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
-    from orion.kernel import memory, memory_groups
+    from orion.kernel import memory, memory_entities, memory_groups
     from orion.kernel.config import get_runtime_settings
     queries = [{"text": q.text, "id": q.id, "keyword": q.keyword, "like": q.like} for q in args.queries
                if q.id is not None or q.text.strip() or q.keyword.strip()]
     size = args.page_size
+    settings = await get_runtime_settings(None, context.user_id)
     try:
         found = await memory_groups.search_queries(
-            context.user_id, await get_runtime_settings(None, context.user_id), queries,
+            context.user_id, settings, queries,
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
             vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size,
             **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip()]) else {}))
@@ -174,7 +181,14 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
     labels = found.get("labels") or []
     words = ", ".join(q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None)
     results = [_result(card, labels, words) for card in found["groups"]]
+    for card, item in zip(found["groups"], results):
+        if card.get("fact"):  # A fact: who it is about, its kind and since when (memory_groups adds it to the card).
+            item["fact"] = card["fact"]
     result = {"page": args.page, "results": results, "more": found["more"]}
+    if args.sensitive and memory_entities.enabled(settings):
+        result["locked_facts"] = await memory_entities.search_locked(context.user_id, settings, words)
+        result["locked_note"] = ("Locked facts match by words only, and only because the user asked. Tell them what "
+                                 "they asked for; do not bring these up on your own.")
     if results:
         result["note"] = NOTE if any(q["like"] for q in queries) else "Newest first. " + NOTE
     else:
@@ -193,6 +207,35 @@ class MemoryAddInput(ToolInput):
     title: str = Field(default="", max_length=120,
                        description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
                                    "a short fact.")
+    type: Literal["note", "fact"] = Field(
+        default="note",
+        description="note (default): a note saved as it is. fact: ONE short sentence about a person, place, pet or the "
+                    "user, filed under 'me' with its history (needs the user's collections to be on). Use fact for "
+                    "'my mother's birthday is 17 November'; note for anything longer.")
+    about: str = Field(
+        default="", max_length=120,
+        description="type=fact: who or what the fact is about: a name or relation as the user says it ('Ayşe', "
+                    "'my mother'); empty or 'me' for the user. An unknown name makes a new entity; if two entities "
+                    "fit, the answer lists them: pass '#<id>' to choose one.")
+    about_kind: Literal["person", "place", "org", "pet", "thing"] = Field(
+        default="person", description="type=fact: what a NEW entity is (ignored for one that exists).")
+    relation: str = Field(default="", max_length=120,
+                          description="type=fact: how a new entity relates to the user ('mother', 'colleague').")
+    category: Literal["identity", "relationship", "preference", "opinion", "work", "place", "date", "other", "health",
+                      "sexual_life", "religion", "political", "ethnicity", "union", "biometric_genetic", "legal",
+                      "finance", "id_number"] = Field(
+        default="other",
+        description="type=fact: what kind of fact. The last ten (health ... id_number) are locked kinds: say them only "
+                    "when the user themselves said it; they are never saved without the user's press on a card, and "
+                    "ID or card numbers are never stored, only that one exists.")
+    since: str = Field(default="", max_length=10,
+                       description="type=fact: ISO date (YYYY-MM-DD) from which it is true, if the user said (resolve "
+                                   "'since March' yourself); empty if unknown.")
+    replaces: int | None = Field(
+        default=None,
+        description="type=fact: the id of a current fact (from search_memory's 'fact') that this sentence replaces "
+                    "because things changed ('I moved to Istanbul'). You never close or rewrite a fact: this opens a "
+                    "card for the user, who keeps the old one as history when they accept.")
 
 
 class MemoryDeleteInput(ToolInput):
@@ -212,12 +255,49 @@ class MemoryOpenInput(ToolInput):
                                        "reported as not opened and can be asked for again.")
 
 
+async def add_fact(args: MemoryAddInput, context: ToolContext, settings) -> dict:
+    """add_memory type=fact: a clearly stated fact is written at once with the chat as its source; a replacement, or a
+    locked kind, only opens a card the user answers (§8). {"added": {...}}, {"same_as": id} or {"proposal": id}."""
+    from orion.kernel import memory, memory_entities as me
+    if not me.enabled(settings):
+        return {"error": "Facts need the user's memory collections (the 'memory_v2' setting), which are off: save "
+                         "it as a note (type=note) instead."}
+    if not context.chat_id:
+        return {"error": "A fact needs a source chat; nothing was saved."}
+    try:
+        category = me.category_of(args.category)
+        if args.replaces is not None:
+            done = await me.propose_supersede(context.user_id, settings, args.replaces, args.text, since=args.since or None,
+                                              chat_id=context.chat_id, category=category if args.category != "other" else None)
+        else:
+            done = await me.write_by_model(context.user_id, settings, context.chat_id, args.about, args.about_kind,
+                                           args.relation or None, category, args.text, since=args.since or None)
+    except me.Ambiguous as exc:
+        return {"error": str(exc), "candidates": exc.candidates}
+    except LookupError:
+        return {"error": "There is no current fact with that id (the user may have removed it); search_memory again."}
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        return {"error": str(exc)}
+    if "proposal" in done:
+        return {"status": "awaiting_user_confirmation", "proposal_id": done["proposal"],
+                "instruction": "NOTHING is saved or changed yet. A card with Onayla / Düzenle / Reddet was shown to the "
+                               "user. Tell them briefly what you suggested and that it waits for them; do not say it "
+                               "was saved."}
+    if "same_as" in done:
+        return {"same_as": done["same_as"], "note": "This was already known (a new source was added to it)."}
+    fact = done["fact"]
+    return {"added": {"fact_id": fact["id"], "about": done["entity"]["name"], "statement": args.text,
+                      "since": fact["since"], "category": fact["category"]}}
+
+
 async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
     from orion.kernel import memory
     from orion.kernel.config import get_runtime_settings
+    settings = await get_runtime_settings(None, context.user_id)
+    if args.type == "fact":
+        return await add_fact(args, context, settings)
     try:
-        added = await memory.add_note(context.user_id, args.text, await get_runtime_settings(None, context.user_id),
-                                      source_kind="assistant", title=args.title)
+        added = await memory.add_note(context.user_id, args.text, settings, source_kind="assistant", title=args.title)
     except (memory.MemoryUnavailable, ValueError) as exc:
         return {"error": str(exc)}
     return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}
@@ -457,7 +537,7 @@ CHAT_STATES = {
     "cleared": "The chat it came from was cleared; those messages are gone.",
 }
 SOURCES = {"chat_save": "saved from a chat", "file": "added as a file", "manual": "added as a note",
-           "assistant": "added by the assistant"}
+           "assistant": "added by the assistant", "fact": "a fact about a person, place or the user"}
 
 
 async def memory_context(args: MemoryContextInput, context: ToolContext) -> dict:
@@ -480,6 +560,15 @@ async def memory_context(args: MemoryContextInput, context: ToolContext) -> dict
         result["scope"] = f"only {args.id} and {found['neighbours']} parts before and after it"
     if found["title"]:
         result["file" if found["source_kind"] == "file" else "chat_title"] = found["title"]
+    if found["source_kind"] == "fact":  # A fact: who it is about, its past versions and where it came from.
+        from orion.kernel import memory_entities
+        fact_id = await memory_entities.fact_of_group(context.user_id, found["group"])
+        about = await memory_entities.fact_context(context.user_id, fact_id) if fact_id else None
+        if about:
+            result["fact"] = {"id": fact_id, "about": about["entity"]["name"], "category": about["category"],
+                              "versions": [{"id": v["id"], "statement": v["statement"], "since": v["since"],
+                                            "until": v["until"], "current": v["current"]} for v in about["versions"]],
+                              "sources": about["sources"]}
     if found["rest"]:
         result["rest"] = (f"{found['rest']} more parts; call again with start="
                           f"{found['parts'][-1]['index'] + 1} to continue.")

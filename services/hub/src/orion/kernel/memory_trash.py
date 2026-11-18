@@ -161,6 +161,9 @@ async def purge(user_id: str, trash_ids: list[str] | None = None, settings=None)
                 await _scrub_previews(conn, user_id, gone)
     finally:
         await conn.close()
+    if rows:  # Facts whose memory is gone go with their past versions (nothing for a user without facts).
+        from orion.kernel import memory_entities
+        await memory_entities.after_purge(user_id)
     if neighbours:
         memory._schedule_reembed(user_id, neighbours, settings)
     return {"deleted": [r["id"] for r in rows if not r.get("whole")], "entries": len(trash_ids)}
@@ -263,6 +266,11 @@ async def purge_expired(settings_of=None) -> int:
             count += (await purge(user_id, expired, settings))["entries"]
         except Exception:
             logger.exception("Memory trash: removals of a user could not be deleted for good")
+    try:  # Locked facts the user removed (they have no rows to put in the trash).
+        from orion.kernel import memory_entities
+        count += await memory_entities.purge_removed_all(settings_of)
+    except Exception:
+        logger.exception("Memory trash: removed locked facts could not be deleted for good")
     if count:
         logger.info("Memory trash: %d removals older than their trash days deleted for good", count)
     return count

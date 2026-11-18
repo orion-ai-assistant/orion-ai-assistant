@@ -582,6 +582,11 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             more = offset + len(groups) < int(matching or 0)
         hits = await text_candidates(conn, user_id, groups, q) if searching and q else set()
         members = await _group_rows(conn, user_id, groups, full=hits if hits is not None else True)
+        about = {}
+        fact_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "fact"]
+        if fact_groups:  # Facts say who they are about (one lookup, on this connection).
+            from orion.kernel import memory_entities
+            about = await memory_entities.facts_on(conn, user_id, fact_groups)
         if searching:
             summary = await _summary(conn, user_id, space)
     finally:
@@ -600,6 +605,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             # The part the memory is shown by is the panel's best part: one computation.
             matched = parts_match["best"] if parts_match["best"] is not None else row["id"]
         item = card(g, rows, prefer, space, matched=matched)
+        if g in about:
+            item["fact"] = about[g]
         if entry:
             # The memory's score is group_match's (the panel shows the same); a memory the vectors did not reach
             # (another model's, found by its words) keeps the search's own.

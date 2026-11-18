@@ -24,6 +24,7 @@ BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "S
 OLD_NAME = "Eski hafıza"
 IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
 CHAT_PREFIX = "chat:"  # A collection name "chat:<chat id>": only the windows of that one chat (Sohbetler, narrowed).
+SORTED_TO = {"file": "belgeler", "fact": "ben"}  # Where a memory's first row sends it when sorted; the rest: Eski hafıza.
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 
@@ -62,7 +63,7 @@ async def ensure_user(conn, user_id: str) -> None:
             await conn.execute(
                 "insert into orion_mem_collection_item (user_id, collection_id, group_id, main) "
                 "select $1, c, g, true from unnest($2::text[], $3::text[]) as x(c, g) on conflict do nothing",
-                user_id, ["belgeler" if r["source_kind"] == "file" else old for r in firsts],
+                user_id, [SORTED_TO.get(r["source_kind"], old) for r in firsts],
                 [r["g"] for r in firsts])
         logger.info("Memory: collections made for a user, %d memories sorted (%d to Belgeler)", len(firsts),
                     sum(1 for r in firsts if r["source_kind"] == "file"))

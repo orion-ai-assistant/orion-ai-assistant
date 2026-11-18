@@ -15,7 +15,11 @@ CATEGORY = Category(
            Tool(id="add_memory", name="Hafızaya ekle",
                 description=("Saves something to remember when the user says 'remember this', 'keep in mind', "
                              "'don't forget'. 'text' is one short self-contained sentence (e.g. 'The user's "
-                             "birthday is 3 March.'). Never save without being asked."),
+                             "birthday is 3 March.'). Never save without being asked. type=fact (when the user's "
+                             "memory collections are on) saves ONE short sentence about a person, place or the user "
+                             "with 'about' and 'category'; a changed fact is passed with 'replaces' (a card asks the "
+                             "user, you never close or rewrite a fact); a locked kind (health, religion, money ...) "
+                             "also only opens a card. The answer may say same_as: it was already known."),
                 input_model=MemoryAddInput, handler=add_memory, timeout_seconds=45, default_on=True),
            Tool(id="delete_memory", name="Hafızadan sil",
                 description=("When the user says 'forget this', 'delete it from your memory'. Find the memories with "
