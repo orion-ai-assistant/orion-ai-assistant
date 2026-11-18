@@ -286,15 +286,27 @@ ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks th
 _COUNTERS = (
     ("orion_memory_cnt_group", ("user_id", "g", "s"),
      ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "{live}"),
+    ("orion_memory_cnt_groupall", ("user_id", "g"),
+     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)"), "{live}"),
     ("orion_memory_cnt_item", ("user_id", "i", "kind"),
      ("{a}.user_id", "coalesce({a}.item_id, coalesce({a}.copied_from, {a}.id)::text)", "{a}.kind"),
      "not {a}.whole and {live}"),
     ("orion_memory_cnt_content", ("user_id", "c", "s"),
      ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "{live}"),
 )  # Rows in the trash are not counted: an entry in orion_mem_trash moves them out of the counts (its triggers).
+# What the page's summary reads: how many counter rows each user has with n > 0, per aggregate key. The counters above
+# have a row per memory, so counting them at every read costs as much as the user has memories (seconds at millions,
+# and every write makes the next read count again). The same statements that change a counter row change this small
+# table too, only when the row crosses 0, so the summary is a read of a handful of rows however large the memory is.
+_AGGREGATES = {
+    "orion_memory_cnt_group": ("orion_memory_sum_space", ("user_id", "s")),
+    "orion_memory_cnt_groupall": ("orion_memory_sum_total", ("user_id",)),
+    "orion_memory_cnt_item": ("orion_memory_sum_kind", ("user_id", "kind")),
+    "orion_memory_cnt_content": ("orion_memory_sum_content", ("user_id", "s")),
+}
 _COLUMN_TYPES = {"user_id": "text", "g": "text", "s": "text", "i": "text", "kind": "text", "c": "bigint"}
 _COUNTED = ("group_id", "vector_space", "kind", "item_id", "copied_from", "whole")
-COUNTERS_MARKER = "counters_built_3"  # The counts' definition changed (trash): filled again once.
+COUNTERS_MARKER = "counters_built_4"  # The counts' definition changed (aggregates): filled again once.
 
 
 def _count_sql(source: str, sign: int, other: str | None = None, trashed: bool = False) -> str:
@@ -311,9 +323,31 @@ def _count_sql(source: str, sign: int, other: str | None = None, trashed: bool =
         columns = ", ".join(names)
         select = ", ".join(e.format(a="r") for e in exprs)
         group = ", ".join(str(i + 1) for i in range(len(names)))
-        sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
-                f"where {where.format(a='r', live='true' if trashed else live('r'))} group by {group} "
-                f"on conflict ({columns}) do update set n = {table}.n + excluded.n; ")
+        condition = where.format(a='r', live='true' if trashed else live('r'))
+        aggregate = _AGGREGATES.get(table)
+        if aggregate is None:
+            sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
+                    f"where {condition} group by {group} order by {group} "
+                    f"on conflict ({columns}) do update set n = {table}.n + excluded.n; ")
+            continue
+        # The deltas first, then the counter rows they change; where a row crosses 0 (a memory appears or its last row
+        # goes) the aggregate follows. Keys are taken in order, so two writers never lock them crosswise.
+        named = ", ".join(f"{e.format(a='r')} as {n}" for e, n in zip(exprs, names))
+        target, keys = aggregate
+        akeys = ", ".join(keys)
+        ukeys = ", ".join('u.' + k for k in keys)
+        dcols = ", ".join('d.' + c for c in names)
+        crossed = ("case when u.new_n - d.dn <= 0 and u.new_n > 0 then 1 "
+                   "when u.new_n - d.dn > 0 and u.new_n <= 0 then -1 else 0 end")
+        sql += (f"with d as (select {named}, {sign} * count(*) as dn from {source} r {join} where {condition} "
+                f"group by {group}), "
+                f"up as (insert into {table} ({columns}, n) select {dcols}, d.dn from d order by {dcols} "
+                f"on conflict ({columns}) do update set n = {table}.n + excluded.n "
+                f"returning {', '.join(f'{table}.{c}' for c in names)}, {table}.n as new_n) "
+                f"insert into {target} ({akeys}, n) select {ukeys}, sum({crossed}) "
+                f"from up u join d on {' and '.join(f'd.{c} = u.{c}' for c in names)} group by {ukeys} "
+                f"having sum({crossed}) <> 0 order by {ukeys} "
+                f"on conflict ({akeys}) do update set n = {target}.n + excluded.n; ")
     return sql  # Rows that reach 0 stay (readers count n > 0; _counter_triggers purges them at start): a delete is cheaper.
 
 
@@ -337,6 +371,10 @@ async def _counter_triggers(conn) -> None:
     for table, names, _, _ in _COUNTERS:
         columns = ", ".join(f"{c} {_COLUMN_TYPES[c]} not null" for c in names)
         await conn.execute(f"create table if not exists {table} ({columns}, n integer not null, "
+                           f"primary key ({', '.join(names)}))")
+    for table, names in _AGGREGATES.values():
+        columns = ", ".join(f"{c} {_COLUMN_TYPES[c]} not null" for c in names)
+        await conn.execute(f"create table if not exists {table} ({columns}, n bigint not null, "
                            f"primary key ({', '.join(names)}))")
     # The per-space reads of the summary (contents of one space, joined to the active space's).
     await conn.execute("create index if not exists idx_orion_memory_cnt_content_space on orion_memory_cnt_content "
@@ -369,7 +407,9 @@ async def _counter_triggers(conn) -> None:
         await conn.execute(f"create trigger orion_mem_trash_count_{event} after {event} on orion_mem_trash "
                            f"referencing {referencing} for each statement execute function orion_mem_trash_count_{event}()")
     await conn.execute("create or replace function orion_memory_count_truncate() returns trigger language plpgsql as "
-                       "$$ begin truncate orion_memory_cnt_group, orion_memory_cnt_item, orion_memory_cnt_content; "
+                       "$$ begin truncate orion_memory_cnt_group, orion_memory_cnt_groupall, orion_memory_cnt_item, "
+                       "orion_memory_cnt_content, orion_memory_sum_space, orion_memory_sum_total, orion_memory_sum_kind, "
+                       "orion_memory_sum_content; "
                        "update orion_memory_version set n = n + 1; "
                        "return null; end $$")
     await conn.execute("drop trigger if exists orion_memory_count_truncate on orion_memory")
@@ -377,7 +417,7 @@ async def _counter_triggers(conn) -> None:
                        "for each statement execute function orion_memory_count_truncate()")
     for old in ("orion_memory_bump_insert", "orion_memory_bump_update", "orion_memory_bump_delete"):
         await conn.execute(f"drop trigger if exists {old} on orion_memory")
-    for table, _, _, _ in _COUNTERS:
+    for table in [c[0] for c in _COUNTERS] + [a[0] for a in _AGGREGATES.values()]:
         await conn.execute(f"delete from {table} where n <= 0")
     if await conn.fetchval("select value from orion_memory_meta where key = $1", COUNTERS_MARKER):
         return
@@ -389,6 +429,11 @@ async def _counter_triggers(conn) -> None:
             group = ", ".join(str(i + 1) for i in range(len(names)))
             await conn.execute(f"insert into {table} ({', '.join(names)}, n) select {select}, count(*) "
                                f"from orion_memory r where {where.format(a='r', live=live('r'))} group by {group}")
+            if table in _AGGREGATES:
+                target, keys = _AGGREGATES[table]
+                await conn.execute(f"truncate {target}")
+                await conn.execute(f"insert into {target} ({', '.join(keys)}, n) select {', '.join(keys)}, count(*) "
+                                   f"from {table} where n > 0 group by {', '.join(keys)}")
         await conn.execute("insert into orion_memory_meta (key, value) values ($1, 'yes') on conflict do nothing",
                            COUNTERS_MARKER)
 
@@ -1520,18 +1565,31 @@ async def _text_rows(conn, user_id: str, q: str, vector_space: str, kind: str, s
     score = _score_sql(params, space, vector)
     extra = filters_sql(vector_space, kind, params, collections)
     if _trgm and fuzzy:
-        # `like` and `<%` (word_similarity >= the threshold set here) are the operators the GIN trigram index
-        # answers; one row per memory is chosen in SQL, so the cap counts memories, not their pieces.
+        # Words first, near spellings after: a substring match ranks above any near spelling (its score is 1), so the
+        # near-spelling search (`<%`, which walks most of the trigram index) only runs when the words alone did not
+        # fill the cap, and then only for the rest. `like` and `<%` (word_similarity >= the threshold set here) are the
+        # operators the GIN trigram index answers; one row per memory is chosen in SQL, so the cap counts memories.
         group = "coalesce(group_id, 'r' || id::text)"
-        async with conn.transaction():
-            await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{FUZZY_MIN}', true)")
-            rows = await conn.fetch(
-                f"select * from (select distinct on ({group}) {_COLUMNS}, {score} as score, "
-                f"case when folded like $2 then 1.0 else word_similarity($3, folded) end as tscore "
-                f"from orion_memory where user_id = $1 and not whole and (folded like $2 or $3 <% folded)"
-                f"{extra} order by {group}, tscore desc, created_at desc, id desc) best "
-                f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP}", *params)
-        return [{**dict(r), "tmatch": "text" if float(r["tscore"]) >= 1 else "similar"} for r in rows]
+        found = await conn.fetch(
+            f"select * from (select distinct on ({group}) {_COLUMNS}, {score} as score, 1.0::float8 as tscore "
+            f"from orion_memory where user_id = $1 and not whole and folded like $2 and $3::text is not null{extra} "
+            f"order by {group}, created_at desc, id desc) best "
+            f"order by created_at desc, id desc limit {TEXT_CAP}", *params)
+        rows = [{**dict(r), "tmatch": "text"} for r in found]
+        if len(rows) < TEXT_CAP:
+            seen = [group_key(r) for r in rows]
+            params.append(seen)
+            async with conn.transaction():
+                await conn.execute(f"select set_config('pg_trgm.word_similarity_threshold', '{FUZZY_MIN}', true)")
+                near = await conn.fetch(
+                    f"select * from (select distinct on ({group}) {_COLUMNS}, {score} as score, "
+                    f"word_similarity($3, folded) as tscore from orion_memory "
+                    f"where user_id = $1 and not whole and not (folded like $2) and $3 <% folded "
+                    f"and {group} <> all(${len(params)}::text[]){extra} "
+                    f"order by {group}, tscore desc, created_at desc, id desc) best "
+                    f"order by tscore desc, created_at desc, id desc limit {TEXT_CAP - len(rows)}", *params)
+            rows += [{**dict(r), "tmatch": "similar"} for r in near]
+        return rows
     rows = [{**dict(r), "tscore": 1.0, "tmatch": "text"} for r in await conn.fetch(
         f"select {_COLUMNS}, {score} as score from orion_memory where user_id = $1 and not whole and folded like $2"
         f"{extra} order by created_at desc, id desc limit {TEXT_CAP}", *params)]

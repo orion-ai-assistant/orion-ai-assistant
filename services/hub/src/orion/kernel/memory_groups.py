@@ -413,7 +413,7 @@ async def _nearest_groups(conn, params: list, extra: str, need: int) -> list[dic
     """The best row of each of (at least) `need` nearest memories, best first: the nearest rows through the vector
     index, then grouped. The rows taken widen (x4) while they hold fewer memories than needed and the index still
     has more (one long text has thousands of rows). params: [user, space, vector, ...filters]."""
-    count = max(100, need * 4)
+    count = max(40, need * 2)
     filtered = " kind = " in extra or "collection_id" in extra  # Filters an index scan may run short on.
     exact = False
     while True:
@@ -703,21 +703,26 @@ async def _summary(conn, user_id: str, space) -> dict:
     counter says nothing changed). The running job is read fresh."""
     from orion.kernel.memory_move import job_status
     version = await memory.memory_version(conn, user_id)
+    job = await job_status(conn, user_id)
     cached = _summary_cache.get((user_id, space))
     if cached is None or cached[0] != version:
-        cached = (version, await _count_summary(conn, user_id, space))
+        cached = (version, await _count_summary(conn, user_id, space, job))
         _summary_cache.pop((user_id, space), None)
         _summary_cache[(user_id, space)] = cached
         while len(_summary_cache) > SUMMARY_CACHE:
             _summary_cache.pop(next(iter(_summary_cache)))
-    return {**cached[1], "job": await job_status(conn, user_id)}
+    return {**cached[1], "job": job}
 
 
-async def _count_summary(conn, user_id: str, space) -> dict:
+_pair_cache: dict = {}  # (user, space) -> (key, {other space: (its contents, those the active space has too)})
+
+
+async def _count_summary(conn, user_id: str, space, job=None) -> dict:
     rows = await conn.fetch(
-        "select 'total' as part, '' as key, count(distinct g) as n from orion_memory_cnt_group where user_id = $1 and n > 0 "
-        "union all select 'space', s, count(*) from orion_memory_cnt_group where user_id = $1 and n > 0 group by s "
-        "union all select 'kind', kind, count(*) from orion_memory_cnt_item where user_id = $1 and n > 0 group by kind", user_id)
+        "select 'total' as part, '' as key, n from orion_memory_sum_total where user_id = $1 and n > 0 "
+        "union all select 'space', s, n from orion_memory_sum_space where user_id = $1 and n > 0 "
+        "union all select 'kind', kind, n from orion_memory_sum_kind where user_id = $1 and n > 0 "
+        "union all select 'content', s, n from orion_memory_sum_content where user_id = $1 and n > 0", user_id)
     total = next((int(x["n"]) for x in rows if x["part"] == "total"), 0)
     per_space = {x["key"]: int(x["n"]) for x in rows if x["part"] == "space"}
     per_kind = {x["key"]: int(x["n"]) for x in rows if x["part"] == "kind"}
@@ -725,18 +730,35 @@ async def _count_summary(conn, user_id: str, space) -> dict:
                "current_vector_space": space, "not_searchable": total, "movable": {}, "copied": {}}
     if space:
         summary["not_searchable"] = total - per_space.get(space, 0)
-        for other in per_space:  # One index range per other space: its contents, and how many the active space has.
-            if other == space:
-                continue
-            mine = [r["c"] for r in await conn.fetch(
-                "select c from orion_memory_cnt_content where user_id = $1 and s = $2 and n > 0", user_id, other)]
-            copied = await conn.fetchval(  # Index lookups by the other space's contents: no plan guesses on fresh tables.
-                "select count(*) from orion_memory_cnt_content where user_id = $1 and s = $2 and n > 0 and c = any($3::bigint[])",
-                user_id, space, mine) if mine else 0
+        # What the other spaces' contents have in the active space is a join over those contents: made again only when
+        # they change (their counts, a running or finished copy job), not at every write of the active space.
+        contents = {x["key"]: int(x["n"]) for x in rows if x["part"] == "content"}
+        key = (tuple(sorted((s, n) for s, n in contents.items() if s != space)),
+               None if job is None else (job["state"], job["done"], job["copied"], job["finished_at"]))
+        pairs = _pair_cache.get((user_id, space))
+        if pairs is None or pairs[0] != key:
+            found = {}
+            for other in per_space:
+                if other == space:
+                    continue
+                async with conn.transaction():  # A hash join that fits in memory (the default would spill to disk).
+                    await conn.execute("select set_config('work_mem', '32MB', true)")
+                    both = await conn.fetchrow(
+                        "select count(*) as n, count(cur.c) as copied from orion_memory_cnt_content o "
+                        "left join orion_memory_cnt_content cur on cur.user_id = o.user_id and cur.s = $2 "
+                        "and cur.c = o.c and cur.n > 0 where o.user_id = $1 and o.s = $3 and o.n > 0",
+                        user_id, space, other)
+                found[other] = (int(both["n"]), int(both["copied"]))
+            pairs = (key, found)
+            _pair_cache.pop((user_id, space), None)
+            _pair_cache[(user_id, space)] = pairs
+            while len(_pair_cache) > SUMMARY_CACHE:
+                _pair_cache.pop(next(iter(_pair_cache)))
+        for other, (mine, copied) in pairs[1].items():
             if copied:
-                summary["copied"][other] = int(copied)
-            if len(mine) - int(copied or 0):
-                summary["movable"][other] = len(mine) - int(copied or 0)
+                summary["copied"][other] = copied
+            if mine - copied:
+                summary["movable"][other] = mine - copied
     return summary
 
 
