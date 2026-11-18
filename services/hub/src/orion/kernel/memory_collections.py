@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "Sohbetler"), ("belgeler", "Belgeler"))
 OLD_NAME = "Eski hafıza"
 IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
+CHAT_PREFIX = "chat:"  # A collection name "chat:<chat id>": only the windows of that one chat (Sohbetler, narrowed).
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 
@@ -76,6 +77,8 @@ async def revert(user_id: str) -> dict:
     try:
         await memory.ensure_memory_table(conn)
         async with conn.transaction():
+            from orion.kernel import memory_chat_index
+            await memory_chat_index.forget_user(conn, user_id)  # Derived windows of the chats: rebuilt when it is on again.
             rows = await conn.execute("delete from orion_mem_collection_item where user_id = $1", user_id)
             gone = await conn.execute("delete from orion_mem_collection where user_id = $1", user_id)
     finally:
@@ -101,6 +104,10 @@ async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
     ids, unknown = [], []
     for name in names:
         key = (name or "").strip()
+        if key.startswith(CHAT_PREFIX):  # One chat of this user (its id is checked in filter_sql by the user's rows).
+            if len(key) > len(CHAT_PREFIX):
+                ids.append(key[:120])
+            continue
         found = IN_NAMES.get(key.lower()) or next((c["id"] for c in mine if c["id"] == key), None) \
             or by_name.get(memory.fold(key))
         if found:
@@ -116,12 +123,25 @@ async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
 
 def filter_sql(collections: list[str] | None, params: list) -> str:
     """The SQL condition (after the user's, `$1` = user id) for rows whose memory is in these collections (main or
-    member). Empty for None (the whole memory, as before)."""
+    member). Empty for None (the whole memory, as before). Sohbetler is the chats index: its windows by their source
+    kind (a literal: their own partial vector index answers it), no membership lookup; "chat:<id>" narrows to one chat."""
     if not collections:
         return ""
-    params.append(list(collections))
-    return (f" and coalesce(group_id, 'r' || id::text) in (select i.group_id from orion_mem_collection_item i "
-            f"where i.user_id = $1 and i.collection_id = any(${len(params)}::text[]))")
+    chats = [c[len(CHAT_PREFIX):] for c in collections if c.startswith(CHAT_PREFIX)]
+    named = [c for c in collections if not c.startswith(CHAT_PREFIX)]
+    every_chat = "sohbetler" in named
+    named = [c for c in named if c != "sohbetler"]
+    parts = []
+    if named:
+        params.append(named)
+        parts.append(f"coalesce(group_id, 'r' || id::text) in (select i.group_id from orion_mem_collection_item i "
+                     f"where i.user_id = $1 and i.collection_id = any(${len(params)}::text[]))")
+    if every_chat:
+        parts.append(f"source_kind = '{memory.CHAT_INDEX}'")
+    elif chats:
+        params.append(chats)
+        parts.append(f"(source_kind = '{memory.CHAT_INDEX}' and source_chat_id = any(${len(params)}::text[]))")
+    return f" and ({' or '.join(parts)})" if len(parts) > 1 else f" and {parts[0]}"
 
 
 # --- Sources ---------------------------------------------------------------------------------------------------------

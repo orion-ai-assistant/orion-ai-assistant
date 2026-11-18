@@ -184,6 +184,8 @@ async def append_history(
     for attempt, pause in enumerate((0.5, 1.0, 2.0, 4.0, None)):
         try:
             await insert_messages(chat_id=chat_id, messages=messages)
+            from orion.kernel import memory_chat_index
+            memory_chat_index.after_turn(chat_id, settings)  # Background, after the answer; no-op without memory_v2.
             return
         except Exception:
             if pause is None:

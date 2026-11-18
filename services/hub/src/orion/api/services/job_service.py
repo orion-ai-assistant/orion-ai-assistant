@@ -589,6 +589,9 @@ async def delete_chat(redis: Redis, user_id: str | None, chat_id: str, admin: bo
         logger.exception("Could not delete chat %s from PostgreSQL", chat_id)
         raise HTTPException(status_code=503, detail="Sohbet veritabanından silinemedi.") from exc
 
+    from orion.kernel import memory_chat_index
+    await memory_chat_index.forget_chat(chat_id, owner_id)  # The chat's windows in the memory go with it.
+
     # Remove all Redis keys for this chat after durable deletion succeeds.
     pipe = redis.pipeline()
     pipe.delete(meta_key)
@@ -641,6 +644,11 @@ async def delete_failed_turn(redis: Redis, user_id: str, chat_id: str, key: str)
     except Exception as exc:
         logger.exception('Could not delete failed turn for %s', chat_id)
         raise HTTPException(503, 'Mesaj veritabanından silinemedi.') from exc
+    from orion.kernel import memory_chat_index
+    if deleted:
+        await memory_chat_index.forget_chat(chat_id, user_id)
+    else:  # Fewer messages: its windows are made again (only what changed is embedded).
+        memory_chat_index.changed(chat_id, await get_runtime_settings(redis, user_id))
     if deleted:
         pipe = redis.pipeline()
         for prefix in (CHAT_META_KEY_PREFIX, CHAT_STATE_KEY_PREFIX, CHAT_STOP_KEY_PREFIX, ACTIVE_TURN_KEY_PREFIX):

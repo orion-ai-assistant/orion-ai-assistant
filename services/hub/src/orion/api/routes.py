@@ -228,6 +228,68 @@ async def memory_move_start(payload: MemoryMove, request: Request, current_user:
         raise HTTPException(503, str(exc)) from exc
 
 
+@router.get("/api/v1/memory/chats/index")
+async def memory_chats_index_status(request: Request, current_user: str = Depends(get_current_user)):
+    """The chats index (Sohbetler): how many chats and windows, how many chats the button would index, and the job."""
+    from orion.kernel import memory, memory_chat_index
+    settings = await get_runtime_settings(request.app.state.redis, current_user)
+    try:
+        return {**await memory_chat_index.status(current_user), "enabled": memory_chat_index.enabled(settings)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/chats/index")
+async def memory_chats_index_start(request: Request, current_user: str = Depends(get_current_user)):
+    """"Eski sohbetleri dizinle": index every chat that is not indexed yet, in the background (progress, cancel)."""
+    from orion.kernel import memory, memory_chat_index
+    try:
+        return {"job": await memory_chat_index.start_backlog(
+            current_user, await get_runtime_settings(request.app.state.redis, current_user))}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/memory/chats/index/cancel")
+async def memory_chats_index_cancel(current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_chat_index
+    try:
+        return {"job": await memory_chat_index.cancel_backlog(current_user)}
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+class ChatMemorySwitch(BaseModel):
+    enabled: bool
+
+
+@router.get("/api/v1/chats/{chat_id}/memory")
+async def get_chat_memory_state(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory, memory_chat_index
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    try:
+        return await memory_chat_index.chat_state(current_user, chat_id)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.put("/api/v1/chats/{chat_id}/memory")
+async def put_chat_memory_state(chat_id: str, payload: ChatMemorySwitch, request: Request,
+                                current_user: str = Depends(get_current_user)):
+    """The chat's own switch for the chats index: off removes its windows and keeps the chat out of the memory."""
+    from orion.kernel import memory, memory_chat_index
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    try:
+        return await memory_chat_index.set_chat_enabled(
+            current_user, chat_id, payload.enabled, await get_runtime_settings(request.app.state.redis, current_user))
+    except LookupError as exc:
+        raise HTTPException(404, "Sohbet bulunamadı.") from exc
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
 @router.post("/api/v1/memory/collections/revert")
 async def memory_collections_revert(request: Request, current_user: str = Depends(get_current_user)):
     """Undo the collections (docs/hafiza-tasarimi.md §13): memory_v2 off for this user, the rows' collection emptied,

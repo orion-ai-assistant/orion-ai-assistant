@@ -22,8 +22,8 @@ CARD_TEXT = 600
 PREVIEW_MEDIA = 6
 MAP_NODES = 300
 _ROW = ("id, text, kind, vector_space, source_kind, source_chat_title, created_at, media_id, media_mime, "
-        "media_seconds, group_id, copied_from, source_chat_id, source_message_id, item_id, whole, span_start, span_end, "
-        "track, caption, item_order, lossless")
+        "media_seconds, group_id, copied_from, source_chat_id, source_message_id, source_message_last, item_id, whole, "
+        "span_start, span_end, track, caption, item_order, lossless")
 ITEM_KEY = f"coalesce(item_id, {CONTENT_KEY}::text)"
 
 
@@ -91,6 +91,14 @@ async def backfill_groups(conn) -> int:
 
 # --- Cards ----------------------------------------------------------------------------------------------------------
 
+def chat_link(r: dict) -> dict | None:
+    """Where a window of the chats index sits in its chat: {"id", "message", "message_last"} (message ids: the chat opens
+    at `message`); None for any other row."""
+    if r.get("source_kind") != memory.CHAT_INDEX or not r.get("source_chat_id"):
+        return None
+    return {"id": r["source_chat_id"], "message": r.get("source_message_id"), "message_last": r.get("source_message_last")}
+
+
 def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
           position: tuple[int, int] | None = None) -> dict:
     text = r["text"] if full or r["kind"] == "text" else r["text"][:200]
@@ -106,10 +114,12 @@ def _part(r: dict, spaces: list[str] | None = None, full: bool = False,
         part["track"] = r["track"]
     if r.get("source_kind") == "file" and r["kind"] == "text" and (r.get("source_chat_title") or "").strip():
         part["file_name"] = r["source_chat_title"].strip()  # A file in a chat memory keeps its own name.
-    if r["kind"] == "text" and r.get("source_kind") != "chat_save":
+    if r["kind"] == "text" and r.get("source_kind") not in ("chat_save", memory.CHAT_INDEX):
         part["title"] = (r.get("source_chat_title") or "").strip() or None  # Each part its own name (null: none).
     if r.get("caption"):
         part["caption"] = r["caption"]
+    if chat_link(r):
+        part["chat"] = chat_link(r)
     if r.get("created_at") is not None:  # Each part its own time: parts can be added to a memory later.
         part["created_at"] = r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
     if position and position[1] > 1:
@@ -128,7 +138,7 @@ def item_counts(parts: list[dict]) -> dict:
     return {kind: n for kind, n in counts.items() if n}
 
 
-SOURCE_LABELS = {"manual": "Metin", "chat_save": "Sohbet", "assistant": "Asistan", "file": "Dosya"}
+SOURCE_LABELS = {"manual": "Metin", "chat_save": "Sohbet", "chat_index": "Sohbet", "assistant": "Asistan", "file": "Dosya"}
 KIND_LABELS = {"text": "Metin", "image": "Görsel", "audio": "Ses", "video": "Video"}
 
 
@@ -162,6 +172,8 @@ def card(group: str, rows: list[dict], prefer, active, full: bool = False, match
             "source_kinds": source_kinds(parts), "sources_label": sources_label(parts),
             "created_at": min(r["created_at"] for r in rows).isoformat(), "vector_spaces": spaces,
             "searchable": bool(active_keys), "missing_in_active": sum(1 for p in parts if content_key(p) not in active_keys)}
+    if first["source_kind"] == memory.CHAT_INDEX:  # A chat's windows: the card names its chat.
+        item["source_chat_id"] = first.get("source_chat_id")
     texts = [p for p in parts if p["kind"] == "text"]
     if full:
         in_spaces: dict[int, list[str]] = {}
@@ -652,6 +664,8 @@ def _best_part(rows: list[dict], part_id, prefer) -> dict | None:
         best.update(span_start=round(float(chosen["span_start"]), 2), span_end=round(float(chosen["span_end"]), 2))
     if chosen.get("track"):
         best["track"] = chosen["track"]
+    if chat_link(chosen):
+        best["chat"] = chat_link(chosen)
     return best
 
 
@@ -890,6 +904,7 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
     limit, k = max(1, min(int(limit), MAP_NODES)), max(1, min(int(k), 10))
     kind = kind if kind in KINDS else "all"
     by_kind = "" if kind == "all" else f" and kind = '{kind}'"  # Validated above: one of KINDS.
+    by_kind += f" and source_kind <> '{memory.CHAT_INDEX}'"  # The chats index is not a memory of the map.
     picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
               f"where user_id = $1 and vector_space = $2 and not whole and {memory.LIVE}{by_kind} group by 1 order by at desc, g desc limit $3")
     conn = await memory._connect()
@@ -1286,7 +1301,7 @@ async def item_document(user_id: str, row_id: int, settings) -> dict | None:
     title = (row.get("source_chat_title") or "").strip()
     if row.get("source_kind") == "file" and title and "." in title[-6:]:
         name = title
-    elif title and row.get("source_kind") != "chat_save":  # A note's own name.
+    elif title and row.get("source_kind") not in ("chat_save", memory.CHAT_INDEX):  # A note's own name.
         name = title if "." in title[-6:] else title + ".txt"
     else:
         name = readable_name(pieces[0]["text"]) or f"Hafıza kaydı {row['id']}"
