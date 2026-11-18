@@ -134,7 +134,6 @@ def _request_timeout(total_seconds: int | float) -> ClientTimeout:
 #  LLM Chat - Streaming
 # ---------------------------------------------------------------------------
 
-STOP_USAGE_GRACE = 1.5  # Seconds a stopped stream is still read for the usage chunk (see llama_stream_chat_typed).
 
 
 async def llama_stream_chat_typed(
@@ -250,35 +249,7 @@ async def llama_stream_chat_typed(
             yield ("content_snapshot", final_content)
 
     last_error = None
-    draining = False  # The user stopped: only a final usage chunk is still taken from what the Router sends.
-
-    async def _usage_after_stop(iterator, pending):
-        """The stop is answered at once for the user, but the connection is not cut in the same instant: for up to
-        STOP_USAGE_GRACE seconds more chunks are read (their text is dropped, parsing keeps only `usage`), because the Router /
-        provider reports the token count of a cancelled answer in its last chunk. `pending`: a read already started."""
-        nonlocal draining
-        draining = True
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + STOP_USAGE_GRACE
-        try:
-            while True:
-                if pending is None:
-                    pending = asyncio.create_task(anext(iterator))
-                ready, _ = await asyncio.wait({pending}, timeout=max(0.0, deadline - loop.time()))
-                if not ready:
-                    return
-                try:
-                    chunk = pending.result()
-                except (StopAsyncIteration, Exception):
-                    return
-                finally:
-                    if pending.done():
-                        pending = None
-                yield chunk
-        finally:
-            if pending is not None and not pending.done():
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+    draining = False
 
     async def _chunks_until_stopped(response):
         iterator = response.content.iter_any().__aiter__()
@@ -298,8 +269,10 @@ async def llama_stream_chat_typed(
                             except StopAsyncIteration:
                                 pass
                             pending = None
-                        async for late in _usage_after_stop(iterator, pending):
-                            yield late
+                        # Cut at once: the stopped turn's usage is estimated; the next answer reports the real count.
+                        if pending is not None and not pending.done():
+                            pending.cancel()
+                            await asyncio.gather(pending, return_exceptions=True)
                         pending = None
                         response.close()
                         return
@@ -311,8 +284,6 @@ async def llama_stream_chat_typed(
                 yield chunk
                 # The entire received chunk is parsed before closing upstream.
                 if stop_checker and await stop_checker():
-                    async for late in _usage_after_stop(iterator, None):
-                        yield late
                     response.close()
                     return
         finally:

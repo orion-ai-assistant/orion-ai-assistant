@@ -396,7 +396,15 @@ async def get(user_id: str, settings) -> dict:
     require(settings)
     block = await build(user_id, settings)
     near = await soon(user_id, settings)
-    return {"enabled": enabled(settings), "limit": budget(settings), "soft_limit": soft_budget(settings),
+    # The map draws memories by group: each line's fact points at its memory group (the "Ben" node links to it).
+    ids = [int(i["fact_id"]) for i in block["lines"] if i.get("fact_id") is not None]
+    groups = {}
+    if ids:
+        async with me._db() as conn:
+            rows = await conn.fetch("select id, group_id from orion_mem_fact where user_id = $1 and id = any($2::bigint[]) "
+                                    "and group_id is not null", user_id, ids)
+        groups = {str(r["id"]): r["group_id"] for r in rows}
+    return {"group_ids": groups, "enabled": enabled(settings), "limit": budget(settings), "soft_limit": soft_budget(settings),
             "text": block["text"], "tokens": block["tokens"], "over_soft": block["over_soft"],
             "compacting": user_id in _compacting, "soon": near,
             "overflow": block["overflow"], "left_out": block["left_out"], "pinned": block["pinned"],
