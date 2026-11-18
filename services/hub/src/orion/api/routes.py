@@ -225,13 +225,32 @@ async def memory_group(group_id: str, request: Request, offset: int = Query(0, g
 
 @router.get("/api/v1/memory/map")
 async def memory_map(request: Request, k: int = 5, limit: int = 300, vector_space: str = "", kind: str = "all",
-                     current_user: str = Depends(get_current_user)):
+                     collection: list[str] = Query(default=[]), when_from: str = "", when_to: str = "",
+                     about: str = "", as_of: str = "", current_user: str = Depends(get_current_user)):
     """A model's memories (the active one's by default) as a graph: each one's nearest neighbours above the
-    space's own floor (pgvector)."""
-    from orion.kernel import memory, memory_groups
+    space's own floor (pgvector). The page's filters (`collection`, `when_from`/`when_to`, `about`, `as_of`: the same
+    values and code as GET /api/v1/memory) leave the other memories out of the map; with memory_v2 on."""
+    from orion.kernel import memory, memory_entities, memory_events, memory_groups
     try:
-        return await memory_groups.map_graph(current_user, await get_runtime_settings(request.app.state.redis, current_user),
-                                             k, limit, vector_space[:100], kind[:20])
+        settings = await get_runtime_settings(request.app.state.redis, current_user)
+        extra: dict = {}
+        about, as_of = about.strip()[:120], as_of.strip()[:10]
+        if memory_entities.enabled(settings):
+            if as_of:
+                extra["as_of"] = memory_events.parse_range(as_of, as_of)[1]
+            if about:
+                try:
+                    async with memory_entities._db() as conn:
+                        entity, _ = await memory_entities.resolve_entity(conn, current_user, about, create=False)
+                except memory_entities.Ambiguous:
+                    entity = None
+                extra["about"] = [entity["id"]] if entity else []  # Nobody by that name: an empty map.
+        return await memory_groups.map_graph(
+            current_user, settings, k, limit, vector_space[:100], kind[:20],
+            collections=[c[:120] for c in collection[:10]] or None,
+            when=memory_events.parse_range(when_from[:10], when_to[:10]), **extra)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
 

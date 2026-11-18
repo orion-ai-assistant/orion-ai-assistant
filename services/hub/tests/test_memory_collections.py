@@ -107,6 +107,19 @@ class CollectionTests(PostgresMemoryCase):
         await self.groups(self.v2)
         self.backup.assert_awaited_once()  # Sorted once.
 
+    async def test_the_map_takes_the_pages_collection_filter(self):
+        await self.memories()
+        whole = await memory_groups.map_graph('alice', self.v2)
+        self.assertEqual({n['group_id'] for n in whole['nodes']}, {'alice-chat', 'alice-note', 'alice-doc'})
+        docs = await memory_groups.map_graph('alice', self.v2, collections=['documents'])
+        self.assertEqual(({n['group_id'] for n in docs['nodes']}, docs['total']), ({'alice-doc'}, 1))
+        olds = await memory_groups.map_graph('alice', self.v2, collections=['eski HAFIZA'])
+        self.assertEqual({n['group_id'] for n in olds['nodes']}, {'alice-chat', 'alice-note'})
+        nobody = await memory_groups.map_graph('alice', self.v2, collections=['me'], about=[])
+        self.assertEqual(nobody['nodes'], [])
+        off = await memory_groups.map_graph('alice', self.settings, collections=['documents'])  # Ignored with it off.
+        self.assertEqual(len(off['nodes']), 3)
+
     async def test_new_rows_join_their_memory_s_collection_and_a_new_file_goes_to_documents(self):
         await self.memories()
         await self.groups(self.v2)

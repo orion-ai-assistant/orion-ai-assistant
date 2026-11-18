@@ -454,6 +454,30 @@ async def _nearest_groups(conn, params: list, extra: str, need: int, listed: boo
         count = min(count * 4, MAX_CANDIDATES)
 
 
+async def scope(conn, user_id: str, settings, collections=None, when=None, about=None, as_of=None):
+    """What the page's collection / date / about / as_of filters narrow to, on the caller's connection (the one
+    definition: the list and the map both use it): (collection ids or None, the dated/about memory keys or None,
+    the memories not yet true on `as_of`, the user's collections or None). All None/empty with memory_v2 off."""
+    from orion.kernel import memory_collections as mc
+    if not mc.enabled(settings):
+        return None, None, set(), None
+    await mc.ensure_user(conn, user_id)
+    listed = await mc.list_collections(conn, user_id)
+    in_ids = await mc.resolve(conn, user_id, collections) if collections else None
+    if when:  # The dated memories, named once: the filter of every query.
+        from orion.kernel import memory_events
+        when = await memory_events.when_keys(conn, user_id, when)
+    hidden: set[str] = set()
+    if about is not None:  # The memories about these entities: one more candidate set, narrowing `when`.
+        from orion.kernel import memory_events
+        named = await memory_events.about_keys(conn, user_id, about)
+        when = named if not when else memory_events.intersect_keys(when, named)
+    if as_of is not None:  # Facts that only began after the day asked about do not exist yet that day.
+        from orion.kernel import memory_entities
+        hidden = await memory_entities.not_yet_groups(conn, user_id, as_of)
+    return in_ids, when, hidden, listed
+
+
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
                       vector_space: str = "all", kind: str = "all", vector: str | None = None,
                       vector_space_of_query: str | None = None, vectors: list[str] | None = None,
@@ -513,26 +537,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     more, search, scores, stats = False, {}, {}, {}
     try:
         await memory.ensure_memory_table(conn)
-        from orion.kernel import memory_collections as mc
-        in_ids, listed = None, None
-        if not mc.enabled(settings):
-            when = about = as_of = None
-        if mc.enabled(settings):
-            await mc.ensure_user(conn, user_id)
-            listed = await mc.list_collections(conn, user_id)
-            in_ids = await mc.resolve(conn, user_id, collections) if collections else None
-        if when:  # The dated memories, named once: the filter of every query below.
-            from orion.kernel import memory_events
-            when = await memory_events.when_keys(conn, user_id, when)
-        hidden: set[str] = set()
-        if about is not None:  # The memories about these entities: one more candidate set, narrowing `when`.
-            from orion.kernel import memory_events
-            named = await memory_events.about_keys(conn, user_id, about)
-            when = named if not when else memory_events.intersect_keys(when, named)
-        if as_of is not None:  # Facts that only began after the day asked about do not exist yet that day.
-            from orion.kernel import memory_entities
-            hidden = await memory_entities.not_yet_groups(conn, user_id, as_of)
-            leave_out |= hidden
+        in_ids, when, hidden, listed = await scope(conn, user_id, settings, collections, when, about, as_of)
+        leave_out |= hidden
         for word, like in keywords or ():
             found_groups = await mf.keyword_groups(conn, user_id, word)
             if like:
@@ -940,11 +946,13 @@ def _label(item: dict) -> str:
 
 
 async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, vector_space: str = "",
-                    kind: str = "all") -> dict:
+                    kind: str = "all", collections: list[str] | None = None, when=None, about: list[int] | None = None,
+                    as_of=None) -> dict:
     """The newest `limit` memories of a vector space (the active model's unless `vector_space` names another) as
     nodes and, per node, edges to its `k` nearest others (cosine of the memories' mean vectors) at or above the
     space's floor (map_floor), all computed by pgvector. Each edge's `w` places it between the floor (0) and the
-    space's most similar pair (1)."""
+    space's most similar pair (1). `collections`, `when`, `about`, `as_of`: the page's filters (scope, the list's own
+    code): only the memories that match are nodes (with memory_v2 on)."""
     active = await memory.current_space(settings)
     space = vector_space or active
     if not space:
@@ -952,25 +960,36 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
     limit, k = max(1, min(int(limit), MAP_NODES)), max(1, min(int(k), 10))
     kind = kind if kind in KINDS else "all"
     by_kind = "" if kind == "all" else f" and kind = '{kind}'"  # Validated above: one of KINDS.
-    by_kind += f" and source_kind <> '{memory.CHAT_INDEX}'"  # The chats index is not a memory of the map.
-    picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
-              f"where user_id = $1 and vector_space = $2 and not whole and {memory.LIVE}{by_kind} group by 1 order by at desc, g desc limit $3")
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
+        in_ids, keys, hidden, _ = await scope(conn, user_id, settings, collections, when, about, as_of)
+
+        def narrowed(params: list) -> str:  # The filters' SQL, its values appended to `params`.
+            sql = by_kind + (memory.filters_sql("all", "all", params, in_ids, live=False, when=keys)
+                             if in_ids or keys else f" and source_kind <> '{memory.CHAT_INDEX}'")
+            if hidden:
+                params.append(sorted(hidden))
+                sql += f" and not (coalesce(group_id, 'r' || id::text) = any(${len(params)}::text[]))"
+            return sql
+        pick_params = [user_id, space, limit]
+        picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
+                  f"where user_id = $1 and vector_space = $2 and not whole and {memory.LIVE}{narrowed(pick_params)} "
+                  f"group by 1 order by at desc, g desc limit $3")
+        count_params = [user_id, space]
         total = await conn.fetchval(f"select count(distinct {GROUP_KEY}) from orion_memory where user_id = $1 "
-                                    f"and vector_space = $2 and {memory.LIVE}" + by_kind, user_id, space)
-        groups = [r["g"] for r in await conn.fetch(f"select g from ({picked}) p", user_id, space, limit)]
+                                    f"and vector_space = $2 and {memory.LIVE}" + narrowed(count_params), *count_params)
+        groups = [r["g"] for r in await conn.fetch(f"select g from ({picked}) p", *pick_params)]
         # Every pair once (<= 45k at 300 nodes): the space's own spread.
         stats = await conn.fetchrow(
             f"with p as materialized ({picked}) select avg(s) as mean, stddev_pop(s) as sd, max(s) as top, "
-            f"count(*) as n from (select 1 - (a.v <=> b.v) as s from p a join p b on a.g < b.g) t",
-            user_id, space, limit)
+            f"count(*) as n from (select 1 - (a.v <=> b.v) as s from p a join p b on a.g < b.g) t", *pick_params)
         floor = map_floor(stats["mean"], int(stats["n"] or 0))
+        at = len(pick_params)
         edges = await conn.fetch(
             f"with p as materialized ({picked}) select a.g as a, n.g as b, n.sim from p a cross join lateral "
-            f"(select b.g, 1 - (a.v <=> b.v) as sim from p b where b.g <> a.g order by a.v <=> b.v limit $4) n "
-            f"where n.sim >= $5", user_id, space, limit, k, floor)
+            f"(select b.g, 1 - (a.v <=> b.v) as sim from p b where b.g <> a.g order by a.v <=> b.v limit ${at + 1}) n "
+            f"where n.sim >= ${at + 2}", *pick_params, k, floor)
         members = await _group_rows(conn, user_id, groups)
     finally:
         await conn.close()

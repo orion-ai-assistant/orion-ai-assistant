@@ -331,7 +331,8 @@ class MemoryGroupTests(PostgresMemoryCase):
                          (['e'], False, memory_groups.MAP_MIN_SIM, []))
         with patch.object(routes, 'get_runtime_settings', AsyncMock(return_value=self.settings)):
             via_route = await routes.memory_map(SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None))),
-                                                k=3, limit=300, vector_space='', current_user='alice')
+                                                k=3, limit=300, vector_space='', kind='all', collection=[], when_from='',
+                                                when_to='', about='', as_of='', current_user='alice')
         self.assertEqual(len(via_route['nodes']), 4)
 
     def test_the_map_floor_is_the_typical_pair_never_below_the_minimum(self):
