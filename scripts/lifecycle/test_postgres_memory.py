@@ -15,8 +15,8 @@ def test_router_server_keeps_its_small_settings():
 
 
 @pytest.mark.parametrize('ram_gb, shared, cache', [(2, '128MB', '1024MB'), (8, '512MB', '4096MB'),
-                                                   (16, '1024MB', '8192MB'), (32, '1024MB', '16384MB'),
-                                                   (128, '1024MB', '65536MB')])
+                                                   (16, '512MB', '8192MB'), (32, '512MB', '16384MB'),
+                                                   (128, '512MB', '65536MB')])
 def test_shared_buffers_is_a_sixteenth_of_ram_within_limits(ram_gb, shared, cache):
     values = settings(ram_gb)
     assert values['shared_buffers'] == shared

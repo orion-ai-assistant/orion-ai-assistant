@@ -99,7 +99,7 @@ MB = 1 << 20
 def memory_settings(ram_bytes=None, search=False):
     """Start arguments for the server's memory. The default (the Router's own small server, which keeps only its
     accounts and usage) is MEMORY_SETTINGS. The Hub's server (search=True) holds the memory vector index and trigram
-    search, which slow to 1-2 s when the index does not fit: shared_buffers is RAM/16 within 128 MB..1 GB,
+    search, which slow to 1-2 s when the index does not fit: shared_buffers is RAM/16 within 128..512 MB (Windows reserves it in full at start; the file cache holds the rest),
     effective_cache_size (a planner hint, nothing allocated) RAM/2, and the maintenance and per-sort memory grow a
     little with it. Given on every start, so clusters that already exist get them too."""
     if not search:
@@ -107,7 +107,7 @@ def memory_settings(ram_bytes=None, search=False):
     if ram_bytes is None:
         ram_bytes = psutil.virtual_memory().total
     ram = ram_bytes // MB
-    shared = min(max(ram // 16, 128), 1024)
+    shared = min(max(ram // 16, 128), 512)
     values = {'shared_buffers': shared, 'effective_cache_size': max(ram // 2, 256),
               'maintenance_work_mem': min(max(ram // 32, 64), 512), 'work_mem': min(max(ram // 1024, 4), 16),
               'max_connections': 50}
