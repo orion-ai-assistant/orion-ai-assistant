@@ -80,6 +80,8 @@ async def revert(user_id: str) -> dict:
         async with conn.transaction():
             from orion.kernel import memory_chat_index
             await memory_chat_index.forget_user(conn, user_id)  # Derived windows of the chats: rebuilt when it is on again.
+            from orion.kernel import memory_extract
+            await memory_extract.forget_user(conn, user_id)  # Runs and candidates of the extraction (derived, shadow).
             rows = await conn.execute("delete from orion_mem_collection_item where user_id = $1", user_id)
             gone = await conn.execute("delete from orion_mem_collection where user_id = $1", user_id)
     finally:

@@ -612,7 +612,8 @@ class EventTests(PostgresMemoryCase):
             await conn.execute("alter table orion_mem_fact drop column recurring")
             await conn.execute("update orion_memory_meta set value = '5' where key = 'schema_version'")
             await memory._migrate(conn)
-            self.assertEqual(await conn.fetchval("select value from orion_memory_meta where key = 'schema_version'"), '6')
+            self.assertEqual(await conn.fetchval("select value from orion_memory_meta where key = 'schema_version'"),
+                             str(memory.SCHEMA_VERSION))
             self.assertEqual(await conn.fetchval('select count(*) from orion_mem_fact'), 1)
             self.assertEqual(await conn.fetchval('select count(*) from orion_mem_event'), 0)
             self.assertIsNone(await conn.fetchval('select recurring from orion_mem_fact'))

@@ -240,6 +240,7 @@ async def forget_chat(chat_id: str, user_id: str | None = None) -> int:
         await memory.ensure_memory_table(conn)
         users = [user_id] if user_id else [r["user_id"] for r in await conn.fetch(
             "select user_id from orion_mem_chat_state where chat_id = $1 union "
+            "select user_id from orion_mem_extraction_run where chat_id = $1 union "
             "select user_id from orion_memory where source_chat_id = $1 and source_kind = $2", chat_id, CHAT_INDEX)]
         count = 0
         for user in users:
@@ -247,6 +248,8 @@ async def forget_chat(chat_id: str, user_id: str | None = None) -> int:
             try:
                 count += await _drop(conn, user, chat_id)
                 await conn.execute("delete from orion_mem_chat_state where user_id = $1 and chat_id = $2", user, chat_id)
+                from orion.kernel import memory_extract  # Its runs and candidates (they hold the user's sentences) go too.
+                await memory_extract.forget_chat(conn, user, chat_id)
             finally:
                 await conn.execute("select pg_advisory_unlock($1, hashtext($2))", CHAT_LOCK, chat_id)
         return count
@@ -286,6 +289,11 @@ async def set_chat_enabled(user_id: str, chat_id: str, on: bool, settings) -> di
                 await _drop(conn, user_id, chat_id)
             finally:
                 await conn.execute("select pg_advisory_unlock($1, hashtext($2))", CHAT_LOCK, chat_id)
+            # A chat that is out of the memory is out of the extraction too: its runs, candidates and summary go.
+            from orion.kernel import memory_extract
+            await memory_extract.forget_chat(conn, user_id, chat_id)
+            await conn.execute("update orion_mem_chat_state set summary = null, summary_upto = null, summary_stale = false, "
+                               "summary_at = null, extracted_upto = null where user_id = $1 and chat_id = $2", user_id, chat_id)
     finally:
         await conn.close()
     if on:
@@ -297,14 +305,15 @@ async def chat_state(user_id: str, chat_id: str) -> dict:
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
-        row = await conn.fetchrow("select memory_enabled, windows, indexed_upto, indexed_at from orion_mem_chat_state "
-                                  "where user_id = $1 and chat_id = $2", user_id, chat_id)
+        row = await conn.fetchrow("select memory_enabled, windows, indexed_upto, indexed_at, summary, summary_stale from "
+                                  "orion_mem_chat_state where user_id = $1 and chat_id = $2", user_id, chat_id)
     finally:
         await conn.close()
     if row is None:
-        return {"chat_id": chat_id, "memory_enabled": True, "windows": 0, "indexed_at": None}
+        return {"chat_id": chat_id, "memory_enabled": True, "windows": 0, "indexed_at": None, "summary": None}
     return {"chat_id": chat_id, "memory_enabled": row["memory_enabled"], "windows": row["windows"],
-            "indexed_at": row["indexed_at"].isoformat() if row["indexed_at"] else None}
+            "indexed_at": row["indexed_at"].isoformat() if row["indexed_at"] else None, "summary": row["summary"],
+            "summary_stale": row["summary_stale"]}
 
 
 # --- The job that indexes the old chats ------------------------------------------------------------------------------
