@@ -60,6 +60,16 @@ async def _fetch_section(session, bases: list[str], name: str, credentials) -> d
         return None
 
 
+def _context_of(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _group_context(group: dict, by_name: dict[str, int | None]) -> int | None:
+    """A group routes to any of its models, so only the smallest context length is safe to rely on (None if any is unknown)."""
+    sizes = [by_name.get(item.get('name')) for item in group.get('items') or [] if item.get('capability', 'chat') == 'chat']
+    return min(sizes) if sizes and all(sizes) else None
+
+
 async def _catalog_credentials():
     from orion.kernel.router_accounts import catalog_credentials, RouterAccountError
     try:
@@ -87,9 +97,12 @@ async def _refresh_models() -> dict:
             _catalog_sections[name] = result
     if not any(name in _catalog_sections for name in names):
         raise RuntimeError('Model listelerine şu an erişilemiyor. Sonraki kontrolde tekrar denenecek.')
-    models = [{"name": m["name"], "provider": m.get("provider"), "capability": m.get("capability")}
+    models = [{"name": m["name"], "provider": m.get("provider"), "capability": m.get("capability"),
+               "context_length": _context_of(m.get("context_length"))}
               for m in _catalog_sections.get('models', {}).get('models', []) if m.get('is_active', True)]
-    models.extend({"name": g["name"], "provider": None, "capability": g.get("capability", "chat")}
+    by_name = {m["name"]: m["context_length"] for m in models}
+    models.extend({"name": g["name"], "provider": None, "capability": g.get("capability", "chat"),
+                   "context_length": _group_context(g, by_name)}
                   for g in _catalog_sections.get('model-groups', {}).get('groups', [])
                   if g.get('capability', 'chat') == 'chat' and g.get('is_active', True))
     _model_catalog_cache = {'models': models, 'voices': {}, 'unavailable': unavailable}
@@ -165,9 +178,12 @@ async def get_account_catalog(user_id, include_voices=True):
             return None
     model_data, groups, voice_catalog = await asyncio.gather(
         fetch('models'), fetch('model-groups'), voice_section() if include_voices else asyncio.sleep(0))
-    models = [{'name': m['name'], 'provider': m.get('provider'), 'capability': m.get('capability')}
+    models = [{'name': m['name'], 'provider': m.get('provider'), 'capability': m.get('capability'),
+               'context_length': _context_of(m.get('context_length'))}
               for m in model_data['models']]
-    models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat')}
+    by_name = {m['name']: m['context_length'] for m in models}
+    models.extend({'name': g['name'], 'provider': None, 'capability': g.get('capability', 'chat'),
+                   'context_length': _group_context(g, by_name)}
                   for g in groups['groups'])
     voices, groups_by_provider, languages, unavailable = {}, {}, {}, []
     if include_voices:

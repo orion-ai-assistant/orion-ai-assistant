@@ -200,20 +200,16 @@ def start(user_id: str, chat_id: str, settings) -> None:
         pass
 
 
-CONTEXT_KEYS = ("context_length", "context_window", "max_input_tokens", "context")
-
-
 async def context_length(settings) -> int:
-    """The chat model's context length in tokens: from the Router's model catalog (the first of CONTEXT_KEYS the chat model's entry
-    has), else the setting `chat_context_tokens` (0 = not known)."""
+    """The chat model's context length in tokens: from the Router's model catalog (the `context_length` of the chat model's entry; a
+    group: its smallest), else the setting `chat_context_tokens` (0 = not known)."""
     try:
         from orion.kernel.router_models import get_router_catalog
         catalog = await get_router_catalog(include_voices=False)
         for model in catalog["models"]:
             if model.get("name") == settings.router_model_group and model.get("capability") == "chat":
-                for key in CONTEXT_KEYS:
-                    if int(model.get(key) or 0) > 0:
-                        return int(model[key])
+                if int(model.get("context_length") or 0) > 0:
+                    return int(model["context_length"])
     except Exception:
         pass
     return int(getattr(settings, "chat_context_tokens", 0) or 0)
