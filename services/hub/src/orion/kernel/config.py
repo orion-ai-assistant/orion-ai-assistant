@@ -8,7 +8,7 @@ from redis.asyncio import Redis
 
 from orion.contracts.constants import SETTINGS_HASH_KEY_PREFIX, SETTINGS_DEFAULT_USER
 from orion.contracts.settings import RuntimeSettings
-from orion.kernel.registry import fetch_setting_overrides, upsert_setting_overrides, insert_missing_setting_overrides, fetch_all_settings, delete_setting_override
+from orion.kernel.registry import fetch_setting_overrides, fetch_setting_overrides_for, upsert_setting_overrides, insert_missing_setting_overrides, fetch_all_settings, delete_setting_override
 
 settings = RuntimeSettings()
 _allowed_keys = set(settings.model_dump().keys())
@@ -111,9 +111,9 @@ async def _replace_overrides_in_redis(
 
 
 async def _get_effective_overrides(user_id: str) -> dict[str, str]:
-    global_overrides = await fetch_setting_overrides(SETTINGS_DEFAULT_USER)
-    user_overrides = {} if user_id == SETTINGS_DEFAULT_USER else await fetch_setting_overrides(user_id)
-    return _normalize_overrides({**global_overrides, **user_overrides})
+    # One query for both (every settings read of every request and tool call went through two connections).
+    found = await fetch_setting_overrides_for([SETTINGS_DEFAULT_USER, user_id])
+    return _normalize_overrides({**found[SETTINGS_DEFAULT_USER], **found[user_id]})
 
 
 async def get_runtime_settings(redis: Redis | None = None, user_id: str | None = None) -> RuntimeSettings:

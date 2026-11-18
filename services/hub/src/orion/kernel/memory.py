@@ -10,6 +10,7 @@ as one card. A copy of a row made for another embedding model (memory_move) keep
 in `copied_from`, so `coalesce(copied_from, id)` (CONTENT_KEY) is the same for a row and all its copies."""
 from __future__ import annotations
 
+import functools
 import logging
 import re
 
@@ -821,18 +822,33 @@ async def _build_indexes() -> None:
             pass
 
 
+_iterative_scan: bool | None = None  # Whether this pgvector knows hnsw.iterative_scan (found out once, by the first search).
+
+
 async def ann_fetch(conn, sql: str, *args) -> list:
     """`conn.fetch` of a nearest-neighbour query with the ANN settings of this query only (transaction local, so a
     pooled connection keeps no setting): a larger ef_search and, where pgvector has it, iterative scan so the
-    user's filter cannot leave the result short."""
+    user's filter cannot leave the result short. Three round trips around the query (begin, settings, commit): the
+    first search of the process finds out whether pgvector has iterative scan (inside a savepoint, an older one
+    refuses it); the rest ask for it in the same statement as ef_search, or leave it out."""
+    global _iterative_scan
     async with conn.transaction():
-        await conn.execute(f"select set_config('hnsw.ef_search', '{ANN_EF}', true)")
-        try:
-            async with conn.transaction():  # A savepoint: older pgvector does not know these settings.
-                await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true), "
-                                   f"set_config('hnsw.max_scan_tuples', '{ANN_MAX_SCAN}', true)")
-        except Exception:
-            pass
+        if _iterative_scan:
+            await conn.execute(f"select set_config('hnsw.ef_search', '{ANN_EF}', true), "
+                               "set_config('hnsw.iterative_scan', 'relaxed_order', true), "
+                               f"set_config('hnsw.max_scan_tuples', '{ANN_MAX_SCAN}', true)")
+        elif _iterative_scan is False:
+            await conn.execute(f"select set_config('hnsw.ef_search', '{ANN_EF}', true)")
+        else:
+            await conn.execute(f"select set_config('hnsw.ef_search', '{ANN_EF}', true)")
+            try:
+                async with conn.transaction():  # A savepoint: older pgvector does not know these settings.
+                    await conn.execute("select set_config('hnsw.iterative_scan', 'relaxed_order', true), "
+                                       f"set_config('hnsw.max_scan_tuples', '{ANN_MAX_SCAN}', true)")
+                _iterative_scan = True
+            except Exception as exc:
+                if getattr(exc, "sqlstate", None) == "42704":  # unrecognized configuration parameter: this pgvector lacks it
+                    _iterative_scan = False  # Any other failure: ask again next time.
         return await conn.fetch(sql, *args)
 
 
@@ -1791,9 +1807,16 @@ def like_pattern(folded: str) -> str:
 def _trigrams(text: str) -> set[str]:
     grams = set()
     for word in re.findall(r"\w+", text):
-        padded = f"  {word} "
-        grams.update(padded[i:i + 3] for i in range(len(padded) - 2))
+        grams |= _word_trigrams(word)
     return grams
+
+
+@functools.lru_cache(maxsize=8192)
+def _word_trigrams(word: str) -> frozenset[str]:
+    """The trigrams of one word as pg_trgm pads it. A text's are the union of its words' (remembered: a search compares the
+    same few words over and over)."""
+    padded = f"  {word} "
+    return frozenset(padded[i:i + 3] for i in range(len(padded) - 2))
 
 
 def word_similarity(query: str, text: str) -> float:
@@ -1804,9 +1827,11 @@ def word_similarity(query: str, text: str) -> float:
         return 0.0
     words = re.findall(r"\w+", text)
     size = max(1, len(re.findall(r"\w+", query)))
+    grams = [_word_trigrams(w) for w in words]  # each word once, however many windows it sits in
     best = 0.0
     for start in range(max(1, len(words) - size + 1)):
-        best = max(best, len(wanted & _trigrams(" ".join(words[start:start + size]))) / len(wanted))
+        window = set().union(*grams[start:start + size])
+        best = max(best, len(wanted & window) / len(wanted))
         if best == 1.0:
             break
     return best

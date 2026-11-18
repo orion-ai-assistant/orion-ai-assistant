@@ -291,6 +291,24 @@ async def fetch_setting_overrides(user_id: str) -> dict[str, str]:
         await conn.close()
 
 
+async def fetch_setting_overrides_for(user_ids: list[str]) -> dict[str, dict[str, str]]:
+    """The overrides of several users (the global defaults and one user) in ONE round trip: {user_id: {key: value}}.
+    Every user asked for is a key, empty when it has none (or the database is down)."""
+    found: dict[str, dict[str, str]] = {user_id: {} for user_id in user_ids}
+    conn = await _connect()
+    if conn is None:
+        return found
+    try:
+        await _ensure_tables(conn)
+        rows = await conn.fetch(
+            "select user_id, key, value from orion_settings where user_id = any($1::text[])", list(found))
+        for row in rows:
+            found[row["user_id"]][row["key"]] = row["value"]
+        return found
+    finally:
+        await conn.close()
+
+
 async def initialize_stt_language_override(user_id: str, language: str) -> None:
     """First successful initialization wins; never overwrite a saved preference."""
     conn = await _connect()
