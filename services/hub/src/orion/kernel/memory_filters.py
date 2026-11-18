@@ -34,6 +34,7 @@ def standing(score, stats) -> float | None:
 
 POOL_ROWS = 1000  # Nearest rows looked at for the memories that stand out (exclusions).
 SAMPLE_ROWS = 1000  # Newest rows a query's typical score is measured on (never every row of the user).
+SAMPLE_SLACK = 200  # Extra newest rows read so rows in the trash do not shorten the sample.
 
 
 async def group_scores(conn, user_id: str, space: str, vector: str, kind: str = "all") -> dict[str, float]:
@@ -57,11 +58,16 @@ async def sample_scores(conn, user_id: str, space: str, vector: str, kind: str =
     for calibrate (a bounded read, however large the memory has grown)."""
     from orion.kernel.memory_groups import GROUP_KEY
     params = [user_id, space, vector]
-    extra = memory.filters_sql("all", kind, params)
+    extra = memory.filters_sql("all", kind, params, live=False)
+    # The newest rows come first, through the partial newest index of the user's ordinary rows (ordered by time, which the
+    # primary key cannot give: a walk of the table backwards would skip every chat window on the way; and a barrier,
+    # so the trash check does not change the plan); the trash is checked on
+    # the few rows taken (a little more than SAMPLE_ROWS, so removed rows do not shorten the sample much).
     rows = await conn.fetch(
-        f"select g, max(s) as s from (select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from "
-        f"orion_memory where user_id = $1 and vector_space = $2{extra} order by id desc limit {SAMPLE_ROWS}) t "
-        f"group by g", *params)
+        f"with newest as materialized (select id, group_id, created_at, embedding from orion_memory where user_id = $1 and "
+        f"vector_space = $2{extra} order by created_at desc, id desc limit {SAMPLE_ROWS + SAMPLE_SLACK}) "
+        f"select g, max(s) as s from (select {GROUP_KEY} as g, 1 - (embedding <=> $3::vector) as s from newest "
+        f"where {memory.live('newest')} order by created_at desc, id desc limit {SAMPLE_ROWS}) t group by g", *params)
     return {r["g"]: float(r["s"]) for r in rows}
 
 

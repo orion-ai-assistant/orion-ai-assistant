@@ -47,9 +47,10 @@ class MemorySearchInput(ToolInput):
     in_: list[str] = Field(
         default_factory=list, max_length=10, alias="in",
         description="Only these collections: 'me' (who the user is), 'experiences' (dated events), 'chats' (past "
-                    "conversations), 'documents' (files) or a project/album by its name. A personal question: me, "
-                    "experiences; something said before: chats. Empty: the whole memory. Ignored while the user's "
-                    "memory has no collections.")
+                    "conversations), 'documents' (files) or a project/album by its name; 'chat:<chat id>' searches inside "
+                    "one chat. A personal question: me, experiences; something said before: chats. Empty: the whole "
+                    "memory except the past conversations (ask for 'chats' to search them). Ignored while the "
+                    "user's memory has no collections.")
     page: int = Field(default=1, ge=1, le=100,
                       description="Result page: 1 = the best ones, 2 = the next ones... Look further only if "
                                   "'more' is true.")
@@ -123,6 +124,8 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
             (p["text"] for p in card.get("parts") or [] if p["id"] == row_id), None)
     if label is not None:
         item["label"] = _snippet(label, card.get("spans") if row_id == card.get("matched_part") else None)
+    if best.get("chat"):  # A past conversation: where it is, so it can be opened (memory_context chat=true).
+        item["chat"] = {"id": best["chat"]["id"], "title": card.get("title"), "message_id": best["chat"]["message"]}
     if card.get("source_kind") == "file" and card.get("title") and kind == "text":
         item["label"] = _snippet(f"{card['title']}: {item.get('label') or ''}")
     if card.get("part_count", 1) > 1:

@@ -33,6 +33,8 @@ class AISettings(BaseModel):
     # removed memory waits in the trash before it is deleted for good.
     memory_v2: bool = False
     memory_trash_days: int = Field(default=30, ge=1, le=3650)
+    # With memory_v2: chats are indexed into the Sohbetler collection (memory_chat_index). Turn off to stop it.
+    memory_index_chats: bool = True
 
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)
