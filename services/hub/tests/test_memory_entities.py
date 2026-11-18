@@ -78,7 +78,7 @@ class EntityTests(PostgresMemoryCase):
                            row[0]['group_id'], fetch=True)
         self.assertEqual(len(vector), 1)
         self.assertEqual((vector[0]['source_kind'], vector[0]['source_chat_title']), ('fact', 'Ayşe'))
-        self.assertEqual(vector[0]['text'], 'Anne (Ayşe): Annemin doğum günü 17 Kasım.')
+        self.assertEqual(vector[0]['text'], 'Annemin doğum günü 17 Kasım.')
         member = await sql("select collection_id, main from orion_mem_collection_item where group_id = $1",
                            row[0]['group_id'], fetch=True)
         self.assertEqual([(m['collection_id'], m['main']) for m in member], [('ben', True)])

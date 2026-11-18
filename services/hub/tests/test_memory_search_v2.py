@@ -217,7 +217,7 @@ class SearchOptionTests(V2Case):
         await self.lives()
         found = await self.find([{'text': 'nerede yaşıyor'}])
         self.assertEqual([r['fact']['about'] for r in found['results']], ['Ayşe (anne)'])
-        self.assertEqual([r['label'] for r in found['results']], ["Anne (Ayşe): Ayşe İstanbul'da yaşıyor."])
+        self.assertEqual([r['label'] for r in found['results']], ["Ayşe İstanbul'da yaşıyor."])
         self.assertNotIn('past_facts', found)
         self.assertNotIn('budget', found)
         self.assertEqual(found['page'], 1)

@@ -55,6 +55,11 @@ RELATIVE_DAYS = {
     "evvelki gun": -2, "onceki gun": -2, "tomorrow": 1, "yarin": 1, "day after tomorrow": 2, "obur gun": 2}
 WEEKDAY_NAMES = {"pazartesi": 0, "sali": 1, "carsamba": 2, "persembe": 3, "cuma": 4, "cumartesi": 5, "pazar": 6,
                   "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
+# Vague times ("the other day"): never one exact day. Folded words -> a rough period before today, stored as precision approx.
+VAGUE_RECENT = {"gecen gun", "gecen gunlerde", "gecenlerde", "gecen", "bu aralar", "son zamanlarda", "recently",
+                "the other day", "a while ago", "lately"}
+VAGUE_RECENT_DAYS = 30
+LAST_WEEK = {"gecen hafta", "last week", "onceki hafta"}
 LAST_WEEKDAY = re.compile(r"^(?:gecen|last|onceki)\s+(\w+)$")
 ISO = re.compile(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$")
 
@@ -108,6 +113,18 @@ def relative_day(said_as: str | None, today: date) -> date | None:
     return None
 
 
+def vague_period(said_as: str | None, today: date) -> tuple[date, date, str] | None:
+    """(first, last, label) of a vague phrase ("geçen gün", "geçenlerde", "geçen hafta", "the other day"): the last
+    VAGUE_RECENT_DAYS days up to yesterday, or last week (Monday to Sunday). None for any other words."""
+    key = " ".join(memory.fold((said_as or "").strip().strip(".!")).split())
+    if key in VAGUE_RECENT:
+        return today - timedelta(days=VAGUE_RECENT_DAYS), today - timedelta(days=1), f"the last {VAGUE_RECENT_DAYS} days"
+    if key in LAST_WEEK:
+        monday = today - timedelta(days=today.weekday() + 7)
+        return monday, monday + timedelta(days=6), "last week"
+    return None
+
+
 def resolve_date(date_text: str | None, end_text: str | None = None, precision: str | None = None,
                  said_as: str | None = None, reference: datetime | None = None) -> dict:
     """The stored date of an event: {"on", "end", "precision", "said_as", "note"} from what was given.
@@ -133,6 +150,14 @@ def resolve_date(date_text: str | None, end_text: str | None = None, precision: 
             note = (f"'{said}' counted from the message's day ({today.isoformat()}) is {relative.isoformat()}: "
                     f"that was used, not {date(*form).isoformat()}.")
         return {"on": relative, "end": None, "precision": "day", "said_as": said, "note": note}
+    vague = vague_period(said, today)
+    if vague is not None:
+        first, last, label = vague
+        guess = (f" The date {date(*form).isoformat()} you gave was not used." if form is not None and form[1] and form[2]
+                 else "")
+        return {"on": first, "end": last, "precision": "approx", "said_as": said,
+                "note": f"'{said}' is vague: stored as a rough period ({label}, {first.isoformat()} to {last.isoformat()}), "
+                        f"not one exact day.{guess}"}
     if form is None:
         raise ValueError(f"An event needs a date (YYYY-MM-DD; today is {today.isoformat()}, {WEEKDAYS[today.weekday()]}). "
                          "For a vague time ('last summer') give your best date and precision=approx.")

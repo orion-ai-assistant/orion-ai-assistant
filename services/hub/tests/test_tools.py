@@ -227,6 +227,37 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item['status'] for item in conversation.activity], ['error', 'error'])
         self.assertIn('automatic retry is disabled', conversation.activity[1]['result']['error']['message'])
 
+    async def test_a_call_refused_before_it_ran_can_be_retried_in_the_same_turn(self):
+        conversation = self.conversation(['add_memory'])
+        requests = []
+
+        async def stream(messages, settings, **kwargs):
+            requests.append(kwargs)
+            if len(requests) == 1:
+                yield 'tool_calls', json.dumps([call('bad', 'add_memory', '{"type":"event","participants":["Mehmet"]}')])
+            elif len(requests) == 2:
+                yield 'tool_calls', json.dumps([call('good', 'add_memory', '{"text":"Kahve içtik."}')])
+            else:
+                yield 'content', 'ok'
+
+        registry = get_registry()
+        handler = AsyncMock(return_value={'added': 'x'})
+        with patch.dict(registry.tools, {'add_memory': replace(registry.tools['add_memory'], handler=handler)}):
+            _ = [event async for event in conversation.stream([], RuntimeSettings(),
+                 AsyncMock(return_value=False), stream)]
+        self.assertEqual([item['status'] for item in conversation.activity], ['error', 'completed'])
+        self.assertIn('Invalid arguments for add_memory', conversation.activity[0]['result']['error']['message'])
+        self.assertIn('text', conversation.activity[0]['result']['error']['message'])
+        self.assertIn('Example event', conversation.activity[0]['result']['error']['message'])
+        handler.assert_awaited_once()
+
+    async def test_add_memory_takes_what_models_naturally_send(self):
+        from orion.worker.tools.memory.tools import MemoryAddInput
+        args = MemoryAddInput.model_validate_json(json.dumps({
+            'type': 'event', 'date': '', 'said_as': 'geçen gün', 'participants': ['Mehmet'], 'place': 'park',
+            'title': 'Parkta kahve', 'mood': '', 'precision': 'approx', 'about': '', 'items': []}))
+        self.assertEqual((args.text, args.title, args.mood, args.date), ('Parkta kahve', 'Parkta kahve', '', ''))
+
     async def test_ambiguous_media_seek_returns_to_model_for_targeted_retry(self):
         conversation = self.conversation(['media_control'])
         requests = []

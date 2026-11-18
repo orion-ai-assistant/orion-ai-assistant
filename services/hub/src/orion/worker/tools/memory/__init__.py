@@ -18,12 +18,23 @@ CATEGORY = Category(
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
            Tool(id="add_memory", name="Hafızaya ekle",
                 description=("Saves something to remember when the user says 'remember this', 'keep in mind', "
-                             "'don't forget'. 'text' is one short self-contained sentence (e.g. 'The user's "
-                             "birthday is 3 March.'). Never save without being asked. type=fact (when the user's "
-                             "memory collections are on) saves ONE short sentence about a person, place or the user "
-                             "with 'about' and 'category'; a changed fact is passed with 'replaces' (a card asks the "
-                             "user, you never close or rewrite a fact); a locked kind (health, religion, money ...) "
-                             "also only opens a card. The answer may say same_as: it was already known."),
+                             "'don't forget' (or tells you what happened). Never save without being asked. ALWAYS write "
+                             "everything (text, about, relation, place, participants) in the user's own language, exactly "
+                             "as they said it: never translate and never add English labels. Fields by type. "
+                             "type=note (default): 'text' (+ optional 'title'). "
+                             "type=fact (when the user's memory collections are on): 'text' = ONE short sentence in the "
+                             "user's words ('Annemin adı Ayşe.'), 'about' = who it is about as the user says it ('Annem', "
+                             "'Mehmet'; empty or 'me' for the user: their own name, age, job), 'relation' = how a new person "
+                             "relates to the user ('annem'), 'category', optional 'since'. Example: {type:'fact', "
+                             "text:'Annemin adı Ayşe.', about:'Annem', relation:'annem', category:'relationship'}. A changed "
+                             "fact is passed with 'replaces' (a card asks the user, you never close or rewrite a fact); a "
+                             "locked kind (health, religion, money ...) also only opens a card. "
+                             "type=event: 'text' = what happened ('Mehmet ile parkta kahve içtik.'), 'said_as' = the user's "
+                             "own time words ('geçen gün'), 'date' only if the user gave one (YYYY-MM-DD), 'participants' "
+                             "(names, 'me' for the user), 'place'. If the user gave no exact day, KEEP said_as, set "
+                             "precision='approx' and do not invent a date. Example: {type:'event', text:'Mehmet ile parkta "
+                             "kahve içtik.', said_as:'geçen gün', precision:'approx', participants:['Mehmet'], place:'park'}. "
+                             "Leave unused fields out. The answer may say same_as: it was already known."),
                 input_model=MemoryAddInput, handler=add_memory, timeout_seconds=45, default_on=True),
            Tool(id="delete_memory", name="Hafızadan sil",
                 description=("When the user says 'forget this', 'delete it from your memory'. Find the memories with "
