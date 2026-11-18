@@ -40,6 +40,9 @@ class AISettings(BaseModel):
     memory_extract_chats: bool = True
     # The model that does it, a Router model group; empty = the chat model.
     memory_background_model: str = ""
+    # With memory_v2: a short profile of the user (their pinned lines and current facts, memory_profile) is added to every
+    # chat's system message. Turn off to chat without it.
+    memory_profile: bool = True
 
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)

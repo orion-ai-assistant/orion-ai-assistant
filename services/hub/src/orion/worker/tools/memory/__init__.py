@@ -10,7 +10,11 @@ CATEGORY = Category(
                     "guessing anything personal. Each query is a text (by meaning), a keyword (exact words only) or "
                     "an id from an earlier result (memories like that one); like=false leaves matching memories out. "
                     "mode together = close to all liked queries, separate = close to any. Results are pages, best "
-                    "first; with no query, the newest (of kind)."),
+                    "first; with no query, the newest (of kind). The order is the shown score, nothing else. With the "
+                    "user's memory collections on: 'about' limits it to one person or thing, 'as_of' / 'include_past' "
+                    "bring in how facts stood or used to be ('past_facts', by words), 'budget' fits the answer into a "
+                    "token budget, and a query that names a known person or thing also returns that 'entity' card "
+                    "(its current facts and latest events) before the results."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
            Tool(id="add_memory", name="Hafızaya ekle",
                 description=("Saves something to remember when the user says 'remember this', 'keep in mind', "

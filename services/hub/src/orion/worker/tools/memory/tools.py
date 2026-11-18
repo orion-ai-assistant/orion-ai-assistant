@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from typing import Literal
 
@@ -72,6 +73,28 @@ class MemorySearchInput(ToolInput):
                     "sex life, ethnicity, union, legal trouble, money or ID documents): then the locked facts that "
                     "match the query words are added to the answer as 'locked_facts'. Locked facts are never in "
                     "ordinary results. Ignored while the user's memory has no collections.")
+    about: str = Field(
+        default="", max_length=120,
+        description="Only memories about this person, place, pet or thing: a name or relation as the user says it ('Ayşe', "
+                    "'my mother'), '#<id>' for an entity from an earlier answer, 'me' for the user. Their facts, events and the "
+                    "photos linked to those events; the query ranks inside them (empty query: the newest). Ignored while the "
+                    "user's memory has no collections.")
+    as_of: str = Field(
+        default="", max_length=10,
+        description="A day (YYYY-MM-DD; YYYY-MM or YYYY mean the END of that month or year): the facts as they stood then. Facts "
+                    "that only became true later are left out, and the past versions that were true that day are listed under "
+                    "'past_facts' (found by the query's words, no score). Use it for 'where did I live in 2022?'. Ignored while "
+                    "the user's memory has no collections.")
+    include_past: bool = Field(
+        default=False,
+        description="true: also list past versions of facts (replaced ones, with 'since' and 'until') under 'past_facts', for "
+                    "'where did I live before?'. They have no vectors, so they are found by the query's words and carry no score. "
+                    "Ignored while the user's memory has no collections.")
+    budget: int | None = Field(
+        default=None, ge=100, le=8000,
+        description="Token budget for the whole answer. Without it: 'page_size' results. With it: the best results that fit, "
+                    "never half a result ('more' is true when some were left out; open more with memory_context or a narrower "
+                    "query); 'page' and 'page_size' are not used.")
     page: int = Field(default=1, ge=1, le=100,
                       description="Result page: 1 = the best ones, 2 = the next ones... Look further only if "
                                   "'more' is true.")
@@ -178,27 +201,81 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
     return item
 
 
+BUDGET_WINDOW = 40  # Ranked memories a search with a `budget` looks at; the budget then cuts that list from the bottom.
+CARD_SHARE = 0.6  # Most of a budget the entity card may take (it is the first thing in the answer).
+PAST_SHARE = 0.3  # Most of a budget the past versions may take.
+
+
+def _tokens(value) -> int:
+    from orion.kernel.memory import estimate_tokens
+    return estimate_tokens(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _fit_card(card: dict, budget: int) -> dict:
+    """The entity card inside its share of the budget: facts and events are dropped whole from the end."""
+    limit = int(budget * CARD_SHARE)
+    for key in ("recent_events", "facts"):
+        while _tokens(card) > limit and card.get(key):
+            card[key] = card[key][:-1]
+            card["trimmed"] = True
+    return card
+
+
 async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
-    from orion.kernel import memory, memory_entities, memory_groups
+    from orion.kernel import memory, memory_entities, memory_events, memory_groups
     from orion.kernel.config import get_runtime_settings
     queries = [{"text": q.text, "id": q.id, "keyword": q.keyword, "like": q.like} for q in args.queries
                if q.id is not None or q.text.strip() or q.keyword.strip()]
-    size = args.page_size
+    size = BUDGET_WINDOW if args.budget else args.page_size
     settings = await get_runtime_settings(None, context.user_id)
+    v2 = memory_entities.enabled(settings)
+    if args.budget and args.page > 1:
+        return {"error": "With a budget the answer is one page of the best results that fit; 'page' is not used. Raise the "
+                         "budget, narrow the query or read a result's surroundings with memory_context."}
     extra = {}
     if args.when is not None:
-        from orion.kernel import memory_events
         try:
             span = memory_events.parse_range(args.when.from_, args.when.to)
         except ValueError as exc:
             return {"error": str(exc)}
         if span:
             extra["when"] = span
+    entity_id, as_of = None, None
+    if v2 and args.as_of.strip():
+        try:
+            as_of = memory_events.parse_range(args.as_of.strip(), args.as_of.strip())[1]
+        except ValueError as exc:
+            return {"error": str(exc)}
+        extra["as_of"] = as_of
+    if v2 and args.about.strip():
+        try:
+            async with memory_entities._db() as conn:
+                entity, _ = await memory_entities.resolve_entity(conn, context.user_id, args.about, create=False)
+        except memory_entities.Ambiguous as exc:
+            return {"error": str(exc)}
+        except ValueError as exc:
+            return {"error": str(exc)}
+        if entity is None:
+            return {"page": args.page, "results": [], "more": False,
+                    "note": f"The user's memory has no one called {args.about.strip()!r}."}
+        entity_id = entity["id"]
+        extra["about"] = [entity_id]
+    like_texts = [q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None]
+    async def extras_on(conn):  # The entity card and the past versions, read on the search's own connection.
+        try:
+            return await memory_entities.search_extras(context.user_id, settings, like_texts, entity_id, as_of,
+                                                       args.include_past, bool(args.about.strip()), conn=conn)
+        except Exception:  # Extras: the ranked results go out without them.
+            logging.getLogger(__name__).warning("search_memory: entity card / past versions failed", exc_info=True)
+            return None
+    if v2:
+        extra["side"] = extras_on
     try:
         found = await memory_groups.search_queries(
             context.user_id, settings, queries, **extra,
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
-            vector_space=args.model.strip() or "all", limit=size, offset=(args.page - 1) * size,
+            vector_space=args.model.strip() or "all", limit=size,
+            offset=0 if args.budget else (args.page - 1) * size,
             **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip()]) else {}))
     except (memory.MemoryUnavailable, ValueError) as exc:  # QueryError and an unknown collection are ValueErrors.
         return {"error": str(exc)}
@@ -211,10 +288,44 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
         if card.get("event"):  # An event: its day (precision), who took part, where (memory_groups adds it).
             item["event"] = card["event"]
     result = {"page": args.page, "results": results, "more": found["more"]}
-    if args.sensitive and memory_entities.enabled(settings):
+    spent = 0
+    extras = found.get("side")  # The entity card comes first, then the past versions, then the results.
+    if extras is not None:
+        if extras["candidates"]:
+            result["entity_candidates"] = extras["candidates"]
+        if extras["card"] is not None:
+            result["entity"] = _fit_card(extras["card"], args.budget) if args.budget else extras["card"]
+            spent += _tokens(result["entity"])
+        past = extras["past"]
+        if past is not None:
+            if args.budget:
+                kept, room = [], int(args.budget * PAST_SHARE)
+                for item in past:
+                    if sum(_tokens(k) for k in kept) + _tokens(item) > room:
+                        break
+                    kept.append(item)
+                if len(kept) < len(past):
+                    result["past_more"] = True
+                past = kept
+            result["past_facts"] = past
+            spent += _tokens(past)
+    if args.sensitive and v2:
         result["locked_facts"] = await memory_entities.search_locked(context.user_id, settings, words)
         result["locked_note"] = ("Locked facts match by words only, and only because the user asked. Tell them what "
                                  "they asked for; do not bring these up on your own.")
+        spent += _tokens(result["locked_facts"])
+    if args.budget:  # The best results that fit, whole, in the order of their scores.
+        kept = []
+        for item in results:
+            cost = _tokens(item)
+            if spent + cost > args.budget:
+                break
+            kept.append(item)
+            spent += cost
+        result["more"] = bool(result["more"]) or len(kept) < len(results)
+        result["results"] = results = kept
+        result["budget"] = {"limit": args.budget, "used": spent}
+        result.pop("page", None)
     if results:
         result["note"] = NOTE if any(q["like"] for q in queries) else "Newest first. " + NOTE
     else:

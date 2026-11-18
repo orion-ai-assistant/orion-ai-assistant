@@ -72,7 +72,12 @@ class Ambiguous(ValueError):
 
 
 @asynccontextmanager
-async def _db():
+async def _db(conn=None):
+    """A connection of the memory (closed after), or the caller's own `conn` (left open): several reads of one search share
+    one connection."""
+    if conn is not None:
+        yield conn
+        return
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
@@ -478,11 +483,11 @@ async def history(user_id: str, settings, fact_id: int, reveal: bool = False) ->
             "versions": [{**_fact_out(v, reveal), "sources": sources.get(v["id"], [])} for v in versions]}
 
 
-async def entity_card(user_id: str, settings, entity_id: int, reveal: bool = False) -> dict:
+async def entity_card(user_id: str, settings, entity_id: int, reveal: bool = False, conn=None) -> dict:
     """An entity with its current facts by category (a fact says how many past versions it has and how many sources);
     locked facts without their text unless `reveal`. LookupError for an entity that is not this user's."""
     require(settings)
-    async with _db() as conn:
+    async with _db(conn) as conn:
         e = await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2 and "
                                 "merged_into is null and deleted_at is null", user_id, entity_id)
         if e is None:
@@ -627,6 +632,145 @@ async def search_locked(user_id: str, settings, words: str = "", about: str | No
                     "since": r["valid_from"].isoformat() if r["valid_from"] else None})
         if len(out) >= limit:
             break
+    return out
+
+
+# --- Search: time, the past, the entity card (step 8; memory_groups.search_queries and the search_memory tool) ----------------
+
+async def not_yet_groups(conn, user_id: str, as_of: date) -> set[str]:
+    """The memories of current facts that only became true AFTER `as_of` (a start date later than it): left out of a search
+    "as of" that day. A fact with no start date counts as always true."""
+    return {r["group_id"] for r in await conn.fetch(
+        "select group_id from orion_mem_fact where user_id = $1 and superseded_by is null and group_id is not null "
+        "and valid_from > $2", user_id, as_of)}
+
+
+def _end_of(r) -> date | None:
+    """The day a past version stopped being true: its `valid_to`; an end nobody gave falls back to the day Orion stopped
+    counting it (`expired_at`)."""
+    return r["valid_to"] or (r["expired_at"].date() if r["expired_at"] else None)
+
+
+def _true_on(r, as_of: date | None) -> bool:
+    """Was this past version true on `as_of`? From its start (unknown = always) to its end."""
+    if as_of is None:
+        return True
+    start, end = r["valid_from"], _end_of(r)
+    return (start is None or start <= as_of) and (end is None or end > as_of)
+
+
+PAST_LIMIT = 20  # Past versions listed by one search.
+
+
+async def search_past(user_id: str, settings, terms: list[str], entity_ids: list[int] | None = None,
+                      as_of: date | None = None, limit: int = PAST_LIMIT, conn=None) -> list[dict]:
+    """Past versions of facts (replaced ones; the vector rows of a version go when it is replaced, so they are found by words
+    and dates, never by meaning, and carry no score): [{"id", "about", "category", "statement", "since", "until", "past": True}].
+    Only unlocked facts of lineages that still live. `terms`: the query's words (folded, 3+ letters): a version counts when it
+    holds at least one, the more the earlier; no words: all of them (of `entity_ids` if given), the newest end first. `as_of`:
+    only the versions that were true that day."""
+    require(settings)
+    words = [t for t in dict.fromkeys(w for text in terms for w in re.findall(r"\w+", memory.fold(text))) if len(t) >= 3]
+    params: list = [user_id]
+    where = ["f.user_id = $1", "f.superseded_by is not null", "not f.sensitive", "f.deleted_at is null",
+             f"exists (select 1 from orion_mem_fact h where h.user_id = f.user_id and h.lineage = f.lineage and "
+             f"h.superseded_by is null and {_live('h')})"]
+    if entity_ids is not None:
+        params.append(list(entity_ids))
+        where.append(f"f.entity_id = any(${len(params)}::bigint[])")
+    async with _db(conn) as conn:
+        rows = await conn.fetch(
+            f"select {_FACT}, e.name, e.relation from orion_mem_fact f join orion_mem_entity e on e.id = f.entity_id and "
+            f"e.user_id = f.user_id where {' and '.join(where)} order by f.id desc limit 2000", *params)
+    scored = []
+    for r in rows:
+        if not _true_on(r, as_of):
+            continue
+        hay = memory.fold(f"{r['statement']} {r['name']} {r['relation'] or ''}")
+        hits = sum(1 for w in words if w in hay)
+        if words and not hits:
+            continue
+        scored.append((hits, r))
+    scored.sort(key=lambda x: (-x[0], -(_end_of(x[1]) or date.min).toordinal(), -x[1]["id"]))
+    return [{"id": r["id"], "about": r["name"] if not r["relation"] else f"{r['name']} ({r['relation']})",
+             "category": r["category"], "statement": r["statement"],
+             "since": r["valid_from"].isoformat() if r["valid_from"] else None,
+             "until": _end_of(r).isoformat() if _end_of(r) else None,
+             "past": True} for _, r in scored[:limit]]
+
+
+async def named_entities(user_id: str, settings, texts: list[str], conn=None) -> list[dict]:
+    """The user's entities a query names: a name, relation or alias that is a whole word (or words) of the query, with a
+    suffix of up to four letters allowed on a name of four letters or more (Turkish: "annemin", "Ayşe'nin"). The user's own
+    entity only when the whole query is one of its names ("me", "ben"): "ben" inside any Turkish sentence is not a question
+    about the user. One read of the (small) entity table. [{"id", "kind", "name", "relation", "aliases"}]."""
+    require(settings)
+    queries = [q for q in (memory.fold(" ".join((t or "").split())) for t in texts) if q]
+    if not queries:
+        return []
+    async with _db(conn) as conn:
+        rows = await conn.fetch(f"select {_ENTITY}, keys from orion_mem_entity where user_id = $1 and merged_into is null "
+                                "and deleted_at is null", user_id)
+    found = []
+    for r in rows:
+        for key in r["keys"]:
+            if not key:
+                continue
+            if r["kind"] == "self":
+                hit = key in queries
+            else:
+                tail = r"\w{0,4}" if len(key) >= 4 else ""
+                hit = any(re.search(rf"(?<!\w){re.escape(key)}{tail}(?!\w)", q) for q in queries)
+            if hit:
+                found.append(_entity_out(r))
+                break
+    return found
+
+
+async def search_card(user_id: str, settings, entity_id: int, events: int = 3, facts: int = 12, conn=None) -> dict:
+    """The entity as a search answers it (the tool's `entity`): who it is, its current unlocked facts (the newest `facts`;
+    how many past versions each has), how many locked facts there are (no text), its newest `events` events and how many
+    facts were cut. LookupError for an entity that is not this user's."""
+    from orion.kernel import memory_events
+    card = await entity_card(user_id, settings, entity_id, conn=conn)
+    open_facts = [f for f in card["facts"] if not f["locked"]]
+    listed = await memory_events.list_events(user_id, settings, entity_id=entity_id, limit=events, conn=conn)
+    out = {"id": card["id"], "name": card["name"], "kind": card["kind"], "relation": card["relation"],
+           "aliases": card["aliases"],
+           "facts": [{"id": f["id"], "category": f["category"], "statement": f["statement"], "since": f["since"],
+                      **({"past_versions": f["past_versions"]} if f["past_versions"] else {})}
+                     for f in open_facts[:facts]],
+           "recent_events": [{"id": e["id"], "date": e["date"], "precision": e["precision"], "title": e["title"]}
+                             for e in listed["events"]]}
+    if len(open_facts) > facts:
+        out["more_facts"] = len(open_facts) - facts
+    if any(f["locked"] for f in card["facts"]):
+        out["locked_facts"] = sum(1 for f in card["facts"] if f["locked"])
+    return out
+
+
+async def search_extras(user_id: str, settings, texts: list[str], entity_id: int | None = None, as_of: date | None = None,
+                        include_past: bool = False, about_given: bool = False, conn=None) -> dict:
+    """Everything a search adds beside its ranked results, on ONE connection (the search's own: memory_groups.list_groups's `side`):
+    the entity card (`entity_id`, else the one entity the query names), the entities a query names when several
+    fit (`candidates`, no card), and the past versions (`past`) when asked for (`include_past`, or `as_of`). {"card",
+    "candidates", "past"}."""
+    out: dict = {"card": None, "candidates": [], "past": None}
+    async with _db(conn) as conn:
+        if entity_id is None and texts:
+            named = await named_entities(user_id, settings, texts, conn=conn)
+            if len(named) == 1:
+                entity_id = named[0]["id"]
+            elif named:
+                out["candidates"] = [{"id": e["id"], "name": e["name"], "relation": e["relation"]} for e in named[:5]]
+        if entity_id is not None:
+            try:
+                out["card"] = await search_card(user_id, settings, entity_id, conn=conn)
+            except LookupError:
+                pass
+        if include_past or as_of is not None:
+            out["past"] = await search_past(user_id, settings, texts, [entity_id] if about_given and entity_id else None,
+                                            as_of, conn=conn)
     return out
 
 

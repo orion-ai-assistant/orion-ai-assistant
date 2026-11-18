@@ -139,8 +139,10 @@ async def llama_stream_chat_typed(
     settings: RuntimeSettings,
     stop_checker: Callable[[], Awaitable[bool]] | None = None,
     tools: list[dict[str, Any]] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
-    """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar.
+    """LLM streaming — thinking ve content tokenlarını ayrı ayrı yayınlar. `extra_headers`: more request headers (the
+    memory profile's size for the Router's log).
 
     Yields:
         ("thinking", token) — reasoning / chain-of-thought içeriği
@@ -150,6 +152,7 @@ async def llama_stream_chat_typed(
 
     urls = _router_urls("/v1/chat/completions")
     headers = await _chat_headers(settings)
+    headers.update(extra_headers or {})
     payload: dict[str, Any] = {
         "model": settings.router_model_group,
         "messages": messages,

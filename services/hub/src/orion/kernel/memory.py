@@ -172,7 +172,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 7  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries.
+SCHEMA_VERSION = 8  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines).
 CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
@@ -211,6 +211,8 @@ async def _migrate(conn) -> None:
             await _schema_6(conn)
         if version < 7:
             await _schema_7(conn)
+        if version < 8:
+            await _schema_8(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
@@ -499,6 +501,17 @@ async def _schema_7(conn) -> None:
                    "summary_stale boolean not null default false", "summary_at timestamptz"):
         await conn.execute(f"alter table orion_mem_chat_state add column if not exists {column}")
     await conn.execute("alter table orion_mem_fact add column if not exists run_id bigint")
+
+
+async def _schema_8(conn) -> None:
+    """The profile block (§9.2; memory_profile): the lines the user pinned, and the last block built (for the page and the
+    log; the block itself is rebuilt from the facts at every chat turn). One row per user."""
+    await conn.execute("""
+        create table if not exists orion_mem_profile (
+            user_id text primary key,
+            pinned jsonb not null default '[]',              -- [{"text": "...", "fact_id": 12 | null}]
+            generated jsonb not null default '[]',           -- [{"fact_id": 31, "text": "..."}] as last built
+            tokens integer, built_at timestamptz)""")
 
 
 ANN_EF = 100  # hnsw.ef_search while a search runs (the default 40 returns too few rows once the user's filter applies).
@@ -1731,6 +1744,15 @@ def fold(text: str) -> str:
     `folded` and `caption_folded` columns, which the trigram indexes cover) and for the query: a database lower()
     follows its locale, so SQL never folds."""
     return text.translate(_FOLD).lower()
+
+
+CHARS_PER_TOKEN = 3  # Turkish text costs about this many characters per token in common tokenizers (English ~4): a guess on the high side.
+
+
+def estimate_tokens(text: str) -> int:
+    """About how many model tokens `text` costs (a budget guard for the profile block and search_memory's `budget`; the
+    real count is the model's tokenizer's, which the Hub does not carry). Rounded up, so a budget is never overrun."""
+    return -(-len(text or "") // CHARS_PER_TOKEN)
 
 
 def match_text(text: str, title: str | None = None, caption: str | None = None, source_kind: str | None = None) -> str:

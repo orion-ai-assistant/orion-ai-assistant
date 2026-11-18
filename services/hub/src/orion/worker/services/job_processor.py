@@ -336,8 +336,11 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 settings.redis_cache_ttl_seconds,
             )
             messages: list[dict[str, Any]] = []
-            if settings.system_prompt:
-                messages.append({"role": "system", "content": settings.system_prompt})
+            from orion.kernel import memory_profile  # The user's profile block rides in the system message (memory_v2).
+            profile = await memory_profile.for_chat(context.user_id, settings)
+            system_text = memory_profile.with_system_prompt(settings.system_prompt, profile)
+            if system_text:
+                messages.append({"role": "system", "content": system_text})
             messages.extend(history)
 
             current = {'role': 'user', 'content': user_content(context.request.input)}
@@ -403,7 +406,14 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 if settings.tts_enabled and is_audio_requested:
                     adaptive_tts = AdaptiveTts(context, settings, _check_stop, arrival_ms)
 
-                stream = conversation.stream(messages, settings, _check_stop, llama_stream_chat_typed)
+                chat_stream = llama_stream_chat_typed
+                if profile:  # Tell the Router's log what the block was, not its text.
+                    profile_headers = memory_profile.log_header(profile)
+
+                    def chat_stream(model_messages, model_settings, **options):
+                        return llama_stream_chat_typed(model_messages, model_settings, extra_headers=profile_headers,
+                                                       **options)
+                stream = conversation.stream(messages, settings, _check_stop, chat_stream)
                 token_count = 0
                 thinking_token_count = 0
                 content_token_count = 0

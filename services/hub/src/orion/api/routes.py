@@ -492,6 +492,52 @@ async def memory_recent_undo(payload: RecentUndo, request: Request, current_user
     return await _ben(request, current_user, lambda s: memory_recent.undo(current_user, s, payload.type, payload.id))
 
 
+# --- Profile block: what every chat is told about the user (memory_profile; memory_v2) ---------------------------------------
+
+class ProfileLine(BaseModel):
+    text: str = Field(max_length=2000)
+    fact_id: int | None = None
+
+
+class ProfilePinned(BaseModel):
+    items: list[ProfileLine] = Field(default_factory=list, max_length=100)
+
+
+class ProfilePin(BaseModel):
+    fact_id: int
+    text: str | None = Field(default=None, max_length=2000)  # The user's own wording of it (else the fact's sentence).
+
+
+@router.get("/api/v1/memory/profile")
+async def memory_profile_get(request: Request, current_user: str = Depends(get_current_user)):
+    """The profile block as the next chat would carry it ({text, tokens, limit, overflow, left_out}), the pinned lines with
+    their state (ok / replaced / gone / locked) and the generated lines with their fact ids."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.get(current_user, settings))
+
+
+@router.put("/api/v1/memory/profile/pinned")
+async def memory_profile_set_pinned(payload: ProfilePinned, request: Request, current_user: str = Depends(get_current_user)):
+    """Replace the pinned lines (they always go into the block; the generated part fills what is left)."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.set_pinned(
+        current_user, settings, [i.model_dump() for i in payload.items]))
+
+
+@router.post("/api/v1/memory/profile/pin")
+async def memory_profile_pin(payload: ProfilePin, request: Request, current_user: str = Depends(get_current_user)):
+    """Pin one current fact (its sentence, or the user's own wording)."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.pin_fact(
+        current_user, settings, payload.fact_id, payload.text))
+
+
+@router.delete("/api/v1/memory/profile/pin/{fact_id}")
+async def memory_profile_unpin(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.unpin_fact(current_user, settings, fact_id))
+
+
 # --- Extraction: reading chats for memories, shadow mode and the quality-gate report (memory_extract; memory_v2) -------------
 
 class ExtractionLive(BaseModel):

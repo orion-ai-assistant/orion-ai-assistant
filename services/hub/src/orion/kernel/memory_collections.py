@@ -82,6 +82,8 @@ async def revert(user_id: str) -> dict:
             await memory_chat_index.forget_user(conn, user_id)  # Derived windows of the chats: rebuilt when it is on again.
             from orion.kernel import memory_extract
             await memory_extract.forget_user(conn, user_id)  # Runs and candidates of the extraction (derived, shadow).
+            from orion.kernel import memory_profile
+            await memory_profile.forget_user(conn, user_id)  # The built profile block (derived); pinned lines stay.
             rows = await conn.execute("delete from orion_mem_collection_item where user_id = $1", user_id)
             gone = await conn.execute("delete from orion_mem_collection where user_id = $1", user_id)
     finally:

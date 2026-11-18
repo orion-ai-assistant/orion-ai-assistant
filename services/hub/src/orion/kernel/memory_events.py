@@ -219,6 +219,29 @@ def when_sql(keys: tuple[list[str], list[int]], params: list) -> str:
     return f" and (group_id = any(${first}::text[]) or (group_id is null and id = any(${len(params)}::bigint[])))"
 
 
+async def about_keys(conn, user_id: str, entity_ids: list[int]) -> tuple[list[str], list[int]]:
+    """The memories about these entities (search_memory's `about`): their current facts, the events they took part in or were
+    the place of, and the items (photos, videos) linked to such events. Same shape as when_keys, so a search takes them the
+    same way (a candidate set ranked exactly)."""
+    ids = [str(int(i)) for i in entity_ids]
+    rows = await conn.fetch(
+        "select f.group_id as k from orion_mem_fact f where f.user_id = $1 and f.superseded_by is null and "
+        "f.group_id is not null and f.entity_id = any($2::text[]::bigint[]) "
+        "union select e.group_id from orion_mem_event e join orion_mem_link l on l.user_id = e.user_id and "
+        "l.from_type = 'event' and l.from_id = e.id and l.to_type = 'entity' and l.to_id = any($2::text[]) "
+        "where e.user_id = $1 and e.superseded_by is null "
+        "union select i.to_id from orion_mem_link i join orion_mem_event e on e.id = i.from_id and e.user_id = i.user_id "
+        "join orion_mem_link l on l.user_id = e.user_id and l.from_type = 'event' and l.from_id = e.id and "
+        "l.to_type = 'entity' and l.to_id = any($2::text[]) where i.user_id = $1 and i.from_type = 'event' and "
+        "i.to_type = 'item' and e.superseded_by is null", user_id, ids)
+    return _keys([r["k"] for r in rows])
+
+
+def intersect_keys(a: tuple[list[str], list[int]], b: tuple[list[str], list[int]]) -> tuple[list[str], list[int]]:
+    """The memories both key sets name."""
+    return sorted(set(a[0]) & set(b[0])), sorted(set(a[1]) & set(b[1]))
+
+
 # --- Reading ----------------------------------------------------------------------------------------------------------
 
 _EVENT = ("e.id, e.lineage, e.title, e.body, e.occurred_on, e.occurred_end, e.precision, e.said_as, e.mood, e.recorded_at, "
@@ -289,7 +312,7 @@ async def _decorate(conn, user_id: str, rows: list) -> list[dict]:
 
 
 async def list_events(user_id: str, settings, start: str | None = None, end: str | None = None, entity_id: int | None = None,
-                      limit: int = 50, offset: int = 0) -> dict:
+                      limit: int = 50, offset: int = 0, conn=None) -> dict:
     """The timeline: the user's live events, newest day first, {"events", "more", "years": [{year, count}] (the first
     page only; counted over the same filter)}. `start` / `end`: a range (parse_range); `entity_id`: events the entity took
     part in or was the place of. ValueError for a bad range."""
@@ -310,7 +333,7 @@ async def list_events(user_id: str, settings, start: str | None = None, end: str
         where.append(f"exists (select 1 from orion_mem_link l where l.user_id = e.user_id and l.from_type = 'event' and "
                      f"l.from_id = e.id and l.to_type = 'entity' and l.to_id = ${len(params)})")
     condition = " and ".join(where)
-    async with me._db() as conn:
+    async with me._db(conn) as conn:
         rows = await conn.fetch(f"select {_EVENT} from orion_mem_event e where {condition} order by e.occurred_on desc, "
                                 f"e.id desc limit {limit + 1} offset {offset}", *params)
         events = await _decorate(conn, user_id, rows[:limit])
