@@ -11,8 +11,8 @@ CATEGORY = Category(
                     "an id from an earlier result (memories like that one); like=false leaves matching memories out. "
                     "mode together = close to all liked queries, separate = close to any. Results are pages, best "
                     "first; with no query, the newest (of kind). The order is the shown score, nothing else. With the "
-                    "user's memory collections on: 'about' limits it to one person or thing, 'as_of' / 'include_past' "
-                    "bring in how facts stood or used to be ('past_facts', by words), 'budget' fits the answer into a "
+                    "user's memory collections on: 'about' limits it to one person or thing, 'when' is the one date filter "
+                    "(it also lists replaced fact versions true then as 'past_facts'), 'include_past' lists how facts used to be (by words), 'budget' fits the answer into a "
                     "token budget, and a query that names a known person or thing also returns that 'entity' card "
                     "(its current facts and latest events) before the results."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),

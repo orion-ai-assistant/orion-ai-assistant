@@ -1,14 +1,13 @@
-"""Collections (docs/hafiza-tasarimi.md §3, §13): every memory sits in one main collection and may also be a member
-of projects/albums: both are rows of `orion_mem_collection_item` (the main one has `main`), one per memory, never a
-column of the vector table (sorting would rewrite every vector row and its HNSW entries). Behind the per-user setting `memory_v2`:
-with it off nothing here runs and the memory behaves as before.
+"""Collections (docs/hafiza-tasarimi.md §3, §13): the four fixed ones (Ben, Yaşadıklarım, Sohbetler, Belgeler); the user does not
+make others. Belgeler, Yaşadıklarım and Sohbetler are membership rows of `orion_mem_collection_item` (`main`, one per memory,
+never a column of the vector table: sorting would rewrite every vector row and its HNSW entries); Ben is not stored but
+defined (ben_sql): the facts about the user and about the people close to them, and the events the user took part in. Behind
+the per-user setting `memory_v2`: with it off nothing here runs and the memory behaves as before.
 
-The first time a user's memory is used with `memory_v2` on, their collections are made and their existing memories
-sorted, once (ensure_user): after a dump of the memory tables, the four built-in collections and the project
-"Eski hafıza"; a memory whose first row came from a file goes to Belgeler, every other one to Eski hafıza. Group ids,
-parts and vectors stay as they are. revert() undoes it (memberships and collections gone); the rows were never
-touched. Memories with no collection (saved before, or while the setting was off) are searched as before by a search over
-the whole memory.
+The first time a user's memory is used with `memory_v2` on, their collections are made and their files sorted into Belgeler, once
+(ensure_user), after a dump of the memory tables. Every other old memory stays in no collection: it is listed under "Tüm hafıza"
+(the whole memory) and found by a search over the whole memory. Group ids, parts and vectors stay as they are. revert() undoes
+it (memberships and collections gone); the rows were never touched.
 
 Source links (`orion_mem_source`): where a fact or an event came from (a chat and its first/last message, an item, or
 the user typing it on the page). Nothing is written without one (§16); add_source / sources_of are the only way in."""
@@ -21,10 +20,8 @@ from orion.kernel import memory
 logger = logging.getLogger(__name__)
 
 BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "Sohbetler"), ("belgeler", "Belgeler"))
-OLD_NAME = "Eski hafıza"
 IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
 CHAT_PREFIX = "chat:"  # A collection name "chat:<chat id>": only the windows of that one chat (Sohbetler, narrowed).
-SORTED_TO = {"file": "belgeler", "fact": "ben", "event": "yasadiklarim"}  # Where a memory's first row sends it when sorted; the rest: Eski hafıza.
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 
@@ -38,8 +35,7 @@ async def _sorted(conn, user_id: str) -> bool:
 
 
 async def ensure_user(conn, user_id: str) -> None:
-    """Make this user's collections and sort their existing memories into Belgeler / Eski hafıza, once. A
-    primary-key lookup when it was done."""
+    """Make this user's collections and sort their existing files into Belgeler, once. A primary-key lookup when it was done."""
     if await _sorted(conn, user_id):
         return
     await conn.execute("select pg_advisory_lock($1, hashtext($2))", USER_LOCK, user_id)
@@ -49,24 +45,18 @@ async def ensure_user(conn, user_id: str) -> None:
         if await conn.fetchval("select exists (select 1 from orion_memory where user_id = $1)", user_id):
             from orion.kernel import memory_backup
             await memory_backup.backup("collections")
-        old = "p_" + memory.new_group()
-        # Each memory by its first row: a group key and where that row came from (one pass over the user's rows).
-        firsts = await conn.fetch(
-            "select distinct on (g) g, source_kind from (select coalesce(group_id, 'r' || id::text) as g, id, "
-            "source_kind from orion_memory where user_id = $1) t order by g, id", user_id)
         async with conn.transaction():
             await conn.executemany(
                 "insert into orion_mem_collection (user_id, id, kind, name) values ($1, $2, 'builtin', $3) "
                 "on conflict do nothing", [(user_id, cid, name) for cid, name in BUILTIN])
-            await conn.execute("insert into orion_mem_collection (user_id, id, kind, name) values ($1, $2, 'project', $3)",
-                               user_id, old, OLD_NAME)
+            files = await conn.fetch(
+                "select distinct group_id as g from orion_memory where user_id = $1 and source_kind = 'file' and "
+                "group_id is not null", user_id)
             await conn.execute(
                 "insert into orion_mem_collection_item (user_id, collection_id, group_id, main) "
-                "select $1, c, g, true from unnest($2::text[], $3::text[]) as x(c, g) on conflict do nothing",
-                user_id, [SORTED_TO.get(r["source_kind"], old) for r in firsts],
-                [r["g"] for r in firsts])
-        logger.info("Memory: collections made for a user, %d memories sorted (%d to Belgeler)", len(firsts),
-                    sum(1 for r in firsts if r["source_kind"] == "file"))
+                "select $1, 'belgeler', g, true from unnest($2::text[]) as x(g) on conflict do nothing",
+                user_id, [r["g"] for r in files])
+        logger.info("Memory: collections made for a user, %d files sorted into Belgeler", len(files))
     finally:
         await conn.execute("select pg_advisory_unlock($1, hashtext($2))", USER_LOCK, user_id)
 
@@ -92,20 +82,16 @@ async def revert(user_id: str) -> dict:
 
 
 async def list_collections(conn, user_id: str) -> list[dict]:
-    """This user's collections: the built-ins in their order, then projects/albums by name. No counts (they would
-    read every row of the user)."""
-    rows = await conn.fetch("select id, kind, name from orion_mem_collection where user_id = $1 and deleted_at is null",
-                            user_id)
-    order = {cid: k for k, (cid, _) in enumerate(BUILTIN)}
-    return [{"id": r["id"], "kind": r["kind"], "name": r["name"]}
-            for r in sorted(rows, key=lambda r: (order.get(r["id"], len(order)), memory.fold(r["name"])))]
+    """This user's collections: the four fixed ones in their order. No counts (they would read every row of the user)."""
+    have = {r["id"] for r in await conn.fetch(
+        "select id from orion_mem_collection where user_id = $1 and deleted_at is null", user_id)}
+    return [{"id": cid, "kind": "builtin", "name": name} for cid, name in BUILTIN if cid in have]
 
 
 async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
-    """Collection ids for the names a search asked for: 'me', 'experiences', 'chats', 'documents' or a collection's
-    own id or name (Turkish folding). ValueError naming the unknown ones and what there is."""
-    mine = await list_collections(conn, user_id)
-    by_name = {memory.fold(c["name"]): c["id"] for c in mine}
+    """Collection ids for the names a search asked for: 'me', 'experiences', 'chats', 'documents' or a collection's own id
+    or name (Turkish folding), or "chat:<chat id>". ValueError naming the unknown ones and what there is."""
+    by_name = {memory.fold(name): cid for cid, name in BUILTIN}
     ids, unknown = [], []
     for name in names:
         key = (name or "").strip()
@@ -113,17 +99,30 @@ async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
             if len(key) > len(CHAT_PREFIX):
                 ids.append(key[:120])
             continue
-        found = IN_NAMES.get(key.lower()) or next((c["id"] for c in mine if c["id"] == key), None) \
-            or by_name.get(memory.fold(key))
+        found = IN_NAMES.get(key.lower()) or next((cid for cid, _ in BUILTIN if cid == key), None)             or by_name.get(memory.fold(key))
         if found:
             ids.append(found)
         elif key:
             unknown.append(key)
     if unknown:
-        known = ", ".join(["me", "experiences", "chats", "documents"] +
-                          [c["name"] for c in mine if c["kind"] != "builtin"])
-        raise ValueError(f"Unknown collection: {', '.join(unknown)}. There are: {known}.")
+        raise ValueError(f"Unknown collection: {', '.join(unknown)}. There are: me, experiences, chats, documents.")
     return list(dict.fromkeys(ids))
+
+
+def ben_sql() -> str:
+    """The memories of the Ben collection, as a SQL condition on a row of `orion_memory` (after the user's, `$1` = user id):
+    the current facts about the user and about the people close to them (an entity with a `relation`: how it relates to the
+    user), and the events the user took part in. Defined, not stored, so a relation set later or a person merged is right at once;
+    plain lookups by the user's entity ids, never a scan of the memory."""
+    self_ids = "select id::text from orion_mem_entity where user_id = $1 and kind = 'self' and merged_into is null"
+    return (
+        "coalesce(group_id, 'r' || id::text) in ("
+        "select f.group_id from orion_mem_fact f join orion_mem_entity en on en.id = f.entity_id and en.user_id = f.user_id "
+        "where f.user_id = $1 and f.superseded_by is null and f.group_id is not null and en.merged_into is null and "
+        "en.deleted_at is null and (en.kind = 'self' or en.relation is not null) "
+        "union select e.group_id from orion_mem_event e join orion_mem_link l on l.user_id = e.user_id and "
+        f"l.from_type = 'event' and l.from_id = e.id and l.to_type = 'entity' and l.to_id in ({self_ids}) "
+        "where e.user_id = $1 and e.superseded_by is null)")
 
 
 def filter_sql(collections: list[str] | None, params: list) -> str:
@@ -135,8 +134,10 @@ def filter_sql(collections: list[str] | None, params: list) -> str:
     chats = [c[len(CHAT_PREFIX):] for c in collections if c.startswith(CHAT_PREFIX)]
     named = [c for c in collections if not c.startswith(CHAT_PREFIX)]
     every_chat = "sohbetler" in named
-    named = [c for c in named if c != "sohbetler"]
+    named = [c for c in named if c not in ("sohbetler", "ben")]
     parts = []
+    if "ben" in collections:
+        parts.append(ben_sql())
     if named:
         params.append(named)
         parts.append(f"coalesce(group_id, 'r' || id::text) in (select i.group_id from orion_mem_collection_item i "

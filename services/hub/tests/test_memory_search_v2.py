@@ -1,6 +1,6 @@
 """Memory step 8 (docs/hafiza-tasarimi.md §16): search and the profile block. THE ranking policy (the order is the shown real
 %, a word match only marks, unlike is a filter) is one implementation: the page's list, the detail panel and the chat tool
-give facts, events, chat windows and notes the same order and the same %, whatever the query. Then `about`, `as_of`,
+give facts, events, chat windows and notes the same order and the same %, whatever the query. Then `about`, `when`,
 `include_past`, `budget` and the entity card of search_memory, and the profile block (pinning, the token limit, immediate
 rebuild, locked / past / trashed never in it, user separation). On a throwaway real PostgreSQL (test_memory_search);
 embeddings are hand-made vectors."""
@@ -203,7 +203,7 @@ class RankingConsistencyTests(V2Case):
 
 
 class SearchOptionTests(V2Case):
-    """about, as_of, include_past, budget and the entity card of search_memory."""
+    """about, when, include_past, budget and the entity card of search_memory."""
     RULES = [('yaşıyor', 0.80, 2), ('doğum', 0.60, 3), ('okul', 0.50, 4)]
 
     async def lives(self):
@@ -234,29 +234,33 @@ class SearchOptionTests(V2Case):
         none = await self.find([{'text': 'zürafa'}], include_past=True)  # No word of the query in any past version.
         self.assertEqual(none['past_facts'], [])
 
-    async def test_as_of_shows_the_facts_as_they_stood_that_day(self):
+    @staticmethod
+    def span(first, last=None):
+        return {'from': first, 'to': last if last is not None else first}
+
+    async def test_when_shows_the_facts_as_they_stood_in_that_range(self):
         first, head = await self.lives()
-        then = await self.find([{'text': 'nerede yaşıyor'}], as_of='2022-06-01')
+        then = await self.find([{'text': 'nerede yaşıyor'}], when=self.span('2022-06-01'))
         self.assertEqual([r['fact']['id'] for r in then['results'] if 'fact' in r], [])  # Istanbul had not begun.
         self.assertEqual([p['id'] for p in then['past_facts']], [first])
-        now = await self.find([{'text': 'nerede yaşıyor'}], as_of='2027-01-01')
+        now = await self.find([{'text': 'nerede yaşıyor'}], when=self.span('2027-01-01'))
         self.assertEqual([r['fact']['id'] for r in now['results'] if 'fact' in r], [head])
         self.assertEqual(now['past_facts'], [])  # Ankara ended on 2026-11-01.
-        before = await self.find([{'text': 'nerede yaşıyor'}], as_of='2018-01-01')
+        before = await self.find([{'text': 'nerede yaşıyor'}], when=self.span('2018-01-01'))
         self.assertEqual(before['past_facts'], [])  # It had not begun in 2018.
-        year = await self.find([{'text': 'nerede yaşıyor'}], as_of='2026')  # A year: its last day.
+        year = await self.find([{'text': 'nerede yaşıyor'}], when=self.span('2026'))  # A year: both versions touch it.
         self.assertEqual([r['fact']['id'] for r in year['results'] if 'fact' in r], [head])
-        self.assertEqual(year['past_facts'], [])
-        bad = await self.find([{'text': 'x'}], as_of='13/2022')
+        self.assertEqual([p['id'] for p in year['past_facts']], [first])
+        bad = await self.find([{'text': 'x'}], when=self.span('13/2022'))
         self.assertIn('error', bad)
 
     async def test_a_past_version_without_an_end_date_ends_when_orion_stopped_counting_it(self):
         old = await self.fact('Ayşe', 'yer', "Ayşe Bursa'da yaşıyor.")
         await me.supersede('alice', self.v2, old, "Ayşe İzmir'de yaşıyor.", origin='user', source={'by_user': True})
         await sql("update orion_mem_fact set expired_at = timestamptz '2025-03-01' where id = $1", old)
-        before = await self.find([{'text': 'Bursa'}], as_of='2025-02-01')
+        before = await self.find([{'text': 'Bursa'}], when=self.span('2025-02-01'))
         self.assertEqual([p['id'] for p in before['past_facts']], [old])
-        after = await self.find([{'text': 'Bursa'}], as_of='2025-04-01')
+        after = await self.find([{'text': 'Bursa'}], when=self.span('2025-04-01'))
         self.assertEqual(after['past_facts'], [])
 
     async def test_a_locked_fact_is_never_a_past_version_in_a_search(self):
@@ -321,7 +325,7 @@ class SearchOptionTests(V2Case):
     async def test_memory_v2_off_ignores_every_new_argument(self):
         await self.lives()
         self.current = self.off
-        found = await self.find([{'text': 'yaşıyor'}], as_of='2022-06-01', include_past=True, about='Ayşe')
+        found = await self.find([{'text': 'yaşıyor'}], when=self.span('2022-06-01'), include_past=True, about='Ayşe')
         for key in ('entity', 'past_facts', 'entity_candidates'):
             self.assertNotIn(key, found)
 
@@ -357,7 +361,7 @@ class SearchOptionTests(V2Case):
 
 
 class PageSearchRouteTests(V2Case):
-    """The memory page's `GET /api/v1/memory` takes the tool's `about`, `as_of` and `include_past` (one code: list_groups)."""
+    """The memory page's `GET /api/v1/memory` takes the tool's `about` and the one date filter (one code: list_groups)."""
     RULES = [('yaşıyor', 0.80, 2), ('doğum', 0.60, 3), ('okul', 0.50, 4)]
 
     async def lives(self):
@@ -372,19 +376,22 @@ class PageSearchRouteTests(V2Case):
         self.addCleanup(guard.stop)
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
         args = dict(q=q, limit=20, offset=0, vector_space='all', kind='all', exclude=[], collection=[], when_from='',
-                    when_to='', about='', as_of='', include_past=False, current_user='alice')
+                    when_to='', about='', current_user='alice')
         return await routes.list_memory(request, **{**args, **kw})
 
-    async def test_about_as_of_and_past_versions_reach_the_page(self):
+    async def test_about_and_the_date_reach_the_page_and_past_versions_stay_in_the_facts_history(self):
         first, head = await self.lives()
-        found = await self.page('nerede yaşıyor', about='Ayşe', include_past=True)
+        found = await self.page('nerede yaşıyor', about='Ayşe')
         self.assertEqual([g['fact']['id'] for g in found['groups'] if 'fact' in g], [head])
         self.assertEqual(found['entity']['name'], 'Ayşe')
-        self.assertEqual([p['id'] for p in found['past_facts']], [first])
+        self.assertNotIn('past_facts', found)  # The page lists no past versions: the fact's detail does.
         self.assertNotIn('side', found)
-        then = await self.page('nerede yaşıyor', about='#' + str(found['entity']['id']), as_of='2022-06-01')
-        self.assertEqual([g['fact']['id'] for g in then['groups'] if 'fact' in g], [])
-        self.assertEqual([p['id'] for p in then['past_facts']], [first])  # True that day.
+        then = await self.page('nerede yaşıyor', about='#' + str(found['entity']['id']), when_from='2022-06-01',
+                               when_to='2022-06-01')
+        self.assertEqual([g['fact']['id'] for g in then['groups'] if 'fact' in g], [])  # Istanbul had not begun.
+        self.assertNotIn('past_facts', then)
+        history = await me.history('alice', self.v2, head)
+        self.assertEqual([v['id'] for v in history['versions']], [first, head])
 
     async def test_the_page_without_the_new_params_is_what_it_was(self):
         await self.lives()
@@ -408,14 +415,14 @@ class PageSearchRouteTests(V2Case):
     async def test_memory_v2_off_ignores_the_new_params(self):
         await self.lives()
         self.current = self.off
-        found = await self.page('yaşıyor', about='Ayşe', as_of='2022-06-01', include_past=True)
+        found = await self.page('yaşıyor', about='Ayşe', when_from='2022-06-01', when_to='2022-06-01')
         for key in ('entity', 'past_facts', 'entity_candidates', 'note'):
             self.assertNotIn(key, found)
 
     async def test_a_bad_day_is_a_400(self):
         from fastapi import HTTPException
         with self.assertRaises(HTTPException) as caught:
-            await self.page('x', as_of='13/2022')
+            await self.page('x', when_from='13/2022')
         self.assertEqual(caught.exception.status_code, 400)
 
 

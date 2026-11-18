@@ -79,9 +79,8 @@ class EntityTests(PostgresMemoryCase):
         self.assertEqual(len(vector), 1)
         self.assertEqual((vector[0]['source_kind'], vector[0]['source_chat_title']), ('fact', 'Ayşe'))
         self.assertEqual(vector[0]['text'], 'Annemin doğum günü 17 Kasım.')
-        member = await sql("select collection_id, main from orion_mem_collection_item where group_id = $1",
-                           row[0]['group_id'], fetch=True)
-        self.assertEqual([(m['collection_id'], m['main']) for m in member], [('ben', True)])
+        member = await sql("select count(*) from orion_mem_collection_item where group_id = $1", row[0]['group_id'])
+        self.assertEqual(member, 0)  # Ben is defined by who a fact is about, not stored as a membership.
         inside = await self.find(**{'in': ['me']})
         self.assertEqual(len(inside['results']), 1)
         self.assertEqual(inside['results'][0]['fact'], {'id': fact_id, 'about': 'Ayşe (anne)', 'category': 'tarih',
@@ -324,7 +323,7 @@ class EntityTests(PostgresMemoryCase):
         merge_id = await sql('select id from orion_mem_entity_merge')
         # Bob: his own entity "Ayşe" is a different one, and nothing of alice's is reachable by an id.
         self.assertEqual(await me.list_entities('bob', self.v2), [])
-        bob = await self.add('Doğum günü 1 Mart.', about='Ayşe', category='date', user='bob', chat='b1')
+        bob = await self.add('Doğum günü 1 Mart.', about='Ayşe', relation='anne', category='date', user='bob', chat='b1')
         self.assertNotEqual(bob['added']['fact_id'], fact_id)
         self.assertEqual(await sql("select count(*) from orion_mem_entity where user_id = 'bob'"), 1)  # His own Ayşe.
         for call in (lambda: me.entity_card('bob', self.v2, ayse_id), lambda: me.history('bob', self.v2, fact_id),

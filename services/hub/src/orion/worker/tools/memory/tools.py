@@ -57,16 +57,17 @@ class MemorySearchInput(ToolInput):
     in_: list[str] = Field(
         default_factory=list, max_length=10, alias="in",
         description="Only these collections: 'me' (who the user is), 'experiences' (dated events), 'chats' (past "
-                    "conversations), 'documents' (files) or a project/album by its name; 'chat:<chat id>' searches inside "
-                    "one chat. A personal question: me, experiences; something said before: chats. Empty: the whole "
+                    "conversations), 'documents' (files); 'chat:<chat id>' searches inside "
+                    "one chat. 'me' is the user and the people close to them and the events they took part in. A personal question: me, experiences; something said before: chats. Empty: the whole "
                     "memory except the past conversations (ask for 'chats' to search them). Ignored while the "
                     "user's memory has no collections.")
     when: MemoryWhen | None = Field(
         default=None,
-        description="Only memories dated within this range: events (their day or period overlaps it), facts that were true "
-                    "then, and the photos / videos linked to such events. Use it for 'what did I do in March 2026?' with a "
-                    "short query or none. Undated memories (notes, files) are not returned while it is set. Ignored while "
-                    "the user's memory has no collections.")
+        description="The one date filter. Only memories within this range: events (their day or period overlaps it), facts that "
+                    "were true then (a replaced version that was true then is listed under 'past_facts'), notes and files saved "
+                    "then, and the photos / videos linked to such events. Use it for 'what did I do in March 2026?' or 'where did "
+                    "I live in 2022?' (from and to the same year) with a short query or none. Ignored while the user's memory "
+                    "has no collections.")
     sensitive: bool = Field(
         default=False,
         description="true ONLY when the user directly asks about a locked topic (their health, religion, politics, "
@@ -79,12 +80,6 @@ class MemorySearchInput(ToolInput):
                     "'my mother'), '#<id>' for an entity from an earlier answer, 'me' for the user. Their facts, events and the "
                     "photos linked to those events; the query ranks inside them (empty query: the newest). Ignored while the "
                     "user's memory has no collections.")
-    as_of: str = Field(
-        default="", max_length=10,
-        description="A day (YYYY-MM-DD; YYYY-MM or YYYY mean the END of that month or year): the facts as they stood then. Facts "
-                    "that only became true later are left out, and the past versions that were true that day are listed under "
-                    "'past_facts' (found by the query's words, no score). Use it for 'where did I live in 2022?'. Ignored while "
-                    "the user's memory has no collections.")
     include_past: bool = Field(
         default=False,
         description="true: also list past versions of facts (replaced ones, with 'since' and 'until') under 'past_facts', for "
@@ -240,13 +235,7 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
             return {"error": str(exc)}
         if span:
             extra["when"] = span
-    entity_id, as_of = None, None
-    if v2 and args.as_of.strip():
-        try:
-            as_of = memory_events.parse_range(args.as_of.strip(), args.as_of.strip())[1]
-        except ValueError as exc:
-            return {"error": str(exc)}
-        extra["as_of"] = as_of
+    entity_id = None
     if v2 and args.about.strip():
         try:
             async with memory_entities._db() as conn:
@@ -263,7 +252,7 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
     like_texts = [q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None]
     async def extras_on(conn):  # The entity card and the past versions, read on the search's own connection.
         try:
-            return await memory_entities.search_extras(context.user_id, settings, like_texts, entity_id, as_of,
+            return await memory_entities.search_extras(context.user_id, settings, like_texts, entity_id, extra.get("when"),
                                                        args.include_past, bool(args.about.strip()), conn=conn)
         except Exception:  # Extras: the ranked results go out without them.
             logging.getLogger(__name__).warning("search_memory: entity card / past versions failed", exc_info=True)
@@ -424,10 +413,6 @@ class MemoryAddInput(ToolInput):
         default=None,
         description="type=event: the id of an existing event (from search_memory's 'event'): then nothing new is written, "
                     "'items' are linked to that event.")
-    collection: str = Field(
-        default="", max_length=80,
-        description="Optional: the name of one of the user's albums or projects the new memory also joins. You do not "
-                    "create albums; an unknown name is an error. Needs the user's collections.")
     repeats: Literal["none", "yearly"] = Field(
         default="none",
         description="type=fact: yearly when it falls on the same day every year (a birthday, an anniversary); then 'date' "
@@ -509,7 +494,7 @@ async def add_event(args: MemoryAddInput, context: ToolContext, settings) -> dic
     """add_memory type=event: written at once with the chat as its source (§8: an event the user said clearly); the date is
     checked against the message's time. With `event`: only links `items` to that event. {"added": {...}}, {"same_as": id}
     or {"linked": n}."""
-    from orion.kernel import memory, memory_albums, memory_events as ev, memory_entities as me
+    from orion.kernel import memory, memory_events as ev, memory_entities as me
     if not ev.enabled(settings):
         return {"error": "Events need the user's memory collections (the 'memory_v2' setting), which are off: save "
                          "it as a note (type=note) instead."}
@@ -518,7 +503,6 @@ async def add_event(args: MemoryAddInput, context: ToolContext, settings) -> dic
     try:
         async with me._db() as conn:
             groups = await ev.groups_of_rows(conn, context.user_id, args.items) if args.items else []
-            album = await memory_albums.album_id_of(conn, context.user_id, args.collection) if args.collection else None
         if args.event is not None:
             if not groups:
                 return {"error": "Give 'items': the ids of the memories to link to that event."}
@@ -527,7 +511,7 @@ async def add_event(args: MemoryAddInput, context: ToolContext, settings) -> dic
         when = ev.resolve_date(args.date or None, args.end_date or None, args.precision or None, args.said_as or None)
         done = await ev.add_event(context.user_id, settings, args.title, when, body=args.text, mood=args.mood or None,
                                   participants=args.participants, place=args.place or None, items=groups, origin="model",
-                                  source={"chat_id": context.chat_id}, album=album)
+                                  source={"chat_id": context.chat_id})
     except me.Ambiguous as exc:
         return {"error": str(exc), "candidates": exc.candidates}
     except LookupError as exc:
@@ -561,32 +545,11 @@ async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
         return await add_fact(args, context, settings)
     if args.type == "event":
         return await add_event(args, context, settings)
-    if args.collection:  # A note that also joins one of the user's albums.
-        return await add_note_to_album(args, context, settings)
     try:
         added = await memory.add_note(context.user_id, args.text, settings, source_kind="assistant", title=args.title)
     except (memory.MemoryUnavailable, ValueError) as exc:
         return {"error": str(exc)}
     return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}
-
-
-async def add_note_to_album(args: MemoryAddInput, context: ToolContext, settings) -> dict:
-    from orion.kernel import memory, memory_albums, memory_collections, memory_entities as me
-    if not memory_collections.enabled(settings):
-        return {"error": "Albums need the user's memory collections (the 'memory_v2' setting), which are off."}
-    try:
-        async with me._db() as conn:
-            album = await memory_albums.album_id_of(conn, context.user_id, args.collection)
-        saved = await memory.add_note_to(context.user_id, args.text, settings, "assistant", title=args.title)
-        if saved.get("group_id"):
-            await memory_albums.set_members(context.user_id, settings, album, add=[saved["group_id"]])
-    except LookupError as exc:
-        return {"error": str(exc.args[0]) if exc.args and isinstance(exc.args[0], str) else str(exc)}
-    except (memory.MemoryUnavailable, ValueError) as exc:
-        return {"error": str(exc)}
-    if not (saved["added"] or saved.get("job")):
-        return {"note": "This was already in memory.", "text": args.text}
-    return {"added": args.text, "album": args.collection}
 
 
 async def delete_by_card(args: MemoryDeleteInput, context: ToolContext, settings) -> dict:

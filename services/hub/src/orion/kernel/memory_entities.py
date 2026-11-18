@@ -42,7 +42,6 @@ from orion.kernel import memory, memory_collections
 logger = logging.getLogger(__name__)
 
 FACT = "fact"  # source_kind of a fact's vector row.
-COLLECTION = "ben"
 ENTITY_LOCK = 51730206  # With hashtext(user id): one entity creation at a time per user.
 MAX_STATEMENT = 500
 MAX_NAME = 120
@@ -341,15 +340,12 @@ async def _vector_for(settings, entity: dict, statement: str):
 
 async def _store_vector(conn, user_id: str, entity: dict, statement: str, space: str, vector: str,
                         source: dict) -> str:
-    """The fact's memory (one row, the Ben collection); its group id."""
+    """The fact's memory (one row; the Ben collection is defined by who the fact is about, not stored); its group id."""
     group, item = memory.new_group(), memory.new_group()
     await conn.fetchval(
         memory.ROW_SQL, user_id, _embedded(entity, statement), space, vector, FACT, entity["name"] or None, "text", None,
         None, None, group, source.get("chat_id"), None, item, False, None, None, None, None, memory.item_order(), None,
         memory.fold(memory.match_text(_embedded(entity, statement), entity["name"], None, FACT)), None, True)
-    if await conn.fetchval("select 1 from orion_mem_collection where user_id = $1 and id = $2", user_id, COLLECTION):
-        await conn.execute("insert into orion_mem_collection_item (user_id, collection_id, group_id, main) "
-                           "values ($1, $2, $3, true) on conflict do nothing", user_id, COLLECTION, group)
     return group
 
 
@@ -448,10 +444,8 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
                 user_id, old["entity_id"], old["lineage"], category, text, since, sensitive, origin, group, repeats)
             await conn.execute("update orion_mem_fact set valid_to = $3, expired_at = now(), superseded_by = $4 "
                                "where user_id = $1 and id = $2", user_id, old["id"], since, new_id)
-            if old["group_id"]:  # Its vector row and its place in the collection go; the text stays in the fact table.
+            if old["group_id"]:  # Its vector row goes; the text stays in the fact table.
                 await memory.delete_rows(conn, user_id, "group_id = $2", old["group_id"])
-                await conn.execute("delete from orion_mem_collection_item where user_id = $1 and group_id = $2",
-                                   user_id, old["group_id"])
             await _source(conn, user_id, new_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", new_id)
     return {"fact": _fact_out(row, reveal=True), "replaced": old["id"], "entity": _entity_out(entity)}
@@ -657,38 +651,32 @@ async def search_locked(user_id: str, settings, words: str = "", about: str | No
 
 # --- Search: time, the past, the entity card (step 8; memory_groups.search_queries and the search_memory tool) ----------------
 
-async def not_yet_groups(conn, user_id: str, as_of: date) -> set[str]:
-    """The memories of current facts that only became true AFTER `as_of` (a start date later than it): left out of a search
-    "as of" that day. A fact with no start date counts as always true."""
-    return {r["group_id"] for r in await conn.fetch(
-        "select group_id from orion_mem_fact where user_id = $1 and superseded_by is null and group_id is not null "
-        "and valid_from > $2", user_id, as_of)}
-
-
 def _end_of(r) -> date | None:
     """The day a past version stopped being true: its `valid_to`; an end nobody gave falls back to the day Orion stopped
     counting it (`expired_at`)."""
     return r["valid_to"] or (r["expired_at"].date() if r["expired_at"] else None)
 
 
-def _true_on(r, as_of: date | None) -> bool:
-    """Was this past version true on `as_of`? From its start (unknown = always) to its end."""
-    if as_of is None:
+def _true_within(r, when: tuple[date | None, date | None] | None) -> bool:
+    """Was this past version true at some time within `when` (the search's date range, either end open)? From its start
+    (unknown = always) to its end."""
+    if when is None:
         return True
+    first, last = when
     start, end = r["valid_from"], _end_of(r)
-    return (start is None or start <= as_of) and (end is None or end > as_of)
+    return (last is None or start is None or start <= last) and (first is None or end is None or end > first)
 
 
 PAST_LIMIT = 20  # Past versions listed by one search.
 
 
 async def search_past(user_id: str, settings, terms: list[str], entity_ids: list[int] | None = None,
-                      as_of: date | None = None, limit: int = PAST_LIMIT, conn=None) -> list[dict]:
+                      when: tuple[date | None, date | None] | None = None, limit: int = PAST_LIMIT, conn=None) -> list[dict]:
     """Past versions of facts (replaced ones; the vector rows of a version go when it is replaced, so they are found by words
     and dates, never by meaning, and carry no score): [{"id", "about", "category", "statement", "since", "until", "past": True}].
     Only unlocked facts of lineages that still live. `terms`: the query's words (folded, 3+ letters): a version counts when it
-    holds at least one, the more the earlier; no words: all of them (of `entity_ids` if given), the newest end first. `as_of`:
-    only the versions that were true that day."""
+    holds at least one, the more the earlier; no words: all of them (of `entity_ids` if given), the newest end first. `when`:
+    only the versions that were true within that range."""
     require(settings)
     words = [t for t in dict.fromkeys(w for text in terms for w in re.findall(r"\w+", memory.fold(text))) if len(t) >= 3]
     params: list = [user_id]
@@ -704,7 +692,7 @@ async def search_past(user_id: str, settings, terms: list[str], entity_ids: list
             f"e.user_id = f.user_id where {' and '.join(where)} order by f.id desc limit 2000", *params)
     scored = []
     for r in rows:
-        if not _true_on(r, as_of):
+        if not _true_within(r, when):
             continue
         hay = memory.fold(f"{r['statement']} {r['name']} {r['relation'] or ''}")
         hits = sum(1 for w in words if w in hay)
@@ -772,11 +760,11 @@ async def search_card(user_id: str, settings, entity_id: int, events: int = 3, f
     return out
 
 
-async def search_extras(user_id: str, settings, texts: list[str], entity_id: int | None = None, as_of: date | None = None,
-                        include_past: bool = False, about_given: bool = False, conn=None) -> dict:
+async def search_extras(user_id: str, settings, texts: list[str], entity_id: int | None = None,
+                        when: tuple[date | None, date | None] | None = None, include_past: bool = False, about_given: bool = False, conn=None) -> dict:
     """Everything a search adds beside its ranked results, on ONE connection (the search's own: memory_groups.list_groups's `side`):
     the entity card (`entity_id`, else the one entity the query names), the entities a query names when several
-    fit (`candidates`, no card), and the past versions (`past`) when asked for (`include_past`, or `as_of`). {"card",
+    fit (`candidates`, no card), and the past versions (`past`) when asked for (`include_past`, or a date range `when`). {"card",
     "candidates", "past"}."""
     out: dict = {"card": None, "candidates": [], "past": None}
     async with _db(conn) as conn:
@@ -791,9 +779,9 @@ async def search_extras(user_id: str, settings, texts: list[str], entity_id: int
                 out["card"] = await search_card(user_id, settings, entity_id, conn=conn)
             except LookupError:
                 pass
-        if include_past or as_of is not None:
+        if include_past or when is not None:
             out["past"] = await search_past(user_id, settings, texts, [entity_id] if about_given and entity_id else None,
-                                            as_of, conn=conn)
+                                            when, conn=conn)
     return out
 
 

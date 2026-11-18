@@ -454,28 +454,40 @@ async def _nearest_groups(conn, params: list, extra: str, need: int, listed: boo
         count = min(count * 4, MAX_CANDIDATES)
 
 
-async def scope(conn, user_id: str, settings, collections=None, when=None, about=None, as_of=None):
-    """What the page's collection / date / about / as_of filters narrow to, on the caller's connection (the one
+async def scope(conn, user_id: str, settings, collections=None, when=None, about=None):
+    """What the page's collection / date / about filters narrow to, on the caller's connection (the one
     definition: the list and the map both use it): (collection ids or None, the dated/about memory keys or None,
-    the memories not yet true on `as_of`, the user's collections or None). All None/empty with memory_v2 off."""
+    the user's collections or None). All None with memory_v2 off."""
     from orion.kernel import memory_collections as mc
     if not mc.enabled(settings):
-        return None, None, set(), None
+        return None, None, None
     await mc.ensure_user(conn, user_id)
     listed = await mc.list_collections(conn, user_id)
     in_ids = await mc.resolve(conn, user_id, collections) if collections else None
     if when:  # The dated memories, named once: the filter of every query.
         from orion.kernel import memory_events
         when = await memory_events.when_keys(conn, user_id, when)
-    hidden: set[str] = set()
     if about is not None:  # The memories about these entities: one more candidate set, narrowing `when`.
         from orion.kernel import memory_events
         named = await memory_events.about_keys(conn, user_id, about)
         when = named if not when else memory_events.intersect_keys(when, named)
-    if as_of is not None:  # Facts that only began after the day asked about do not exist yet that day.
+    return in_ids, when, listed
+
+
+async def what_they_are(conn, user_id: str, members: dict) -> tuple[dict, dict]:
+    """The facts and the events among these memories (`members`: group -> rows), as the cards say it: ({group: fact info},
+    {group: event info}). A fact says who it is about, an event when, with whom and where: one lookup each, on the caller's
+    connection, none when there is no fact or event (the list and the detail panel share it)."""
+    about, happened = {}, {}
+    fact_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "fact"]
+    event_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "event"]
+    if fact_groups:
         from orion.kernel import memory_entities
-        hidden = await memory_entities.not_yet_groups(conn, user_id, as_of)
-    return in_ids, when, hidden, listed
+        about = await memory_entities.facts_on(conn, user_id, fact_groups)
+    if event_groups:
+        from orion.kernel import memory_events
+        happened = await memory_events.events_on(conn, user_id, event_groups)
+    return about, happened
 
 
 async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offset: int = 0,
@@ -486,7 +498,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                       leave_out: set[str] | None = None, only_groups: set[str] | None = None,
                       meaning: bool = True, keywords: list[tuple[str, bool]] | None = None,
                       collections: list[str] | None = None, when=None, about: list[int] | None = None,
-                      as_of=None, side=None) -> dict:
+                      side=None) -> dict:
     """A page of this user's memories (cards) and a summary; `vector_space` filters by a model ("active": the
     active one's, "all": every model's). Without `q` or `vector`: newest first. With `q`: by their best row's
     meaning score (a piece or an item's whole vector) alone: the order is the shown %, a word match only marks
@@ -500,10 +512,8 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     found on this call's own connection. `collections`: only memories of these collections (names or ids,
     memory_collections.resolve; ValueError for an unknown one), with the user's `memory_v2` on; ignored with it off.
     `when`: (from, to) dates (memory_events.parse_range), likewise only with `memory_v2` on: only memories dated within it
-    (events, facts true then, the photos of such events). `about`: entity ids: only the memories about them (their current facts,
-    their events, those events' photos: memory_events.about_keys), narrowing `when` when both are given; `as_of`: a date: the
-    current facts that only became true after it are left out (memory_entities.not_yet_groups; the versions that WERE true
-    then are past versions, which have no vectors: memory_entities.search_past). Both with `memory_v2` on only. `side`: an async
+    (events, facts true then, notes and files saved then, the photos of such events). `about`: entity ids: only the memories about them (their current facts,
+    their events, those events' photos: memory_events.about_keys), narrowing `when` when both are given. Both with `memory_v2` on only. `side`: an async
     function of this call's own connection, awaited before it closes; its answer is `side` in the result (the chat tool reads the
     entity card and the past versions there, so they cost no connection of their own).
     With it on the answer also lists the user's `collections` (their first use sorts their memory, once)."""
@@ -537,8 +547,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
     more, search, scores, stats = False, {}, {}, {}
     try:
         await memory.ensure_memory_table(conn)
-        in_ids, when, hidden, listed = await scope(conn, user_id, settings, collections, when, about, as_of)
-        leave_out |= hidden
+        in_ids, when, listed = await scope(conn, user_id, settings, collections, when, about)
         for word, like in keywords or ():
             found_groups = await mf.keyword_groups(conn, user_id, word)
             if like:
@@ -595,9 +604,6 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
         else:
             params = [user_id]
             extra = _filters(vector_space, kind, params, in_ids, when=when)
-            if hidden:
-                params.append(sorted(hidden))
-                extra += f" and not (group_id = any(${len(params)}::text[]))"
             # The newest memories: the user's newest rows by the (user, created_at) index, grouped here; the rows
             # taken widen while they hold fewer memories than the page needs (one long text has thousands of rows).
             need, count, groups = int(offset) + int(limit), max(100, (int(offset) + int(limit)) * 4), []
@@ -611,7 +617,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
                 count *= 4
             groups = groups[int(offset):need]
             summary = await _summary(conn, user_id, space)
-            if kind == "all" and not in_ids and not when and not hidden:  # The counts are the cached summary's: no scan of all rows for the number.
+            if kind == "all" and not in_ids and not when:  # The counts are the cached summary's: no scan of all rows for the number.
                 matching = (summary["total"] if vector_space == "all"
                             else summary["per_vector_space"].get(vector_space, 0))
             else:
@@ -620,15 +626,7 @@ async def list_groups(user_id: str, settings, q: str = "", limit: int = 20, offs
             more = offset + len(groups) < int(matching or 0)
         hits = await text_candidates(conn, user_id, groups, q) if searching and q else set()
         members = await _group_rows(conn, user_id, groups, full=hits if hits is not None else True)
-        about, happened = {}, {}
-        fact_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "fact"]
-        event_groups = [g for g, r in members.items() if r and r[0]["source_kind"] == "event"]
-        if fact_groups:  # Facts say who they are about (one lookup, on this connection).
-            from orion.kernel import memory_entities
-            about = await memory_entities.facts_on(conn, user_id, fact_groups)
-        if event_groups:  # Events say when, with whom and where (one lookup; none when the page has no event).
-            from orion.kernel import memory_events
-            happened = await memory_events.events_on(conn, user_id, event_groups)
+        about, happened = await what_they_are(conn, user_id, members)
         if searching:
             summary = await _summary(conn, user_id, space)
         side_result = await side(conn) if side is not None else None
@@ -869,6 +867,11 @@ async def group_detail(user_id: str, group: str, settings, offset: int = 0, limi
         if not rows:
             return None
         item = card(group, rows, space, space, full=True)
+        about, happened = await what_they_are(conn, user_id, {group: rows})
+        if group in about:
+            item["fact"] = about[group]
+        if group in happened:
+            item["event"] = happened[group]
         parts = item["parts"]
         if item_id is not None:
             pieces = [p for p in parts if p["item_id"] == item_id]
@@ -946,12 +949,11 @@ def _label(item: dict) -> str:
 
 
 async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, vector_space: str = "",
-                    kind: str = "all", collections: list[str] | None = None, when=None, about: list[int] | None = None,
-                    as_of=None) -> dict:
+                    kind: str = "all", collections: list[str] | None = None, when=None, about: list[int] | None = None) -> dict:
     """The newest `limit` memories of a vector space (the active model's unless `vector_space` names another) as
     nodes and, per node, edges to its `k` nearest others (cosine of the memories' mean vectors) at or above the
     space's floor (map_floor), all computed by pgvector. Each edge's `w` places it between the floor (0) and the
-    space's most similar pair (1). `collections`, `when`, `about`, `as_of`: the page's filters (scope, the list's own
+    space's most similar pair (1). `collections`, `when`, `about`: the page's filters (scope, the list's own
     code): only the memories that match are nodes (with memory_v2 on)."""
     active = await memory.current_space(settings)
     space = vector_space or active
@@ -963,14 +965,11 @@ async def map_graph(user_id: str, settings, k: int = 5, limit: int = MAP_NODES, 
     conn = await memory._connect()
     try:
         await memory.ensure_memory_table(conn)
-        in_ids, keys, hidden, _ = await scope(conn, user_id, settings, collections, when, about, as_of)
+        in_ids, keys, _ = await scope(conn, user_id, settings, collections, when, about)
 
         def narrowed(params: list) -> str:  # The filters' SQL, its values appended to `params`.
             sql = by_kind + (memory.filters_sql("all", "all", params, in_ids, live=False, when=keys)
                              if in_ids or keys else f" and source_kind <> '{memory.CHAT_INDEX}'")
-            if hidden:
-                params.append(sorted(hidden))
-                sql += f" and not (coalesce(group_id, 'r' || id::text) = any(${len(params)}::text[]))"
             return sql
         pick_params = [user_id, space, limit]
         picked = (f"select {GROUP_KEY} as g, avg(embedding) as v, max(created_at) as at from orion_memory "
@@ -1248,14 +1247,14 @@ class QueryError(ValueError):
 async def search_queries(user_id: str, settings, queries: list[dict], mode: str = "together", kind: str = "all",
                          vector_space: str = "all", limit: int = 10, offset: int = 0,
                          collections: list[str] | None = None, when=None, about: list[int] | None = None,
-                         as_of=None, side=None) -> dict:
+                         side=None) -> dict:
     """The page's search for the chat model: several queries, each a text or a memory row id (that row's vector, as
     a dropped file), `like` true (results like it) or false (memories like it are left out); mode "together" (one
     query: the normalized mean of the like-queries) or "each" (each ranked on its own, ranked by its best input: rank_matches).
     The memory a like-id belongs to is not listed (it would come first, matching itself). Answers list_groups's
     page, plus "labels" (each like-query's label: '"text"' or 'id 12', the names `via` uses) and "left_out"
-    (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`). `about` / `as_of`: list_groups's
-    (the memories about these entities; facts as they stood on that day), `side`: list_groups's `side`, on every path below."""
+    (memories left out as the id-queries' own). No like-query: the newest memories (of `kind`). `about`: list_groups's
+    (the memories about these entities), `side`: list_groups's `side`, on every path below."""
     import json
     keywords = [q for q in queries if (q.get("keyword") or "").strip()]
     queries = [q for q in queries if not (q.get("keyword") or "").strip()]
@@ -1267,7 +1266,7 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
         words = " ".join(k["keyword"].strip() for k in keywords if k.get("like", True))
         found = await list_groups(user_id, settings, words[:200], limit, offset, vector_space, kind,
                                   keywords=by_words, meaning=False, collections=collections, when=when, about=about,
-                                  as_of=as_of, side=side,
+                                  side=side,
                                   exclude=[q["text"].strip()[:200] for q in unlikes
                                                           if (q.get("text") or "").strip()])
         found["labels"] = []
@@ -1296,10 +1295,10 @@ async def search_queries(user_id: str, settings, queries: list[dict], mode: str 
              if q.get("id") is None and (q.get("text") or "").strip()]
     words = ", ".join(texts)
     common = dict(vector_space=vector_space, kind=kind, exclude=exclude, exclude_vectors=exclude_vectors,
-                  keywords=by_words, collections=collections, when=when, about=about, as_of=as_of, side=side)
+                  keywords=by_words, collections=collections, when=when, about=about, side=side)
     if not likes:
         found = await list_groups(user_id, settings, "", limit, offset, vector_space, kind, collections=collections,
-                                  when=when, about=about, as_of=as_of, side=side)
+                                  when=when, about=about, side=side)
         found["labels"] = []
         return found
     if len(likes) == 1 and texts:  # One text: exactly the page's text search (meaning and its words).

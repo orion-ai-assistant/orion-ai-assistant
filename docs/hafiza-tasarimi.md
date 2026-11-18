@@ -612,3 +612,25 @@ Açık konular (sıralama kararı) → bu belge → onay → 8 adım:
    profil bloğu (sabitleme, kırpma, Router logu).
 
 Sonra: belgelerden "Bilgi çıkar" düğmesi, eski hafıza öneri geçişi, haritada varlık düğümleri, misafir hesapları.
+
+## 17. Sadeleştirme kararları
+
+Kullanıcı yeni hafızayı karışık buldu; şu kararlar önceki bölümlerdeki albüm, "Eski hafıza", `as_of` ve `include_past`
+anlatımlarının yerine geçer (şema 9):
+
+1. **"Eski hafıza" yok.** Taşıma kovası kalktı. Eski türsüz notlar hiçbir koleksiyonda durmaz, "Tüm hafıza"da düz not olarak
+   görünür; dosyalar Belgeler'dedir. Geri dönüş yolu yalnızca `memory_v2` bayrağıdır.
+2. **Albüm ve proje yok.** API, araç argümanı (`add_memory.collection`), Flutter arayüzü ve testler gitti. Sabit koleksiyonlar:
+   Ben, Yaşadıklarım, Sohbetler, Belgeler. Şema 9 albüm/proje koleksiyonlarını ve üyeliklerini siler (öncesinde yine otomatik yedek;
+   hafızaların kendisine dokunulmaz).
+3. **Tek tarih süzgeci.** Sayfada "Şu tarihte" ve "Değişen bilgilerin eski hali" yerine tek "Tarih" aralığı (`when_from`/`when_to`;
+   araçta `when`): aralıkta olan olaylar, aralıkta doğru olan bilgiler (başlangıcı yoksa kaydedildiği gün), aralıkta kaydedilen not ve
+   dosyalar, o olayların fotoğrafları. Bir bilginin eski sürümleri sayfada liste değil, o bilginin ayrıntısında ("Geçmiş ve kaynak").
+   Araç `as_of`'u bıraktı; `when` verilince aralıkta doğru olan eski sürümler `past_facts`ta gelir, `include_past` tarihsiz "eskiden"
+   için kaldı. Hata düzeltildi: 2023 seçince 2026-11-17 olayı artık gelmez.
+4. **Ben tanımlıdır, saklanmaz.** Ben = kullanıcı hakkındaki bilgiler + yakın kişilerin (ilişkisi olan varlık) bilgileri + kullanıcının
+   katıldığı olaylar (`memory_collections.ben_sql`). Ben seçilince ayrıca "Hakkında: Ben" süzgeci eklenmez (seçiciden de kalktı);
+   "Kimin hakkında" yalnız başka kişiler için.
+5. **Olay metni temiz.** Tarih bir kez, kesinliğe uygun ("17 Kasım 2026 Salı", "Kasım 2026, yaklaşık"); çift nokta yok; katılanlar ve
+   yer arayüzde çip, gömülen metinde de yalnızca bir kez, temiz cümleyle.
+6. **Profil.** Başlık metni İngilizce kalır (talimat); bilgi satırları kullanıcının kendi sözüdür.

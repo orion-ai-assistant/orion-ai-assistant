@@ -89,15 +89,16 @@ class CollectionTests(PostgresMemoryCase):
         self.assertEqual(groups, ['alice-chat', 'alice-doc', 'alice-note'])  # Every memory still listed.
         self.backup.assert_awaited_once_with('collections')
         names = [c['name'] for c in page['collections']]
-        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Sohbetler', 'Belgeler', 'Eski hafıza'])
-        old = next(c['id'] for c in page['collections'] if c['name'] == 'Eski hafıza')
+        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Sohbetler', 'Belgeler'])  # The four fixed ones, no "Eski hafıza".
         rows = {r['group_id']: r['collection_id'] for r in await sql(
             'select group_id, collection_id from orion_mem_collection_item where main', fetch=True)}
-        self.assertEqual(rows, {'alice-chat': old, 'alice-note': old, 'alice-doc': 'belgeler'})
+        self.assertEqual(rows, {'alice-doc': 'belgeler'})  # Only files are sorted; the rest is plain memory, listed above.
         _, docs = await self.groups(self.v2, collections=['documents'])
         self.assertEqual(docs, ['alice-doc'])
-        _, olds = await self.groups(self.v2, collections=['eski HAFIZA'])  # By name, Turkish folding.
-        self.assertEqual(olds, ['alice-chat', 'alice-note'])
+        _, folded = await self.groups(self.v2, collections=['BELGELER'])  # By name, Turkish folding.
+        self.assertEqual(folded, ['alice-doc'])
+        with self.assertRaises(ValueError):
+            await self.groups(self.v2, collections=['eski hafıza'])  # That collection is gone.
         found, hits = await self.groups(self.v2, q='tez', collections=['documents'])
         self.assertEqual(hits, ['alice-doc'])
         _, none = await self.groups(self.v2, q='tez', collections=['me'])
@@ -113,8 +114,6 @@ class CollectionTests(PostgresMemoryCase):
         self.assertEqual({n['group_id'] for n in whole['nodes']}, {'alice-chat', 'alice-note', 'alice-doc'})
         docs = await memory_groups.map_graph('alice', self.v2, collections=['documents'])
         self.assertEqual(({n['group_id'] for n in docs['nodes']}, docs['total']), ({'alice-doc'}, 1))
-        olds = await memory_groups.map_graph('alice', self.v2, collections=['eski HAFIZA'])
-        self.assertEqual({n['group_id'] for n in olds['nodes']}, {'alice-chat', 'alice-note'})
         nobody = await memory_groups.map_graph('alice', self.v2, collections=['me'], about=[])
         self.assertEqual(nobody['nodes'], [])
         off = await memory_groups.map_graph('alice', self.settings, collections=['documents'])  # Ignored with it off.
@@ -145,32 +144,25 @@ class CollectionTests(PostgresMemoryCase):
             result = await routes.memory_collections_revert(SimpleNamespace(app=SimpleNamespace(
                 state=SimpleNamespace(redis=None))), 'alice')
         update.assert_awaited_once_with(None, {'memory_v2': 'false'}, 'alice')
-        self.assertEqual(result, {'memories': 3, 'collections': 5})
+        self.assertEqual(result, {'memories': 1, 'collections': 4})
         self.assertEqual(await sql('select count(*) from orion_mem_collection_item'), 0)
         after, again = await self.groups(self.settings)
         self.assertEqual((groups, before['matching']), (again, after['matching']))
         await self.groups(self.v2)  # On again: sorted again.
-        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'alice'"), 5)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'alice'"), 4)
 
     async def test_users_never_see_each_other_s_collections_members_or_sources(self):
         await self.memories('alice')
         await self.memories('bob')
         await self.groups(self.v2, user='alice')
         await self.groups(self.v2, user='bob')
-        alice_old = await sql("select id from orion_mem_collection where user_id = 'alice' and kind = 'project'")
-        # Alice puts her note into her project, and names bob's memory too: membership is hers only.
+        # Alice puts her note into Belgeler, and names bob's memory too: membership is hers only.
         await sql("insert into orion_mem_collection_item (user_id, collection_id, group_id) values "
                   "('alice', 'belgeler', 'alice-note'), ('alice', 'belgeler', 'bob-note')")
         _, alice_docs = await self.groups(self.v2, user='alice', collections=['documents'])
         self.assertEqual(alice_docs, ['alice-doc', 'alice-note'])
         _, bob_docs = await self.groups(self.v2, user='bob', collections=['documents'])
         self.assertEqual(bob_docs, ['bob-doc'])
-        with self.assertRaises(ValueError):  # Alice's project id means nothing to bob... unless bob has the same id.
-            conn = await registry._connect()
-            try:
-                await mc.resolve(conn, 'bob', [alice_old])
-            finally:
-                await conn.close()
         conn = await registry._connect()
         try:
             await mc.add_source(conn, 'alice', 'fact', 7, chat_id='chat', first_message=5, last_message=3)
@@ -185,9 +177,9 @@ class CollectionTests(PostgresMemoryCase):
         finally:
             await conn.close()
         result = await mc.revert('alice')
-        self.assertEqual(result['collections'], 5)
-        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'bob'"), 5)
-        self.assertEqual(await sql("select count(*) from orion_mem_collection_item where user_id = 'bob'"), 3)
+        self.assertEqual(result['collections'], 4)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'bob'"), 4)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection_item where user_id = 'bob'"), 1)
 
     async def test_the_tool_takes_in(self):
         await self.memories()

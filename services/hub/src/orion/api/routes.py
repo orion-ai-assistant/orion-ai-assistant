@@ -127,26 +127,22 @@ async def latest_search(key: str, work):
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", exclude: list[str] = Query(default=[]),
                       collection: list[str] = Query(default=[]), when_from: str = "", when_to: str = "",
-                      about: str = "", as_of: str = "", include_past: bool = False,
-                      current_user: str = Depends(get_current_user)):
+                      about: str = "", current_user: str = Depends(get_current_user)):
     """A page of memories: cards of the rows saved together (memory_groups.list_groups). `collection`: only these
-    collections; `when_from` / `when_to`: only memories dated within (YYYY[-MM[-DD]]; events, facts true then, their
-    photos): both with the user's memory_v2 on. Also with memory_v2 (the chat tool's `about`, `as_of`, `include_past`, one
-    code: memory_groups.list_groups): `about` (a name, relation, `#<id>` or `me`): only what is about that entity, `as_of`
-    (a day, month or year): facts as they stood then, `include_past`: the replaced versions of facts, which carry no score.
-    The answer then also has `entity` (the card of the one entity the query or `about` names), `entity_candidates` (several
-    fit: no card; `about` that fits several: no results either), `past_facts`, and `note` when `about` names nobody."""
+    collections; `when_from` / `when_to`: the one date filter (YYYY[-MM[-DD]]): events within it, facts that were true within it,
+    notes and files saved within it, the photos of such events. Both with the user's memory_v2 on. Also with memory_v2 (the chat
+    tool's `about`, one code: memory_groups.list_groups): `about` (a name, relation, `#<id>` or `me`): only what is about that
+    entity. The answer then also has `entity` (the card of the one entity the query or `about` names), `entity_candidates` (several
+    fit: no card; `about` that fits several: no results either) and `note` when `about` names nobody. A fact's earlier versions
+    are in its own history (GET /memory/facts/{id}/history), not in the list."""
     from orion.kernel import memory, memory_entities, memory_events, memory_groups
     try:
         settings = await get_runtime_settings(request.app.state.redis, current_user)
         span = memory_events.parse_range(when_from[:10], when_to[:10])
         extra: dict = {}
-        about, as_of = about.strip()[:120], as_of.strip()[:10]
+        about = about.strip()[:120]
         v2 = memory_entities.enabled(settings)
-        entity_id, day = None, None
-        if v2 and as_of:
-            day = memory_events.parse_range(as_of, as_of)[1]
-            extra["as_of"] = day
+        entity_id = None
         if v2 and about:
             try:
                 async with memory_entities._db() as conn:
@@ -160,13 +156,13 @@ async def list_memory(request: Request, q: str = "", limit: int = 20, offset: in
             entity_id = entity["id"]
             extra["about"] = [entity_id]
         if v2:
-            async def side(conn):  # The entity card and the past versions, on the search's own connection.
+            async def side(conn):  # The entity card, on the search's own connection.
                 try:
                     return await memory_entities.search_extras(current_user, settings, [q.strip()] if q.strip() else [],
-                                                                entity_id, day, include_past, bool(about), conn=conn)
+                                                                entity_id, conn=conn)
                 except Exception:  # Extras: the page's results go out without them.
                     import logging
-                    logging.getLogger(__name__).warning("memory page: entity card / past versions failed", exc_info=True)
+                    logging.getLogger(__name__).warning("memory page: entity card failed", exc_info=True)
                     return None
             extra["side"] = side
         work = memory_groups.list_groups(
@@ -185,8 +181,6 @@ async def list_memory(request: Request, q: str = "", limit: int = 20, offset: in
             found["entity_candidates"] = extras["candidates"]
         if extras["card"] is not None:
             found["entity"] = extras["card"]
-        if extras["past"] is not None:
-            found["past_facts"] = extras["past"]
     windows = await query_note(q)
     if windows:
         found["query_windows"] = windows  # The page says how a long passage was searched.
@@ -226,18 +220,16 @@ async def memory_group(group_id: str, request: Request, offset: int = Query(0, g
 @router.get("/api/v1/memory/map")
 async def memory_map(request: Request, k: int = 5, limit: int = 300, vector_space: str = "", kind: str = "all",
                      collection: list[str] = Query(default=[]), when_from: str = "", when_to: str = "",
-                     about: str = "", as_of: str = "", current_user: str = Depends(get_current_user)):
+                     about: str = "", current_user: str = Depends(get_current_user)):
     """A model's memories (the active one's by default) as a graph: each one's nearest neighbours above the
-    space's own floor (pgvector). The page's filters (`collection`, `when_from`/`when_to`, `about`, `as_of`: the same
+    space's own floor (pgvector). The page's filters (`collection`, `when_from`/`when_to`, `about`: the same
     values and code as GET /api/v1/memory) leave the other memories out of the map; with memory_v2 on."""
     from orion.kernel import memory, memory_entities, memory_events, memory_groups
     try:
         settings = await get_runtime_settings(request.app.state.redis, current_user)
         extra: dict = {}
-        about, as_of = about.strip()[:120], as_of.strip()[:10]
+        about = about.strip()[:120]
         if memory_entities.enabled(settings):
-            if as_of:
-                extra["as_of"] = memory_events.parse_range(as_of, as_of)[1]
             if about:
                 try:
                     async with memory_entities._db() as conn:
@@ -680,7 +672,7 @@ async def memory_chat_summary(chat_id: str, request: Request, current_user: str 
     return await _ben(request, current_user, lambda s: mx.chat_summary(current_user, chat_id))
 
 
-# --- Yaşadıklarım: events, albums (memory_events, memory_albums; behind the user's memory_v2) -------------------------------
+# --- Yaşadıklarım: events (memory_events; behind the user's memory_v2) -------------------------------
 
 class EventBody(BaseModel):
     title: str | None = Field(default=None, max_length=300)
@@ -693,16 +685,11 @@ class EventBody(BaseModel):
     participants: list[str] | None = Field(default=None, max_length=20)  # names, relations or "#<entity id>"
     place: str | None = Field(default=None, max_length=120)
     items: list[str] = Field(default_factory=list, max_length=100)  # memory group keys (photos...)
-    album: str | None = Field(default=None, max_length=80)
 
 
 class MembersBody(BaseModel):
     add: list[str] = Field(default_factory=list, max_length=500)
     remove: list[str] = Field(default_factory=list, max_length=500)
-
-
-class AlbumBody(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
 
 
 @router.get("/api/v1/memory/events")
@@ -728,19 +715,15 @@ async def memory_events_upcoming(request: Request, days: int = 30, current_user:
 @router.post("/api/v1/memory/events")
 async def memory_event_create(payload: EventBody, request: Request, current_user: str = Depends(get_current_user)):
     """The user writes an event (no card; source: the user): {"event"} or {"same_as"}."""
-    from orion.kernel import memory_albums, memory_events as ev, memory_entities as me
+    from orion.kernel import memory_events as ev, memory_entities as me
 
     async def call(settings):
         when = ev.resolve_date(payload.date, payload.end_date, payload.precision, payload.said_as)
-        album = None
-        if payload.album:
-            async with me._db() as conn:
-                album = await memory_albums.album_id_of(conn, current_user, payload.album)
         async with me._db() as conn:
             groups = await ev.groups_exist(conn, current_user, payload.items) if payload.items else []
         return await ev.add_event(current_user, settings, payload.title or "", when, body=payload.body, mood=payload.mood,
                                   participants=payload.participants, place=payload.place, items=groups, origin="user",
-                                  source={"by_user": True}, album=album)
+                                  source={"by_user": True})
     return await _ben(request, current_user, call)
 
 
@@ -779,61 +762,6 @@ async def memory_event_items(event_id: int, payload: MembersBody, request: Reque
     """Link photos / videos (memory group keys) to an event, or unlink them: {"linked", "unlinked"}."""
     from orion.kernel import memory_events as ev
     return await _ben(request, current_user, lambda s: ev.set_items(current_user, s, event_id, payload.add, payload.remove))
-
-
-@router.get("/api/v1/memory/albums")
-async def memory_albums_list(request: Request, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory_albums as al
-
-    async def call(settings):
-        return {"albums": await al.list_albums(current_user, settings)}
-    return await _ben(request, current_user, call)
-
-
-@router.post("/api/v1/memory/albums")
-async def memory_album_create(payload: AlbumBody, request: Request, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory_albums as al
-    return await _ben(request, current_user, lambda s: al.create_album(current_user, s, payload.name))
-
-
-@router.put("/api/v1/memory/albums/{album_id}")
-@router.patch("/api/v1/memory/albums/{album_id}")
-async def memory_album_rename(album_id: str, payload: AlbumBody, request: Request,
-                              current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory_albums as al
-    return await _ben(request, current_user, lambda s: al.rename_album(current_user, s, album_id[:80], payload.name))
-
-
-@router.post("/api/v1/memory/albums/{album_id}/remove")  # The same as DELETE; its memories stay where they are.
-@router.delete("/api/v1/memory/albums/{album_id}")
-async def memory_album_remove(album_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory_albums as al
-    return await _ben(request, current_user, lambda s: al.remove_album(current_user, s, album_id[:80]))
-
-
-@router.post("/api/v1/memory/albums/{album_id}/restore")
-async def memory_album_restore(album_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory_albums as al
-    return await _ben(request, current_user, lambda s: al.restore_album(current_user, s, album_id[:80]))
-
-
-@router.post("/api/v1/memory/albums/{album_id}/items")
-async def memory_album_items(album_id: str, payload: MembersBody, request: Request,
-                             current_user: str = Depends(get_current_user)):
-    """Put memories (group keys) into an album / take them out (never deletes them): {"added", "removed"}."""
-    from orion.kernel import memory_albums as al
-    return await _ben(request, current_user, lambda s: al.set_members(current_user, s, album_id[:80], payload.add,
-                                                                    payload.remove))
-
-
-@router.get("/api/v1/memory/groups/{group_id}/albums")
-async def memory_group_albums(group_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    """The user's albums and projects, each with `member`: is this memory in it."""
-    from orion.kernel import memory_albums as al
-
-    async def call(settings):
-        return {"albums": await al.albums_of(current_user, settings, group_id)}
-    return await _ben(request, current_user, call)
 
 
 @router.post("/api/v1/memory/collections/revert")

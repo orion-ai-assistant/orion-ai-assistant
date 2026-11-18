@@ -173,7 +173,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 8  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines).
+SCHEMA_VERSION = 9  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership.
 CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
@@ -214,9 +214,20 @@ async def _migrate(conn) -> None:
             await _schema_7(conn)
         if version < 8:
             await _schema_8(conn)
+        if version < 9:
+            await _schema_9(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
+
+
+async def _schema_9(conn) -> None:
+    """Albums, projects and the migration bucket "Eski hafıza" are gone (user decision), and Ben is no longer a membership
+    (memory_collections.ben_sql defines it). Their collections and memberships are deleted; the memories themselves are never touched:
+    they stay in the whole memory (a file also in Belgeler, an event in Yaşadıklarım, the chats' windows in Sohbetler)."""
+    await conn.execute("delete from orion_mem_collection_item i where i.collection_id = 'ben' or exists (select 1 from "
+                       "orion_mem_collection c where c.user_id = i.user_id and c.id = i.collection_id and c.kind <> 'builtin')")
+    await conn.execute("delete from orion_mem_collection where kind <> 'builtin'")
 
 
 async def _schema_2(conn) -> None:
@@ -227,8 +238,8 @@ async def _schema_2(conn) -> None:
     await conn.execute("""
         create table if not exists orion_mem_collection (
             user_id text not null,
-            id text not null,                 -- 'ben', 'yasadiklarim', 'sohbetler', 'belgeler' or 'p_<hex>'
-            kind text not null,               -- builtin | project | album
+            id text not null,                 -- 'ben', 'yasadiklarim', 'sohbetler' or 'belgeler'
+            kind text not null,               -- builtin (the only kind left: albums and projects are gone)
             name text not null,
             deleted_at timestamptz,
             created_at timestamptz not null default now(),

@@ -15,10 +15,10 @@ Versions, never overwrites (like facts). An event the user corrects is a new row
 event, only add one.
 
 How an event is searched. Its vector is an ordinary `orion_memory` row (kind 'text', source_kind 'event', its own group, main
-collection `yasadiklarim`), embedded as "2026-11-17 Salı, Kasım 2026: <title>. Katılanlar: ... Yer: ...": the page, map,
+collection `yasadiklarim`), embedded as "17 Kasım 2026 Salı: <title>. Katılanlar: ... Yer: ...", each once: the page, map,
 counters, trash, model move and `search_memory` (`in: ["experiences"]`) need no new path. An event is live while that memory
 has a live row (the page's own delete, or the trash, removes it; restoring brings it back; deleting for good removes the
-event rows: after_purge). `search_memory(when=...)` is one SQL condition (when_sql) on the memory's group.
+event rows: after_purge). The date filter (`when`) is one SQL condition (when_sql) on the memory's group.
 
 Links (`orion_mem_link`): event -> entity (role katılan | yer) and event -> item (role fotoğraf; the item is a memory, named by
 its group key). An item removed to the trash stays linked and shows greyed; deleted for good, its link goes. Merging two
@@ -184,13 +184,19 @@ def resolve_date(date_text: str | None, end_text: str | None = None, precision: 
 
 
 def range_text(on: date, end: date | None, precision: str) -> str:
-    """How a date reads in an event's embedded text: "2026-11-17 Salı, Kasım 2026", "Kasım 2026", "2026"."""
-    if precision == "year":
-        return str(on.year)
-    if precision == "month":
-        return f"{MONTHS[on.month - 1]} {on.year}"
-    head = f"{on.isoformat()} {WEEKDAYS[on.weekday()]}, {MONTHS[on.month - 1]} {on.year}"
-    return head if not end else f"{head} - {end.isoformat()}"
+    """The date of an event, once, as far as it is known: "17 Kasım 2026 Salı", "17 - 20 Kasım 2026", "Kasım 2026", "2026";
+    "approx" adds ", yaklaşık" to what its range reads like ("Kasım 2026, yaklaşık")."""
+    rough = ", yaklaşık" if precision == "approx" else ""
+    if precision == "year" or (precision == "approx" and end and (on.month, on.day, end.month, end.day) == (1, 1, 12, 31)):
+        return f"{on.year}{rough}"
+    if precision == "month" or (precision == "approx" and end and on.day == 1 and end == _last_day(on.year, on.month)):
+        return f"{MONTHS[on.month - 1]} {on.year}{rough}"
+    if not end or end == on:
+        head = f"{on.day} {MONTHS[on.month - 1]} {on.year}"
+        return f"{head}{rough}" if rough else f"{head} {WEEKDAYS[on.weekday()]}"
+    if (on.year, on.month) == (end.year, end.month):
+        return f"{on.day} - {end.day} {MONTHS[on.month - 1]} {on.year}{rough}"
+    return f"{on.day} {MONTHS[on.month - 1]} {on.year} - {end.day} {MONTHS[end.month - 1]} {end.year}{rough}"
 
 
 def parse_range(start: str | None, end: str | None) -> tuple[date | None, date | None] | None:
@@ -209,29 +215,33 @@ def parse_range(start: str | None, end: str | None) -> tuple[date | None, date |
 
 
 async def when_keys(conn, user_id: str, when: tuple[date | None, date | None]) -> tuple[list[str], list[int]]:
-    """The memories dated within `when` (parse_range): an event whose days overlap it, a fact that was true then (it has a
-    start; an open-ended one counts) and the items (photos, videos...) linked to such an event. As memory group keys:
-    (real group ids, row ids of memories saved before groups). One query on the caller's connection; the keys are then the
-    search's own candidates (when_sql), ranked exactly."""
+    """The memories dated within `when` (parse_range), the page's one date filter: an event whose days overlap it, a fact that
+    was true then (from its start, else from the day it was saved, until its end; an open-ended one counts), the items (photos,
+    videos...) linked to such an event, and the notes and files saved within it. Past versions of a fact have no memory of their
+    own (the fact's history shows them). As memory group keys: (real group ids, row ids of memories saved before groups). One
+    query on the caller's connection; the keys are then the search's own candidates (when_sql), ranked exactly."""
     first, last = when
     params: list = [user_id]
-    holds, valid = [], []
+    holds, valid, saved = [], [], []
     if last is not None:
         params.append(last)
         holds.append(f"e.occurred_on <= ${len(params)}")
-        valid.append(f"f.valid_from <= ${len(params)}")
+        valid.append(f"coalesce(f.valid_from, f.recorded_at::date) <= ${len(params)}")
+        saved.append(f"m.created_at < (${len(params)}::date + 1)")
     if first is not None:
         params.append(first)
         holds.append(f"coalesce(e.occurred_end, e.occurred_on) >= ${len(params)}")
         valid.append(f"(f.valid_to is null or f.valid_to >= ${len(params)})")
+        saved.append(f"m.created_at >= ${len(params)}::date")
     inside = " and ".join(["e.user_id = $1", "e.superseded_by is null", *holds])
-    fact = " and ".join(["f.user_id = $1", "f.superseded_by is null", "f.group_id is not null", "f.valid_from is not null",
-                         *valid])
+    fact = " and ".join(["f.user_id = $1", "f.superseded_by is null", "f.group_id is not null", *valid])
+    note = " and ".join(["m.user_id = $1", f"m.source_kind not in ('{EVENT}', 'fact', '{memory.CHAT_INDEX}')", *saved])
     rows = await conn.fetch(
         f"select e.group_id as k from orion_mem_event e where {inside} "
         f"union select f.group_id from orion_mem_fact f where {fact} "
         f"union select l.to_id from orion_mem_link l join orion_mem_event e on e.id = l.from_id and e.user_id = l.user_id "
-        f"where l.user_id = $1 and l.from_type = 'event' and l.to_type = 'item' and {inside}", *params)
+        f"where l.user_id = $1 and l.from_type = 'event' and l.to_type = 'item' and {inside} "
+        f"union select coalesce(m.group_id, 'r' || m.id::text) from orion_memory m where {note}", *params)
     return _keys([r["k"] for r in rows])
 
 
@@ -400,7 +410,7 @@ async def get_event(user_id: str, settings, event_id: int) -> dict:
 # --- Writing ----------------------------------------------------------------------------------------------------------
 
 def check_text(title: str, body: str | None) -> tuple[str, str | None]:
-    title = " ".join((title or "").split())
+    title = " ".join((title or "").split()).rstrip(". ").rstrip()
     body = (body or "").strip() or None
     if not title and body:
         title = " ".join(body.split())[:MAX_TITLE].rstrip()
@@ -410,21 +420,30 @@ def check_text(title: str, body: str | None) -> tuple[str, str | None]:
         raise ValueError(f"An event's title is short: at most {MAX_TITLE} characters (put the rest in the text).")
     if body and len(body) > MAX_BODY:
         raise ValueError(f"An event's text is at most {MAX_BODY} characters: keep a longer account as a note.")
-    if body and " ".join(body.split()) == title:
+    if body and " ".join(body.split()).rstrip(". ") == title:
         body = None
     return title, body
 
 
+def _sentence(text: str) -> str:
+    """`text` ending in exactly one full stop (or the ! ? … it already ends with)."""
+    text = text.strip()
+    return text if text.endswith(("!", "?", "…")) else text.rstrip(".") + "."
+
+
 def embedded_text(title: str, body: str | None, when: dict, people: list[str], place: str | None) -> str:
+    """What the event's vector row says: the date once ("17 Kasım 2026 Salı", the user's own words after it), the title, the
+    text, then who and where once each, every part one clean sentence. The page shows the date, the people and the place
+    from the event itself, not from this text."""
     said = f" ({when['said_as']})" if when.get("said_as") else ""
-    text = f"{range_text(when['on'], when['end'], when['precision'])}{said}: {title}."
+    parts = [f"{range_text(when['on'], when['end'], when['precision'])}{said}: {_sentence(title)}"]
     if body:
-        text += f" {body}"
+        parts.append(_sentence(body))
     if people:
-        text += f" Katılanlar: {', '.join(people)}."
+        parts.append(f"Katılanlar: {', '.join(people)}.")
     if place:
-        text += f" Yer: {place}."
-    return text
+        parts.append(f"Yer: {place}.")
+    return " ".join(parts)
 
 
 async def _store_vector(conn, user_id: str, text: str, title: str, space: str, vector: str, source: dict) -> str:
@@ -498,10 +517,9 @@ def _check_source(source: dict | None) -> dict:
 
 async def add_event(user_id: str, settings, title: str, when: dict, *, body: str | None = None, mood: str | None = None,
                     participants: list[str] | None = None, place: str | None = None, items: list[str] | None = None,
-                    origin: str, source: dict, album: str | None = None, run_id: int | None = None) -> dict:
+                    origin: str, source: dict, run_id: int | None = None) -> dict:
     """Write one event, or find that it is already there. `when`: resolve_date's answer; `participants` / `place`: names
-    (resolve_entity); `items`: memory group keys of photos etc. to link (this user's, not removed); `album`: a
-    collection id the event's memory also joins. {"event": {...}} or {"same_as": id} (an event with the same title and day
+    (resolve_entity); `items`: memory group keys of photos etc. to link (this user's, not removed); {"event": {...}} or {"same_as": id} (an event with the same title and day
     exists: the new source is added to it and the new links with it). ValueError: no source, an empty title, a bad date;
     LookupError: an item that is not this user's; Ambiguous. Nothing is written when embedding fails (MemoryUnavailable)."""
     require(settings)
@@ -548,9 +566,6 @@ async def add_event(user_id: str, settings, title: str, when: dict, *, body: str
                 await _link(conn, user_id, event_id, "entity", where["id"], PLACE)
             for item in groups:
                 await _link(conn, user_id, event_id, "item", item, PHOTO)
-            if album:
-                await conn.execute("insert into orion_mem_collection_item (user_id, collection_id, group_id, main) values "
-                                   "($1, $2, $3, false) on conflict do nothing", user_id, album, group)
             row = await conn.fetchrow(f"select {_EVENT} from orion_mem_event e where e.id = $1", event_id)
         event = (await _decorate(conn, user_id, [row]))[0]
     return {"event": event}
@@ -603,7 +618,7 @@ async def replace_event(user_id: str, settings, event_id: int, *, title: str | N
                 (" ".join((mood if mood is not None else old["mood"] or "").split())[:40] or None), origin, group)
             await conn.execute("update orion_mem_event set expired_at = now(), superseded_by = $3 where user_id = $1 and id = $2",
                                user_id, event_id, new_id)
-            # The new version takes the item links and the places in albums; the old vector row and membership go.
+            # The new version takes the item links; the old vector row and membership go.
             await conn.execute("delete from orion_mem_link where user_id = $1 and from_type = 'event' and from_id = $2 and "
                                "to_type = 'entity'", user_id, new_id)
             for entity in people:
@@ -614,10 +629,6 @@ async def replace_event(user_id: str, settings, event_id: int, *, title: str | N
                                "from_id = $2 and to_type = 'item'", user_id, event_id, new_id)
             await conn.execute("delete from orion_mem_link where user_id = $1 and from_type = 'event' and from_id = $2",
                                user_id, event_id)
-            await conn.execute(
-                "insert into orion_mem_collection_item (user_id, collection_id, group_id, main) select user_id, collection_id, "
-                "$3, false from orion_mem_collection_item where user_id = $1 and group_id = $2 and not main "
-                "on conflict do nothing", user_id, old["group_id"], group)
             await memory.delete_rows(conn, user_id, "group_id = $2", old["group_id"])
             await conn.execute("delete from orion_mem_collection_item where user_id = $1 and group_id = $2", user_id,
                                old["group_id"])
@@ -670,12 +681,12 @@ async def set_items(user_id: str, settings, event_id: int, add: list[str] | None
 # --- What search and memory_context tell about an event ----------------------------------------------------------------
 
 async def events_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
-    """{memory group: {"id", "date", "end", "precision", "title", "with", "place"}} for the memories among `groups` that
+    """{memory group: {"id", "date", "end", "precision", "title", "body", "said_as", "with", "place", "photos"}} for the memories among `groups` that
     are current events: one indexed lookup on the caller's connection (a search card says what its event is)."""
     if not groups:
         return {}
     rows = await conn.fetch(
-        "select e.id, e.group_id, e.title, e.occurred_on, e.occurred_end, e.precision, "
+        "select e.id, e.group_id, e.title, e.body, e.said_as, e.occurred_on, e.occurred_end, e.precision, "
         "coalesce(array_agg(en.name order by l.created_at, en.id) filter (where l.role = 'katılan'), '{}') as people, "
         "max(en.name) filter (where l.role = 'yer') as place, count(*) filter (where l.to_type = 'item') as photos "
         "from orion_mem_event e left join orion_mem_link l on l.user_id = e.user_id and l.from_type = 'event' and "
@@ -684,7 +695,8 @@ async def events_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
         "e.group_id = any($2::text[]) and e.superseded_by is null group by e.id", user_id, groups)
     return {r["group_id"]: {"id": r["id"], "date": r["occurred_on"].isoformat(),
                             "end": r["occurred_end"].isoformat() if r["occurred_end"] else None,
-                            "precision": r["precision"], "title": r["title"], "with": list(r["people"]),
+                            "precision": r["precision"], "title": r["title"], "body": r["body"], "said_as": r["said_as"],
+                            "with": list(r["people"]),
                             "place": r["place"], "photos": int(r["photos"])} for r in rows}
 
 
@@ -760,7 +772,7 @@ async def upcoming(user_id: str, settings, days: int = 30, today: date | None = 
 
 async def after_purge(user_id: str) -> int:
     """Rows were deleted for good: events whose memory has no row left go with their past versions, sources and links; links
-    to items with no row left and album memberships of memories that are gone go too. How many events went."""
+    to items with no row left go too. How many events went."""
     async with me._db() as conn:
         async with conn.transaction():
             gone = [r["lineage"] for r in await conn.fetch(
@@ -779,9 +791,4 @@ async def after_purge(user_id: str) -> int:
                 "orion_memory m where m.user_id = l.user_id and m.group_id = l.to_id) and not exists (select 1 from "
                 "orion_memory m where m.user_id = l.user_id and m.group_id is null and m.id = case when l.to_id ~ '^r[0-9]+$' "
                 "then substr(l.to_id, 2)::bigint end)", user_id)
-            await conn.execute(
-                "delete from orion_mem_collection_item i where i.user_id = $1 and not i.main and not exists (select 1 from "
-                "orion_memory m where m.user_id = i.user_id and m.group_id = i.group_id) and not exists (select 1 from "
-                "orion_memory m where m.user_id = i.user_id and m.group_id is null and m.id = case when i.group_id ~ "
-                "'^r[0-9]+$' then substr(i.group_id, 2)::bigint end)", user_id)
             return len(gone)
