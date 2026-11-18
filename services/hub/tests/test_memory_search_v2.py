@@ -356,6 +356,69 @@ class SearchOptionTests(V2Case):
             self.assertTrue(fact['statement'].endswith('.'))  # Never half a fact.
 
 
+class PageSearchRouteTests(V2Case):
+    """The memory page's `GET /api/v1/memory` takes the tool's `about`, `as_of` and `include_past` (one code: list_groups)."""
+    RULES = [('yaşıyor', 0.80, 2), ('doğum', 0.60, 3), ('okul', 0.50, 4)]
+
+    async def lives(self):
+        first = await self.fact('Ayşe', 'yer', "Ayşe Ankara'da yaşıyor.", since='2019-01-01', relation='anne')
+        done = await me.supersede('alice', self.v2, first, "Ayşe İstanbul'da yaşıyor.", origin='user',
+                                  source={'by_user': True}, since='2026-11-01')
+        return first, done['fact']['id']
+
+    async def page(self, q='', **kw):
+        guard = patch.object(routes, 'get_runtime_settings', AsyncMock(side_effect=lambda r, u=None: self.current))
+        guard.start()
+        self.addCleanup(guard.stop)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
+        args = dict(q=q, limit=20, offset=0, vector_space='all', kind='all', exclude=[], collection=[], when_from='',
+                    when_to='', about='', as_of='', include_past=False, current_user='alice')
+        return await routes.list_memory(request, **{**args, **kw})
+
+    async def test_about_as_of_and_past_versions_reach_the_page(self):
+        first, head = await self.lives()
+        found = await self.page('nerede yaşıyor', about='Ayşe', include_past=True)
+        self.assertEqual([g['fact']['id'] for g in found['groups'] if 'fact' in g], [head])
+        self.assertEqual(found['entity']['name'], 'Ayşe')
+        self.assertEqual([p['id'] for p in found['past_facts']], [first])
+        self.assertNotIn('side', found)
+        then = await self.page('nerede yaşıyor', about='#' + str(found['entity']['id']), as_of='2022-06-01')
+        self.assertEqual([g['fact']['id'] for g in then['groups'] if 'fact' in g], [])
+        self.assertEqual([p['id'] for p in then['past_facts']], [first])  # True that day.
+
+    async def test_the_page_without_the_new_params_is_what_it_was(self):
+        await self.lives()
+        found = await self.page('nerede yaşıyor')
+        for key in ('past_facts', 'entity_candidates', 'note', 'side'):
+            self.assertNotIn(key, found)
+        self.assertEqual(found['entity']['name'], 'Ayşe') if 'entity' in found else None  # A query naming her gets the card.
+
+    async def test_unknown_and_ambiguous_names_answer_with_a_note_not_an_error(self):
+        await self.lives()
+        async with me._db() as conn:  # A second Ayşe.
+            await conn.execute("insert into orion_mem_entity (user_id, kind, name, keys) values ('alice', 'person', 'Ayşe', "
+                               "array['ayse'])")
+        nobody = await self.page('x', about='Zeynep')
+        self.assertEqual((nobody['groups'], nobody['more']), ([], False))
+        self.assertIn('Zeynep', nobody['note'])
+        two = await self.page('x', about='Ayşe')
+        self.assertEqual(two['groups'], [])
+        self.assertEqual(len(two['entity_candidates']), 2)
+
+    async def test_memory_v2_off_ignores_the_new_params(self):
+        await self.lives()
+        self.current = self.off
+        found = await self.page('yaşıyor', about='Ayşe', as_of='2022-06-01', include_past=True)
+        for key in ('entity', 'past_facts', 'entity_candidates', 'note'):
+            self.assertNotIn(key, found)
+
+    async def test_a_bad_day_is_a_400(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as caught:
+            await self.page('x', as_of='13/2022')
+        self.assertEqual(caught.exception.status_code, 400)
+
+
 class ProfileTests(V2Case):
     async def test_the_block_orders_by_kind_and_keeps_to_its_token_limit_with_whole_facts(self):
         await self.fact('Ben', 'diğer', 'Kahve içmeyi sever.')

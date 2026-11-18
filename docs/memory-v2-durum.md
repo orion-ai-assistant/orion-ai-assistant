@@ -81,7 +81,24 @@ Hedef (gömme çağrısı hariç p50 ≤150 ms, 40 bin kümeli satır, `memory_v
 sözcük dağarcıklı en kötü durumda "sohbetlerde" 187 ms ile üstünde (yakın yazım taraması, yukarıdaki neden). Hâlâ ölçülmedi: Router'a bağlı
 gerçek `account_settings` (hesap anahtarı önbelleği boşken), havuz boşta kapandıktan (300 sn) sonraki ilk arama (+~45 ms bağlantı), 1M satır.
 
-## Hiç canlı denenmedi (kod + gerçek Postgres testleri var, çalışan uygulamada yok)
+## Bitiriş turu: kalan açıklar (2. ve 3. iş)
+
+Hepsi ayrı dallarda, hiçbiri birleştirilmedi/itilmedi:
+- **Router, başlıklar** (`D:/krstlcm Workspace/DevProjects/orion-router`, worktree `orion-router-memory-v2-headers`, dal `memory-v2-headers`, b1ea7f8):
+  `x-orion-log-content: hidden` isteğin logunda yalnız üst veri bırakır (model, birkaç düz parametre, `purpose`, kullanım, metrikler; mesajlar, araçlar
+  ve cevap `[içerik gizli]`, `content_hidden: true`); `x-orion-memory-profile: tokens=N; facts=..` ile sistem mesajındaki profil bloğu loglanan
+  kopyada `[hafıza profili: tokens=N; facts=..]` olur (sağlayıcıya giden metin aynen); `x-orion-log-content: show` açık "içeriği göster" tercihidir
+  (profil dahil her şey loglanır). Bozuk/bilinmeyen değerler yok sayılır; başlıklar sağlayıcıya iletilmez. Yeni 8 test; Router paketi 306 test, 2 hata
+  (biri ana dalda da var, biri yalnız worktree'de dosya yolu). Log sayfası (dashboard) ayrı bir "gizli" rozeti göstermiyor, ham JSON'da işareti var.
+- **Hub, sayfa araması**: `GET /api/v1/memory` artık `about`, `as_of`, `include_past` alır (araçla aynı kod: `list_groups`); cevaba `entity`,
+  `entity_candidates`, `past_facts` eklenir; `about` kimseyi bulmazsa `groups: []` + `note`, birden çok kişiyse `entity_candidates` (hata değil: sayfa 409'u
+  "eski arama" diye yok sayar). `memory_v2` kapalıyken yok sayılır. 5 yeni test (`PageSearchRouteTests`).
+- **Flutter** (`orion-ai-assistant-flutter-finish`, dal `memory-v2-finish`, 5a1cd63): "Profil" sayfası (blok, token ölçeri, sabitle / kendi sözünle / düzenle /
+  kaldır, `replaced`/`gone`/`locked` rozetleri, taşma uyarısı) ve arama satırında "Kimin hakkında", "Şu tarihte", "Eski sürümler" çipleri, varlık kartı, ayrı
+  "Eski sürümler" bölümü, aday çipleri. `flutter analyze` temiz; 11 hafıza test dosyası, 118 test (20 yeni) geçti. Bilinen: dosyayla/uzun metinle arama
+  (`POST /memory/search`) bu üç süzgeci taşımaz; sayfada `when` çipi `main`de yoktu (kopyalanacak çip yok), mevcut hap şeritlerinin görünümü alındı; Hub'ın
+  `PUT /profile/pinned` isteği eskimiş (replaced/gone/locked) satır varken reddediyor, arayüz bu durumda serbest satır eklemeyi engelliyor.
+ (kod + gerçek Postgres testleri var, çalışan uygulamada yok)
 
 - Çalışan Hub + telefon/web arayüzünde adım 3-7'nin Flutter ekranları (kart akışları, zaman çizelgesi, Onay bekleyenler / Son eklenenler) ve gerçek
   bir sohbet modelinin araçları seçmesi; akış içinde kartlar.
@@ -89,10 +106,10 @@ gerçek `account_settings` (hesap anahtarı önbelleği boşken), havuz boşta k
   otomatik yazma uçtan uca.
 - Büyük gerçek veritabanında (on binlerce satır) arka plan indeks kurulumu ve aramanın 150 ms hedefi; ölçümler 20 bin satırlık sahte kümeli
   vektörlerle yapıldı.
-- Profil bloğu: gerçek bir sohbette modelin davranışı, istem önbelleğine etkisi (OpenAI/DeepSeek), Router logunda `x-orion-memory-profile`
-  başlığının gösterilmesi (Router bu başlığı henüz okumuyor; içeriği gizleme Router deposunda yapılacak iş).
-- Profil için arayüz yok (Ayarlar > profil: görüntüle, düzenle, sabitle): yalnız API var (`/api/v1/memory/profile`).
-- Sayfanın arama kutusunda `about` / `as_of` / `include_past` yok; yalnızca model aracında (sayfa aynı sıralama kodunu kullanır).
+- Profil bloğu: gerçek bir sohbette modelin davranışı, istem önbelleğine etkisi (OpenAI/DeepSeek). Router'ın `x-orion-memory-profile` /
+  `x-orion-log-content` başlıklarını okuması yazıldı (aşağıda) ama canlı Router + gerçek sohbetle denenmedi.
+- Flutter: profil sayfası ve sayfa aramasındaki `about` / `as_of` / `include_past` yazıldı (aşağıda), analiz + birim/widget testleri geçti; çalışan
+  Hub'a karşı ve gözle (web/telefon) bakılmadı.
 - Çok süreçli çalışma (API ve Worker süreçlerinin ayrı çıkarım işçileri), Hub yeniden başlarken bekleyen zamanlayıcılar.
 - Sohbet/mesaj silme kartı (§11.3), "Bilgi çıkar" düğmesi (belgeler), eski hafıza öneri geçişi, haritada varlık düğümleri, misafir hesapları:
   tasarımın "Sonra" listesinde, yapılmadı.

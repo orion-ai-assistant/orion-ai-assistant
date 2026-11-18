@@ -127,22 +127,66 @@ async def latest_search(key: str, work):
 async def list_memory(request: Request, q: str = "", limit: int = 20, offset: int = 0, vector_space: str = "all",
                       kind: str = "all", exclude: list[str] = Query(default=[]),
                       collection: list[str] = Query(default=[]), when_from: str = "", when_to: str = "",
+                      about: str = "", as_of: str = "", include_past: bool = False,
                       current_user: str = Depends(get_current_user)):
     """A page of memories: cards of the rows saved together (memory_groups.list_groups). `collection`: only these
     collections; `when_from` / `when_to`: only memories dated within (YYYY[-MM[-DD]]; events, facts true then, their
-    photos): both with the user's memory_v2 on."""
-    from orion.kernel import memory, memory_events, memory_groups
+    photos): both with the user's memory_v2 on. Also with memory_v2 (the chat tool's `about`, `as_of`, `include_past`, one
+    code: memory_groups.list_groups): `about` (a name, relation, `#<id>` or `me`): only what is about that entity, `as_of`
+    (a day, month or year): facts as they stood then, `include_past`: the replaced versions of facts, which carry no score.
+    The answer then also has `entity` (the card of the one entity the query or `about` names), `entity_candidates` (several
+    fit: no card; `about` that fits several: no results either), `past_facts`, and `note` when `about` names nobody."""
+    from orion.kernel import memory, memory_entities, memory_events, memory_groups
     try:
+        settings = await get_runtime_settings(request.app.state.redis, current_user)
         span = memory_events.parse_range(when_from[:10], when_to[:10])
+        extra: dict = {}
+        about, as_of = about.strip()[:120], as_of.strip()[:10]
+        v2 = memory_entities.enabled(settings)
+        entity_id, day = None, None
+        if v2 and as_of:
+            day = memory_events.parse_range(as_of, as_of)[1]
+            extra["as_of"] = day
+        if v2 and about:
+            try:
+                async with memory_entities._db() as conn:
+                    entity, _ = await memory_entities.resolve_entity(conn, current_user, about, create=False)
+            except memory_entities.Ambiguous as exc:
+                return {"groups": [], "matching": 0, "more": False, "note": str(exc),
+                        "entity_candidates": [{"id": e["id"], "name": e["name"], "relation": e["relation"]}
+                                              for e in exc.candidates[:5]]}
+            if entity is None:
+                return {"groups": [], "matching": 0, "more": False, "note": f"Hafızada {about!r} adında biri yok."}
+            entity_id = entity["id"]
+            extra["about"] = [entity_id]
+        if v2:
+            async def side(conn):  # The entity card and the past versions, on the search's own connection.
+                try:
+                    return await memory_entities.search_extras(current_user, settings, [q.strip()] if q.strip() else [],
+                                                                entity_id, day, include_past, bool(about), conn=conn)
+                except Exception:  # Extras: the page's results go out without them.
+                    import logging
+                    logging.getLogger(__name__).warning("memory page: entity card / past versions failed", exc_info=True)
+                    return None
+            extra["side"] = side
         work = memory_groups.list_groups(
-            current_user, await get_runtime_settings(request.app.state.redis, current_user), q[:memory.MAX_QUERY_CHARS],
+            current_user, settings, q[:memory.MAX_QUERY_CHARS],
             max(1, min(limit, 100)), max(0, offset), vector_space[:100], kind[:20],
-            exclude=[t[:200] for t in exclude[:5]], collections=[c[:120] for c in collection[:10]] or None, when=span)
+            exclude=[t[:200] for t in exclude[:5]], collections=[c[:120] for c in collection[:10]] or None, when=span,
+            **extra)
         found = await (latest_search(current_user, work) if q.strip() else work)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
+    extras = found.pop("side", None)
+    if extras is not None:
+        if extras["candidates"]:
+            found["entity_candidates"] = extras["candidates"]
+        if extras["card"] is not None:
+            found["entity"] = extras["card"]
+        if extras["past"] is not None:
+            found["past_facts"] = extras["past"]
     windows = await query_note(q)
     if windows:
         found["query_windows"] = windows  # The page says how a long passage was searched.
