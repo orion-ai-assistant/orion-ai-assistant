@@ -33,16 +33,32 @@ class AISettings(BaseModel):
     # removed memory waits in the trash before it is deleted for good.
     memory_v2: bool = False
     memory_trash_days: int = Field(default=30, ge=1, le=3650)
-    # With memory_v2: chats are indexed into the Sohbetler collection (memory_chat_index). Turn off to stop it.
-    memory_index_chats: bool = True
-    # With memory_v2: new chat messages are read in the background for things worth remembering (memory_extract). The
+    # With memory_v2: new messages of the "Asistanla konuş" chat (only that one) are read in the background for things worth remembering (memory_extract). The
     # candidates only go to the quality-gate report until the user turns automatic writing on (its own switch, not a setting).
     memory_extract_chats: bool = True
     # The model that does it, a Router model group; empty = the chat model.
     memory_background_model: str = ""
-    # With memory_v2: a short profile of the user (their pinned lines and current facts, memory_profile) is added to every
-    # chat's system message. Turn off to chat without it.
+    # With memory_v2: a short profile of the user (their pinned lines and their own facts, memory_profile) is added to the
+    # system message of every "Asistanla konuş" request (never of a normal chat). Turn off to talk without it.
     memory_profile: bool = True
+    # "Hafıza değişikliklerini otomatik onayla": a card (remember / replace / relation change / delete) is applied at once, without a
+    # press; it is still listed in "Son eklenenler" with undo, and a delete still goes to the trash.
+    memory_auto_approve: bool = False
+    # The profile ("Profil", about the user) in (estimated) tokens: pinned lines always go in, the rest newest first. Past the
+    # soft limit nothing happens; past the hard limit the background model compacts the non-pinned part to `compact_to`.
+    memory_profile_soft_tokens: int = Field(default=600, ge=100, le=8000)
+    memory_profile_tokens: int = Field(default=800, ge=200, le=8000)  # The hard limit.
+    memory_profile_compact_tokens: int = Field(default=400, ge=50, le=4000)
+    # "Yakında / güncel": a second small block (automatic): events and yearly dates coming within `soon_days`, important
+    # events of the last `recent_days`, in at most `soon_tokens`.
+    memory_soon_tokens: int = Field(default=150, ge=0, le=2000)
+    memory_soon_days: int = Field(default=14, ge=1, le=366)
+    memory_recent_days: int = Field(default=7, ge=1, le=366)
+    # Chat compaction: one background-model call turns the conversation into a summary (its new first message) and memory
+    # items. Automatic once the conversation passes this share of the chat model's context window; the window is
+    # `chat_context_tokens` (0 = not known: only the manual "Sohbeti sıkıştır").
+    chat_compact_percent: int = Field(default=70, ge=10, le=95)
+    chat_context_tokens: int = Field(default=0, ge=0, le=10000000)
 
     thinking_level: str = ""
     temperature: float | None = Field(default=None, ge=0, le=2)

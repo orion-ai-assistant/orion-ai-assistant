@@ -634,3 +634,38 @@ anlatımlarının yerine geçer (şema 9):
 5. **Olay metni temiz.** Tarih bir kez, kesinliğe uygun ("17 Kasım 2026 Salı", "Kasım 2026, yaklaşık"); çift nokta yok; katılanlar ve
    yer arayüzde çip, gömülen metinde de yalnızca bir kez, temiz cümleyle.
 6. **Profil.** Başlık metni İngilizce kalır (talimat); bilgi satırları kullanıcının kendi sözüdür.
+
+## 17b. Kararlar: yalnız "Asistanla konuş", model yazmaz, arka plan yazıcı (şema 10)
+
+Sadeleştirmenin ikinci turu; §6-§7.1 (Sohbetler dizini), §10 (`add_memory`), §7 (çıkarım tetikleri) ve §9.2 (profil) anlatımlarının
+yerine geçer.
+
+1. **Hafıza yalnız "Asistanla konuş"ta.** Kodda bu, `orion_chats.assistant = true` olan tek sohbettir (`JobCreateRequest.assistant`,
+   `assistant_chat.py`). Hafıza araçları (`search_memory`, `remember`, `delete_memory`, `open_memory_files`, `memory_context`) yalnız onun
+   isteklerinde modele sunulur (`contracts.tools.MEMORY_TOOLS`, `ToolConversation(assistant=...)`); normal sohbet araç, profil, çıkarım
+   almaz. **Sohbetler dizini tamamen kalktı** (pencereler, "Eski sohbetleri dizinle", `memory_index_chats`, Sohbetler koleksiyonu,
+   `in: chats` / `chat:<id>`, `/memory/chats/index`, `/chats/{id}/memory`). Şema 10 (öncesinde otomatik yedek) `chat_index` satırlarını,
+   çöp kayıtlarını, Sohbetler koleksiyonunu, iş tablosunu ve `orion_mem_chat_state`'in dizin sütunlarını siler.
+2. **Sohbet modeli yapılandırılmış bir şey yazmaz.** `add_memory` yerine tek küçük araç: `remember {text}`: kullanıcının "bunu hatırla"
+   dediği şeyi kendi sözleriyle kuyruğa koyar (`orion_mem_remember`), "queued" döner. Kayıtlı açık/kapalı seçim `add_memory` -> `remember`.
+3. **Arka plan hafıza yazıcısı** (adım 7'nin çıkarım modeli) TÜM yazmaların sahibidir: bilgi, olay, varlık, ilişki değişimi, not.
+   Girdi: konuşma metni ya da `remember` metinleri + Hub'ın getirdiği adaylar (anılan her varlığın güncel bilgileri ve kullanıcının
+   kendi bilgileri; çakışmayı Hub aday getirerek bulur, güncelleme mi yeni mi kararını model verir). Çıktı: yeni bilgi/olay/not
+   (doğrudan yazılır, ekleme-yalnız, "Son eklenenler"den geri alınır), `supersede` ve `set_relation` (kart). `remember` öğeleri
+   açık istek olduğundan varsayılan CANLI yazılır; otomatik (sıkıştırma) çıkarım gölge kalır (anahtar: `extraction/live`).
+4. **Tetikleyiciler:** (a) `remember` kuyruğu; (b) **sohbet sıkıştırma**: "Sohbeti sıkıştır" (`POST /chats/{id}/compact`) ya da konuşma
+   `chat_compact_percent` (70) x `chat_context_tokens` aşınca otomatik. TEK arka plan modeli çağrısı tüm konuşmayı alır,
+   {özet, hafıza öğeleri} döndürür; özet konuşmanın model için ilk mesajı olur (`orion_mem_chat_state.summary/compacted_upto`), eski
+   mesajlar kullanıcı için saklı kalır ama modele gitmez. Her cevaptan sonra çıkarım artık yok.
+5. **İlişki zamanla değişir.** `orion_mem_entity_relation` (since/until); `orion_mem_entity.relation` güncel olan. Yazıcının `set_relation`ı
+   kart açar: "sevgilimden ayrıldım, yeni sevgilim Merve" -> Defne "eski sevgilim" (until), Merve "sevgilim". Bilgiler kişiye bağlı kalır.
+6. **Aynı konu / emme.** Çekirdekte `similar_current` (aynı kategori ya da aramanın puanlamasıyla güçlü eşleşme) ve `write_by_model`
+   `possible_update` döner; onaylanan bir değiştirme başka bir güncel bilgiyle aynı cümleye varırsa onu emer (tek güncel bilgi, eski geçmiş).
+7. **Arama sonucu.** Bilgi `since` taşır; geçmişi varsa `history: {versions, last_change, previously}`; olayın `said_as` değeri söylendiği
+   günle gelir ("geçen hafta, said on 2026-11-18"). Tam geçmiş yalnız `memory_context`te; varlık kartı yalnız güncel bilgileri sayar.
+8. **Olay metni.** `said_as` yalnız üst veri: başlığa/gövdeye/gömülen metne girmez; gömülen = başlık + gövde + yer + katılanlar ("Ben" hariç),
+   tarihsiz. Şema 10 var olan olay yazılarını düzeltir (vektörler olay düzenlenince/model taşımada yenilenir).
+9. **İki profil bloğu** (her "Asistanla konuş" isteğinin sistem isteminde): "Profil" (kullanıcı hakkında; sabitlenenler otomasyonla
+   değişmez, diğerleri en yeni önce; yumuşak 600, sert 800 token; aşılırsa arka plan modeli sabitlenmeyenleri ~400 tokene sıkıştırır,
+   elle "Profili düzenle" aynısı) ve "Yakında / güncel" (otomatik, ~150 token: 14 gün içindeki olaylar ve yinelenen tarihler, son 7 gün
+   olayları). Sayıların hepsi ayar.

@@ -25,10 +25,10 @@ Tasarım: [hafiza-tasarimi.md](hafiza-tasarimi.md). Her adımın devir notu: `me
 1. Hub'ı güncelle; ilk açılışta şema 8'e kendisi taşınır (öncesinde otomatik yedek: Orion veri klasörü, `schema-N-to-8` dökümü).
 2. Kullanıcının ayarlarında `memory_v2` = true (Ayarlar > Hafıza koleksiyonları, ya da `PUT` ayar). İlk kullanımda mevcut hafıza otomatik
    koleksiyonlara dizilir (geri alınabilir: `POST /api/v1/memory/collections/revert` bayrağı kapatır, üyelikleri boşaltır, eski satırlar yerinde).
-3. Alt anahtarlar (hepsi `memory_v2` varken): `memory_index_chats` (sohbet dizini, açık), `memory_extract_chats` (gölge çıkarım, açık),
-   `memory_background_model` (boş = sohbet modeli), `memory_profile` (profil bloğu, açık). Otomatik yazma ayar değil, ayrı bir anahtardır:
+3. Alt anahtarlar (hepsi `memory_v2` varken): `memory_extract_chats` (gölge çıkarım, açık; yalnız "Asistanla konuş" sohbetini okur),
+   `memory_background_model` (boş = sohbet modeli), `memory_profile` (profil bloğu, açık) ve `memory_profile_tokens` (bütçe, 800, en az 200). Otomatik yazma ayar değil, ayrı bir anahtardır:
    `PUT /api/v1/memory/extraction/live {enabled, confirm: true}`; kalite kapısı raporunu (`GET /memory/extraction/report?format=text`) okumadan açma.
-4. Önerilen sıra: bayrağı aç, eski sohbetleri dizinle, `POST /memory/extraction/backlog {limit: 20}` ile ~20 sohbeti gölgede geçir,
+4. Önerilen sıra: bayrağı aç, `POST /memory/extraction/backlog {limit: 20}` ile asistan sohbetini gölgede geçir,
    raporu oku, ancak sonra otomatik yazmayı aç.
 
 ## Hız: arama neden 420-640 ms görünüyordu (bitiriş turu, 1. iş)
@@ -112,3 +112,16 @@ Hepsi ayrı dallarda, hiçbiri birleştirilmedi/itilmedi:
 - Çok süreçli çalışma (API ve Worker süreçlerinin ayrı çıkarım işçileri), Hub yeniden başlarken bekleyen zamanlayıcılar.
 - Sohbet/mesaj silme kartı (§11.3), "Bilgi çıkar" düğmesi (belgeler), eski hafıza öneri geçişi, haritada varlık düğümleri, misafir hesapları:
   tasarımın "Sonra" listesinde, yapılmadı.
+
+## Yalnız "Asistanla konuş", yazıcı model (şema 10; kararlar hafiza-tasarimi.md §17b)
+
+- Hafıza araçları, profil ve çıkarım yalnız `orion_chats.assistant` sohbetinde. Sohbetler dizini kalktı (şema 10 siler, öncesinde yedek).
+- Sohbet modelinin hafıza araçları: `search_memory`, `remember` (yalnız metni kuyruğa koyar), `delete_memory`, `open_memory_files`, `memory_context`.
+  Yazan, arka plan yazıcıdır (`memory_extract`): `remember` kuyruğunu canlı, sıkıştırma çıkarımını anahtara göre (gölge/canlı) yazar;
+  bilgi/olay/not doğrudan eklenir, değişiklikler (`supersede`, `set_relation`) kart olur.
+- Sohbet sıkıştırma: `memory_compact` (`POST/GET /chats/{id}/compact`, ayarlar `chat_compact_percent`, `chat_context_tokens`).
+- Profil: iki blok sistem isteminde (`job_processor` -> `memory_profile.for_chat`); `memory_profile_soft_tokens` 600, `memory_profile_tokens` 800,
+  `memory_profile_compact_tokens` 400, `memory_soon_tokens` 150, `memory_soon_days` 14, `memory_recent_days` 7. Router logunda görünür.
+- Yapılmadı / bilinen: `chat_context_tokens` varsayılan 0 (modelin bağlam penceresi Hub'da bilinmiyor): otomatik sıkıştırma ancak ayarlanırsa
+  çalışır, elle düğme her zaman; olay vektörleri şema 10'da yeniden gömülmez; "Yakında" bloğunda olayların "önemi" ayrımı yok (son 7 günün hepsi);
+  yazıcı istemi gerçek modelle denenmedi (testlerde betikli model); sıkıştırmada özet uzunluğu için ayrı üst sınır yok.

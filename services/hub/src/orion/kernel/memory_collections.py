@@ -1,5 +1,5 @@
-"""Collections (docs/hafiza-tasarimi.md §3, §13): the four fixed ones (Ben, Yaşadıklarım, Sohbetler, Belgeler); the user does not
-make others. Belgeler, Yaşadıklarım and Sohbetler are membership rows of `orion_mem_collection_item` (`main`, one per memory,
+"""Collections (docs/hafiza-tasarimi.md §3, §13): the three fixed ones (Ben, Yaşadıklarım, Belgeler); the user does not
+make others. Belgeler and Yaşadıklarım are membership rows of `orion_mem_collection_item` (`main`, one per memory,
 never a column of the vector table: sorting would rewrite every vector row and its HNSW entries); Ben is not stored but
 defined (ben_sql): the facts about the user and about the people close to them, and the events the user took part in. Behind
 the per-user setting `memory_v2`: with it off nothing here runs and the memory behaves as before.
@@ -19,9 +19,8 @@ from orion.kernel import memory
 
 logger = logging.getLogger(__name__)
 
-BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("sohbetler", "Sohbetler"), ("belgeler", "Belgeler"))
-IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "chats": "sohbetler", "documents": "belgeler"}  # search_memory `in`
-CHAT_PREFIX = "chat:"  # A collection name "chat:<chat id>": only the windows of that one chat (Sohbetler, narrowed).
+BUILTIN = (("ben", "Ben"), ("yasadiklarim", "Yaşadıklarım"), ("belgeler", "Belgeler"))
+IN_NAMES = {"me": "ben", "experiences": "yasadiklarim", "documents": "belgeler"}  # search_memory `in`
 USER_LOCK = 51730203  # With the user's hash: one sorting of one user's memory at a time, across Hub processes.
 
 
@@ -68,8 +67,6 @@ async def revert(user_id: str) -> dict:
     try:
         await memory.ensure_memory_table(conn)
         async with conn.transaction():
-            from orion.kernel import memory_chat_index
-            await memory_chat_index.forget_user(conn, user_id)  # Derived windows of the chats: rebuilt when it is on again.
             from orion.kernel import memory_extract
             await memory_extract.forget_user(conn, user_id)  # Runs and candidates of the extraction (derived, shadow).
             from orion.kernel import memory_profile
@@ -82,30 +79,26 @@ async def revert(user_id: str) -> dict:
 
 
 async def list_collections(conn, user_id: str) -> list[dict]:
-    """This user's collections: the four fixed ones in their order. No counts (they would read every row of the user)."""
+    """This user's collections: the fixed ones in their order. No counts (they would read every row of the user)."""
     have = {r["id"] for r in await conn.fetch(
         "select id from orion_mem_collection where user_id = $1 and deleted_at is null", user_id)}
     return [{"id": cid, "kind": "builtin", "name": name} for cid, name in BUILTIN if cid in have]
 
 
 async def resolve(conn, user_id: str, names: list[str]) -> list[str]:
-    """Collection ids for the names a search asked for: 'me', 'experiences', 'chats', 'documents' or a collection's own id
-    or name (Turkish folding), or "chat:<chat id>". ValueError naming the unknown ones and what there is."""
+    """Collection ids for the names a search asked for: 'me', 'experiences', 'documents' or a collection's own id
+    or name (Turkish folding). ValueError naming the unknown ones and what there is."""
     by_name = {memory.fold(name): cid for cid, name in BUILTIN}
     ids, unknown = [], []
     for name in names:
         key = (name or "").strip()
-        if key.startswith(CHAT_PREFIX):  # One chat of this user (its id is checked in filter_sql by the user's rows).
-            if len(key) > len(CHAT_PREFIX):
-                ids.append(key[:120])
-            continue
         found = IN_NAMES.get(key.lower()) or next((cid for cid, _ in BUILTIN if cid == key), None)             or by_name.get(memory.fold(key))
         if found:
             ids.append(found)
         elif key:
             unknown.append(key)
     if unknown:
-        raise ValueError(f"Unknown collection: {', '.join(unknown)}. There are: me, experiences, chats, documents.")
+        raise ValueError(f"Unknown collection: {', '.join(unknown)}. There are: me, experiences, documents.")
     return list(dict.fromkeys(ids))
 
 
@@ -127,14 +120,10 @@ def ben_sql() -> str:
 
 def filter_sql(collections: list[str] | None, params: list) -> str:
     """The SQL condition (after the user's, `$1` = user id) for rows whose memory is in these collections (main or
-    member). Empty for None (the whole memory, as before). Sohbetler is the chats index: its windows by their source
-    kind (a literal: their own partial vector index answers it), no membership lookup; "chat:<id>" narrows to one chat."""
+    member). Empty for None (the whole memory, as before). Ben is defined (ben_sql), the others are memberships."""
     if not collections:
         return ""
-    chats = [c[len(CHAT_PREFIX):] for c in collections if c.startswith(CHAT_PREFIX)]
-    named = [c for c in collections if not c.startswith(CHAT_PREFIX)]
-    every_chat = "sohbetler" in named
-    named = [c for c in named if c not in ("sohbetler", "ben")]
+    named = [c for c in collections if c != "ben"]
     parts = []
     if "ben" in collections:
         parts.append(ben_sql())
@@ -142,11 +131,6 @@ def filter_sql(collections: list[str] | None, params: list) -> str:
         params.append(named)
         parts.append(f"coalesce(group_id, 'r' || id::text) in (select i.group_id from orion_mem_collection_item i "
                      f"where i.user_id = $1 and i.collection_id = any(${len(params)}::text[]))")
-    if every_chat:
-        parts.append(f"source_kind = '{memory.CHAT_INDEX}'")
-    elif chats:
-        params.append(chats)
-        parts.append(f"(source_kind = '{memory.CHAT_INDEX}' and source_chat_id = any(${len(params)}::text[]))")
     return f" and ({' or '.join(parts)})" if len(parts) > 1 else f" and {parts[0]}"
 
 

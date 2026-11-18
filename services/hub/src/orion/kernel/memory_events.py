@@ -4,18 +4,19 @@ last one; `precision` day | month | year | approx), what the user said ("bugün"
 where (entities), and the photos / videos that belong to it (items). Behind the per-user `memory_v2` setting; with it off
 nothing here runs.
 
-Dates. The model writes an ISO date (YYYY-MM-DD, YYYY-MM or YYYY); the Hub checks it against the message's own time
-(resolve_date): a relative word from a short exact table ("bugün", "dün", "yarın", "geçen cuma", today / yesterday /
-tomorrow / last friday...) is resolved by the Hub from that time and wins over a date that disagrees (the answer says so),
-every other phrase ("geçen yaz") keeps the model's date with `precision = approx`. Nothing here guesses: an event without a
-date is refused (the answer says today's date). The original words and the precision are stored.
+Dates. The background writer model is given every message's time and today's date and itself resolves what the user said ("geçen
+hafta", "dün") to date_from / date_to (ISO: YYYY-MM-DD, YYYY-MM or YYYY), a precision and the user's own words (`said_as`);
+the Hub has no table of relative words and only validates the format and the range (resolve_date). An event without a date
+is refused. The original words and the precision are stored.
 
 Versions, never overwrites (like facts). An event the user corrects is a new row (same `lineage`); the old one is closed
 (`expired_at`, `superseded_by`) and loses its vector row; the links move to the new version. The model cannot change an
 event, only add one.
 
 How an event is searched. Its vector is an ordinary `orion_memory` row (kind 'text', source_kind 'event', its own group, main
-collection `yasadiklarim`), embedded as "17 Kasım 2026 Salı: <title>. Katılanlar: ... Yer: ...", each once: the page, map,
+collection `yasadiklarim`), embedded as "<title>. <text>. Yer: ... Katılanlar: ...", each once (no date and never the user's own
+time words: "dün" goes stale; the date is the event's own field, `said_as` is metadata only; the user, "Ben", is not
+listed among the participants): the page, map,
 counters, trash, model move and `search_memory` (`in: ["experiences"]`) need no new path. An event is live while that memory
 has a live row (the page's own delete, or the trash, removes it; restoring brings it back; deleting for good removes the
 event rows: after_purge). The date filter (`when`) is one SQL condition (when_sql) on the memory's group.
@@ -49,18 +50,6 @@ MAX_ITEMS = 100
 MONTHS = ("Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık")
 WEEKDAYS = ("Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar")
 
-# Words that name a day by the message's own day: folded text -> days from it. Exact words only (no guessing).
-RELATIVE_DAYS = {
-    "today": 0, "bugun": 0, "yesterday": -1, "dun": -1, "day before yesterday": -2, "evvelsi gun": -2,
-    "evvelki gun": -2, "onceki gun": -2, "tomorrow": 1, "yarin": 1, "day after tomorrow": 2, "obur gun": 2}
-WEEKDAY_NAMES = {"pazartesi": 0, "sali": 1, "carsamba": 2, "persembe": 3, "cuma": 4, "cumartesi": 5, "pazar": 6,
-                  "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6}
-# Vague times ("the other day"): never one exact day. Folded words -> a rough period before today, stored as precision approx.
-VAGUE_RECENT = {"gecen gun", "gecen gunlerde", "gecenlerde", "gecen", "bu aralar", "son zamanlarda", "recently",
-                "the other day", "a while ago", "lately"}
-VAGUE_RECENT_DAYS = 30
-LAST_WEEK = {"gecen hafta", "last week", "onceki hafta"}
-LAST_WEEKDAY = re.compile(r"^(?:gecen|last|onceki)\s+(\w+)$")
 ISO = re.compile(r"^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$")
 
 
@@ -101,36 +90,16 @@ def parse_iso(text: str | None) -> tuple[int, int | None, int | None] | None:
     return year, month, day
 
 
-def relative_day(said_as: str | None, today: date) -> date | None:
-    """The day an exact relative word names, counted from `today` (the message's day): "bugün", "dün", "yarın",
-    "geçen cuma" / "last friday" (the latest such weekday before today). None for any other words."""
-    key = " ".join(memory.fold((said_as or "").strip().strip(".!")).split())
-    if key in RELATIVE_DAYS:
-        return today + timedelta(days=RELATIVE_DAYS[key])
-    found = LAST_WEEKDAY.match(key)
-    if found and found.group(1) in WEEKDAY_NAMES:
-        return today - timedelta(days=(today.weekday() - WEEKDAY_NAMES[found.group(1)]) % 7 or 7)
-    return None
-
-
-def vague_period(said_as: str | None, today: date) -> tuple[date, date, str] | None:
-    """(first, last, label) of a vague phrase ("geçen gün", "geçenlerde", "geçen hafta", "the other day"): the last
-    VAGUE_RECENT_DAYS days up to yesterday, or last week (Monday to Sunday). None for any other words."""
-    key = " ".join(memory.fold((said_as or "").strip().strip(".!")).split())
-    if key in VAGUE_RECENT:
-        return today - timedelta(days=VAGUE_RECENT_DAYS), today - timedelta(days=1), f"the last {VAGUE_RECENT_DAYS} days"
-    if key in LAST_WEEK:
-        monday = today - timedelta(days=today.weekday() + 7)
-        return monday, monday + timedelta(days=6), "last week"
-    return None
+MIN_YEAR, MAX_YEAR = 1900, 2200  # The only range check on a date the writer model gives.
 
 
 def resolve_date(date_text: str | None, end_text: str | None = None, precision: str | None = None,
                  said_as: str | None = None, reference: datetime | None = None) -> dict:
-    """The stored date of an event: {"on", "end", "precision", "said_as", "note"} from what was given.
-    `date_text`: ISO (a month or a year are allowed); `said_as`: the user's words; `reference`: the time of the message
-    the event was told in (now when None). An exact relative word in `said_as` is resolved from that time and wins over a
-    date that disagrees (`note` says so). `precision`: day | month | year | approx; empty = what the date's form says;
+    """The stored date of an event: {"on", "end", "precision", "said_as", "note"} from what was given. The Hub does NOT read
+    relative words ("geçen hafta", "dün"): the background writer model is given each message's time and today's date and itself
+    answers date_from / date_to / precision / said_as; this only checks the format and the range. `date_text`: ISO (a month or a
+    year are allowed); `said_as`: the user's words, kept as metadata; `reference`: only for the "today" in an error message.
+    `precision`: day | month | year | approx; empty = what the date's form says;
     month / year cover the whole month / year (`end` = its last day); approx keeps the date (or the month / year) as a range
     when the form is partial or `end_text` is given; a day with `end_text` is a range of exact days. ValueError (English,
     for the model) for no date, a bad one, an unknown precision or an end before the start."""
@@ -142,22 +111,11 @@ def resolve_date(date_text: str | None, end_text: str | None = None, precision: 
     form = parse_iso(date_text)
     end = parse_iso(end_text)
     if end is not None and (end[1] is None or end[2] is None):
-        raise ValueError("end_date must be a full day (YYYY-MM-DD).")
+        raise ValueError("date_to must be a full day (YYYY-MM-DD).")
+    for part in (form, end):
+        if part is not None and not MIN_YEAR <= part[0] <= MAX_YEAR:
+            raise ValueError(f"The year must be between {MIN_YEAR} and {MAX_YEAR}.")
     note = None
-    relative = relative_day(said, today)
-    if relative is not None:
-        if form is not None and form[1] and form[2] and date(*form) != relative:
-            note = (f"'{said}' counted from the message's day ({today.isoformat()}) is {relative.isoformat()}: "
-                    f"that was used, not {date(*form).isoformat()}.")
-        return {"on": relative, "end": None, "precision": "day", "said_as": said, "note": note}
-    vague = vague_period(said, today)
-    if vague is not None:
-        first, last, label = vague
-        guess = (f" The date {date(*form).isoformat()} you gave was not used." if form is not None and form[1] and form[2]
-                 else "")
-        return {"on": first, "end": last, "precision": "approx", "said_as": said,
-                "note": f"'{said}' is vague: stored as a rough period ({label}, {first.isoformat()} to {last.isoformat()}), "
-                        f"not one exact day.{guess}"}
     if form is None:
         raise ValueError(f"An event needs a date (YYYY-MM-DD; today is {today.isoformat()}, {WEEKDAYS[today.weekday()]}). "
                          "For a vague time ('last summer') give your best date and precision=approx.")
@@ -235,7 +193,7 @@ async def when_keys(conn, user_id: str, when: tuple[date | None, date | None]) -
         saved.append(f"m.created_at >= ${len(params)}::date")
     inside = " and ".join(["e.user_id = $1", "e.superseded_by is null", *holds])
     fact = " and ".join(["f.user_id = $1", "f.superseded_by is null", "f.group_id is not null", *valid])
-    note = " and ".join(["m.user_id = $1", f"m.source_kind not in ('{EVENT}', 'fact', '{memory.CHAT_INDEX}')", *saved])
+    note = " and ".join(["m.user_id = $1", f"m.source_kind not in ('{EVENT}', 'fact')", *saved])
     rows = await conn.fetch(
         f"select e.group_id as k from orion_mem_event e where {inside} "
         f"union select f.group_id from orion_mem_fact f where {fact} "
@@ -409,7 +367,29 @@ async def get_event(user_id: str, settings, event_id: int) -> dict:
 
 # --- Writing ----------------------------------------------------------------------------------------------------------
 
-def check_text(title: str, body: str | None) -> tuple[str, str | None]:
+def strip_said_as(text: str | None, said_as: str | None) -> str | None:
+    """`text` without the user's own time words (`said_as`, "dün", "geçen perşembe"): a relative word goes stale once it is
+    stored, so it is metadata only. The words are removed where they stand as whole words (any case, a Turkish suffix
+    glued to them goes too); what is left is tidied (spaces, a comma or dash left dangling). Text that would be empty
+    is returned as it was."""
+    if not text or not (said_as or "").strip():
+        return text
+    words = " ".join(said_as.split()).strip(".,!?;: ")
+    if not words:
+        return text
+    pattern = r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words.split()) + r"\w*(?!\w)"
+    cleaned = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"^[\s,;:\-–—]+|[\s,;:\-–—]+$", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    if not cleaned:
+        return text
+    return cleaned[:1].upper() + cleaned[1:] if text[:1].isupper() or text.lstrip()[:1].isupper() else cleaned
+
+
+def check_text(title: str, body: str | None, said_as: str | None = None) -> tuple[str, str | None]:
+    title = strip_said_as(title, said_as) or title
+    body = strip_said_as(body, said_as) if body else body
     title = " ".join((title or "").split()).rstrip(". ").rstrip()
     body = (body or "").strip() or None
     if not title and body:
@@ -432,18 +412,23 @@ def _sentence(text: str) -> str:
 
 
 def embedded_text(title: str, body: str | None, when: dict, people: list[str], place: str | None) -> str:
-    """What the event's vector row says: the date once ("17 Kasım 2026 Salı", the user's own words after it), the title, the
-    text, then who and where once each, every part one clean sentence. The page shows the date, the people and the place
-    from the event itself, not from this text."""
-    said = f" ({when['said_as']})" if when.get("said_as") else ""
-    parts = [f"{range_text(when['on'], when['end'], when['precision'])}{said}: {_sentence(title)}"]
+    """What the event's vector row says: the title, the text, then the place and who took part, each once and one clean
+    sentence. Never the user's own time words (`said_as` is metadata: "dün" goes stale), and no date (the event's own
+    field, the `when` filter); `when` is kept in the signature for the callers. `people`: names of the participants
+    without the user (the user is in every event of theirs: "Ben" tells nothing)."""
+    parts = [_sentence(title)]
     if body:
         parts.append(_sentence(body))
-    if people:
-        parts.append(f"Katılanlar: {', '.join(people)}.")
     if place:
         parts.append(f"Yer: {place}.")
+    if people:
+        parts.append(f"Katılanlar: {', '.join(people)}.")
     return " ".join(parts)
+
+
+def _others(people: list[dict]) -> list[str]:
+    """The participants' labels without the user's own entity."""
+    return [me.label_of(e) for e in people if e.get("kind") != "self"]
 
 
 async def _store_vector(conn, user_id: str, text: str, title: str, space: str, vector: str, source: dict) -> str:
@@ -524,7 +509,7 @@ async def add_event(user_id: str, settings, title: str, when: dict, *, body: str
     LookupError: an item that is not this user's; Ambiguous. Nothing is written when embedding fails (MemoryUnavailable)."""
     require(settings)
     source = _check_source(source)
-    title, body = check_text(title, body)
+    title, body = check_text(title, body, when.get("said_as"))
     mood = " ".join((mood or "").split())[:40] or None
     names = [n for n in (" ".join((n or "").split())[:me.MAX_NAME] for n in participants or []) if n][:MAX_PEOPLE]
     async with me._db() as conn:
@@ -548,7 +533,7 @@ async def add_event(user_id: str, settings, title: str, when: dict, *, body: str
                 for group in groups:
                     await _link(conn, user_id, same["id"], "item", group, PHOTO)
             return {"same_as": same["id"]}
-        text = embedded_text(title, body, when, [me.label_of(e) for e in people], where["name"] if where else None)
+        text = embedded_text(title, body, when, _others(people), where["name"] if where else None)
         space, vector = await _vector_for(settings, text)
         async with conn.transaction():
             group = await _store_vector(conn, user_id, text, title, space, vector, source)
@@ -585,10 +570,10 @@ async def replace_event(user_id: str, settings, event_id: int, *, title: str | N
         if old is None or old["superseded_by"] is not None or not await conn.fetchval(
                 f"select {_live('e')} from orion_mem_event e where e.id = $1", event_id):
             raise LookupError(event_id)
-        new_title, new_body = check_text(title if title is not None else old["title"],
-                                         body if body is not None else old["body"])
         when = when or {"on": old["occurred_on"], "end": old["occurred_end"], "precision": old["precision"],
                         "said_as": old["said_as"]}
+        new_title, new_body = check_text(title if title is not None else old["title"],
+                                         body if body is not None else old["body"], when.get("said_as"))
         async with conn.transaction():
             names = [n for n in (" ".join((n or "").split())[:me.MAX_NAME] for n in participants or []) if n][:MAX_PEOPLE]
             named, named_place = await _resolve_people(conn, user_id, names, place)
@@ -603,7 +588,7 @@ async def replace_event(user_id: str, settings, event_id: int, *, title: str | N
                     user_id, ids)] if ids else []
             people = named if participants is not None else await entities(PARTICIPANT)
             where = named_place if place is not None else next(iter(await entities(PLACE)), None)
-        text = embedded_text(new_title, new_body, when, [me.label_of(e) for e in people], where["name"] if where else None)
+        text = embedded_text(new_title, new_body, when, _others(people), where["name"] if where else None)
         space, vector = await _vector_for(settings, text)
         async with conn.transaction():
             old = await conn.fetchrow(f"select {_EVENT} from orion_mem_event e where e.user_id = $1 and e.id = $2 for update "
@@ -686,7 +671,7 @@ async def events_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
     if not groups:
         return {}
     rows = await conn.fetch(
-        "select e.id, e.group_id, e.title, e.body, e.said_as, e.occurred_on, e.occurred_end, e.precision, "
+        "select e.id, e.group_id, e.title, e.body, e.said_as, e.recorded_at, e.occurred_on, e.occurred_end, e.precision, "
         "coalesce(array_agg(en.name order by l.created_at, en.id) filter (where l.role = 'katılan'), '{}') as people, "
         "max(en.name) filter (where l.role = 'yer') as place, count(*) filter (where l.to_type = 'item') as photos "
         "from orion_mem_event e left join orion_mem_link l on l.user_id = e.user_id and l.from_type = 'event' and "
@@ -696,6 +681,7 @@ async def events_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
     return {r["group_id"]: {"id": r["id"], "date": r["occurred_on"].isoformat(),
                             "end": r["occurred_end"].isoformat() if r["occurred_end"] else None,
                             "precision": r["precision"], "title": r["title"], "body": r["body"], "said_as": r["said_as"],
+                            "said_on": r["recorded_at"].date().isoformat(),
                             "with": list(r["people"]),
                             "place": r["place"], "photos": int(r["photos"])} for r in rows}
 
@@ -792,3 +778,39 @@ async def after_purge(user_id: str) -> int:
                 "orion_memory m where m.user_id = l.user_id and m.group_id is null and m.id = case when l.to_id ~ '^r[0-9]+$' "
                 "then substr(l.to_id, 2)::bigint end)", user_id)
             return len(gone)
+
+
+async def clean_existing(conn) -> int:
+    """Schema 10: the stored event texts of every user made right once: the title and body without the user's time words
+    (`said_as`), and each current event's memory row (its text, title and folded words) rewritten as embedded_text says (no
+    date, no time words, no "Ben"). The vector of a row is not touched (embedding needs the model: it follows when the event
+    is next edited or the memory moves to another model). Returns the events changed."""
+    rows = await conn.fetch(
+        "select e.id, e.user_id, e.title, e.body, e.said_as, e.group_id, e.superseded_by from orion_mem_event e")
+    changed = 0
+    for r in rows:
+        if not r.get("title"):
+            continue
+        title = strip_said_as(r["title"], r["said_as"]) or r["title"]
+        title = " ".join(title.split()).rstrip(". ").rstrip() or r["title"]
+        body = strip_said_as(r["body"], r["said_as"]) if r["body"] else r["body"]
+        if body and " ".join(body.split()).rstrip(". ") == title:
+            body = None
+        if (title, body) != (r["title"], r["body"]):
+            await conn.execute("update orion_mem_event set title = $2, body = $3 where id = $1", r["id"], title, body)
+        if r["superseded_by"] is not None:
+            continue  # A past version has no vector row.
+        linked = await conn.fetch(
+            "select en.kind, en.name, en.relation, l.role from orion_mem_link l join orion_mem_entity en on "
+            "en.user_id = l.user_id and en.id = l.to_id::bigint where l.user_id = $1 and l.from_type = 'event' and "
+            "l.from_id = $2 and l.to_type = 'entity' order by l.created_at, en.id", r["user_id"], r["id"])
+        place = next((x["name"] for x in linked if x["role"] == PLACE), None)
+        people = _others([dict(x) for x in linked if x["role"] == PARTICIPANT])
+        text = embedded_text(title, body, {}, people, place)
+        done = await conn.execute(
+            "update orion_memory set text = $3, source_chat_title = $4, folded = $5 where user_id = $1 and group_id = $2 "
+            "and source_kind = $6 and text is distinct from $3", r["user_id"], r["group_id"], text, title,
+            memory.fold(memory.match_text(text, title, None, EVENT)), EVENT)
+        if (title, body) != (r["title"], r["body"]) or done.split()[-1] != "0":
+            changed += 1
+    return changed

@@ -35,7 +35,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('text', registry.categories)
         self.assertEqual([tool.id for tool in registry.categories['text'].tools],
                          ['analyze_text', 'find_in_text', 'replace_in_text'])
-        self.assertEqual(registry.enabled(default_tool_selection()), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+        self.assertEqual(registry.enabled(default_tool_selection()), ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
         context = ToolContext('u', 'c', 't', AsyncMock(return_value=False))
         analyze = await execute_tool(registry.tools['analyze_text'], json.dumps({'text': 'Bir iki\nüç'}), context)
         self.assertEqual(analyze, {'characters': 10, 'words': 3, 'lines': 2})
@@ -52,12 +52,12 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
     def test_discovery_selection_and_duplicate_ids(self):
         registry = get_registry()
         selection = default_tool_selection()
-        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
         selection.categories['datetime'] = False
-        self.assertEqual(registry.enabled(selection), ['search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+        self.assertEqual(registry.enabled(selection), ['search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
         self.assertTrue(selection.functions['get_current_time'])
         selection.categories['datetime'] = True
-        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+        self.assertEqual(registry.enabled(selection), ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
         with self.assertRaises(ValueError):
             ToolRegistry([CATEGORY, CATEGORY])
         with self.assertRaises(ValueError):
@@ -228,35 +228,54 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('automatic retry is disabled', conversation.activity[1]['result']['error']['message'])
 
     async def test_a_call_refused_before_it_ran_can_be_retried_in_the_same_turn(self):
-        conversation = self.conversation(['add_memory'])
+        conversation = self.conversation(['remember'])
         requests = []
 
         async def stream(messages, settings, **kwargs):
             requests.append(kwargs)
             if len(requests) == 1:
-                yield 'tool_calls', json.dumps([call('bad', 'add_memory', '{"type":"event","participants":["Mehmet"]}')])
+                yield 'tool_calls', json.dumps([call('bad', 'remember', '{"note":"x"}')])
             elif len(requests) == 2:
-                yield 'tool_calls', json.dumps([call('good', 'add_memory', '{"text":"Kahve içtik."}')])
+                yield 'tool_calls', json.dumps([call('good', 'remember', '{"text":"Kahve içtik."}')])
             else:
                 yield 'content', 'ok'
 
         registry = get_registry()
         handler = AsyncMock(return_value={'added': 'x'})
-        with patch.dict(registry.tools, {'add_memory': replace(registry.tools['add_memory'], handler=handler)}):
+        with patch.dict(registry.tools, {'remember': replace(registry.tools['remember'], handler=handler)}):
             _ = [event async for event in conversation.stream([], RuntimeSettings(),
                  AsyncMock(return_value=False), stream)]
         self.assertEqual([item['status'] for item in conversation.activity], ['error', 'completed'])
-        self.assertIn('Invalid arguments for add_memory', conversation.activity[0]['result']['error']['message'])
+        self.assertIn('Invalid arguments for remember', conversation.activity[0]['result']['error']['message'])
         self.assertIn('text', conversation.activity[0]['result']['error']['message'])
-        self.assertIn('Example event', conversation.activity[0]['result']['error']['message'])
+        self.assertIn('Annemin doğum günü', conversation.activity[0]['result']['error']['message'])
         handler.assert_awaited_once()
 
-    async def test_add_memory_takes_what_models_naturally_send(self):
-        from orion.worker.tools.memory.tools import MemoryAddInput
-        args = MemoryAddInput.model_validate_json(json.dumps({
-            'type': 'event', 'date': '', 'said_as': 'geçen gün', 'participants': ['Mehmet'], 'place': 'park',
-            'title': 'Parkta kahve', 'mood': '', 'precision': 'approx', 'about': '', 'items': []}))
-        self.assertEqual((args.text, args.title, args.mood, args.date), ('Parkta kahve', 'Parkta kahve', '', ''))
+    async def test_remember_takes_what_models_naturally_send(self):
+        from orion.worker.tools.memory.tools import RememberInput
+        args = RememberInput.model_validate_json(json.dumps({'text': 'Annemin doğum günü 17 Kasım.', 'title': None}) if False else
+                                                 json.dumps({'text': 'Annemin doğum günü 17 Kasım.'}))
+        self.assertEqual(args.text, 'Annemin doğum günü 17 Kasım.')
+        with self.assertRaises(Exception):
+            RememberInput.model_validate_json(json.dumps({'text': ''}))  # Nothing to remember.
+        with self.assertRaises(Exception):
+            RememberInput.model_validate_json(json.dumps({'text': 'x', 'type': 'fact'}))  # No structured fields: the writer files it.
+
+    async def test_a_saved_add_memory_choice_and_a_queued_job_become_remember(self):
+        from orion.contracts.tools import MEMORY_TOOLS, ToolSelection
+        saved = ToolSelection(categories={'memory': True}, functions={'add_memory': False, 'search_memory': True})
+        self.assertEqual(saved.functions, {'remember': False, 'search_memory': True})
+        self.assertNotIn('add_memory', saved.functions)
+        queued = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['add_memory', 'get_current_time'])
+        self.assertEqual(queued.enabled, {'remember', 'get_current_time'})
+
+    async def test_a_normal_chat_never_gets_a_memory_tool(self):
+        from orion.contracts.tools import MEMORY_TOOLS
+        names = sorted(MEMORY_TOOLS | {'get_current_time'})
+        normal = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), names, assistant=False)
+        self.assertEqual(normal.enabled, {'get_current_time'})
+        talk = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), names, assistant=True)
+        self.assertEqual(talk.enabled, set(names))
 
     async def test_ambiguous_media_seek_returns_to_model_for_targeted_retry(self):
         conversation = self.conversation(['media_control'])
@@ -500,13 +519,13 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
             nonlocal durable
             durable = value
         with patch.object(db, 'get_chat_tool_selection', db_get), patch.object(db, 'set_chat_tool_selection', db_set), patch.object(tool_service, 'get_runtime_settings', AsyncMock(side_effect=lambda *args: settings)):
-            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
             settings = RuntimeSettings(tool_selection=ToolSelection())
             self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], [])
             result = await tool_service.save_selection(redis, 'u', 'c', default_tool_selection())
             self.assertFalse(result['inherited'])
             cache.clear()
-            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+            self.assertEqual((await tool_service.read_selection(redis, 'u', 'c'))['enabled_tools'], ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
             result = await tool_service.save_selection(redis, 'u', 'c', None)
             self.assertTrue(result['inherited'])
             self.assertEqual(result['enabled_tools'], [])
@@ -534,7 +553,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(job_service, 'get_runtime_settings', AsyncMock(return_value=RuntimeSettings())), patch.object(job_service, 'upsert_chat', AsyncMock()):
             await job_service.create_job(redis, JobCreateRequest(user_id='u', input={'text': 'hi'}))
         fields = redis.pipeline.return_value.xadd.call_args.kwargs['fields']
-        self.assertEqual(json.loads(fields['enabled_tools']), ['get_current_time', 'search_memory', 'add_memory', 'delete_memory', 'open_memory_files', 'memory_context'])
+        self.assertEqual(json.loads(fields['enabled_tools']), ['get_current_time', 'search_memory', 'remember', 'delete_memory', 'open_memory_files', 'memory_context'])
         with self.assertRaises(HTTPException):
             await job_service.create_job(redis, JobCreateRequest(user_id='u', chat_id='c', input={'text': 'hi'}, tool_selection=ToolSelection()))
 

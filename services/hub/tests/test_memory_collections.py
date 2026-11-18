@@ -89,7 +89,7 @@ class CollectionTests(PostgresMemoryCase):
         self.assertEqual(groups, ['alice-chat', 'alice-doc', 'alice-note'])  # Every memory still listed.
         self.backup.assert_awaited_once_with('collections')
         names = [c['name'] for c in page['collections']]
-        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Sohbetler', 'Belgeler'])  # The four fixed ones, no "Eski hafıza".
+        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Belgeler'])  # The four fixed ones, no "Eski hafıza".
         rows = {r['group_id']: r['collection_id'] for r in await sql(
             'select group_id, collection_id from orion_mem_collection_item where main', fetch=True)}
         self.assertEqual(rows, {'alice-doc': 'belgeler'})  # Only files are sorted; the rest is plain memory, listed above.
@@ -144,12 +144,12 @@ class CollectionTests(PostgresMemoryCase):
             result = await routes.memory_collections_revert(SimpleNamespace(app=SimpleNamespace(
                 state=SimpleNamespace(redis=None))), 'alice')
         update.assert_awaited_once_with(None, {'memory_v2': 'false'}, 'alice')
-        self.assertEqual(result, {'memories': 1, 'collections': 4})
+        self.assertEqual(result, {'memories': 1, 'collections': 3})
         self.assertEqual(await sql('select count(*) from orion_mem_collection_item'), 0)
         after, again = await self.groups(self.settings)
         self.assertEqual((groups, before['matching']), (again, after['matching']))
         await self.groups(self.v2)  # On again: sorted again.
-        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'alice'"), 4)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'alice'"), 3)
 
     async def test_users_never_see_each_other_s_collections_members_or_sources(self):
         await self.memories('alice')
@@ -177,8 +177,8 @@ class CollectionTests(PostgresMemoryCase):
         finally:
             await conn.close()
         result = await mc.revert('alice')
-        self.assertEqual(result['collections'], 4)
-        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'bob'"), 4)
+        self.assertEqual(result['collections'], 3)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection where user_id = 'bob'"), 3)
         self.assertEqual(await sql("select count(*) from orion_mem_collection_item where user_id = 'bob'"), 1)
 
     async def test_the_tool_takes_in(self):

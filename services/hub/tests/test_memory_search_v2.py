@@ -14,6 +14,7 @@ from orion.kernel import (memory, memory_collections as mc, memory_entities as m
                           memory_profile as mp, memory_trash, registry)
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools.memory import tools as memory_tools
+import legacy_add
 
 from test_memory_search import SPACE, PostgresMemoryCase, vec
 
@@ -78,8 +79,8 @@ class V2Case(PostgresMemoryCase):
 
     async def write(self, text, **kw):  # the tool, as the model calls it (type fact)
         user = kw.pop('user', 'alice')
-        args = memory_tools.MemoryAddInput.model_validate({'text': text, 'type': kw.pop('type', 'fact'), **kw})
-        return await memory_tools.add_memory(args, self.context(user, kw.get('chat', 'chat')))
+        args = legacy_add.MemoryAddInput.model_validate({'text': text, 'type': kw.pop('type', 'fact'), **kw})
+        return await legacy_add.add_memory(args, self.context(user, kw.get('chat', 'chat')))
 
     async def find(self, queries=(), user='alice', **kw):
         args = memory_tools.MemorySearchInput.model_validate({'queries': list(queries), **kw})
@@ -110,8 +111,10 @@ class RankingConsistencyTests(V2Case):
             await self.add_row(f'sıradan {k}', 0.04, 20 + k)
 
     async def add_chat(self, text, score, axis):
-        row = await self.add(text, score=score, axis=axis, group=f'chat{axis}', source=memory.CHAT_INDEX, chat='chat',
+        row = await self.add(text, score=score, axis=axis, group=f'chat{axis}', source='assistant', chat='chat',
                              minute=axis)
+        await sql("insert into orion_mem_collection_item (user_id, collection_id, group_id, main) values "
+                  "('alice', 'belgeler', $1, true) on conflict do nothing", f'chat{axis}')
         return row
 
     async def add_row(self, text, score, axis):
@@ -135,7 +138,7 @@ class RankingConsistencyTests(V2Case):
     async def test_one_order_and_one_percent_for_every_kind_and_every_query(self):
         await self.seed()
         self.table.update({'b': unit(5), 'gezi tatil': unit(4)})
-        everything = ['me', 'experiences', 'chats']
+        everything = None  # The whole memory (notes are in no collection).
         cases = [
             ('single text', [{'text': 'a'}], 'together', everything, None, None),
             ('a word that matches rows only marks them', [{'text': 'kapadokya'}], 'together', everything, None, None),
@@ -144,7 +147,6 @@ class RankingConsistencyTests(V2Case):
             ('unlike filters', [{'text': 'a'}, {'text': 'gezi tatil', 'like': False}], 'together', everything, None, None),
             ('me', [{'text': 'a'}], 'together', ['me'], None, None),
             ('experiences', [{'text': 'a'}], 'together', ['experiences'], None, None),
-            ('chats', [{'text': 'a'}], 'together', ['chats'], None, None),
             ('keyword', [{'keyword': 'kapadokya'}], 'together', everything, None, None),
             ('about', [{'text': 'a'}], 'together', None, 'about', None),
             ('when', [{'text': 'a'}], 'together', None, None, 'when'),
@@ -166,7 +168,7 @@ class RankingConsistencyTests(V2Case):
                 self.assertEqual([r['id'] for r in tool['results']], [c['matched_part'] for c in cards[:n]])
                 if 'score' in tool['results'][0]:  # A keyword alone has no meaning score: its words only.
                     self.assertEqual([r['score'] for r in tool['results']], [round(c['score'] * 100) for c in cards[:n]])
-                seen_kinds |= {key for r in tool['results'] for key in ('fact', 'event', 'chat') if key in r}
+                seen_kinds |= {key for r in tool['results'] for key in ('fact', 'event') if key in r}
                 if len([q for q in queries if q.get('like', True)]) == 1 and queries[0].get('text'):
                     vector = memory._vector(self.table.get(queries[0]['text'], self.query))
                     for card in cards[:4]:  # The detail panel's number for the same memory is the card's.
@@ -174,25 +176,25 @@ class RankingConsistencyTests(V2Case):
                                                                 vector=vector, space=SPACE)
                         self.assertEqual((panel['score'], panel['best'], panel['match'], panel['strength']),
                                          (card['score'], card['matched_part'], card['match'], card['strength']))
-        self.assertEqual(seen_kinds, {'fact', 'event', 'chat'})
+        self.assertEqual(seen_kinds, {'fact', 'event'})
 
     async def test_the_mixed_order_is_by_real_score_across_kinds_not_by_kind(self):
         await self.seed()
-        page, tool = await self.run_case([{'text': 'a'}], collections=['me', 'experiences', 'chats'])
+        page, tool = await self.run_case([{'text': 'a'}], collections=['me', 'experiences', 'documents'])
         scores = [round(c['score'], 2) for c in page['groups']]
-        self.assertEqual(scores, [0.90, 0.80, 0.70, 0.62, 0.55, 0.35])  # fact, event, event, chat, fact, chat: interleaved.
-        kinds = ['fact' if c.get('fact') else 'event' if c.get('event') else 'chat' for c in page['groups']]
-        self.assertEqual(kinds, ['fact', 'event', 'event', 'chat', 'fact', 'chat'])
-        word, _ = await self.run_case([{'text': 'kapadokya'}], collections=['me', 'experiences', 'chats'])
+        self.assertEqual(scores, [0.90, 0.80, 0.70, 0.62, 0.55, 0.35])  # fact, event, event, note, fact, note: interleaved.
+        kinds = ['fact' if c.get('fact') else 'event' if c.get('event') else 'note' for c in page['groups']]
+        self.assertEqual(kinds, ['fact', 'event', 'event', 'note', 'fact', 'note'])
+        word, _ = await self.run_case([{'text': 'kapadokya'}], collections=['me', 'experiences', 'documents'])
         self.assertEqual([c['score'] for c in word['groups']], [c['score'] for c in page['groups']])  # Words did not reorder.
         self.assertIn('text', {c['match'] for c in word['groups']})  # ...they only mark.
 
     async def test_unlike_is_a_filter_that_leaves_the_rest_in_order(self):
         await self.seed()
         self.table['gezi tatil'] = unit(4)
-        full, _ = await self.run_case([{'text': 'a'}], collections=['me', 'experiences', 'chats'])
+        full, _ = await self.run_case([{'text': 'a'}], collections=['me', 'experiences', 'documents'])
         page, tool = await self.run_case([{'text': 'a'}, {'text': 'gezi tatil', 'like': False}],
-                                         collections=['me', 'experiences', 'chats'])
+                                         collections=['me', 'experiences', 'documents'])
         left = [c['group_id'] for c in page['groups']]
         self.assertLess(len(left), len(full['groups']))
         self.assertEqual(left, [g for g in (c['group_id'] for c in full['groups']) if g in left])  # Same relative order.
@@ -427,40 +429,42 @@ class PageSearchRouteTests(V2Case):
 
 
 class ProfileTests(V2Case):
-    async def test_the_block_orders_by_kind_and_keeps_to_its_token_limit_with_whole_facts(self):
+    async def test_the_block_is_the_users_own_facts_newest_first_inside_the_limits_with_whole_facts(self):
         await self.fact('Ben', 'diğer', 'Kahve içmeyi sever.')
         await self.fact('Ben', 'tercih', 'Çayı şekersiz içer.')
-        await self.fact('Ayşe', 'ilişki', 'Ayşe annesidir.', relation='anne')
+        await self.fact('Ayşe', 'ilişki', 'Ayşe annesidir.', relation='anne')  # A close person's fact: not in by itself.
         await self.fact('Ben', 'iş', 'Yazılım mühendisi olarak çalışır.')
-        await self.fact('Ben', 'yer', "İstanbul'da yaşar.")
         await self.fact('Ben', 'kimlik', 'Adı Kürşat.')
-        order = ['Adı Kürşat.', 'Ayşe annesidir.', 'Yazılım mühendisi olarak çalışır.', "İstanbul'da yaşar.",
-                 'Çayı şekersiz içer.', 'Kahve içmeyi sever.']
         block = await mp.build('alice', self.v2)
-        self.assertEqual([i['text'] for i in block['lines']], order)
+        self.assertEqual([i['text'] for i in block['lines']],
+                         ['Adı Kürşat.', 'Yazılım mühendisi olarak çalışır.', 'Çayı şekersiz içer.', 'Kahve içmeyi sever.'])
         self.assertTrue(block['text'].startswith(mp.HEADER))
-        self.assertEqual(block['text'].count('\n'), 6)
         self.assertLessEqual(block['tokens'], mp.TOKEN_LIMIT)
-        for k in range(60):
-            await self.fact('Ben', 'diğer', f'Yüzüncü sırada gelen bir bilgi, numara {k}, tamamen yazılmış cümle.')
-        block = await mp.build('alice', self.v2)
-        self.assertLessEqual(block['tokens'], mp.TOKEN_LIMIT)
+        self.assertEqual((mp.SOFT_LIMIT, mp.TOKEN_LIMIT), (600, 800))
+        with patch.object(mp, '_compact_later') as later:  # Past the hard limit the model is asked to compact (not here).
+            for k in range(40):
+                await self.fact('Ben', 'diğer', f'Uzun sırada gelen bir bilgi, numara {k}, tamamen yazılmış cümle. ' + 'x' * 60)
+            block = await mp.build('alice', self.v2)
+        later.assert_called_once()
+        self.assertTrue(block['needs_compaction'])
+        self.assertLessEqual(block['tokens'], mp.SOFT_LIMIT)  # Until the compaction is ready the soft limit holds.
         self.assertGreater(block['left_out'], 0)
-        for line in block['text'].split('\n')[1:]:  # Whole facts only: every line is a complete stored sentence.
-            self.assertTrue(line.startswith('- ') and line.endswith('.'))
-        self.assertEqual(sum(memory.estimate_tokens('- ' + i['text']) for i in block['lines']) +
-                         memory.estimate_tokens(mp.HEADER), block['tokens'])
-        # The kinds' order survives the trimming; inside the last kind the newer facts come first (the oldest is last).
-        self.assertEqual([i['text'] for i in block['lines']][:5], order[:5])
-        self.assertEqual(block['lines'][5]['text'], 'Yüzüncü sırada gelen bir bilgi, numara 59, tamamen yazılmış cümle.')
+        for line in block['text'].split('\n')[1:]:
+            self.assertTrue(line.startswith('- ') and line.endswith(('.', 'x')))
+        # With the model's compacted lines the non-pinned part is those lines.
+        done = mp.compose([], [{'id': 1, 'statement': 'Uzun bir bilgi. ' * 400, 'category': 'diğer'}], mp.TOKEN_LIMIT,
+                          mp.SOFT_LIMIT, ['Kısa özet.'])
+        self.assertEqual([i['text'] for i in done['lines']], ['Kısa özet.'])
+        self.assertFalse(done['needs_compaction'])
 
     async def test_a_fact_that_does_not_fit_is_left_out_whole_and_a_shorter_one_after_it_still_goes_in(self):
-        await self.fact('Ben', 'kimlik', 'K' * 400)  # About 134 tokens.
-        await self.fact('Ben', 'ilişki', 'L' * 400)  # About 134 tokens: together they pass the limit.
+        for letter in 'ABCDE':
+            await self.fact('Ben', 'kimlik', letter * 480)  # About 160 tokens each: together they pass the hard limit.
         await self.fact('Ben', 'tercih', 'Kısa.')
-        block = await mp.build('alice', self.v2)
-        self.assertEqual([i['text'] for i in block['lines']], ['K' * 400, 'Kısa.'])
-        self.assertEqual(block['left_out'], 1)
+        with patch.object(mp, '_compact_later'):
+            block = await mp.build('alice', self.v2)
+        self.assertEqual([i['text'] for i in block['lines']], ['Kısa.', 'E' * 480, 'D' * 480, 'C' * 480])  # Newest first.
+        self.assertEqual(block['left_out'], 2)  # B and A were left out whole.
 
     async def test_never_in_the_block_locked_past_trashed_or_another_users(self):
         locked = await self.fact('Ben', 'sağlık', 'Diyabet hastası.')
@@ -496,7 +500,7 @@ class ProfileTests(V2Case):
         self.assertNotEqual(first, changed)
         self.assertIn("İstanbul'da yaşar.", changed)
         stored = json.loads(await sql("select generated from orion_mem_profile where user_id = 'alice'"))
-        self.assertEqual([g['text'] for g in stored], ['Adı Kürşat.', "İstanbul'da yaşar."])
+        self.assertEqual([g['text'] for g in stored], ["İstanbul'da yaşar.", 'Adı Kürşat.'])  # Newest first.
 
     async def test_pinned_lines_always_go_in_first_and_survive_a_rebuild(self):
         fact = await self.fact('Ben', 'diğer', 'Kahve içmeyi sever.')
@@ -517,12 +521,12 @@ class ProfileTests(V2Case):
 
     async def test_pinned_alone_past_the_limit_overflows_and_empties_the_generated_part(self):
         await self.fact('Ben', 'kimlik', 'Adı Kürşat.')
-        items = [{'text': f'Sabitlenmiş uzun bir satır numara {k} ' + 'x' * 200} for k in range(5)]
+        items = [{'text': f'Satır {k} ' + 'x' * 280} for k in range(10)]
         got = await mp.set_pinned('alice', self.v2, items)
         self.assertTrue(got['overflow'])
         self.assertEqual(got['generated'], [])
         block = await mp.build('alice', self.v2)
-        self.assertEqual(len(block['lines']), 5)  # Every pinned line is still in.
+        self.assertEqual(len(block['lines']), 10)  # Every pinned line is still in.
         self.assertGreater(block['tokens'], mp.TOKEN_LIMIT)
         await mp.set_pinned('alice', self.v2, items[:1])
         self.assertFalse((await mp.get('alice', self.v2))['overflow'])

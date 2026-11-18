@@ -576,6 +576,19 @@ async def get_assistant_chat_db(user_id: str) -> str | None:
         await conn.close()
 
 
+async def is_assistant_chat_db(chat_id: str, user_id: str) -> bool:
+    """Is `chat_id` this user's "Asistanla konuş" chat (the only chat the memory is for)?"""
+    conn = await _connect()
+    if conn is None:
+        raise RuntimeError("Postgres is unavailable")
+    try:
+        await _ensure_tables(conn)
+        return bool(await conn.fetchval("select assistant from orion_chats where id = $1 and user_id = $2",
+                                        chat_id, user_id))
+    finally:
+        await conn.close()
+
+
 async def set_assistant_chat_db(chat_id: str, user_id: str) -> None:
     """Make `chat_id` the user's only "Asistanla konuş" chat."""
     conn = await _connect()
@@ -783,7 +796,25 @@ async def get_chat_window_db(chat_id: str, limit: int | None, before_turn: str |
         await conn.close()
 
 
-async def get_chat_tail_db(chat_id: str, rows: int) -> tuple[list[dict], int]:
+async def get_compaction_db(chat_id: str) -> tuple[str, int] | None:
+    """(summary, last compacted message id) of a compacted chat (memory_compact), else None. The messages up to that id stay
+    stored for the user but are not sent to the model; the summary is its first message."""
+    conn = await _connect()
+    if conn is None:
+        return None
+    try:
+        if not await conn.fetchval("select to_regclass('orion_mem_chat_state') is not null"):
+            return None
+        row = await conn.fetchrow("select summary, compacted_upto from orion_mem_chat_state where chat_id = $1 and "
+                                  "compacted_upto is not null and summary is not null limit 1", chat_id)
+        return (row["summary"], row["compacted_upto"]) if row else None
+    except Exception:
+        return None
+    finally:
+        await conn.close()
+
+
+async def get_chat_tail_db(chat_id: str, rows: int, after_id: int = 0) -> tuple[list[dict], int]:
     """The last `rows` messages of a chat from the start of their first turn, and how many successful turns
     came before them (the model's history counts turns from the chat's start; see tool_history.model_history)."""
     conn = await _connect()
@@ -792,19 +823,19 @@ async def get_chat_tail_db(chat_id: str, rows: int) -> tuple[list[dict], int]:
     try:
         await _ensure_tables(conn)
         oldest = await conn.fetchval(
-            """select min(id) from (select id from orion_chat_messages where chat_id = $1
-               order by id desc limit $2) tail""", chat_id, rows)
+            """select min(id) from (select id from orion_chat_messages where chat_id = $1 and id > $3
+               order by id desc limit $2) tail""", chat_id, rows, after_id)
         if oldest is None:
             return [], 0
         start = await conn.fetchval(
             "select max(id) from orion_chat_messages where chat_id = $1 and id <= $2 and role = 'user'",
             chat_id, oldest) or 0
         prior = await conn.fetchval(
-            """select count(*) from orion_chat_messages where chat_id = $1 and id < $2 and role = 'user'
-               and strpos(content_json, '"failed_turn": true') = 0""", chat_id, start)
+            """select count(*) from orion_chat_messages where chat_id = $1 and id < $2 and id > $3 and role = 'user'
+               and strpos(content_json, '"failed_turn": true') = 0""", chat_id, start, after_id)
         found = await conn.fetch(
-            "select content_json from orion_chat_messages where chat_id = $1 and id >= $2 order by id",
-            chat_id, start)
+            "select content_json from orion_chat_messages where chat_id = $1 and id >= $2 and id > $3 order by id",
+            chat_id, start, after_id)
         return _messages(found), prior
     finally:
         await conn.close()

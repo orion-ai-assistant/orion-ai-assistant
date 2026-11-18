@@ -28,6 +28,14 @@ Merging two entities moves the facts and the names (kept as aliases of the survi
 moved (`orion_mem_entity_merge`), so it can be undone. The model never merges: duplicates are found by exact folded names
 and offered as one batch card (orion_mem_proposal).
 
+A person's relation to the user changes over time too ("sevgilim" -> "eski sevgilim"): `orion_mem_entity_relation` keeps one
+row per relation with its dates (valid_from / valid_to), `orion_mem_entity.relation` is the current one. The model asks for
+the change with a card (action `set_relation`: set_relation / propose_relation); facts stay attached to the person, never to
+the role. Before the model adds a fact about an entity that already has facts, the same-topic check (similar_current: same
+category, or a strong match by the search's own scoring) hands it the fact as `possible_update` so it replaces instead of
+adding a parallel one; a replacement whose sentence is already another current fact of the entity absorbs that fact (one
+current fact, the old as its history).
+
 Every table has user_id and every read filters by it."""
 from __future__ import annotations
 
@@ -193,6 +201,7 @@ async def resolve_entity(conn, user_id: str, about: str | None, kind: str = "per
     row = await conn.fetchrow(
         f"insert into orion_mem_entity (user_id, kind, name, relation, keys) values ($1, $2, $3, $4, $5) returning {_ENTITY}",
         user_id, kind, name, relation, keys_of(name, relation, []))
+    await _open_relation(conn, user_id, row["id"], relation, None)
     return dict(row), True
 
 
@@ -211,6 +220,7 @@ async def create_entity(user_id: str, settings, name: str, kind: str = "person",
         row = await conn.fetchrow(
             f"insert into orion_mem_entity (user_id, kind, name, relation, aliases, keys) values ($1, $2, $3, $4, $5, $6) "
             f"returning {_ENTITY}", user_id, kind, name, relation, names, keys_of(name, relation, names))
+        await _open_relation(conn, user_id, row["id"], relation, None)
     return _entity_out(row)
 
 
@@ -224,6 +234,7 @@ async def update_entity(user_id: str, settings, entity_id: int, name: str | None
                                       "merged_into is null and deleted_at is null for update", user_id, entity_id)
             if row is None:
                 raise LookupError(entity_id)
+            row_before = row
             new_name = _clean(name, MAX_NAME) if name is not None else row["name"]
             if not new_name:
                 raise ValueError("Bir ad gerekli.")
@@ -234,7 +245,61 @@ async def update_entity(user_id: str, settings, entity_id: int, name: str | None
                 f"update orion_mem_entity set name = $3, relation = $4, aliases = $5, keys = $6 where user_id = $1 and id = $2 "
                 f"returning {_ENTITY}", user_id, entity_id, new_name, new_relation, new_aliases,
                 keys_of(new_name, new_relation, new_aliases))
+            if new_relation != row_before["relation"]:  # The user's own correction: the open relation is rewritten, no history.
+                await conn.execute("delete from orion_mem_entity_relation where user_id = $1 and entity_id = $2 and "
+                                   "valid_to is null", user_id, entity_id)
+                await _open_relation(conn, user_id, entity_id, new_relation, None)
     return _entity_out(row)
+
+
+# --- Relations over time ----------------------------------------------------------------------------------------------
+
+async def _open_relation(conn, user_id: str, entity_id: int, relation: str | None, since) -> None:
+    """The entity's relation from `since` on (the open row of its relation history); nothing for no relation."""
+    if relation:
+        await conn.execute("insert into orion_mem_entity_relation (user_id, entity_id, relation, valid_from) values "
+                           "($1, $2, $3, $4)", user_id, entity_id, relation, since)
+
+
+async def relation_history(conn, user_id: str, entity_id: int) -> list[dict]:
+    """The relations the entity had before the current one, oldest first: [{"relation", "since", "until"}] (the current one
+    is the entity's `relation`; an entity whose relation never changed has none)."""
+    rows = await conn.fetch("select relation, valid_from, valid_to from orion_mem_entity_relation where user_id = $1 and "
+                            "entity_id = $2 and valid_to is not null order by valid_to, id", user_id, entity_id)
+    return [{"relation": r["relation"], "since": r["valid_from"].isoformat() if r["valid_from"] else None,
+             "until": r["valid_to"].isoformat()} for r in rows]
+
+
+async def set_relation(user_id: str, settings, entity_id: int, relation: str, *, since=None, source: dict | None = None) -> dict:
+    """The person's relation to the user changed ("sevgilim" -> "eski sevgilim"): the old relation is closed (`valid_to` =
+    `since`, else today) and the new one opens; the entity's current `relation` and names follow. The facts stay attached
+    to the person. {"entity", "was", "until"}; {"same_as": id} when it is the current relation already. LookupError for an
+    entity that is not the user's; ValueError for the user's own entity or an empty relation."""
+    require(settings)
+    relation = _clean(relation, MAX_NAME)
+    if not relation:
+        raise ValueError("A relation needs words (e.g. 'eski sevgilim').")
+    day = _day(since) or date.today()
+    async with _db() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2 and "
+                                      "merged_into is null and deleted_at is null for update", user_id, entity_id)
+            if row is None:
+                raise LookupError(entity_id)
+            if row["kind"] == "self":
+                raise ValueError("The user's own entity has no relation.")
+            if memory.fold(row["relation"] or "") == memory.fold(relation):
+                return {"same_as": entity_id}
+            closed = await conn.execute("update orion_mem_entity_relation set valid_to = $3 where user_id = $1 and "
+                                        "entity_id = $2 and valid_to is null", user_id, entity_id, day)
+            if closed.endswith(" 0") and row["relation"]:  # A relation from before the history: its row is made now.
+                await conn.execute("insert into orion_mem_entity_relation (user_id, entity_id, relation, valid_to) "
+                                   "values ($1, $2, $3, $4)", user_id, entity_id, row["relation"], day)
+            await _open_relation(conn, user_id, entity_id, relation, day)
+            new = await conn.fetchrow(
+                f"update orion_mem_entity set relation = $3, keys = $4 where user_id = $1 and id = $2 returning {_ENTITY}",
+                user_id, entity_id, relation, keys_of(row["name"], relation, list(row["aliases"] or [])))
+    return {"entity": _entity_out(new), "was": row["relation"], "until": day.isoformat()}
 
 
 def _live(alias: str) -> str:
@@ -355,7 +420,8 @@ async def _current(conn, user_id: str, entity_id: int) -> list:
 
 
 async def add_fact(user_id: str, settings, entity: dict, category: str, statement: str, *, origin: str, source: dict,
-                   since=None, until=None, recurring: str | None = None, run_id: int | None = None) -> dict:
+                   since=None, until=None, recurring: str | None = None, run_id: int | None = None,
+                   vector_of=None) -> dict:
     """Write one fact about `entity` (a dict from resolve_entity), or find that it is already there. Returns
     {"fact": {...}} or {"same_as": id} (the same sentence is already current for this entity: the new source is added to
     it). `recurring`: the day it repeats every year ("11-17": birthdays, anniversaries; memory_events.upcoming). `run_id`: the
@@ -383,7 +449,7 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
                 return {"same_as": r["id"]}
         space = vector = None
         if not sensitive:
-            space, vector = await _vector_for(settings, entity, text)
+            space, vector = vector_of or await _vector_for(settings, entity, text)  # `vector_of`: made by the same-topic check
         async with conn.transaction():
             group = await _store_vector(conn, user_id, entity, text, space, vector, source) if not sensitive else None
             fact_id = await conn.fetchval(
@@ -428,9 +494,13 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
         if memory.fold(text) == memory.fold(old["statement"]):
             await _source(conn, user_id, old["id"], source)
             return {"same_as": old["id"]}
+        since = _day(since)
+        twin = next((r for r in await _current(conn, user_id, old["entity_id"])
+                     if r["id"] != old["id"] and not r["sensitive"] and memory.fold(r["statement"]) == memory.fold(text)), None)
+        if twin is not None:  # The new sentence is another current fact already: absorb it, never two nodes for one fact.
+            return await _absorb(conn, user_id, old, twin, since, source)
         entity = dict(await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2",
                                           user_id, old["entity_id"]))
-        since = _day(since)
         repeats = old["recurring"] if recurring is None else recurring_of(recurring)
         space = vector = None
         if not sensitive:
@@ -451,6 +521,43 @@ async def supersede(user_id: str, settings, fact_id: int, statement: str, *, ori
     return {"fact": _fact_out(row, reveal=True), "replaced": old["id"], "entity": _entity_out(entity)}
 
 
+async def _absorb(conn, user_id: str, old, twin, since, source: dict) -> dict:
+    """`old` is replaced by a sentence that `twin` (another current fact of the same entity) already says: `twin` stays the one
+    current fact and takes `old` (and its past) as its history, `old` closed from `since`; its vector row goes (only the
+    current version is searched). {"fact", "replaced", "absorbed"}."""
+    async with conn.transaction():
+        old = await _head(conn, user_id, old["id"], lock=True)
+        twin = await _head(conn, user_id, twin["id"], lock=True)
+        await conn.execute("update orion_mem_fact set lineage = $3 where user_id = $1 and lineage = $2", user_id,
+                           twin["lineage"], old["lineage"])  # One lineage: the twin's own past joins the old one's.
+        await conn.execute("update orion_mem_fact set valid_to = $3, expired_at = now(), superseded_by = $4 where user_id = $1 "
+                           "and id = $2", user_id, old["id"], since, twin["id"])
+        if since and not twin["valid_from"]:
+            await conn.execute("update orion_mem_fact set valid_from = $3 where user_id = $1 and id = $2", user_id,
+                               twin["id"], since)
+        if old["group_id"]:
+            await memory.delete_rows(conn, user_id, "group_id = $2", old["group_id"])
+        await _source(conn, user_id, twin["id"], source)
+        row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", twin["id"])
+        entity = dict(await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2", user_id,
+                                          old["entity_id"]))
+    return {"fact": _fact_out(row, reveal=True), "replaced": old["id"], "absorbed": twin["id"], "entity": _entity_out(entity)}
+
+
+def _in_order(versions: list) -> list:
+    """A lineage's versions oldest first: by how many replacements lie between a version and the current one (a version a
+    twin absorbed sits beside the twin's own past), then by id."""
+    by_id = {v["id"]: v for v in versions}
+
+    def depth(v) -> int:
+        n, seen = 0, set()
+        while v["superseded_by"] in by_id and v["id"] not in seen:
+            seen.add(v["id"])
+            v, n = by_id[v["superseded_by"]], n + 1
+        return n
+    return sorted(versions, key=lambda v: (-depth(v), v["id"]))
+
+
 async def history(user_id: str, settings, fact_id: int, reveal: bool = False) -> dict:
     """Every version of a fact (any version's id), oldest first, each with its sources; locked text only with `reveal`.
     LookupError when the fact is not this user's or its lineage is removed."""
@@ -460,9 +567,9 @@ async def history(user_id: str, settings, fact_id: int, reveal: bool = False) ->
                                   user_id, fact_id)
         if row is None:
             raise LookupError(fact_id)
-        versions = await conn.fetch(
+        versions = _in_order(await conn.fetch(
             f"select {_FACT} from orion_mem_fact f where f.user_id = $1 and f.lineage = $2 order by f.id", user_id,
-            row["lineage"])
+            row["lineage"]))
         head = next((v for v in versions if v["superseded_by"] is None), None)
         if head is None or not await conn.fetchval(f"select {_live('f')} from orion_mem_fact f where f.id = $1",
                                                    head["id"]):
@@ -516,7 +623,9 @@ async def entity_card(user_id: str, settings, entity_id: int, reveal: bool = Fal
             "e.id = m.from_id and e.user_id = m.user_id where m.user_id = $1 and m.into_id = $2 and m.undone_at is null "
             "order by m.id", user_id, entity_id)
         close = await close_people(conn, user_id) if e["kind"] == "self" else None
-    return {**_entity_out(e), **({"close": close} if close else {}), "facts": [{**_fact_out(f, reveal), "past_versions": int(f["past"]),
+        past_relations = await relation_history(conn, user_id, entity_id)
+    return {**_entity_out(e), **({"close": close} if close else {}),
+            **({"relation_history": past_relations} if past_relations else {}), "facts": [{**_fact_out(f, reveal), "past_versions": int(f["past"]),
                                          "sources": int(f["sources"])} for f in facts],
             "merges": [{"id": m["id"], "from_id": m["from_id"], "name": m["name"], "merged_at": m["merged_at"].isoformat()}
                        for m in merges]}
@@ -601,17 +710,28 @@ async def purge_removed_all(settings_of) -> int:
 # --- What search and memory_context tell about a fact ------------------------------------------------------------------
 
 async def facts_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
-    """{memory group: {"id", "about", "category", "since"}} for the memories among `groups` that are current facts: one
-    indexed lookup on the caller's connection (memory_groups.list_groups: a search card says who its fact is about)."""
+    """{memory group: {"id", "about", "category", "since", "history"?}} for the memories among `groups` that are current
+    facts: one indexed lookup on the caller's connection (memory_groups.list_groups: a search card says who its fact is
+    about). `history`: {versions, last_change (the day the current version was recorded), previously (the sentence it replaced)}, only
+    for a fact that changed."""
     if not groups:
         return {}
     rows = await conn.fetch(
-        "select f.group_id, f.id, f.category, f.valid_from, e.name, e.relation from orion_mem_fact f join "
-        "orion_mem_entity e on e.id = f.entity_id and e.user_id = f.user_id where f.user_id = $1 and "
-        "f.group_id = any($2::text[]) and f.superseded_by is null", user_id, groups)
-    return {r["group_id"]: {"id": r["id"], "about": r["name"] if not r["relation"] else f"{r['name']} ({r['relation']})",
-                            "category": r["category"], "since": r["valid_from"].isoformat() if r["valid_from"] else None}
-            for r in rows}
+        "select f.group_id, f.id, f.category, f.valid_from, f.recorded_at, e.name, e.relation, p.statement as was, "
+        "p.valid_to as was_to, p.expired_at as was_expired, (select count(*) from orion_mem_fact v where v.user_id = f.user_id "
+        "and v.lineage = f.lineage) as versions from orion_mem_fact f join orion_mem_entity e on e.id = f.entity_id and "
+        "e.user_id = f.user_id left join lateral (select q.statement, q.valid_to, q.expired_at from orion_mem_fact q where "
+        "q.user_id = f.user_id and q.superseded_by = f.id and not q.sensitive order by q.id desc limit 1) p on true "
+        "where f.user_id = $1 and f.group_id = any($2::text[]) and f.superseded_by is null", user_id, groups)
+    out = {}
+    for r in rows:
+        fact = {"id": r["id"], "about": r["name"] if not r["relation"] else f"{r['name']} ({r['relation']})",
+                "category": r["category"], "since": r["valid_from"].isoformat() if r["valid_from"] else None}
+        if r["was"]:  # Compact history of a fact that changed; the full history is memory_context's.
+            fact["history"] = {"versions": int(r["versions"]), "last_change": r["recorded_at"].date().isoformat(),
+                               "previously": r["was"]}
+        out[r["group_id"]] = fact
+    return out
 
 
 async def fact_of_group(user_id: str, group: str) -> int | None:
@@ -795,8 +915,8 @@ async def fact_context(user_id: str, fact_id: int) -> dict | None:
             return None
         entity = await conn.fetchrow(f"select {_ENTITY} from orion_mem_entity where user_id = $1 and id = $2", user_id,
                                      row["entity_id"])
-        versions = await conn.fetch(f"select {_FACT} from orion_mem_fact f where f.user_id = $1 and f.lineage = $2 "
-                                    "order by f.id", user_id, row["lineage"])
+        versions = _in_order(await conn.fetch(f"select {_FACT} from orion_mem_fact f where f.user_id = $1 and f.lineage = $2 "
+                                              "order by f.id", user_id, row["lineage"]))
         sources = await conn.fetch(
             "select target_id, chat_id, first_message, last_message, item_id, by_user from orion_mem_source where "
             "user_id = $1 and target_type = 'fact' and target_id = any($2::bigint[]) order by id", user_id,
@@ -806,6 +926,33 @@ async def fact_context(user_id: str, fact_id: int) -> dict | None:
             "sources": [{"version": s["target_id"], "chat_id": s["chat_id"], "first_message": s["first_message"],
                          "last_message": s["last_message"], "item_id": s["item_id"], "by_user": s["by_user"]}
                         for s in sources]}
+
+
+# --- The same topic ---------------------------------------------------------------------------------------------------
+
+async def similar_current(conn, user_id: str, settings, entity: dict, category: str, statement: str):
+    """Before a model adds a fact about an entity that already has some: the current fact of that entity that looks like the
+    same topic, so the model replaces it instead of keeping two (`possible_update`). A candidate is a current, unlocked fact
+    that either has the same category (a named one, not 'diğer') or is a STRONG match by the search's own scoring: the
+    cosine of the sentences' vectors, judged against the user's own scores (memory_groups.strength_of; no threshold of
+    its own). The best-scoring candidate wins. (fact row or None, (space, vector) or None): None for the fact when none looks
+    alike or the very sentence is current already (add_fact says `same_as`); the vector is the new sentence's, so writing it
+    need not embed again."""
+    from orion.kernel import memory_filters as mf, memory_groups
+    current = [r for r in await _current(conn, user_id, entity["id"]) if not r["sensitive"]]
+    same = memory.fold(statement)
+    if not current or any(memory.fold(r["statement"]) == same for r in current):
+        return None, None
+    space, vector = await _vector_for(settings, entity, statement)
+    groups = [r["group_id"] for r in current if r["group_id"]]
+    scores = await memory_groups._group_scores(conn, user_id, groups, space, vector) if groups else {}
+    stats = mf.calibrate(list((await mf.sample_scores(conn, user_id, space, vector)).values())) if scores else None
+    pool = [r for r in current if (category != "diğer" and r["category"] == category) or (
+        r["group_id"] in scores and memory_groups.strength_of(scores[r["group_id"]], stats) == "strong")]
+    if not pool:
+        return None, (space, vector)
+    best = max(pool, key=lambda r: (scores.get(r["group_id"], -1.0), r["id"]))
+    return best, (space, vector)
 
 
 # --- Merging entities -------------------------------------------------------------------------------------------------
@@ -982,6 +1129,29 @@ async def propose_supersede(user_id: str, settings, fact_id: int, statement: str
     return {"proposal": pid}
 
 
+async def propose_relation(user_id: str, settings, about: str, relation: str, *, since=None, chat_id: str | None = None,
+                           reason: str | None = None) -> dict:
+    """The model found that a person's relation to the user changed ("sevgilimden ayrıldım": Defne is now "eski sevgilim"):
+    never changes it, opens a card (old -> new relation). {"proposal": id} or {"same_as": entity id}. Ambiguous / LookupError
+    (no such person) / ValueError (the user themselves, an empty relation)."""
+    require(settings)
+    new = _clean(relation, MAX_NAME)
+    if not new:
+        raise ValueError("A relation needs words (e.g. 'eski sevgilim').")
+    async with _db() as conn:
+        entity, _ = await resolve_entity(conn, user_id, about, create=False)
+        if entity is None:
+            raise LookupError(about)
+        if entity["kind"] == "self":
+            raise ValueError("The user's own entity has no relation.")
+        if memory.fold(entity.get("relation") or "") == memory.fold(new):
+            return {"same_as": entity["id"]}
+        pid = await propose(user_id, settings, "set_relation", {
+            "entity_id": entity["id"], "about": entity["name"], "old": entity.get("relation"), "statement": new,
+            "since": since and str(_day(since)), "source": {"chat_id": chat_id}}, reason, chat_id, conn=conn)
+    return {"proposal": pid}
+
+
 async def propose_add(user_id: str, settings, about: str, kind: str, relation: str | None, category: str, statement: str,
                       *, since=None, chat_id: str | None = None, reason: str | None = None,
                       recurring: str | None = None) -> dict:
@@ -1030,6 +1200,9 @@ async def carry_out(user_id: str, settings, card: dict, edit: str | None) -> dic
     if action == "merge_entities":
         return await merge_entities(user_id, settings, int(p["from_id"]), int(p["into_id"]))
     text = (edit or p["statement"]).strip()
+    if action == "set_relation":  # `statement` is the new relation (the user may edit it)
+        done = await set_relation(user_id, settings, int(p["entity_id"]), text, since=p.get("since"), source=source)
+        return {"entity_id": int(p["entity_id"]), "relation": text, "until": done.get("until")}
     if action == "supersede":
         done = await supersede(user_id, settings, int(p["fact_id"]), text, origin="user" if edit else "model",
                                source=source, since=p.get("since"), category=p.get("category"),
@@ -1061,9 +1234,11 @@ async def write_by_user(user_id: str, settings, about: str, category: str, state
 
 
 async def write_by_model(user_id: str, settings, chat_id: str, about: str, kind: str, relation: str | None, category: str,
-                         statement: str, since=None, recurring: str | None = None) -> dict:
-    """The model's add_memory(type=fact): written at once when it is a normal, clearly stated fact; a locked kind opens a
-    card instead (§8: sensitive at most a card). Sourced by the chat. {"fact"}, {"same_as"} or {"proposal"}."""
+                         statement: str, since=None, recurring: str | None = None, add_anyway: bool = False) -> dict:
+    """The model's remember_fact: written at once when it is a normal, clearly stated fact; a locked kind opens a card
+    instead (§8: sensitive at most a card). Sourced by the chat. {"fact"}, {"same_as"}, {"proposal"} or, when the entity
+    already has a current fact that looks like the same topic (similar_current) and `add_anyway` is off, nothing written and
+    {"possible_update": {"fact_id", "statement"}} (the model then calls again with `replaces`, or with `add_anyway`)."""
     require(settings)
     cat = category_of(category)
     if is_sensitive(cat):
@@ -1072,6 +1247,12 @@ async def write_by_model(user_id: str, settings, chat_id: str, about: str, kind:
     async with _db() as conn:
         async with conn.transaction():
             await conn.execute("select pg_advisory_xact_lock($1, hashtext($2))", ENTITY_LOCK, user_id)
-            entity, _ = await resolve_entity(conn, user_id, about, kind, relation)
+            entity, created = await resolve_entity(conn, user_id, about, kind, relation)
+        vector_of = None
+        if not created and not add_anyway:
+            text = check_statement(statement, cat)
+            found, vector_of = await similar_current(conn, user_id, settings, entity, cat, text)
+            if found:
+                return {"possible_update": {"fact_id": found["id"], "statement": found["statement"]}}
     return await add_fact(user_id, settings, entity, cat, statement, origin="model", source={"chat_id": chat_id},
-                          since=since, recurring=recurring)
+                          since=since, recurring=recurring, vector_of=vector_of)

@@ -56,11 +56,11 @@ class MemorySearchInput(ToolInput):
                                    "by their words), 'active' (only memories the active model can search by meaning).")
     in_: list[str] = Field(
         default_factory=list, max_length=10, alias="in",
-        description="Only these collections: 'me' (who the user is), 'experiences' (dated events), 'chats' (past "
-                    "conversations), 'documents' (files); 'chat:<chat id>' searches inside "
-                    "one chat. 'me' is the user and the people close to them and the events they took part in. A personal question: me, experiences; something said before: chats. Empty: the whole "
-                    "memory except the past conversations (ask for 'chats' to search them). Ignored while the "
-                    "user's memory has no collections.")
+        description="Only these collections: 'me' (who the user is), 'experiences' (dated events), 'documents' (files). "
+                    "'me' is the user and the people close to them and the events they took part in. A personal question: "
+                    "me, experiences. 'chats' adds a keyword and date search of the past talk with the user (see "
+                    "'chat_messages' in the answer; use 'keyword' queries and 'when'). Empty: the whole memory. Ignored while "
+                    "the user's memory has no collections.")
     when: MemoryWhen | None = Field(
         default=None,
         description="The one date filter. Only memories within this range: events (their day or period overlaps it), facts that "
@@ -163,8 +163,6 @@ def _result(card: dict, labels: list[str], words: str) -> dict:
             (p["text"] for p in card.get("parts") or [] if p["id"] == row_id), None)
     if label is not None:
         item["label"] = _snippet(label, card.get("spans") if row_id == card.get("matched_part") else None)
-    if best.get("chat"):  # A past conversation: where it is, so it can be opened (memory_context chat=true).
-        item["chat"] = {"id": best["chat"]["id"], "title": card.get("title"), "message_id": best["chat"]["message"]}
     if card.get("source_kind") == "file" and card.get("title") and kind == "text":
         item["label"] = _snippet(f"{card['title']}: {item.get('label') or ''}")
     if card.get("part_count", 1) > 1:
@@ -265,9 +263,14 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
             mode="each" if args.mode == "separate" else "together", kind=args.kind,
             vector_space=args.model.strip() or "all", limit=size,
             offset=0 if args.budget else (args.page - 1) * size,
-            **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip()]) else {}))
+            **({"collections": wanted} if (wanted := [c for c in args.in_ if c.strip() and c.strip().lower() != "chats"]) else {}))
     except (memory.MemoryUnavailable, ValueError) as exc:  # QueryError and an unknown collection are ValueErrors.
         return {"error": str(exc)}
+    chat_messages = None
+    if any(c.strip().lower() == "chats" for c in args.in_):  # Past talk: keywords and dates, no embedding of messages.
+        from orion.kernel import memory_compact
+        terms = [w for q in queries if q["like"] and q["id"] is None for w in (q["keyword"] or q["text"]).split()]
+        chat_messages = await memory_compact.search_messages(context.user_id, terms, extra.get("when"))
     labels = found.get("labels") or []
     words = ", ".join(q["text"].strip() or q["keyword"].strip() for q in queries if q["like"] and q["id"] is None)
     results = [_result(card, labels, words) for card in found["groups"]]
@@ -275,8 +278,13 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
         if card.get("fact"):  # A fact: who it is about, its kind and since when (memory_groups adds it to the card).
             item["fact"] = card["fact"]
         if card.get("event"):  # An event: its day (precision), who took part, where (memory_groups adds it).
-            item["event"] = card["event"]
+            item["event"] = dict(card["event"])
+            said_on = item["event"].pop("said_on", None)
+            if item["event"].get("said_as") and said_on:  # A relative word stays meaningful with the day it was said.
+                item["event"]["said_as"] = f"{item['event']['said_as']}, said on {said_on}"
     result = {"page": args.page, "results": results, "more": found["more"]}
+    if chat_messages is not None:
+        result["chat_messages"] = chat_messages
     spent = 0
     extras = found.get("side")  # The entity card comes first, then the past versions, then the results.
     if extras is not None:
@@ -326,102 +334,33 @@ async def search_memory(args: MemorySearchInput, context: ToolContext) -> dict:
     return result
 
 
-class MemoryAddInput(ToolInput):
-    usage_hint: ClassVar[str] = (
-        "Send, in the user's own language: type=note {text}; type=fact {text: one sentence, about: who/what, "
-        "relation: for a new person how they relate to the user}; type=event {text: what happened, date: YYYY-MM-DD "
-        "(or YYYY-MM / YYYY), said_as: the user's time words, participants: [names], place}. Example event: "
-        '{"type":"event","text":"Mehmet ile parkta kahve içtik.","said_as":"geçen gün","precision":"approx",'
-        '"participants":["Mehmet"],"place":"park"}.')
+class RememberInput(ToolInput):
+    usage_hint: ClassVar[str] = 'Send {"text": "Annemin doğum günü 17 Kasım."}: what the user asked you to remember, in their words.'
 
     @model_validator(mode="before")
     @classmethod
     def _lenient(cls, data):
-        """Models send what comes naturally: empty strings / lists / null for unused fields, a `title` without `text`.
-        Empty values are dropped; a missing `text` is taken from `title`."""
-        if not isinstance(data, dict):
-            return data
-        data = {k: v for k, v in data.items() if v is not None and v != "" and v != []}
-        if not str(data.get("text", "")).strip() and str(data.get("title", "")).strip():
-            data["text"] = data["title"]
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if v is not None and v != ""}
         return data
 
-    text: str = Field(min_length=1, max_length=2 * 1024 * 1024,
-                      description="What to remember, in the user's OWN words and language, never translated: a self-contained "
-                                  "sentence (e.g. 'Kızımın adı Elif.') or a longer note. Always required, for every type "
-                                  "(for an event: what happened).")
-    title: str = Field(default="", max_length=120,
-                       description="Optional name for the memory, shown as its title (e.g. 'Elif'). Leave empty for "
-                                   "a short fact.")
-    type: Literal["note", "fact", "event"] = Field(
-        default="note",
-        description="note (default): a note saved as it is. fact: ONE short sentence about a person, place, pet or the "
-                    "user, filed under 'me' with its history (needs the user's collections to be on). Use fact for "
-                    "'my mother's birthday is 17 November'; note for anything longer. event: something that happened on a "
-                    "date ('we went to Cappadocia in June', 'today was my mother's birthday'), filed under 'experiences' "
-                    "(needs the user's collections to be on). 'text' is what happened; give 'date' or 'said_as'.")
-    about: str = Field(
-        default="", max_length=120,
-        description="type=fact: who or what the fact is about: a name or relation as the user says it ('Ayşe', "
-                    "'my mother'); empty or 'me' for the user. An unknown name makes a new entity; if two entities "
-                    "fit, the answer lists them: pass '#<id>' to choose one. Write the name in the user's own language "
-                    "('Annem', 'Mehmet'), never translated ('my mother' stays 'Annem').")
-    about_kind: Literal["person", "place", "org", "pet", "thing"] = Field(
-        default="person", description="type=fact: what a NEW entity is (ignored for one that exists).")
-    relation: str = Field(default="", max_length=120,
-                          description="type=fact: how a NEW person relates to the user, in the user's own language ('annem', "
-                                      "'iş arkadaşım'); it links them to the user. Never translated.")
-    category: Literal["identity", "relationship", "preference", "opinion", "work", "place", "date", "other", "health",
-                      "sexual_life", "religion", "political", "ethnicity", "union", "biometric_genetic", "legal",
-                      "finance", "id_number"] = Field(
-        default="other",
-        description="type=fact: what kind of fact. The last ten (health ... id_number) are locked kinds: say them only "
-                    "when the user themselves said it; they are never saved without the user's press on a card, and "
-                    "ID or card numbers are never stored, only that one exists.")
-    since: str = Field(default="", max_length=10,
-                       description="type=fact: ISO date (YYYY-MM-DD) from which it is true, if the user said (resolve "
-                                   "'since March' yourself); empty if unknown.")
-    date: str = Field(
-        default="", max_length=10,
-        description="type=event: when it happened: YYYY-MM-DD (or YYYY-MM, YYYY when only that is known). The Hub checks it "
-                    "against the time of the message: a relative word in 'said_as' (today, yesterday, tomorrow, last "
-                    "friday; bugün, dün, yarın, geçen cuma) is resolved by the Hub itself, and so are the vague ones "
-                    "(geçen gün, geçenlerde, geçen hafta, the other day: stored as a rough period, never a made-up day). "
-                    "NEVER guess an exact day the user did not give: 'geçen parkta' is NOT yesterday. For a vague "
-                    "season or period ('last summer') give your best date and precision=approx; with no date at all "
-                    "pass only said_as. type=fact with repeats=yearly: the day it repeats "
-                    "on (YYYY-MM-DD or MM-DD).")
-    end_date: str = Field(default="", max_length=10,
-                          description="type=event: the last day of a trip or period (YYYY-MM-DD); empty for one day.")
-    precision: Literal["", "day", "month", "year", "approx"] = Field(
-        default="", description="type=event: how exact the date is. Empty: what the date's form says (a full date = day). "
-                    "Use approx (or month/year) whenever the user gave no exact day.")
-    said_as: str = Field(default="", max_length=120,
-                         description="type=event: ONLY the user's own words for the time ('bugün', 'geçen gün', 'geçen yaz'), kept "
-                                     "with the event. Keep them even when you give no date.")
-    participants: list[str] = Field(
-        default_factory=list, max_length=20,
-        description="type=event: who took part, as the user names them ('Ayşe', 'my mother'; 'me' for the user). An unknown "
-                    "name makes a new person; if two entities fit, the answer lists them: pass '#<id>'.")
-    place: str = Field(default="", max_length=120, description="type=event: where it happened ('Cappadocia').")
-    mood: str = Field(default="", max_length=40, description="type=event: how the user felt, if they said.")
-    items: list[int] = Field(
-        default_factory=list, max_length=50,
-        description="type=event: ids of existing memories (from search_memory) that belong to the event, such as its "
-                    "photos or videos.")
-    event: int | None = Field(
-        default=None,
-        description="type=event: the id of an existing event (from search_memory's 'event'): then nothing new is written, "
-                    "'items' are linked to that event.")
-    repeats: Literal["none", "yearly"] = Field(
-        default="none",
-        description="type=fact: yearly when it falls on the same day every year (a birthday, an anniversary); then 'date' "
-                    "is that day.")
-    replaces: int | None = Field(
-        default=None,
-        description="type=fact: the id of a current fact (from search_memory's 'fact') that this sentence replaces "
-                    "because things changed ('I moved to Istanbul'). You never close or rewrite a fact: this opens a "
-                    "card for the user, who keeps the old one as history when they accept.")
+    text: str = Field(min_length=1, max_length=4000,
+                      description="What the user asked to remember, in their OWN words and language, never translated, "
+                                  "with the names and times they said (a relative word like 'dün' is fine here).")
+
+
+async def remember(args: RememberInput, context: ToolContext) -> dict:
+    """Hands the user's words to the background memory writer (it files facts, events, people, relation changes and notes by
+    itself; changes to what is already known wait for the user's card). Returns at once: "queued"."""
+    from orion.kernel import memory, memory_extract
+    from orion.kernel.config import get_runtime_settings
+    settings = await get_runtime_settings(None, context.user_id)
+    try:
+        await memory_extract.queue_remember(context.user_id, context.chat_id, args.text, settings)
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        return {"error": str(exc)}
+    return {"status": "queued", "note": "It will be filed in the memory in the background; do not say more than that it "
+                                        "is noted. Anything that changes what is already known waits for the user's card."}
 
 
 class MemoryDeleteInput(ToolInput):
@@ -439,117 +378,6 @@ class MemoryOpenInput(ToolInput):
                            description="Ids from search_memory results: images, audio, video, text files, notes. As "
                                        "many open as fit the chat model's context (about 40% of it); the rest are "
                                        "reported as not opened and can be asked for again.")
-
-
-async def add_fact(args: MemoryAddInput, context: ToolContext, settings) -> dict:
-    """add_memory type=fact: a clearly stated fact is written at once with the chat as its source; a replacement, or a
-    locked kind, only opens a card the user answers (§8). {"added": {...}}, {"same_as": id} or {"proposal": id}."""
-    from orion.kernel import memory, memory_entities as me
-    if not me.enabled(settings):
-        return {"error": "Facts need the user's memory collections (the 'memory_v2' setting), which are off: save "
-                         "it as a note (type=note) instead."}
-    if not context.chat_id:
-        return {"error": "A fact needs a source chat; nothing was saved."}
-    try:
-        category = me.category_of(args.category)
-        recurring = None
-        if args.repeats == "yearly":
-            if not args.date:
-                return {"error": "repeats=yearly needs 'date': the day it repeats on (YYYY-MM-DD or MM-DD)."}
-            recurring = me.recurring_of(args.date)
-        if args.replaces is not None:
-            done = await me.propose_supersede(context.user_id, settings, args.replaces, args.text, since=args.since or None,
-                                              chat_id=context.chat_id, category=category if args.category != "other" else None,
-                                              recurring=recurring)
-        else:
-            done = await me.write_by_model(context.user_id, settings, context.chat_id, args.about, args.about_kind,
-                                           args.relation or None, category, args.text, since=args.since or None,
-                                           recurring=recurring)
-    except me.Ambiguous as exc:
-        return {"error": str(exc), "candidates": exc.candidates}
-    except LookupError:
-        return {"error": "There is no current fact with that id (the user may have removed it); search_memory again."}
-    except (memory.MemoryUnavailable, ValueError) as exc:
-        return {"error": str(exc)}
-    if "proposal" in done:
-        return {"status": "awaiting_user_confirmation", "proposal_id": done["proposal"],
-                "instruction": "NOTHING is saved or changed yet. A card with Onayla / Düzenle / Reddet was shown to the "
-                               "user. Tell them briefly what you suggested and that it waits for them; do not say it "
-                               "was saved."}
-    if "same_as" in done:
-        return {"same_as": done["same_as"], "note": "This was already known (a new source was added to it)."}
-    fact = done["fact"]
-    added = {"fact_id": fact["id"], "about": done["entity"]["name"], "statement": args.text,
-             "since": fact["since"], "category": fact["category"]}
-    if fact.get("recurring"):
-        added["repeats"] = fact["recurring"]
-    return {"added": added}
-
-
-def _span(event: dict) -> str:
-    return event["date"] + (f" to {event['end']}" if event.get("end") else "")
-
-
-async def add_event(args: MemoryAddInput, context: ToolContext, settings) -> dict:
-    """add_memory type=event: written at once with the chat as its source (§8: an event the user said clearly); the date is
-    checked against the message's time. With `event`: only links `items` to that event. {"added": {...}}, {"same_as": id}
-    or {"linked": n}."""
-    from orion.kernel import memory, memory_events as ev, memory_entities as me
-    if not ev.enabled(settings):
-        return {"error": "Events need the user's memory collections (the 'memory_v2' setting), which are off: save "
-                         "it as a note (type=note) instead."}
-    if not context.chat_id:
-        return {"error": "An event needs a source chat; nothing was saved."}
-    try:
-        async with me._db() as conn:
-            groups = await ev.groups_of_rows(conn, context.user_id, args.items) if args.items else []
-        if args.event is not None:
-            if not groups:
-                return {"error": "Give 'items': the ids of the memories to link to that event."}
-            done = await ev.set_items(context.user_id, settings, args.event, add=groups)
-            return {"linked": done["linked"], "event_id": args.event}
-        when = ev.resolve_date(args.date or None, args.end_date or None, args.precision or None, args.said_as or None)
-        done = await ev.add_event(context.user_id, settings, args.title, when, body=args.text, mood=args.mood or None,
-                                  participants=args.participants, place=args.place or None, items=groups, origin="model",
-                                  source={"chat_id": context.chat_id})
-    except me.Ambiguous as exc:
-        return {"error": str(exc), "candidates": exc.candidates}
-    except LookupError as exc:
-        return {"error": str(exc.args[0]) if exc.args and isinstance(exc.args[0], str) else
-                "There is no event with that id (the user may have removed it); search_memory again."}
-    except (memory.MemoryUnavailable, ValueError) as exc:
-        return {"error": str(exc)}
-    if "same_as" in done:
-        return {"same_as": done["same_as"], "note": "This event was already known (the new source and links were added to it)."}
-    event = done["event"]
-    added = {"event_id": event["id"], "title": event["title"], "date": _span(event), "precision": event["precision"]}
-    if event.get("said_as"):
-        added["said_as"] = event["said_as"]
-    if event["participants"]:
-        added["with"] = [p["name"] for p in event["participants"]]
-    if event["place"]:
-        added["place"] = event["place"]["name"]
-    if event["items"]:
-        added["photos"] = len(event["items"])
-    result = {"added": added}
-    if when.get("note"):
-        result["date_note"] = when["note"]
-    return result
-
-
-async def add_memory(args: MemoryAddInput, context: ToolContext) -> dict:
-    from orion.kernel import memory
-    from orion.kernel.config import get_runtime_settings
-    settings = await get_runtime_settings(None, context.user_id)
-    if args.type == "fact":
-        return await add_fact(args, context, settings)
-    if args.type == "event":
-        return await add_event(args, context, settings)
-    try:
-        added = await memory.add_note(context.user_id, args.text, settings, source_kind="assistant", title=args.title)
-    except (memory.MemoryUnavailable, ValueError) as exc:
-        return {"error": str(exc)}
-    return {"added": args.text} if added else {"note": "This was already in memory.", "text": args.text}
 
 
 async def delete_by_card(args: MemoryDeleteInput, context: ToolContext, settings) -> dict:

@@ -825,17 +825,6 @@ async def make_memory(conn, user: str, settings, chats: dict, media: dict, manif
         manifest.add("entities", self_entity["id"])
 
 
-async def index_chats(conn, user: str, settings, chats: dict) -> None:
-    from orion.kernel import memory_chat_index
-    for chat in CHATS:
-        made = chats[chat["key"]]
-        result = await memory_chat_index.index_now(made["id"], settings, user)
-        await conn.execute("update orion_memory set created_at = $3 where user_id = $1 and source_chat_id = $2 and source_kind = 'chat_index'",
-                           user, made["id"], made["ended"])
-        await conn.execute("update orion_mem_chat_state set indexed_at = $3 where user_id = $1 and chat_id = $2", user, made["id"], made["ended"])
-        print(f"  indexed: {chat['title']} -> {result}")
-
-
 async def ensure_v2(user: str, settings):
     if getattr(settings, "memory_v2", False):
         return settings
@@ -869,7 +858,6 @@ async def seed(user: str | None, manifest_path: Path, force: bool) -> None:
         print("Entities, facts, events")
         await make_memory(conn, user, settings, chats, media, manifest)
         print("Chat index")
-        await index_chats(conn, user, settings, chats)
         block = await memory_profile.build(user, settings)
         print("Profile:\n" + (block or {}).get("text", ""))
     finally:
@@ -878,7 +866,7 @@ async def seed(user: str | None, manifest_path: Path, force: bool) -> None:
 
 
 async def remove(manifest_path: Path) -> None:
-    from orion.kernel import memory, memory_chat_index, memory_profile, memory_trash
+    from orion.kernel import memory, memory_profile, memory_trash
     manifest = Manifest.load(manifest_path)
     if manifest is None:
         raise SystemExit(f"No manifest at {manifest_path}: nothing to remove.")
@@ -892,8 +880,6 @@ async def remove(manifest_path: Path) -> None:
             if ids:
                 groups += [r["group_id"] for r in await conn.fetch(
                     f"select group_id from {table} where user_id = $1 and id = any($2::bigint[]) and group_id is not null", user, ids)]
-        for chat_id in data["chats"]:
-            await memory_chat_index.forget_chat(chat_id, user)
         groups = sorted(set(groups))
         if groups:
             for start in range(0, len(groups), 150):
@@ -942,12 +928,12 @@ async def check(user: str | None) -> None:
         user = user or (Manifest.load(MANIFEST).data["user"] if MANIFEST.exists() else await pick_user(conn))
         settings = await get_runtime_settings(None, user)
         print(f"User {user}, memory_v2 {settings.memory_v2}")
-        for name in ("ben", "yasadiklarim", "sohbetler", "belgeler"):
+        for name in ("ben", "yasadiklarim", "belgeler"):
             found = await memory_groups.list_groups(user, settings, "", 1, 0, collections=[name])
             print(f"  {name}: {found.get('matching', found.get('total', '?'))}")
         print("  all:", (await memory_groups.list_groups(user, settings, "", 1, 0)).get("matching"))
         for query, scope in (("kedim ne yer", None), ("annemin doğum günü", None), ("geçen yaz tatil", None),
-                             ("mantı tarifi", None), ("taşındım", ["yasadiklarim"]), ("tutunamayanlar", ["sohbetler"])):
+                             ("mantı tarifi", None), ("taşındım", ["yasadiklarim"])):
             found = await memory_groups.list_groups(user, settings, query, 4, 0, collections=scope)
             print(f"  '{query}'" + (f" in {scope}" if scope else ""))
             for card in found["groups"][:4]:

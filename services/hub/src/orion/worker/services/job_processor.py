@@ -134,16 +134,21 @@ async def load_history(
     """
     if max_messages <= 0:
         return []
-    from orion.kernel.registry import get_chat_tail_db
+    from orion.kernel.registry import get_chat_tail_db, get_compaction_db
+    compacted = await get_compaction_db(chat_id)  # A compacted chat: its summary first, then only what came after it.
     try:
         # A tail well beyond max_messages (failed turns and tool calls take room); never the whole chat.
-        tail, prior_turns = await get_chat_tail_db(chat_id, max(4 * max_messages, 200))
+        tail, prior_turns = await get_chat_tail_db(chat_id, max(4 * max_messages, 200), compacted[1] if compacted else 0)
     except Exception:
         logging.exception("get_chat_tail_db failed for chat %s — returning empty history", chat_id)
         return []
     history = [message for message in tail if message.get("role")]
-    return await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages,
-                                                            HISTORY_SLIDE_TURNS, prior_turns=prior_turns))
+    shown = await hydrate_model_media(chat_id, model_history(_remove_failed_turns(history), max_messages,
+                                                             HISTORY_SLIDE_TURNS, prior_turns=prior_turns))
+    if compacted:
+        shown = [{"role": "user", "content": "Summary of the conversation so far (the older messages are kept for the user "
+                                             "but not sent to you):\n" + compacted[0]}, *shown]
+    return shown
 
 
 async def append_history(
@@ -152,6 +157,7 @@ async def append_history(
     messages: list[dict[str, Any]],
     max_messages: int,
     settings: RuntimeSettings,
+    used_tokens: int = 0,
 ) -> None:
     """Append messages using Write-Through: Redis (hot cache) + PostgreSQL (durable store).
 
@@ -184,10 +190,8 @@ async def append_history(
     for attempt, pause in enumerate((0.5, 1.0, 2.0, 4.0, None)):
         try:
             await insert_messages(chat_id=chat_id, messages=messages)
-            from orion.kernel import memory_chat_index
-            memory_chat_index.after_turn(chat_id, settings)  # Background, after the answer; no-op without memory_v2.
-            from orion.kernel import memory_extract
-            memory_extract.after_turn(chat_id, settings)  # Reads the chat for memories once it is idle; no-op without memory_v2.
+            from orion.kernel import memory_compact
+            memory_compact.after_turn(chat_id, settings, used_tokens)  # Compacts the assistant chat past its threshold.
             return
         except Exception:
             if pause is None:
@@ -336,8 +340,17 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 settings.redis_cache_ttl_seconds,
             )
             messages: list[dict[str, Any]] = []
+            # Memory belongs to "Asistanla konuş" only: its tools, the profile block and the extraction. The request says so;
+            # a chat adopted as the assistant chat before is found in the database (the flag may be a first message's).
+            assistant_chat = bool(getattr(context.request, "assistant", False))
+            if not assistant_chat:
+                try:
+                    from orion.kernel.registry import is_assistant_chat_db
+                    assistant_chat = await is_assistant_chat_db(context.chat_id, context.user_id)
+                except Exception:
+                    logging.warning("Could not tell whether chat %s is the assistant chat; it gets no memory", context.chat_id)
             from orion.kernel import memory_profile  # The user's profile block rides in the system message (memory_v2).
-            profile = await memory_profile.for_chat(context.user_id, settings)
+            profile = await memory_profile.for_chat(context.user_id, settings) if assistant_chat else None
             system_text = memory_profile.with_system_prompt(settings.system_prompt, profile)
             if system_text:
                 messages.append({"role": "system", "content": system_text})
@@ -354,7 +367,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 # Rebuild model parts from references on the next turn, not from a
                 # second persisted copy of the media in content.
                 user_message['content'] = context.prompt
-            conversation = ToolConversation(context, json.loads(context.record.enabled_tools))
+            conversation = ToolConversation(context, json.loads(context.record.enabled_tools), assistant=assistant_chat)
 
             # Stream tokens from LLM.
             # - token_delay_ms intentionally NOT applied here: LLM already provides natural pacing.
@@ -365,6 +378,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
             stopped = False
             llm_done = False
             router_metrics: dict[str, Any] | None = None
+            last_usage = [0]  # The newest request's real token count (a tool round makes several: the last one is the biggest).
             generation_started_at = time.perf_counter()
             first_token_at: float | None = None
 
@@ -429,6 +443,13 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                                 turn_id=context.turn_id, generation_id=context.turn_id, data=json.loads(token)))
                         await hset_if_active(redis, context.chat_id, context.turn_id, state_key,
                                              "partial_display", json.dumps(display_parts))
+                        continue
+                    if kind == "usage":  # prompt_tokens (+ completion_tokens) of this request: the real size of the chat.
+                        try:
+                            usage = json.loads(token)
+                            last_usage[0] = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+                        except Exception:
+                            pass
                         continue
                     token_count += 1
                     if kind == "metrics":
@@ -646,6 +667,7 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 [user_message, *conversation.transcript, assistant_entry],
                 settings.chat_history_max_messages,
                 settings,
+                last_usage[0],
             )
 
             if is_completed:

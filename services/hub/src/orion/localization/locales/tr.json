@@ -2,7 +2,7 @@
   "categories.browser.name": "Tarayıcı",
   "categories.memory.name": "Hafıza",
   "tools.search_memory.name": "Hafızada ara",
-  "tools.add_memory.name": "Hafızaya ekle",
+  "tools.remember.name": "Hatırla",
   "tools.delete_memory.name": "Hafızadan sil",
   "tools.open_memory_files.name": "Hafızadaki dosyayı aç",
   "tools.memory_context.name": "Hafıza kaydının bağlamı",

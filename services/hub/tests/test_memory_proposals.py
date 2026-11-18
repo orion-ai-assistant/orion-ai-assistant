@@ -9,6 +9,7 @@ from orion.kernel import memory, memory_entities as me, memory_events as ev, mem
 from orion.kernel import memory_recent, memory_trash, registry
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools.memory import tools as memory_tools
+import legacy_add
 
 from test_memory_search import SPACE, PostgresMemoryCase, vec
 
@@ -55,8 +56,8 @@ class ProposalTests(PostgresMemoryCase):
         return ToolContext(user, chat, 't', None)
 
     async def tool(self, text, user='alice', chat='c1', **kw):
-        args = memory_tools.MemoryAddInput.model_validate({'text': text, **kw})
-        return await memory_tools.add_memory(args, self.context(user, chat))
+        args = legacy_add.MemoryAddInput.model_validate({'text': text, **kw})
+        return await legacy_add.add_memory(args, self.context(user, chat))
 
     async def note_by_model(self, text, user='alice'):
         await self.tool(text, user=user, title='Not')

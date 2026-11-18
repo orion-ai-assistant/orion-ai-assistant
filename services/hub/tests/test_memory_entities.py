@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 from orion.kernel import memory, memory_collections as mc, memory_entities as me, memory_groups, memory_trash, registry
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools.memory import tools as memory_tools
+import legacy_add
 
 from test_memory_search import SPACE, PostgresMemoryCase, vec
 
@@ -53,8 +54,8 @@ class EntityTests(PostgresMemoryCase):
         return ToolContext(user, chat, 't', None)
 
     async def add(self, text, user='alice', chat='chat', **kw):  # noqa: D401 - the tool, as the model calls it
-        args = memory_tools.MemoryAddInput.model_validate({'text': text, 'type': 'fact', **kw})
-        return await memory_tools.add_memory(args, self.context(user, chat))
+        args = legacy_add.MemoryAddInput.model_validate({'text': text, 'type': 'fact', **kw})
+        return await legacy_add.add_memory(args, self.context(user, chat))
 
     async def find(self, sorgu='doğum günü', user='alice', **kw):
         args = memory_tools.MemorySearchInput.model_validate({'queries': [{'text': sorgu}], **kw})
@@ -117,7 +118,7 @@ class EntityTests(PostgresMemoryCase):
         self.assertEqual(await sql("select count(*) from orion_mem_entity where kind <> 'self'"), 1)  # 'anne' = Ayşe.
 
     async def test_defaults_keep_today_and_a_fact_needs_the_collections(self):
-        added = await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate({'text': 'Pizza severim'}),
+        added = await legacy_add.add_memory(legacy_add.MemoryAddInput.model_validate({'text': 'Pizza severim'}),
                                               self.context())
         self.assertEqual(added, {'added': 'Pizza severim'})
         self.assertEqual(await sql('select count(*) from orion_mem_fact'), 0)
@@ -389,6 +390,89 @@ class EntityTests(PostgresMemoryCase):
             with self.assertRaises(HTTPException) as caught:  # memory_v2 off: nothing here runs.
                 await routes.memory_entities_list(request, '', 'alice')
             self.assertEqual(caught.exception.status_code, 400)
+
+    async def test_a_same_topic_fact_is_a_possible_update_and_a_replacement_absorbs_an_identical_twin(self):
+        old = await self.add('Annemin doğum günü 17 Kasım.', about='Ayşe', relation='anne', category='date')
+        old_id = old['added']['fact_id']
+        async with me._db() as conn:
+            entity, _ = await me.resolve_entity(conn, 'alice', 'Ayşe', create=False)
+        # Same category: the writer's candidate is handed back, nothing is written.
+        hint = await me.write_by_model('alice', self.v2, 'chat', 'Ayşe', 'person', None, 'tarih',
+                                       'Annemin doğum günü 18 Kasım.')
+        self.assertEqual(hint, {'possible_update': {'fact_id': old_id, 'statement': 'Annemin doğum günü 17 Kasım.'}})
+        self.assertEqual(await sql('select count(*) from orion_mem_fact'), 1)
+        # Insisting adds it (a different fact after all); a new entity is never checked.
+        both = await me.write_by_model('alice', self.v2, 'chat', 'Ayşe', 'person', None, 'tarih',
+                                       'Annemin doğum günü 18 Kasım.', add_anyway=True)
+        twin_id = both['fact']['id']
+        fresh = await me.write_by_model('alice', self.v2, 'chat', 'Veli', 'person', None, 'tarih', 'Veli 5 Mart doğdu.')
+        self.assertIn('fact', fresh)
+        # Replacing the first with the second's sentence: one current fact (the twin), the old one its history.
+        done = await me.supersede('alice', self.v2, old_id, 'Annemin doğum günü 18 Kasım.', origin='user',
+                                  source={'by_user': True}, since='2026-01-01')
+        self.assertEqual((done['absorbed'], done['replaced']), (twin_id, old_id))
+        current = await sql("select count(*) from orion_mem_fact where entity_id = $1 and superseded_by is null",
+                            entity['id'])
+        self.assertEqual(current, 1)
+        versions = (await me.history('alice', self.v2, twin_id))['versions']
+        self.assertEqual([(v['statement'], v['current']) for v in versions],
+                         [('Annemin doğum günü 17 Kasım.', False), ('Annemin doğum günü 18 Kasım.', True)])
+        self.assertEqual(await sql("select count(*) from orion_memory where source_kind = 'fact' and text = $1",
+                                   'Annemin doğum günü 17 Kasım.'), 0)
+
+    async def test_a_changed_fact_says_what_it_was_and_the_card_lists_only_current_facts(self):
+        old = await self.add("Ankara'da yaşıyor.", about='me', category='place')
+        asked = await self.add("İstanbul'da yaşıyor.", about='me', category='place', replaces=old['added']['fact_id'])
+        await me.decide('alice', self.v2, accept=[asked['proposal_id']])
+        found = await self.find('yaşıyor', **{'in': ['me']})
+        fact = found['results'][0]['fact']
+        self.assertEqual(fact['history']['versions'], 2)
+        self.assertEqual(fact['history']['previously'], "Ankara'da yaşıyor.")
+        self.assertIn('last_change', fact['history'])
+        self.assertIn('since', fact)
+        self.assertNotIn('previously', fact)
+        card = await me.search_card('alice', self.v2, (await me.list_entities('alice', self.v2))[0]['id'])
+        self.assertEqual([f['statement'] for f in card['facts']], ["İstanbul'da yaşıyor."])
+
+    async def test_a_relation_changes_over_time_and_the_facts_stay_with_the_person(self):
+        defne = await me.create_entity('alice', self.v2, 'Defne', relation='sevgilim')
+        await self.add('Defne çay sever.', about='Defne', category='preference')
+        asked = await me.propose_relation('alice', self.v2, 'Defne', 'eski sevgilim', since='2026-11-18', chat_id='chat')
+        self.assertEqual((await me.proposals('alice', self.v2))[0]['action'], 'set_relation')
+        self.assertEqual(await sql('select relation from orion_mem_entity where id = $1', defne['id']), 'sevgilim')
+        self.assertEqual(await me.propose_relation('alice', self.v2, 'Defne', 'eski sevgilim', chat_id='chat'),
+                         {'proposal': asked['proposal']})  # The same open question is one card.
+        await me.decide('alice', self.v2, accept=[asked['proposal']])
+        card = await me.entity_card('alice', self.v2, defne['id'])
+        self.assertEqual(card['relation'], 'eski sevgilim')
+        self.assertEqual(card['relation_history'], [{'relation': 'sevgilim', 'since': None, 'until': '2026-11-18'}])
+        self.assertEqual([f['statement'] for f in card['facts']], ['Defne çay sever.'])  # The facts stayed.
+        merve = await me.write_by_user('alice', self.v2, 'Merve', 'ilişki', 'Merve beni çok güldürür.', relation='sevgilim')
+        async with me._db() as conn:
+            self.assertEqual([e['name'] for e in await me.find_entities(conn, 'alice', 'sevgilim')], ['Merve'])
+        with self.assertRaises(ValueError):
+            await me.propose_relation('alice', self.v2, 'me', 'x')
+        self.assertEqual(await me.set_relation('alice', self.v2, defne['id'], 'eski sevgilim'), {'same_as': defne['id']})
+        self.assertTrue(merve['fact'])
+
+    async def test_auto_approve_applies_a_card_at_once_and_the_answer_reaches_the_conversation(self):
+        await sql("insert into orion_chats(id, user_id, assistant) values ('chat', 'alice', true) "
+                  "on conflict (id) do update set assistant = true")
+        defne = await me.create_entity('alice', self.v2, 'Defne', relation='sevgilim')
+        self.v2.memory_auto_approve = True
+        made = await me.propose_relation('alice', self.v2, 'Defne', 'eski sevgilim', since='2026-11-18', chat_id='chat')
+        self.assertEqual(await sql('select relation from orion_mem_entity where id = $1', defne['id']), 'eski sevgilim')
+        self.assertEqual(await sql('select state from orion_mem_proposal where id = $1', made['proposal']), 'accepted')
+        note = json.loads(await sql("select content_json from orion_chat_messages where chat_id = 'chat' order by id desc limit 1"))['content']
+        self.assertIn('Hafıza kartı', note)
+        self.assertIn('otomatik onaylandı', note)
+        self.assertIn('eski sevgilim', note)
+        self.v2.memory_auto_approve = False
+        again = await me.propose_relation('alice', self.v2, 'Defne', 'sevgilim', chat_id='chat')  # Off: a card waits.
+        self.assertEqual(await sql('select state from orion_mem_proposal where id = $1', again['proposal']), 'pending')
+        await me.decide('alice', self.v2, reject=[again['proposal']])
+        last = json.loads(await sql("select content_json from orion_chat_messages where chat_id = 'chat' order by id desc limit 1"))
+        self.assertIn('reddedildi', last['content'])
 
     async def test_purging_one_users_memory_leaves_the_others_facts(self):
         mine = await self.mother()

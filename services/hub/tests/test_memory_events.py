@@ -11,6 +11,7 @@ from orion.kernel import (memory, memory_collections as mc, memory_groups, memor
                           memory_trash, registry)
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools.memory import tools as memory_tools
+import legacy_add
 
 from test_memory_search import SPACE, PostgresMemoryCase, vec
 
@@ -58,39 +59,20 @@ class DateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resolve('2026-07-10', precision='soon')
 
-    def test_relative_words_are_counted_from_the_messages_own_day(self):
-        for words, expected in (('bugün', date(2026, 11, 18)), ('Dün', date(2026, 11, 17)),
-                                ('evvelsi gün', date(2026, 11, 16)), ('yarın', date(2026, 11, 19)),
-                                ('yesterday', date(2026, 11, 17)), ('today', date(2026, 11, 18)),
-                                ('geçen cuma', date(2026, 11, 13)), ('last Wednesday', date(2026, 11, 11)),
-                                ('gecen pazartesi', date(2026, 11, 16))):
-            got = self.resolve(None, said_as=words)
-            self.assertEqual((got['on'], got['precision']), (expected, 'day'), words)
-        # A chat written yesterday: "bugün" is yesterday.
-        old = ev.resolve_date(None, said_as='bugün', reference=datetime(2026, 11, 3, 10, 0).astimezone())
-        self.assertEqual(old['on'], date(2026, 11, 3))
-
-    def test_a_date_that_disagrees_with_a_relative_word_loses_and_the_answer_says_so(self):
-        got = self.resolve('2026-11-10', said_as='dün')
-        self.assertEqual(got['on'], date(2026, 11, 17))
-        self.assertIn('2026-11-17', got['note'])
-        same = self.resolve('2026-11-17', said_as='dün')
-        self.assertIsNone(same['note'])
-        vague = self.resolve('2025-07', precision='approx', said_as='geçen yaz')  # Not a word of the table: kept.
-        self.assertEqual(vague['on'], date(2025, 7, 1))
-
-    def test_vague_phrases_are_a_rough_period_never_a_made_up_day(self):
-        for words in ('geçen gün', 'geçenlerde', 'Geçen günlerde', 'the other day'):
-            got = self.resolve(None, said_as=words)
-            self.assertEqual((got['precision'], got['on'], got['end']), ('approx', date(2026, 10, 19), date(2026, 11, 17)),
-                             words)
-            self.assertEqual(got['said_as'], words)
-        # The model's own guess ("yesterday") is not used for a vague phrase.
-        guessed = self.resolve('2026-11-17', said_as='geçen gün', precision='day')
-        self.assertEqual((guessed['precision'], guessed['on']), ('approx', date(2026, 10, 19)))
-        self.assertIn('not used', guessed['note'])
-        week = self.resolve(None, said_as='geçen hafta')
-        self.assertEqual((week['precision'], week['on'], week['end']), ('approx', date(2026, 11, 9), date(2026, 11, 15)))
+    def test_the_hub_does_not_read_relative_words_the_writer_model_gives_the_dates(self):
+        # "dün" etc. are metadata only: with no date the event is refused, with dates they are stored as given.
+        for words in ('bugün', 'dün', 'geçen cuma', 'geçen hafta'):
+            with self.assertRaises(ValueError, msg=words):
+                self.resolve(None, said_as=words)
+        week = self.resolve('2026-11-09', '2026-11-15', 'approx', said_as='geçen hafta')  # The model resolved it.
+        self.assertEqual((week['precision'], week['on'], week['end'], week['said_as']),
+                         ('approx', date(2026, 11, 9), date(2026, 11, 15), 'geçen hafta'))
+        yesterday = self.resolve('2026-11-17', said_as='dün')
+        self.assertEqual((yesterday['on'], yesterday['precision'], yesterday['note']), (date(2026, 11, 17), 'day', None))
+        with self.assertRaises(ValueError):  # Only the format and the range are checked.
+            self.resolve('1500-01-01')
+        with self.assertRaises(ValueError):
+            self.resolve('17.11.2026')
 
     def test_no_date_is_refused_with_todays_date_for_the_model(self):
         with self.assertRaises(ValueError) as caught:
@@ -151,8 +133,8 @@ class EventTests(PostgresMemoryCase):
         return ToolContext(user, chat, 't', None)
 
     async def add(self, text, user='alice', chat='chat', **kw):  # the tool, as the model calls it
-        args = memory_tools.MemoryAddInput.model_validate({'text': text, 'type': 'event', **kw})
-        return await memory_tools.add_memory(args, self.context(user, chat))
+        args = legacy_add.MemoryAddInput.model_validate({'text': text, 'type': 'event', **kw})
+        return await legacy_add.add_memory(args, self.context(user, chat))
 
     async def find(self, sorgu='doğum günü', user='alice', **kw):
         queries = [{'text': sorgu}] if sorgu else []
@@ -197,8 +179,8 @@ class EventTests(PostgresMemoryCase):
                            row['group_id'], fetch=True)
         self.assertEqual(len(vector), 1)
         self.assertEqual(vector[0]['source_kind'], 'event')
-        self.assertEqual(vector[0]['text'], '17 Kasım 2026 Salı: Annemin doğum günü. Annemin doğum günüydü, pasta yedik. '
-                                            'Katılanlar: Ayşe, Ben. Yer: Kadıköy.')  # The date once, each part one sentence.
+        self.assertEqual(vector[0]['text'], 'Annemin doğum günü. Annemin doğum günüydü, pasta yedik. '
+                                            'Yer: Kadıköy. Katılanlar: Ayşe.')  # Title, text, place, people (not "Ben"); no date.
         member = await sql("select collection_id, main from orion_mem_collection_item where group_id = $1",
                            row['group_id'], fetch=True)
         self.assertEqual([(m['collection_id'], m['main']) for m in member], [('yasadiklarim', True)])
@@ -215,292 +197,49 @@ class EventTests(PostgresMemoryCase):
         self.assertEqual(len((await self.find())['results']), 1)  # The default search is the whole memory.
         self.assertEqual(len((await self.find(**{'in': ['me']}))['results']), 1)  # Ben: the events the user took part in.
 
-    async def test_a_relative_word_is_resolved_by_the_hub_and_vague_times_stay_approx(self):
-        today = await self.add('Bugün parkta yürüdüm.', title='Parkta yürüyüş', said_as='bugün')
+    async def test_dates_come_from_the_writer_and_said_as_is_kept_beside_them(self):
+        today = await self.add('Parkta yürüdüm.', title='Parkta yürüyüş', date='2026-11-18', said_as='bugün')
         self.assertEqual((today['added']['date'], today['added']['precision'], today['added']['said_as']),
                          ('2026-11-18', 'day', 'bugün'))
-        wrong = await self.add('Dün sinemaya gittik.', title='Sinema', date='2026-11-02', said_as='dün')
-        self.assertEqual(wrong['added']['date'], '2026-11-17')
-        self.assertIn('2026-11-17', wrong['date_note'])
         summer = await self.add('Geçen yaz Bodrum', title='Bodrum tatili', date='2025-07', precision='approx',
                                 said_as='geçen yaz')
         self.assertEqual((summer['added']['date'], summer['added']['precision']), ('2025-07-01 to 2025-07-31', 'approx'))
         row = (await sql("select occurred_on, occurred_end, said_as from orion_mem_event where title = 'Bodrum tatili'",
                          fetch=True))[0]
         self.assertEqual((row['occurred_end'], row['said_as']), (date(2025, 7, 31), 'geçen yaz'))
-        undated = await self.add('Bir şey oldu.')
+        undated = await self.add('Bir şey oldu.', said_as='dün')  # The Hub does not guess from the words.
         self.assertIn('error', undated)
-        self.assertIn('2026-11-18', undated['error'])
-        self.assertEqual(await sql('select count(*) from orion_mem_event'), 3)
-
-    async def test_nothing_is_written_with_a_refused_value_and_defaults_keep_today(self):
-        for bad in ({'date': '2026-13-01'}, {'date': '2026-11-17', 'precision': 'day', 'end_date': '2026-11-01'}):
-            self.assertIn('error', await self.add('Bir olay', **bad))
-        with self.assertRaises(ValueError):  # The page's longer title field is checked by the same code.
-            await ev.add_event('alice', self.v2, 'x' * 200, ev.resolve_date('2026-11-17'), origin='user',
-                               source={'by_user': True})
-        with self.assertRaises(ValueError):  # No source, no event.
-            await ev.add_event('alice', self.v2, 'Bir olay', ev.resolve_date('2026-11-17'), origin='user', source={})
-        self.assertEqual(await sql('select count(*) from orion_mem_event'), 0)
-        self.assertEqual(await sql("select count(*) from orion_memory where source_kind = 'event'"), 0)
-        self.assertEqual(await sql('select count(*) from orion_mem_entity'), 0)  # A refused event made no entity either.
-        added = await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate({'text': 'Pizza severim'}),
-                                              self.context())
-        self.assertEqual(added, {'added': 'Pizza severim'})
-        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.off)):
-            refused = await self.add('Bir olay', date='2026-11-17')
-            self.assertIn('error', refused)
-            with self.assertRaises(ValueError):
-                await ev.list_events('alice', self.off)
-        self.assertEqual(await sql('select count(*) from orion_mem_event'), 0)
-
-    async def test_the_same_event_twice_adds_a_source_and_links_not_a_second_event(self):
-        first = await self.mother_day()
-        again = await self.add('Annemin doğum günü', title='annemin doğum günü', date='2026-11-17', chat='c2',
-                               participants=['Elif'])
-        self.assertEqual(again['same_as'], first)
-        self.assertEqual(await sql('select count(*) from orion_mem_event'), 1)
-        self.assertEqual(await sql("select count(*) from orion_mem_source where target_type = 'event' and target_id = $1",
-                                   first), 2)
-        self.assertEqual(await sql("select count(*) from orion_mem_link where from_id = $1 and role = 'katılan'", first), 3)
-        other_day = await self.add('Annemin doğum günü', title='Annemin doğum günü', date='2026-11-18')
-        self.assertNotEqual(other_day['added']['event_id'], first)
-
-    async def test_two_entities_with_a_name_make_the_event_ask_which(self):
-        await me.create_entity('alice', self.v2, 'Ayşe', relation='anne')
-        two = await me.create_entity('alice', self.v2, 'Ayşe', relation='komşu')
-        refused = await self.add('Çay içtik', date='2026-11-17', participants=['Ayşe'])
-        self.assertIn('error', refused)
-        self.assertEqual(len(refused['candidates']), 2)
-        chosen = await self.add('Çay içtik', date='2026-11-17', participants=[f"#{two['id']}"])
-        self.assertEqual(chosen['added']['with'], ['Ayşe'])
-
-    # --- search: when --------------------------------------------------------------------------------------------
-
-    async def test_when_filters_events_facts_and_linked_photos_by_their_dates(self):
-        march = await self.add('Elif doğum günü', title='Elif doğum günü', date='2026-03-03')
-        nov = await self.add('Annemin doğum günü', title='Annemin doğum günü', date='2026-11-17')
-        trip = await self.add('Doğum günü gezisi', title='Gezi', date='2026-06-05', end_date='2026-06-08')
-        year = await self.add('Doğum günü yılı', title='Yıl', date='2024', precision='year')
-        row, group = await self.photo()
-        await self.add('x', event=march['added']['event_id'], items=[row])
-        fact = await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate({
-            'text': 'Doğum günü partisi hep Mart ayında.', 'type': 'fact', 'about': 'Elif', 'since': '2020-01-01'}),
-            self.context())
-        note = await self.note('doğum günü notu')
-        await sql("update orion_memory set created_at = timestamptz '2022-05-05 12:00' where group_id = $1", note)
-        await sql("update orion_memory set created_at = timestamptz '2020-02-02 12:00' where group_id = $1", group)
-
-        async def seen(**when):
-            found = await self.find(when=when)
-            return (sorted(r['event']['title'] for r in found['results'] if 'event' in r),
-                    sum(1 for r in found['results'] if 'fact' in r))
-        # The fact (true since 2020, never closed) is in every range that reaches 2020 or later.
-        self.assertEqual(await seen(**{'from': '2026-03', 'to': '2026-03'}), (['Elif doğum günü'], 1))
-        self.assertEqual(await seen(**{'from': '2026-06-07', 'to': '2026-06-07'}), (['Gezi'], 1))  # Inside the trip.
-        self.assertEqual(await seen(**{'from': '2026-06-09', 'to': '2026-06-30'}), ([], 1))
-        self.assertEqual(await seen(**{'from': '2026-11-01'}), (['Annemin doğum günü'], 1))
-        self.assertEqual(await seen(**{'to': '2023-12'}), ([], 1))  # The year 2024 starts after it.
-        self.assertEqual(await seen(**{'to': '2024-01'}), (['Yıl'], 1))
-        self.assertEqual(await seen(**{'from': '2024', 'to': '2024'}), (['Yıl'], 1))
-        self.assertEqual(await seen(**{'to': '2019-12'}), ([], 0))
-        # The photo is found by its event's date, without any query words.
-        photos = await self.find('', when={'from': '2026-03-01', 'to': '2026-03-31'}, kind='image')
-        self.assertEqual([r['id'] for r in photos['results']], [row])
-        self.assertEqual((await self.find('', when={'from': '2026-07', 'to': '2026-07'}, kind='image'))['results'], [])
-        # A note or file is dated by the day it was saved.
-        async def groups_of(found):
-            return [await sql('select group_id from orion_memory where id = $1', r['id']) for r in found['results']]
-        self.assertIn(note, await groups_of(await self.find()))
-        self.assertIn(note, await groups_of(await self.find(when={'from': '2022', 'to': '2022'})))
-        self.assertIn(note, await groups_of(await self.find(when={'from': '2022-05-05', 'to': '2022-05-05'})))
-        self.assertNotIn(note, await groups_of(await self.find(when={'from': '2023', 'to': '2026'})))
-        self.assertNotIn(note, await groups_of(await self.find(when={'to': '2022-05-04'})))
-        # A bad range is an answer, not a crash; the keyword path and `in` take it too.
-        self.assertIn('error', await self.find(when={'from': '2026-05', 'to': '2026-04'}))
-        inside = await self.find('', when={'from': '2026-11', 'to': '2026-11'}, **{'in': ['experiences']})
-        self.assertEqual(len(inside['results']), 1)
-        kw = await memory_tools.search_memory(memory_tools.MemorySearchInput.model_validate({
-            'queries': [{'keyword': 'günü'}], 'when': {'from': '2026-11', 'to': '2026-11'}}), self.context())
-        self.assertEqual([r['event']['id'] for r in kw['results'] if 'event' in r], [nov['added']['event_id']])
-        self.assertTrue(trip and year and fact)
-
-    async def test_when_is_ignored_for_a_user_without_collections(self):
-        await self.add('Annemin doğum günü', date='2026-11-17')
-        with patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=self.off)):
-            found = await self.find(when={'from': '2020', 'to': '2020'})
-        self.assertEqual(len(found['results']), 1)  # The old behaviour: the whole memory.
-
-    # --- photos ---------------------------------------------------------------------------------------------------
-
-    async def test_photos_are_linked_listed_greyed_in_the_trash_and_unlinked_for_good(self):
-        event_id = (await self.add('Kapadokya', title='Kapadokya gezisi', date='2026-06-05', end_date='2026-06-08'))['added'][
-            'event_id']
-        row, group = await self.photo()
-        linked = await self.add('x', event=event_id, items=[row])
-        self.assertEqual(linked, {'linked': 1, 'event_id': event_id})
-        again = await self.add('x', event=event_id, items=[row])  # Linking twice is one link.
-        self.assertEqual(again['linked'], 1)
-        self.assertEqual(await sql("select count(*) from orion_mem_link where to_type = 'item'"), 1)
-        card = await ev.get_event('alice', self.v2, event_id)
-        self.assertEqual([(i['group_id'], i['kind'], i['removed']) for i in card['items']], [(group, 'image', False)])
-        context = await memory_tools.memory_context(memory_tools.MemoryContextInput(id=row), self.context())
-        self.assertEqual([e['id'] for e in context['events']], [event_id])
-        # An item that is not the user's, or does not exist, links nothing.
-        other_row, _ = await self.photo('bob', 'bob.jpg')
-        self.assertIn('error', await self.add('x', event=event_id, items=[other_row]))
-        self.assertIn('error', await self.add('x', event=event_id, items=[99999]))
-        self.assertEqual(await sql("select count(*) from orion_mem_link where to_type = 'item'"), 1)
-        # Removed to the trash: still linked, shown greyed; restored: back.
-        removed = await memory_trash.trash_groups('alice', [group])
-        card = await ev.get_event('alice', self.v2, event_id)
-        self.assertEqual([i['removed'] for i in card['items']], [True])
-        await memory_trash.restore('alice', [removed['trash_id']])
-        self.assertEqual([i['removed'] for i in (await ev.get_event('alice', self.v2, event_id))['items']], [False])
-        # Deleted for good: the link goes, the event stays.
-        removed = await memory_trash.trash_groups('alice', [group])
-        await memory_trash.purge('alice', [removed['trash_id']], self.v2)
-        self.assertEqual(await sql("select count(*) from orion_mem_link where to_type = 'item'"), 0)
-        self.assertEqual((await ev.get_event('alice', self.v2, event_id))['items'], [])
-        # The event can be created with its photos at once, and unlinked by the user.
-        row2, group2 = await self.photo(name='b.jpg')
-        with_photo = await self.add('Piknik', title='Piknik', date='2026-07-01', items=[row2])
-        self.assertEqual(with_photo['added']['photos'], 1)
-        done = await ev.set_items('alice', self.v2, with_photo['added']['event_id'], remove=[group2])
-        self.assertEqual(done, {'linked': 0, 'unlinked': 1})
-        self.assertEqual(await sql("select count(*) from orion_memory where group_id = $1", group2), 1)  # Never deleted.
-
-    # --- versions, the trash --------------------------------------------------------------------------------------
-
-    async def test_the_user_corrects_an_event_as_a_new_version_and_links_follow(self):
-        event_id = await self.mother_day()
-        row, group = await self.photo()
-        await self.add('x', event=event_id, items=[row])
-        old_group = await sql('select group_id from orion_mem_event where id = $1', event_id)
-        changed = await ev.replace_event('alice', self.v2, event_id, title='Annemin 60. doğum günü',
-                                         when=ev.resolve_date('2026-11-16'))
-        new_id = changed['event']['id']
-        self.assertNotEqual(new_id, event_id)
-        self.assertEqual((changed['event']['date'], changed['event']['title']), ('2026-11-16', 'Annemin 60. doğum günü'))
-        self.assertEqual([p['name'] for p in changed['event']['participants']], ['Ayşe', 'Ben'])  # Kept.
-        self.assertEqual(changed['event']['place']['name'], 'Kadıköy')
-        self.assertEqual([i['group_id'] for i in changed['event']['items']], [group])
-        old = (await sql('select * from orion_mem_event where id = $1', event_id, fetch=True))[0]
-        self.assertEqual((old['superseded_by'], old['lineage']), (new_id, event_id))
-        self.assertIsNotNone(old['expired_at'])
-        self.assertEqual(await sql('select count(*) from orion_memory where group_id = $1', old_group), 0)
-        card = await ev.get_event('alice', self.v2, event_id)  # Any version's id reads the current one.
-        self.assertEqual((card['id'], [p['date'] for p in card['past_versions']]), (new_id, ['2026-11-17']))
-        self.assertEqual(await sql('select count(*) from orion_mem_link where from_id = $1', event_id), 0)
-        found = await self.find(**{'in': ['experiences']})
-        self.assertEqual([r['event']['id'] for r in found['results']], [new_id])
-        with self.assertRaises(LookupError):
-            await ev.replace_event('alice', self.v2, event_id, title='x')  # The old version is closed.
-        cleared = await ev.replace_event('alice', self.v2, new_id, participants=[], place='')
-        self.assertEqual((cleared['event']['participants'], cleared['event']['place']), ([], None))
-        listing = await ev.list_events('alice', self.v2)
-        self.assertEqual([e['id'] for e in listing['events']], [cleared['event']['id']])
-
-    async def test_remove_restore_and_purge_of_an_event_with_its_history(self):
-        event_id = await self.mother_day()
-        newer = (await ev.replace_event('alice', self.v2, event_id, title='Doğum günü pastası'))['event']['id']
-        removed = await ev.remove_event('alice', self.v2, newer)
-        self.assertEqual((await ev.list_events('alice', self.v2))['events'], [])
-        self.assertEqual((await self.find())['results'], [])
-        with self.assertRaises(LookupError):
-            await ev.get_event('alice', self.v2, newer)
-        listing = await memory_trash.list_trash('alice', self.v2)  # The trash page shows it as a memory.
-        self.assertEqual(len(listing['entries']), 1)
-        await memory_trash.restore('alice', [removed['trash_id']])
-        self.assertEqual(len((await ev.list_events('alice', self.v2))['events']), 1)
-        removed = await ev.remove_event('alice', self.v2, event_id)  # By any version's id.
-        await memory_trash.purge('alice', [removed['trash_id']], self.v2)
-        for table in ('orion_mem_event', 'orion_mem_link'):
-            self.assertEqual(await sql(f'select count(*) from {table}'), 0, table)
-        self.assertEqual(await sql("select count(*) from orion_mem_source where target_type = 'event'"), 0)
-
-    # --- the timeline ---------------------------------------------------------------------------------------------
-
-    async def test_the_timeline_lists_newest_first_with_years_pages_and_an_entity_filter(self):
-        for title, day in (('A', '2026-11-17'), ('B', '2026-03-02'), ('C', '2025-12-31'), ('D', '2025-01')):
-            await self.add(title, title=title, date=day, participants=['Ayşe'] if title in 'AC' else [])
-        page = await ev.list_events('alice', self.v2, limit=3)
-        self.assertEqual([e['title'] for e in page['events']], ['A', 'B', 'C'])
-        self.assertTrue(page['more'])
-        self.assertEqual(page['years'], [{'year': 2026, 'count': 2}, {'year': 2025, 'count': 2}])
-        rest = await ev.list_events('alice', self.v2, limit=3, offset=3)
-        self.assertEqual(([e['title'] for e in rest['events']], rest['more'], rest['years']), (['D'], False, []))
-        self.assertEqual(rest['events'][0]['precision'], 'month')
-        ayse = await sql("select id from orion_mem_entity where name = 'Ayşe'")
-        by_person = await ev.list_events('alice', self.v2, entity_id=ayse)
-        self.assertEqual([e['title'] for e in by_person['events']], ['A', 'C'])
-        in_2025 = await ev.list_events('alice', self.v2, '2025', '2025')
-        self.assertEqual([e['title'] for e in in_2025['events']], ['C', 'D'])
-        with self.assertRaises(ValueError):
-            await ev.list_events('alice', self.v2, '2026-05', '2026-04')
-
-    # --- the one date filter, Ben, the clean text ----------------------------------------------------------------
-
-    async def test_a_year_filter_leaves_out_an_event_of_another_year(self):
-        await self.add('Parkta kahve içtik', title='Parkta kahve', date='2026-11-17')
-        await self.add('Eski bir gün', title='Eski gün', date='2023-04-02')
-        for when, titles in (({'from': '2023', 'to': '2023'}, ['Eski gün']), ({'from': '2026', 'to': '2026'}, ['Parkta kahve'])):
-            found = await self.find('', when=when, **{'in': ['experiences']})
-            self.assertEqual([r['event']['title'] for r in found['results']], titles)
-        page = await memory_groups.list_groups('alice', self.v2, when=ev.parse_range('2023', '2023'))
-        self.assertEqual([g['event']['title'] for g in page['groups']], ['Eski gün'])
-
-    async def test_ben_is_the_user_their_close_people_and_the_events_they_took_part_in(self):
-        write = memory_tools.MemoryAddInput.model_validate
-        for fact in ({'text': 'Kahveyi sever.', 'about': 'me'},
-                     {'text': 'Annemin adı Ayşe.', 'about': 'Ayşe', 'relation': 'annem'},
-                     {'text': 'Komşunun arabası kırmızı.', 'about': 'Veli'}):
-            await memory_tools.add_memory(write({'type': 'fact', **fact}), self.context())
-        await self.add('Parkta kahve içtik', title='Parkta kahve', date='2026-11-17', participants=['Mehmet', 'me'])
-        await self.add('Ayşe ile çay', title='Ayşe ile çay', date='2026-11-10', participants=['Ayşe'])
-        everything = (await self.find('', page_size=20))['results']
-        self.assertEqual(len(everything), 5)
-        ben = await self.find('', **{'in': ['me']})
-        labels = sorted(r.get('event', {}).get('title') or r['fact']['about'] for r in ben['results'])
-        self.assertEqual(labels, ['Ayşe (annem)', 'Ben', 'Parkta kahve'])  # Veli (no relation) and Ayşe's event are not Ben.
-        listed = await memory_groups.list_groups('alice', self.v2, collections=['ben'])
-        self.assertEqual(len(listed['groups']), 3)
-        # The page's "Hakkında: Ben" on top of the collection is redundant, never empty.
-        me_entity = await sql("select id from orion_mem_entity where kind = 'self'")
-        both = await memory_groups.list_groups('alice', self.v2, collections=['ben'], about=[me_entity])
-        self.assertEqual(len(both['groups']), 2)  # The user's own fact and the event they were at.
+        self.assertEqual(await sql('select count(*) from orion_mem_event'), 2)
 
     async def test_an_event_reads_cleanly_the_date_once_and_no_double_period(self):
-        self.assertEqual(ev.embedded_text('Parkta kahve içtik.', None, ev.resolve_date('2026-11-17'), ['Mehmet', 'Ben'], 'park'),
-                         '17 Kasım 2026 Salı: Parkta kahve içtik. Katılanlar: Mehmet, Ben. Yer: park.')
+        when = ev.resolve_date('2026-11-17')
+        self.assertEqual(ev.embedded_text('Parkta kahve içtik.', None, when, ['Mehmet'], 'park'),
+                         'Parkta kahve içtik. Yer: park. Katılanlar: Mehmet.')  # No date, no time words, no "Ben".
         self.assertEqual(ev.embedded_text('Gezi', 'Güzeldi...', ev.resolve_date('2026-06-05', '2026-06-08', 'approx'), [], None),
-                         '5 - 8 Haziran 2026, yaklaşık: Gezi. Güzeldi.')
-        self.assertEqual(ev.embedded_text('Yaz', None, ev.resolve_date('2025-07', precision='approx', said_as='geçen yaz'),
-                                          [], None), 'Temmuz 2025, yaklaşık (geçen yaz): Yaz.')
+                         'Gezi. Güzeldi.')
         self.assertEqual(ev.range_text(date(2026, 11, 1), date(2026, 11, 30), 'month'), 'Kasım 2026')
         self.assertEqual(ev.range_text(date(2024, 1, 1), date(2024, 12, 31), 'year'), '2024')
         said = "Geçen parkta Mehmet'le karşılaştık ve kahve içtik."
         done = await self.add(said, title=said, date='2026-11', precision='approx', participants=['Mehmet', 'me'],
                               place='park')
         text = await sql("select text from orion_memory where source_kind = 'event'")
-        self.assertEqual(text, "Kasım 2026, yaklaşık: Geçen parkta Mehmet'le karşılaştık ve kahve içtik. Katılanlar: Mehmet, "
-                               "Ben. Yer: park.")
+        self.assertEqual(text, "Geçen parkta Mehmet'le karşılaştık ve kahve içtik. Yer: park. Katılanlar: Mehmet.")
         self.assertEqual(done['added']['title'], "Geçen parkta Mehmet'le karşılaştık ve kahve içtik")
 
     async def test_albums_projects_and_the_old_bucket_are_gone(self):
-        self.assertNotIn('collection', memory_tools.MemoryAddInput.model_json_schema()['properties'])
+        self.assertNotIn('collection', legacy_add.MemoryAddInput.model_json_schema()['properties'])
         conn = await registry._connect()
         try:
             await mc.ensure_user(conn, 'alice')
             names = [c['name'] for c in await mc.list_collections(conn, 'alice')]
         finally:
             await conn.close()
-        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Sohbetler', 'Belgeler'])
+        self.assertEqual(names, ['Ben', 'Yaşadıklarım', 'Belgeler'])
         self.assertIn('error', await self.find('', **{'in': ['Eski hafıza']}))
 
     async def test_schema_nine_drops_albums_projects_and_the_ben_memberships_but_no_memory(self):
         note = await self.note('kedi')
-        await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate(
+        await legacy_add.add_memory(legacy_add.MemoryAddInput.model_validate(
             {'type': 'fact', 'text': 'Kahveyi sever.', 'about': 'me'}), self.context())
         await sql("insert into orion_mem_collection (user_id, id, kind, name) values ('alice', 'a_1', 'album', 'Eski'), "
                   "('alice', 'p_1', 'project', 'Eski hafıza')")
@@ -514,16 +253,62 @@ class EventTests(PostgresMemoryCase):
             await conn.close()
         self.assertEqual(await sql("select count(*) from orion_mem_collection where kind <> 'builtin'"), 0)
         self.assertEqual(await sql("select count(*) from orion_mem_collection_item where collection_id <> 'yasadiklarim' "
-                                   "and collection_id <> 'belgeler' and collection_id <> 'sohbetler'"), 0)
+                                   "and collection_id <> 'belgeler'"), 0)
         self.assertEqual(await sql('select count(*) from orion_memory'), 2)  # Never a memory.
         self.assertEqual(len((await self.find('', **{'in': ['me']}))['results']), 1)
+
+    async def test_the_users_time_words_are_metadata_only_never_in_the_text(self):
+        done = await self.add('Dün Mehmet ile parkta kahve içtik, dün güzeldi.', title='Dün Mehmet ile kahve', date='2026-11-17',
+                              said_as='dün', participants=['Mehmet', 'me'], place='park')
+        self.assertEqual(done['added']['said_as'], 'dün')
+        row = (await sql('select title, body from orion_mem_event', fetch=True))[0]
+        self.assertNotIn('ün ', ' ' + row['title'].lower())
+        self.assertNotIn('dün', (row['title'] + ' ' + (row['body'] or '')).lower())
+        text = await sql("select text from orion_memory where source_kind = 'event'")
+        self.assertNotIn('dün', text.lower())
+        self.assertNotIn('2026', text)  # No date in the embedded text.
+        self.assertNotIn('Ben', text)  # The user is not listed among the participants.
+        self.assertIn('Mehmet', text)
+        self.assertIn('park', text)
+        # Schema 10 cleans what is stored from before.
+        await sql("update orion_mem_event set title = 'Dün kahve içtik', body = null, said_as = 'dün'")
+        await sql("update orion_memory set text = '17 Kasım 2026 Salı (dün): Dün kahve içtik. Katılanlar: Ben.' "
+                  "where source_kind = 'event'")
+        conn = await registry._connect()
+        try:
+            await ev.clean_existing(conn)
+        finally:
+            await conn.close()
+        self.assertEqual(await sql('select title from orion_mem_event'), 'Kahve içtik')
+        self.assertEqual(await sql("select text from orion_memory where source_kind = 'event'"),
+                         'Kahve içtik. Yer: park. Katılanlar: Mehmet.')  # The links stay; the user is not listed.
+
+    async def test_schema_ten_drops_the_chats_index_and_keeps_the_rest(self):
+        note = await self.note('kedi')
+        await sql("insert into orion_mem_collection (user_id, id, kind, name) values ('alice', 'sohbetler', 'builtin', 'Sohbetler') "
+                  "on conflict do nothing")
+        await sql("insert into orion_memory (user_id, text, vector_space, embedding, source_kind, group_id) "
+                  "select 'alice', 'Kullanıcı: merhaba', vector_space, embedding, 'chat_index', 'wchat' from orion_memory limit 1")
+        await sql("insert into orion_mem_collection_item (user_id, collection_id, group_id, main) values "
+                  "('alice', 'sohbetler', 'wchat', true)")
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory_meta set value = '9' where key = 'schema_version'")
+            await memory._migrate(conn)
+        finally:
+            await conn.close()
+        self.assertEqual(await sql("select count(*) from orion_memory where source_kind = 'chat_index'"), 0)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection where id = 'sohbetler'"), 0)
+        self.assertEqual(await sql("select count(*) from orion_mem_collection_item where collection_id = 'sohbetler'"), 0)
+        self.assertIsNone(await sql("select to_regclass('orion_mem_chat_index_jobs')"))
+        self.assertEqual(await sql('select count(*) from orion_memory where group_id = $1', note), 1)  # Never a real memory.
 
     # --- recurrences ----------------------------------------------------------------------------------------------
 
     async def test_yearly_facts_list_what_is_coming_and_survive_a_new_version(self):
         async def fact(text, **kw):
-            args = memory_tools.MemoryAddInput.model_validate({'text': text, 'type': 'fact', **kw})
-            return await memory_tools.add_memory(args, self.context())
+            args = legacy_add.MemoryAddInput.model_validate({'text': text, 'type': 'fact', **kw})
+            return await legacy_add.add_memory(args, self.context())
         mother = await fact('Annemin doğum günü 17 Kasım.', about='Ayşe', relation='anne', category='date', repeats='yearly',
                             date='2026-11-17')
         self.assertEqual(mother['added']['repeats'], 'yearly:11-17')
@@ -614,7 +399,7 @@ class EventTests(PostgresMemoryCase):
     # --- schema ---------------------------------------------------------------------------------------------------
 
     async def test_schema_five_moves_to_six_without_touching_what_is_there(self):
-        fact = await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate({
+        fact = await legacy_add.add_memory(legacy_add.MemoryAddInput.model_validate({
             'text': 'Annemin doğum günü 17 Kasım.', 'type': 'fact', 'about': 'Ayşe', 'relation': 'anne',
             'category': 'date'}), self.context())
         conn = await registry._connect()
@@ -639,7 +424,7 @@ class EventTests(PostgresMemoryCase):
         event_id = await self.mother_day()
         row, group = await self.photo()
         await self.add('x', event=event_id, items=[row])
-        mother = await memory_tools.add_memory(memory_tools.MemoryAddInput.model_validate({
+        mother = await legacy_add.add_memory(legacy_add.MemoryAddInput.model_validate({
             'text': 'Annemin doğum günü 17 Kasım.', 'type': 'fact', 'about': 'Ayşe', 'category': 'date',
             'repeats': 'yearly', 'date': '11-17'}), self.context())
         self.assertTrue(mother['added'])

@@ -173,14 +173,8 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 9  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership.
-CHAT_INDEX = "chat_index"  # source_kind of the windows memory_chat_index keeps of a chat (a derived copy of it, never a note).
+SCHEMA_VERSION = 10  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership. 10: no chats index (windows, Sohbetler, its tables).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
-
-
-def plain_sql(alias: str) -> str:
-    """Not a window of the chats index (those are counted by orion_mem_chat_state, not as memories)."""
-    return f"{alias}.source_kind <> '{CHAT_INDEX}'"
 
 
 def live(alias: str) -> str:
@@ -216,9 +210,60 @@ async def _migrate(conn) -> None:
             await _schema_8(conn)
         if version < 9:
             await _schema_9(conn)
+        if version < 10:
+            await _schema_10(conn)
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)
+
+
+async def _schema_10(conn) -> None:
+    """The chats index is gone (user decision: memory belongs to "Asistanla konuş" only; normal chats are never indexed). Its
+    windows (rows with source_kind 'chat_index', their trash entries and Sohbetler memberships), the Sohbetler collection, the
+    index job table and the index columns of `orion_mem_chat_state` are deleted; the per-chat extraction state (extracted_upto,
+    summary) stays. The dump before this step (memory_backup) holds everything that is dropped. The partial indexes of the
+    windows are dropped by the background index build once the general ones exist."""
+    await conn.execute("delete from orion_mem_trash t using orion_memory m where m.id = t.memory_id and m.source_kind = 'chat_index'")
+    await conn.execute("delete from orion_mem_collection_item where collection_id = 'sohbetler'")
+    await conn.execute("delete from orion_mem_collection where id = 'sohbetler'")
+    await conn.execute("delete from orion_memory where source_kind = 'chat_index'")  # Text windows: no media, no wholes.
+    await conn.execute("drop table if exists orion_mem_chat_index_jobs")
+    for column in ("memory_enabled", "indexed_upto", "group_id", "item_id", "windows", "vector_space", "indexed_at"):
+        await conn.execute(f"alter table orion_mem_chat_state drop column if exists {column}")
+    await conn.execute("drop index if exists idx_orion_memory_chat")
+    from orion.kernel import memory_events
+    logger.info("Memory: %d event texts cleaned of time words", await memory_events.clean_existing(conn))
+    await _relation_history_table(conn)
+    await conn.execute("""
+        create table if not exists orion_mem_remember (
+            id bigserial primary key,
+            user_id text not null,
+            chat_id text not null,
+            text text not null,                  -- what the user asked to remember, in their words
+            created_at timestamptz not null default now(),
+            done_at timestamptz)""")
+    await conn.execute("create index if not exists idx_orion_mem_remember_open on orion_mem_remember (user_id, chat_id) "
+                       "where done_at is null")
+    # Chat compaction: messages up to `compacted_upto` are not sent to the model any more; `summary` is its first message.
+    await conn.execute("alter table orion_mem_chat_state add column if not exists compacted_upto bigint")
+    await conn.execute("alter table orion_mem_chat_state add column if not exists compacted_at timestamptz")
+    # The profile's non-pinned part after the background model compacted it.
+    await conn.execute("alter table orion_mem_profile add column if not exists compacted jsonb")
+    await conn.execute("alter table orion_mem_profile add column if not exists compacted_at timestamptz")
+
+
+async def _relation_history_table(conn) -> None:
+    """A person's relation to the user changes over time (sevgilim -> eski sevgilim): one row per relation with its dates,
+    like a fact's versions. `orion_mem_entity.relation` stays the current one. Entities that never changed have no row."""
+    await conn.execute("""
+        create table if not exists orion_mem_entity_relation (
+            id bigserial primary key,
+            user_id text not null,
+            entity_id bigint not null references orion_mem_entity(id),
+            relation text not null,
+            valid_from date, valid_to date,   -- when it was true in the world (open: since / until unknown or still true)
+            recorded_at timestamptz not null default now())""")
+    await conn.execute("create index if not exists idx_orion_mem_entity_relation on orion_mem_entity_relation (user_id, entity_id)")
 
 
 async def _schema_9(conn) -> None:
@@ -325,7 +370,7 @@ async def _schema_4(conn) -> None:
     # One chat's windows (a search inside a chat compares only these; also the chat's delete and re-index): partial, so
     # it holds nothing until chats are indexed.
     await conn.execute("create index if not exists idx_orion_memory_chat on orion_memory (user_id, source_chat_id) "
-                       f"where source_kind = '{CHAT_INDEX}'")
+                       "where source_kind = 'chat_index'")
     await conn.execute("""
         create table if not exists orion_mem_chat_index_jobs (
             user_id text primary key,
@@ -534,15 +579,15 @@ ANN_MAX_SCAN = 20000  # hnsw.max_scan_tuples: how far an iterative scan walks th
 # recount of the user's rows. Three small tables: memories per (group, space), items per kind, contents per space.
 _COUNTERS = (
     ("orion_memory_cnt_group", ("user_id", "g", "s"),
-     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "{plain} and {live}"),
+     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)", "{a}.vector_space"), "{live}"),
     ("orion_memory_cnt_groupall", ("user_id", "g"),
-     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)"), "{plain} and {live}"),
+     ("{a}.user_id", "coalesce({a}.group_id, 'r' || {a}.id::text)"), "{live}"),
     ("orion_memory_cnt_item", ("user_id", "i", "kind"),
      ("{a}.user_id", "coalesce({a}.item_id, coalesce({a}.copied_from, {a}.id)::text)", "{a}.kind"),
-     "not {a}.whole and {plain} and {live}"),
+     "not {a}.whole and {live}"),
     ("orion_memory_cnt_content", ("user_id", "c", "s"),
-     ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "{plain} and {live}"),
-)  # `plain`: not a chat index window (chats have their own counts; the page's memory total is not theirs).
+     ("{a}.user_id", "coalesce({a}.copied_from, {a}.id)", "{a}.vector_space"), "{live}"),
+)
 # Rows in the trash are not counted: an entry in orion_mem_trash moves them out of the counts (its triggers).
 # What the page's summary reads: how many counter rows each user has with n > 0, per aggregate key. The counters above
 # have a row per memory, so counting them at every read costs as much as the user has memories (seconds at millions,
@@ -573,7 +618,7 @@ def _count_sql(source: str, sign: int, other: str | None = None, trashed: bool =
         columns = ", ".join(names)
         select = ", ".join(e.format(a="r") for e in exprs)
         group = ", ".join(str(i + 1) for i in range(len(names)))
-        condition = where.format(a='r', live='true' if trashed else live('r'), plain=plain_sql('r'))
+        condition = where.format(a='r', live='true' if trashed else live('r'))
         aggregate = _AGGREGATES.get(table)
         if aggregate is None:
             sql += (f"insert into {table} ({columns}, n) select {select}, {sign} * count(*) from {source} r {join} "
@@ -678,7 +723,7 @@ async def _counter_triggers(conn) -> None:
             select = ", ".join(e.format(a="r") for e in exprs)
             group = ", ".join(str(i + 1) for i in range(len(names)))
             await conn.execute(f"insert into {table} ({', '.join(names)}, n) select {select}, count(*) "
-                               f"from orion_memory r where {where.format(a='r', live=live('r'), plain=plain_sql('r'))} group by {group}")
+                               f"from orion_memory r where {where.format(a='r', live=live('r'))} group by {group}")
             if table in _AGGREGATES:
                 target, keys = _AGGREGATES[table]
                 await conn.execute(f"truncate {target}")
@@ -694,22 +739,14 @@ _index_task = None
 
 
 def _index_plan() -> list[tuple[str, str]]:
-    # The chats index is the biggest collection and is searched only on its own: the general indexes a search uses (the
-    # vector one, the newest rows, the user's newest ids) leave its windows out (partial on the source kind; filters_sql
-    # names it literally in every search so the planner can use them) and the windows have their own (below). A search
-    # of the whole memory then walks only what it asks for, however many chat windows lie between the rows.
     plan = [("idx_orion_memory_item", "create index concurrently if not exists idx_orion_memory_item on orion_memory "
                                       "(user_id, item_id)"),
-            ("idx_orion_memory_newest_plain", "create index concurrently if not exists idx_orion_memory_newest_plain on "
-                                              "orion_memory (user_id, created_at desc, id desc) "
-                                              f"where source_kind <> '{CHAT_INDEX}'"),
-            ("idx_orion_memory_user_plain", "create index concurrently if not exists idx_orion_memory_user_plain on "
-                                           f"orion_memory (user_id, vector_space, id) where source_kind <> '{CHAT_INDEX}'"),
+            ("idx_orion_memory_newest", "create index concurrently if not exists idx_orion_memory_newest on "
+                                        "orion_memory (user_id, created_at desc, id desc)"),
             ("idx_orion_memory_hash", "create index concurrently if not exists idx_orion_memory_hash on orion_memory "
                                      "(user_id, vector_space, content_hash)"),
-            ("idx_orion_memory_ann_main", "create index concurrently if not exists idx_orion_memory_ann_main on "
-                                          "orion_memory using hnsw (embedding vector_cosine_ops) "
-                                          f"where source_kind <> '{CHAT_INDEX}'")]
+            ("idx_orion_memory_ann", "create index concurrently if not exists idx_orion_memory_ann on "
+                                     "orion_memory using hnsw (embedding vector_cosine_ops)")]
     # The minority kinds get an index of their own: a Görsel search in a memory that is mostly text would otherwise
     # walk the text-filled graph for its few images.
     for kind in ("image", "audio", "video"):
@@ -725,14 +762,6 @@ def _index_plan() -> list[tuple[str, str]]:
                                             "orion_mem_fact (user_id, recorded_at desc, id desc) where origin <> 'user'"))
     plan.append(("idx_orion_mem_event_auto", "create index concurrently if not exists idx_orion_mem_event_auto on "
                                              "orion_mem_event (user_id, recorded_at desc, id desc) where origin <> 'user'"))
-    plan.append(("idx_orion_memory_user_chats", "create index concurrently if not exists idx_orion_memory_user_chats on "
-                                                f"orion_memory (user_id, vector_space, id) where source_kind = '{CHAT_INDEX}'"))
-    plan.append(("idx_orion_memory_newest_chats", "create index concurrently if not exists idx_orion_memory_newest_chats on "
-                                                  "orion_memory (user_id, created_at desc, id desc) "
-                                                  f"where source_kind = '{CHAT_INDEX}'"))
-    plan.append(("idx_orion_memory_ann_chats", "create index concurrently if not exists idx_orion_memory_ann_chats on "
-                                               f"orion_memory using hnsw (embedding vector_cosine_ops) "
-                                               f"where source_kind = '{CHAT_INDEX}'"))
     if _trgm:
         plan.append(("idx_orion_memory_folded_trgm", "create index concurrently if not exists "
                                                      "idx_orion_memory_folded_trgm on orion_memory "
@@ -809,16 +838,14 @@ async def _build_indexes() -> None:
                     for old in await conn.fetch("select c.relname from pg_class c where c.relkind = 'i' and "
                                                 "c.relname ~ '^idx_orion_memory_trgm'"):
                         await conn.execute(f'drop index concurrently if exists "{old["relname"]}"')
-            # The general vector index of before the chats index (it holds the chat windows too) goes once its partial
-            # replacement is valid: searches then walk only what they ask for. (The ordinary btrees stay: other queries
-            # may use them, and a btree costs little.) Every vector search names the source kind (filters_sql).
-            if await conn.fetchval("select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
-                                   "where c.relname = 'idx_orion_memory_ann_main'"):
-                await conn.execute("drop index concurrently if exists idx_orion_memory_ann")
-            if await conn.fetchval("select count(*) = 2 from pg_index i join pg_class c on c.oid = i.indexrelid where "
-                                   "c.relname in ('idx_orion_memory_newest_plain', 'idx_orion_memory_newest_chats') "
-                                   "and i.indisvalid"):  # The full newest index would tempt the planner past them.
-                await conn.execute("drop index concurrently if exists idx_orion_memory_newest")
+            # The partial indexes of the removed chats index go once their general replacements are valid.
+            for new, olds in (("idx_orion_memory_ann", ("idx_orion_memory_ann_main", "idx_orion_memory_ann_chats")),
+                              ("idx_orion_memory_newest", ("idx_orion_memory_newest_plain", "idx_orion_memory_newest_chats",
+                                                           "idx_orion_memory_user_plain", "idx_orion_memory_user_chats"))):
+                if await conn.fetchval("select i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid "
+                                       "where c.relname = $1", new):
+                    for old in olds:
+                        await conn.execute(f"drop index concurrently if exists {old}")
         finally:
             await conn.execute("reset maintenance_work_mem")
             await conn.execute("select pg_advisory_unlock($1)", INDEX_LOCK)
@@ -1787,7 +1814,7 @@ def match_text(text: str, title: str | None = None, caption: str | None = None, 
     name (the title of a file's rows) and the user's caption. Names and captions are not embedded into the meaning
     vector (noise there); they only count here."""
     parts = [text or ""]
-    if title and source_kind not in ("chat_save", CHAT_INDEX):  # A file's name, a note's name; a chat's title is not a word of its text.
+    if title and source_kind != "chat_save":  # A file's name, a note's name; a chat's title is not a word of its text.
         parts.append(title)
     if caption:
         parts.append(caption)
@@ -1851,16 +1878,12 @@ def word_similarity(query: str, text: str) -> float:
 def filters_sql(vector_space: str, kind: str, params: list, collections: list[str] | None = None,
                 live: bool = True, when=None) -> str:
     """SQL conditions (after the user's, `$1`) for the page's model, kind and collection filters, and the rows in the
-    trash left out (`live`); their values are appended to `params` (the caller's, numbered from its length). The windows of the
-    chats index are only searched when Sohbetler (or one chat, "chat:<id>") is asked for: a search of the whole memory
-    is what it was before they existed. `when` (memory_events.when_keys): only memories dated within a date range."""
-    from orion.kernel.memory_collections import CHAT_PREFIX, filter_sql
+    trash left out (`live`); their values are appended to `params` (the caller's, numbered from its length). `when` (memory_events.when_keys): only memories dated within a date range."""
+    from orion.kernel.memory_collections import filter_sql
     sql = (f" and {LIVE}" if live else "") + filter_sql(collections, params)  # `live` False: the caller checks the trash.
     if when:
         from orion.kernel import memory_events
         sql += memory_events.when_sql(when, params)
-    if not any(c == "sohbetler" or c.startswith(CHAT_PREFIX) for c in collections or []):
-        sql += f" and source_kind <> '{CHAT_INDEX}'"  # A literal: the general vector and newest indexes skip the chats.
     if vector_space and vector_space != "all":
         params.append(vector_space)
         sql += f" and vector_space = ${len(params)}"

@@ -84,8 +84,10 @@ class ExtractTests(PostgresMemoryCase):
         await sql('truncate orion_mem_extraction_run, orion_mem_candidate, orion_mem_extraction_state, orion_mem_chat_state, '
                   'orion_chat_messages, orion_mem_proposal, orion_mem_fact, orion_mem_entity_merge, orion_mem_entity, '
                   'orion_mem_event, orion_mem_link, orion_mem_source, orion_mem_trash cascade')
-        await sql("insert into orion_chats(id, user_id, title) values ('c1', 'alice', 'Aile'), ('c2', 'alice', 'Tarih'), "
-                  "('b1', 'bob', 'Bob') on conflict (id) do update set title = excluded.title")
+        # Extraction reads only the "Asistanla konuş" chat: these test chats are assistant chats ('c3' is a normal one).
+        await sql("insert into orion_chats(id, user_id, title, assistant) values ('c1', 'alice', 'Aile', true), "
+                  "('c2', 'alice', 'Tarih', true), ('b1', 'bob', 'Bob', true), ('c3', 'alice', 'Normal', false) "
+                  "on conflict (id) do update set title = excluded.title, assistant = excluded.assistant")
         self.v2 = SimpleNamespace(router_model_group='chat', memory_v2=True, memory_extract_chats=True,
                                   memory_background_model='', memory_trash_days=30)
         self.off = SimpleNamespace(router_model_group='chat', memory_v2=False, memory_extract_chats=True,
@@ -159,7 +161,7 @@ class ExtractTests(PostgresMemoryCase):
     async def counts(self):
         return {t: await sql(f'select count(*) from {t}') for t in
                 ('orion_mem_fact', 'orion_mem_event', 'orion_mem_entity', 'orion_mem_proposal', 'orion_mem_source')} | {
-            'memory_rows': await sql("select count(*) from orion_memory where source_kind <> 'chat_index'")}
+            'memory_rows': await sql("select count(*) from orion_memory")}
 
     async def family_chat(self):
         return await self.put('c1', say('user', 'Bugün annemin doğum günüydü, Ayşe annem 60 oldu.'),
@@ -167,7 +169,7 @@ class ExtractTests(PostgresMemoryCase):
 
     def mom_ops(self, ids, **extra):
         return [
-            {'op': 'add_event', 'title': 'Annemin doğum günü', 'date': '2020-01-01', 'said_as': 'bugün',
+            {'op': 'add_event', 'title': 'Annemin doğum günü', 'date_from': datetime.now().astimezone().date().isoformat(), 'said_as': 'bugün',
              'entities': ['e1'], 'messages': [ids[0], ids[0]], 'bucket': 'direct', 'unsupported_risk': 'low'},
             {'op': 'add_fact', 'entity': 'e1', 'category': 'date', 'statement': 'Annemin doğum günü 17 Kasım.',
              'recurring': '11-17', 'messages': [ids[0], ids[0]], 'bucket': 'direct', 'unsupported_risk': 'low'}], \
@@ -191,23 +193,25 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual([(c['verdict'], c['bucket'], c['unsupported_risk'], c['dedupe']) for c in found],
                          [('would_write', 'direct', 'low', 'new')] * 2)
         event = found[0]['op']
-        # "bugün" is resolved from the message's own day, not from the model's wrong date.
-        self.assertEqual(event['when']['on'], datetime.now().astimezone().date().isoformat())
-        self.assertIn('counted from', event['when']['note'])
+        # The Hub does not read "bugün": the writer model's date is stored with the words kept beside it.
+        self.assertEqual((event['when']['on'], event['when']['said_as']),
+                         (datetime.now().astimezone().date().isoformat(), 'bugün'))
         self.assertEqual((found[0]['first_message'], found[0]['last_message']), (ids[0], ids[0]))
         state = (await sql('select * from orion_mem_chat_state where chat_id = $1', 'c1', fetch=True))[0]
         self.assertEqual((state['extracted_upto'], state['summary']), (ids[1], 'Kullanıcı annesinin doğum gününü anlattı.'))
 
-    async def test_relative_dates_follow_the_message_time_not_today(self):
+    async def test_the_model_is_given_each_messages_time_and_today_to_resolve_relative_dates(self):
         ids = await self.family_chat()
         three_days_ago = datetime.now().astimezone() - timedelta(days=3)
         await sql('update orion_chat_messages set created_at = $1 where chat_id = $2', three_days_ago, 'c1')
         ops, entities = self.mom_ops(ids)
+        ops[0]['date_from'] = three_days_ago.date().isoformat()  # What the model made of "bugün" at that message's time.
         self.reply = answer(ops[:1], entities)
         run_id = await self.run_for()
         self.assertEqual((await self.candidates(run_id))[0]['op']['when']['on'], three_days_ago.date().isoformat())
         sent = json.loads(self.calls[0][1]['content'])
         self.assertEqual(sent['new_messages'][0]['time'][:10], three_days_ago.date().isoformat())
+        self.assertEqual(sent['today'], datetime.now().astimezone().date().isoformat())
 
     async def test_the_pre_filter_drops_impersonal_chats_without_a_model_call_and_says_why(self):
         ids = await self.put('c2', say('user', 'Atatürk nerede doğdu?'), say('assistant', 'Selanik. Ben ve annem bile bilirdik.'))
@@ -423,7 +427,7 @@ class ExtractTests(PostgresMemoryCase):
 
     # --- the job ---------------------------------------------------------------------------------------------------------
 
-    async def test_the_queue_is_bounded_one_per_chat_and_a_chat_that_is_off_is_not_queued(self):
+    async def test_the_queue_is_bounded_one_per_chat_and_the_memory_being_off_queues_nothing(self):
         await self.family_chat()
         first = await mx.enqueue('alice', 'c1', self.v2)
         await self.stop_worker()
@@ -432,10 +436,7 @@ class ExtractTests(PostgresMemoryCase):
         await self.put('c2', say('user', 'Ben bugün çalıştım.'))
         with patch.object(mx, 'QUEUE_MAX', 1):
             self.assertIsNone(await mx.enqueue('alice', 'c2', self.v2))  # The queue is full.
-        await sql("insert into orion_mem_chat_state (user_id, chat_id, memory_enabled) values ('alice', 'c2', false)")
-        self.assertIsNone(await mx.enqueue('alice', 'c2', self.v2))  # The chat's own switch is off.
         self.assertIsNone(await mx.enqueue('alice', 'c2', self.off))  # The user's memory_v2 is off.
-        await sql("update orion_mem_chat_state set memory_enabled = true where chat_id = 'c2'")
         self.assertTrue(await mx.enqueue('alice', 'c2', self.v2))
 
     async def test_a_queued_run_is_cancelled_at_once_and_a_running_one_within_a_heartbeat(self):
@@ -552,19 +553,59 @@ class ExtractTests(PostgresMemoryCase):
                 break
         self.assertIsNone(mx._worker)
 
-    async def test_runs_of_a_deleted_or_switched_off_chat_go_with_it(self):
-        await self.family_chat()
-        await self.run_for()
-        from orion.kernel import memory_chat_index as ci
-        await ci.set_chat_enabled('alice', 'c1', False, self.v2)
-        self.assertEqual(await sql('select count(*) from orion_mem_extraction_run'), 0)
-        self.assertIsNone(await sql('select summary from orion_mem_chat_state where chat_id = $1', 'c1'))
-        await ci.set_chat_enabled('alice', 'c1', True, self.v2)
+    async def test_only_the_assistant_chat_is_ever_read(self):
+        await self.put('c3', say('user', 'Benim kedim var.'), say('assistant', 'Güzel.'))
+        self.assertIsNone(await mx.enqueue('alice', 'c3', self.v2))  # A normal chat is never queued.
+        backlog = await mx.enqueue_backlog('alice', self.v2)
+        self.assertEqual(backlog['queued'], [])
+        await self.put('c1', say('user', 'Benim kedim var.'), say('assistant', 'Güzel.'))
+        self.assertIsNotNone(await mx.enqueue('alice', 'c1', self.v2))
         await self.stop_worker()
-        await sql("delete from orion_mem_extraction_run")
-        await self.run_for()
-        await ci.forget_chat('c1', 'alice')
-        self.assertEqual((await sql('select count(*) from orion_mem_extraction_run'), await sql('select count(*) from orion_mem_candidate')), (0, 0))
+        # Even a run that was queued before the chat stopped being the assistant chat reads nothing.
+        await sql("update orion_chats set assistant = false where id = 'c1'")
+        run_id = await mx.process_next(['alice'])
+        self.assertEqual((await self.run_row(run_id))['prefilter'], 'dropped:not_assistant_chat')
+        self.assertEqual(self.calls, [])
+
+    async def test_remember_is_queued_and_filed_live_and_a_relation_change_is_a_card(self):
+        defne = await me.create_entity('alice', self.v2, 'Defne', relation='sevgilim')
+        rid = await mx.queue_remember('alice', 'c1', 'Sevgilimden ayrıldım, yeni sevgilim Merve. Cuma kitap iade et.', self.v2)
+        self.assertEqual(await sql("select count(*) from orion_mem_extraction_run where chat_id = 'remember:c1' and "
+                                   "state = 'queued'"), 1)
+        # A second remember before the writer ran shares the queued run.
+        await mx.queue_remember('alice', 'c1', 'Merve sevgilim.', self.v2)
+        self.assertEqual(await sql("select count(*) from orion_mem_extraction_run where chat_id = 'remember:c1'"), 1)
+        ids = [rid, rid]
+        self.reply = answer(
+            [{'op': 'set_relation', 'entity': 'e1', 'relation': 'eski sevgilim', 'since': '2026-11-18', 'messages': ids,
+              'bucket': 'direct', 'unsupported_risk': 'low'},
+             {'op': 'add_fact', 'entity': 'e2', 'category': 'relationship', 'statement': 'Merve benim sevgilim.',
+              'messages': ids, 'bucket': 'direct', 'unsupported_risk': 'low'},
+             {'op': 'add_note', 'text': 'Cuma günü kitap iade et.', 'messages': ids, 'bucket': 'direct',
+              'unsupported_risk': 'low'}],
+            entities=[{'ref': 'e1', 'name': 'Defne', 'kind': 'person', 'match': defne['id']},
+                      {'ref': 'e2', 'name': 'Merve', 'kind': 'person', 'relation': 'sevgilim'}])
+        run_id = await mx.process_next(['alice'])  # Live without the switch: the user asked for it.
+        run = await self.run_row(run_id)
+        self.assertEqual((run['mode'], run['state'], run['candidates']), ('live', 'done', 3))
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn('remembered_texts', self.calls[0][1]['content'])
+        self.assertEqual(await sql("select count(*) from orion_mem_remember where done_at is null"), 0)
+        self.assertEqual(await sql("select count(*) from orion_mem_fact where origin = 'extraction' and statement = $1",
+                                   'Merve benim sevgilim.'), 1)
+        self.assertEqual(await sql("select count(*) from orion_memory where source_kind = 'assistant' and text like 'Cuma%'"), 1)
+        self.assertEqual(await sql("select relation from orion_mem_entity where id = $1", defne['id']), 'sevgilim')  # A card first.
+        card = await sql("select id from orion_mem_proposal where action = 'set_relation' and state = 'pending'")
+        self.assertTrue(card)
+        done = await me.decide('alice', self.v2, accept=[card])
+        self.assertEqual(done[0]['state'], 'accepted')
+        self.assertEqual(await sql("select relation from orion_mem_entity where id = $1", defne['id']), 'eski sevgilim')
+        async with me._db() as conn:
+            history = await me.relation_history(conn, 'alice', defne['id'])
+        self.assertEqual([(h['relation'], h['until']) for h in history], [('sevgilim', '2026-11-18')])
+        # The new partner is found as "sevgilim" now; the old one by her name.
+        async with me._db() as conn:
+            self.assertEqual([e['name'] for e in await me.find_entities(conn, 'alice', 'sevgilim')], ['Merve'])
 
     async def test_a_summary_made_stale_is_remade_by_a_summary_only_run(self):
         await self.put('c1', say('user', 'Benim kedim var.'), say('assistant', 'Güzel.'))

@@ -157,6 +157,7 @@ async def llama_stream_chat_typed(
         "model": settings.router_model_group,
         "messages": messages,
         "stream": True,
+        "stream_options": {"include_usage": True},  # The real token count of the request (chat compaction's threshold).
     }
     if settings.temperature is not None:
         payload["temperature"] = settings.temperature
@@ -200,7 +201,9 @@ async def llama_stream_chat_typed(
 
         if metrics := data.get("metrics"):
             yield ("metrics", json.dumps(metrics))
-            
+        if isinstance(data.get("usage"), dict) and data["usage"].get("prompt_tokens") is not None:
+            yield ("usage", json.dumps(data["usage"]))
+
         choices = data.get("choices") or []
         if not choices:
             return

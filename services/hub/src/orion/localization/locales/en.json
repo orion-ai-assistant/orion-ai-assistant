@@ -2,7 +2,7 @@
   "categories.browser.name": "Browser",
   "categories.memory.name": "Memory",
   "tools.search_memory.name": "Search memory",
-  "tools.add_memory.name": "Add to memory",
+  "tools.remember.name": "Remember",
   "tools.delete_memory.name": "Delete from memory",
   "tools.open_memory_files.name": "Open memory files",
   "tools.memory_context.name": "Memory context",

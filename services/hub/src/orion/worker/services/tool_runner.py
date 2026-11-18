@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from orion.contracts.tools import LEGACY_WEB_TOOLS
+from orion.contracts.tools import LEGACY_WEB_TOOLS, MEMORY_TOOLS, expand_split_tools
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
 from orion.worker.services.tool_history import MODEL_MEDIA_KINDS
@@ -106,9 +106,11 @@ async def execute_tool(tool, arguments, context):
 
 
 class ToolConversation:
-    def __init__(self, context, enabled):
+    def __init__(self, context, enabled, assistant: bool = True):
         self.context = context
-        self.enabled = set(enabled)
+        self.enabled = set(expand_split_tools(enabled))  # A job queued before add_memory was split still names it.
+        if not assistant:  # Memory belongs to "Asistanla konuş" only: a normal chat never gets a memory tool.
+            self.enabled.difference_update(MEMORY_TOOLS)
         if self.enabled & {'youtube_control', 'ytmusic_control'}:
             self.enabled.difference_update({'youtube_control', 'ytmusic_control'})
             self.enabled.add('media_control')

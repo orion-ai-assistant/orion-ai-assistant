@@ -286,66 +286,35 @@ async def memory_move_start(payload: MemoryMove, request: Request, current_user:
         raise HTTPException(503, str(exc)) from exc
 
 
-@router.get("/api/v1/memory/chats/index")
-async def memory_chats_index_status(request: Request, current_user: str = Depends(get_current_user)):
-    """The chats index (Sohbetler): how many chats and windows, how many chats the button would index, and the job."""
-    from orion.kernel import memory, memory_chat_index
+@router.get("/api/v1/chats/{chat_id}/compact")
+async def get_chat_compaction(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """The compaction of the "Asistanla konuş" chat: {running, compacted_upto (last message id covered), compacted_at,
+    summary_tokens, messages_since, tokens_since}."""
+    from orion.kernel import memory, memory_compact
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
+    try:
+        return await memory_compact.state(current_user, chat_id)
+    except memory.MemoryUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@router.post("/api/v1/chats/{chat_id}/compact", status_code=202)
+async def compact_chat_endpoint(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """"Sohbeti sıkıştır": one background-model call turns the conversation into a summary (its new first message for the
+    model; older messages stay stored and shown) and memory items. Answers 202 {"state": "started"} at once; poll the GET.
+    400: not the assistant chat / memory off / nothing to compact; 409: already running."""
+    from orion.kernel import memory, memory_compact
+    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
     settings = await get_runtime_settings(request.app.state.redis, current_user)
-    try:
-        return {**await memory_chat_index.status(current_user), "enabled": memory_chat_index.enabled(settings)}
-    except memory.MemoryUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-
-
-@router.post("/api/v1/memory/chats/index")
-async def memory_chats_index_start(request: Request, current_user: str = Depends(get_current_user)):
-    """"Eski sohbetleri dizinle": index every chat that is not indexed yet, in the background (progress, cancel)."""
-    from orion.kernel import memory, memory_chat_index
-    try:
-        return {"job": await memory_chat_index.start_backlog(
-            current_user, await get_runtime_settings(request.app.state.redis, current_user))}
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except memory.MemoryUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-
-
-@router.post("/api/v1/memory/chats/index/cancel")
-async def memory_chats_index_cancel(current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory, memory_chat_index
-    try:
-        return {"job": await memory_chat_index.cancel_backlog(current_user)}
-    except memory.MemoryUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-
-
-class ChatMemorySwitch(BaseModel):
-    enabled: bool
-
-
-@router.get("/api/v1/chats/{chat_id}/memory")
-async def get_chat_memory_state(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    from orion.kernel import memory, memory_chat_index
-    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
-    try:
-        return await memory_chat_index.chat_state(current_user, chat_id)
-    except memory.MemoryUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
-
-
-@router.put("/api/v1/chats/{chat_id}/memory")
-async def put_chat_memory_state(chat_id: str, payload: ChatMemorySwitch, request: Request,
-                                current_user: str = Depends(get_current_user)):
-    """The chat's own switch for the chats index: off removes its windows and keeps the chat out of the memory."""
-    from orion.kernel import memory, memory_chat_index
-    await ensure_chat_access(request.app.state.redis, current_user, chat_id)
-    try:
-        return await memory_chat_index.set_chat_enabled(
-            current_user, chat_id, payload.enabled, await get_runtime_settings(request.app.state.redis, current_user))
-    except LookupError as exc:
-        raise HTTPException(404, "Sohbet bulunamadı.") from exc
-    except memory.MemoryUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
+    got = await memory_compact.state(current_user, chat_id)
+    if got["running"]:
+        raise HTTPException(409, "Bu sohbet zaten sıkıştırılıyor.")
+    if not got["messages_since"]:
+        raise HTTPException(400, "Sıkıştırılacak mesaj yok.")
+    if not memory_compact.mx.enabled(settings):
+        raise HTTPException(400, "Hafıza kapalı (memory_v2 ve sohbetten çıkarım).")
+    memory_compact.start(current_user, chat_id, settings)
+    return {"state": "started"}
 
 
 # --- Ben: entities, facts, proposals (memory_entities; behind the user's memory_v2) -------------------------------------
@@ -565,8 +534,9 @@ class ProfilePin(BaseModel):
 
 @router.get("/api/v1/memory/profile")
 async def memory_profile_get(request: Request, current_user: str = Depends(get_current_user)):
-    """The profile block as the next chat would carry it ({text, tokens, limit, overflow, left_out}), the pinned lines with
-    their state (ok / replaced / gone / locked) and the generated lines with their fact ids."""
+    """The profile block as the next "Asistanla konuş" request would carry it in its system prompt ({text, tokens, limit (the
+    `memory_profile_tokens` budget, default 800), overflow, left_out}), the pinned lines with their state (ok / replaced / gone /
+    locked) and the generated lines (the user's own facts only) with their fact id, `why` (pinned | own_fact) and category."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.get(current_user, settings))
 
@@ -585,6 +555,22 @@ async def memory_profile_pin(payload: ProfilePin, request: Request, current_user
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.pin_fact(
         current_user, settings, payload.fact_id, payload.text))
+
+
+@router.post("/api/v1/memory/profile/compact")
+async def memory_profile_compact(request: Request, current_user: str = Depends(get_current_user)):
+    """"Profili düzenle": the background model compacts the non-pinned part of the profile now (the same the Hub starts by
+    itself past the hard limit). Answers like GET /memory/profile. 400 when there is nothing to shorten."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.compact_profile(current_user, settings))
+
+
+@router.get("/api/v1/memory/profile/why/{fact_id}")
+async def memory_profile_why(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
+    """Why a line is in the profile and where the fact comes from: {fact_id, reason (pinned | own_fact | not_in_block),
+    statement, category, about, sources}. 404 for a fact that is not the user's."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda settings: memory_profile.why(current_user, settings, fact_id))
 
 
 @router.delete("/api/v1/memory/profile/pin/{fact_id}")

@@ -11,6 +11,7 @@ from orion.worker.services import router as router_module
 from orion.worker.tools._base import ToolContext
 from orion.worker.tools._registry import get_registry
 from orion.worker.tools.memory import tools as memory_tools
+import legacy_add
 
 
 class FakeConn:
@@ -350,12 +351,12 @@ def test_delete_is_scoped_to_the_user_and_a_foreign_id_is_404(monkeypatch):
 def test_add_and_delete_tools_are_on_by_default_and_report_what_they_did(monkeypatch):
     from orion.contracts.tools import default_tool_selection
     enabled = get_registry().enabled(default_tool_selection())
-    assert {'add_memory', 'delete_memory'} <= set(enabled)
+    assert {'remember', 'delete_memory'} <= set(enabled)
     conn = ListConn()
     wire(monkeypatch, conn)
     _tool_settings(monkeypatch)
     context = ToolContext('u1', 'c', 't', None)
-    added = asyncio.run(memory_tools.add_memory(memory_tools.MemoryAddInput(text='Doğum günüm 3 Mart.'), context))
+    added = asyncio.run(legacy_add.add_memory(legacy_add.MemoryAddInput(text='Doğum günüm 3 Mart.'), context))
     assert added == {'added': 'Doğum günüm 3 Mart.'} and conn.inserted[0][4] == 'assistant'
     # Deleting through the chat model is tested against a real database (test_memory_rank: confirmation card).
 

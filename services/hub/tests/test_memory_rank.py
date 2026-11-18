@@ -529,7 +529,7 @@ class RankTests(PostgresMemoryCase):
             page = await memory_groups.list_groups('alice', self.settings, q='x', kind='image', limit=10)
         self.assertEqual({g['matched_part'] for g in page['groups']}, set(images))
         self.assertEqual(memory.filters_sql('all', 'image', []),
-                         f" and {memory.LIVE} and source_kind <> 'chat_index' and kind = 'image'")
+                         f" and {memory.LIVE} and kind = 'image'")
 
     async def test_cores_concatenate_to_the_original_text_byte_for_byte(self):
         import random

@@ -5,6 +5,8 @@
 What a card can ask (`action`):
 - `add`            a fact the model may not write itself (a locked kind) - carried out by memory_entities.carry_out
 - `supersede`      a fact that changed (add_memory `replaces`): the old version closes only when the user accepts
+- `set_relation`   a person's relation to the user changed (remember_fact `new_relation`: sevgilim -> eski sevgilim): the old
+                   relation is closed with a date and the new one opens; `old` / `statement` hold the two relations
 - `merge_entities` two entities that look the same (a batch card: each pair answered on its own)
 - `trash`          the model asked to delete memories (delete_memory): they go to the trash (restorable) only when the
                    user accepts; the answer carries `trash_id` and the card says where they are now (in the trash,
@@ -24,7 +26,7 @@ from orion.kernel import memory
 
 logger = logging.getLogger(__name__)
 
-ACTIONS = ("add", "supersede", "merge_entities", "trash")
+ACTIONS = ("add", "supersede", "merge_entities", "trash", "set_relation")
 # Keys of a payload that hold the user's words or a memory's text: removed from a card once it is decided.
 CONTENT_KEYS = ("statement", "old", "preview")
 
@@ -43,6 +45,8 @@ def _same_question(action: str, a: dict, b: dict) -> bool:
         return a.get("about") == b.get("about") and _text(a) == _text(b)
     if action == "supersede":
         return a.get("fact_id") == b.get("fact_id") and _text(a) == _text(b)
+    if action == "set_relation":
+        return a.get("entity_id") == b.get("entity_id") and _text(a) == _text(b)
     if action == "merge_entities":
         return (a.get("from_id"), a.get("into_id")) == (b.get("from_id"), b.get("into_id"))
     if action == "trash":
@@ -71,9 +75,12 @@ async def propose(user_id: str, settings, action: str, payload: dict, reason: st
         existing = await pending_like(db, user_id, action, payload)
         if existing:
             return existing
-        return await db.fetchval(
+        pid = await db.fetchval(
             "insert into orion_mem_proposal (user_id, batch_id, action, payload, reason, chat_id) values ($1, $2, $3, $4, $5, "
             "$6) returning id", user_id, batch_id, action, json.dumps(payload, ensure_ascii=False), reason, chat_id)
+    if getattr(settings, "memory_auto_approve", False) and action != "merge_entities" and batch_id is None:
+        await decide(user_id, settings, accept=[pid], auto=True)  # Applied at once; the answer reaches the model like a press.
+    return pid
 
 
 async def propose_trash(user_id: str, settings, ids: list[int], whole: bool = False, chat_id: str | None = None,
@@ -138,8 +145,47 @@ async def count_pending(user_id: str, settings) -> int:
                                        user_id))
 
 
+def _answer_text(card: dict, state: str, auto: bool) -> str | None:
+    """The line the model reads about a card's outcome: "[Hafıza kartı: 'old' → 'new' — onaylandı]"; None for a card that does not
+    concern the conversation (a merge)."""
+    p = card["payload"]
+    what = {"accepted": "onaylandı", "edited": "düzenlenerek onaylandı", "rejected": "reddedildi"}.get(state)
+    if what is None or card["action"] == "merge_entities":
+        return None
+    if auto and state != "rejected":
+        what = "otomatik onaylandı"
+    if card["action"] == "supersede":
+        body = f"'{p.get('old')}' → '{p.get('statement')}'"
+    elif card["action"] == "set_relation":
+        body = f"{p.get('about')}: ilişki '{p.get('old') or '?'}' → '{p.get('statement')}'"
+    elif card["action"] == "trash":
+        body = f"silme ({len(p.get('ids') or [])} kayıt)"
+    else:
+        body = f"'{p.get('statement')}' eklensin"
+    return f"[Hafıza kartı: {body} — {what}]"
+
+
+async def _tell_the_model(user_id: str, card: dict, state: str, auto: bool) -> None:
+    """The outcome of a card goes into the "Asistanla konuş" conversation as a user-role note (`memory_card_answer`; the app may
+    hide it) so the next model turn knows. Never raises."""
+    text = _answer_text(card, state, auto)
+    chat_id = card.get("chat_id")
+    if not text or not chat_id:
+        return
+    try:
+        from orion.kernel.registry import insert_messages
+        me = _entities()
+        async with me._db() as conn:
+            if not await conn.fetchval("select assistant from orion_chats where id = $1 and user_id = $2", chat_id, user_id):
+                return
+        await insert_messages(chat_id=chat_id, messages=[{"role": "user", "content": text, "memory_card_answer": True,
+                                                          "turn_id": f"card-{card['id']}"}])
+    except Exception:
+        logger.warning("Memory card %s: its answer could not be put into the chat", card.get("id"), exc_info=True)
+
+
 async def decide(user_id: str, settings, accept: list[int] = (), reject: list[int] = (),
-                 edits: dict[int, str] | None = None) -> list[dict]:
+                 edits: dict[int, str] | None = None, auto: bool = False) -> list[dict]:
     """The user's answer to cards: each accepted one is carried out (in its own transaction), rejected ones closed;
     `edits` {id: sentence}: Düzenle (the user's own sentence is written instead, state 'edited'). Each result:
     {"id", "state": accepted | edited | rejected | pending (failed: "error") | already | unknown, ...what was done}. A
@@ -179,6 +225,8 @@ async def decide(user_id: str, settings, accept: list[int] = (), reject: list[in
         result = {"id": pid, "state": state, **extra}
         if error:
             result["error"] = error
+        if state != "pending":
+            await _tell_the_model(user_id, card, state, auto)
         out.append(result)
     return out
 

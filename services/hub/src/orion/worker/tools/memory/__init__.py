@@ -1,43 +1,35 @@
 from .._base import Category, Tool
-from .tools import (MemoryAddInput, MemoryContextInput, MemoryDeleteInput, MemoryOpenInput, MemorySearchInput,
-                    add_memory, delete_memory, memory_context, open_memory_files, search_memory)
+from .tools import (MemoryContextInput, MemoryDeleteInput, MemoryOpenInput, MemorySearchInput, RememberInput,
+                    delete_memory, memory_context, open_memory_files, remember, search_memory)
 
 CATEGORY = Category(
-    id="memory", name="Hafıza", description="Kullanıcının hafızaya kaydettiği geçmiş konuşmalar ve notlar.",
+    id="memory", name="Hafıza", description="Kullanıcının hafızaya kaydettiği notlar, bilgiler, olaylar ve dosyalar (yalnız Asistanla konuş'ta).",
     tools=(Tool(id="search_memory", name="Hafızada ara",
                 description=(
-                    "Searches the user's memory (chats, notes, files, images, audio, video). Ask it before "
-                    "guessing anything personal. Each query is a text (by meaning), a keyword (exact words only) or "
+                    "Searches the user's memory (notes, facts, events, files, images, audio, video). Use it ONLY when the "
+                    "user asks about the past or about something personal (their people, plans, preferences), never on your own "
+                    "for an ordinary question; ask it before guessing anything personal. Each query is a text (by meaning), a keyword (exact words only) or "
                     "an id from an earlier result (memories like that one); like=false leaves matching memories out. "
                     "mode together = close to all liked queries, separate = close to any. Results are pages, best "
                     "first; with no query, the newest (of kind). The order is the shown score, nothing else. With the "
                     "user's memory collections on: 'about' limits it to one person or thing, 'when' is the one date filter "
                     "(it also lists replaced fact versions true then as 'past_facts'), 'include_past' lists how facts used to be (by words), 'budget' fits the answer into a "
                     "token budget, and a query that names a known person or thing also returns that 'entity' card "
-                    "(its current facts and latest events) before the results."),
+                    "(its current facts and latest events) before the results. A fact carries its 'since'; one that "
+                    "changed has 'history' {versions, last_change, previously}; the full history is memory_context's. An "
+                    "event's 'said_as' carries the day it was said ('geçen hafta, said on 2026-11-18')."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
-           Tool(id="add_memory", name="Hafızaya ekle",
-                description=("Saves something to remember when the user says 'remember this', 'keep in mind', "
-                             "'don't forget' (or tells you what happened). Never save without being asked. ALWAYS write "
-                             "everything (text, about, relation, place, participants) in the user's own language, exactly "
-                             "as they said it: never translate and never add English labels. Fields by type. "
-                             "type=note (default): 'text' (+ optional 'title'). "
-                             "type=fact (when the user's memory collections are on): 'text' = ONE short sentence in the "
-                             "user's words ('Annemin adı Ayşe.'), 'about' = who it is about as the user says it ('Annem', "
-                             "'Mehmet'; empty or 'me' for the user: their own name, age, job), 'relation' = how a new person "
-                             "relates to the user ('annem'), 'category', optional 'since'. Example: {type:'fact', "
-                             "text:'Annemin adı Ayşe.', about:'Annem', relation:'annem', category:'relationship'}. A changed "
-                             "fact is passed with 'replaces' (a card asks the user, you never close or rewrite a fact); a "
-                             "locked kind (health, religion, money ...) also only opens a card. "
-                             "type=event: 'text' = what happened ('Mehmet ile parkta kahve içtik.'), 'said_as' = the user's "
-                             "own time words ('geçen gün'), 'date' only if the user gave one (YYYY-MM-DD), 'participants' "
-                             "(names, 'me' for the user), 'place'. If the user gave no exact day, KEEP said_as, set "
-                             "precision='approx' and do not invent a date. Example: {type:'event', text:'Mehmet ile parkta "
-                             "kahve içtik.', said_as:'geçen gün', precision:'approx', participants:['Mehmet'], place:'park'}. "
-                             "Leave unused fields out. The answer may say same_as: it was already known."),
-                input_model=MemoryAddInput, handler=add_memory, timeout_seconds=45, default_on=True),
+           Tool(id="remember", name="Hatırla",
+                description=("When the user asks you to remember something ('remember this', 'note that', 'don't forget'), "
+                             "or tells you something personal and asks you to keep it, call this with their words in 'text', "
+                             "in their own language, never translated. You do not choose what kind of memory it is: a "
+                             "background writer files it (a fact, an event, a person, a changed relation or a note) and "
+                             "anything that changes what is already known waits for the user's card. It only queues: answer "
+                             "that it is noted. Never use it without being asked. Example: {text: 'Sevgilimden ayrıldım, "
+                             "yeni sevgilim Merve.'}."),
+                input_model=RememberInput, handler=remember, timeout_seconds=30, default_on=True),
            Tool(id="delete_memory", name="Hafızadan sil",
-                description=("When the user says 'forget this', 'delete it from your memory'. Find the memories with "
+                description=("ONLY when the user asks to forget or delete something ('forget this', 'delete it from your memory'). Find the memories with "
                              "search_memory first and pass only the ids of what the user wants forgotten; "
                              "whole_memory=true takes everything saved together with each id. If unsure, ask "
                              "first. This only ASKS: the user sees a confirmation card and its Sil button moves the "
