@@ -646,7 +646,7 @@ async def embed_text(text: str, settings: RuntimeSettings, kind: str = "document
     prefix, context = "", 0
     if local:
         from services.shared import local_parts
-        profile = local_parts.embedding_profile()
+        profile = local_parts.embedding_profile_cached()
         prefix, context = profile[f"{kind}_prefix"], profile["context"]
         clean = " ".join(title.split()).replace("|", "/")
         if clean and kind == "document" and prefix.startswith("title: none"):

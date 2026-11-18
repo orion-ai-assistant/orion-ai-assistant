@@ -496,6 +496,55 @@ def embedding_profile(config=None, hw=None):
             'document_prefix': model.get('document_prefix', ''), 'vector_space': model.get('vector_space', '')}
 
 
+# embedding_profile() reads the catalog, the parts' config, the installation registry (a dozen times, to find where
+# things live) and the model folders: about 20 ms warm on the developer PC, and every memory search asks for it (the
+# vector space, the context, the prefixes). The answer only changes when one of those files does (the user picks another
+# embedding model, an install or a move rewrites the registry), so it is remembered while their size and time stay the
+# same; a model folder edited in place (a file copied into it) is not among them, hence the short time limit as well.
+PROFILE_SECONDS = 30.0
+_profile_cache = {'stamp': None, 'at': 0.0, 'fn': None, 'value': None}
+
+
+def _profile_stamp():
+    """(size, mtime) of every file embedding_profile() depends on, in either layout (installed Orion, source tree,
+    ORION_PARTS_HOME); a file that is not there counts as None. Only stat calls: no registry read."""
+    paths = [CATALOG]
+    homes = [ROOT / '.local_parts']
+    override = os.getenv('ORION_PARTS_HOME')
+    if override:
+        homes.append(Path(override))
+    try:
+        from .installation_registry import default_registry_path
+        registry = default_registry_path()
+        paths.append(registry)
+        homes.append(registry.parent / 'Parts')
+    except Exception:
+        pass
+    for folder in homes:
+        paths += [folder / 'config.json', folder / 'location' / 'install.json']
+    stamp = []
+    for path in paths:
+        try:
+            info = path.stat()
+            stamp.append((str(path), info.st_size, info.st_mtime_ns))
+        except OSError:
+            stamp.append((str(path), None, None))
+    return tuple(stamp)
+
+
+def embedding_profile_cached():
+    """embedding_profile() for a caller that asks on every search: the same answer, remembered (see above)."""
+    function = embedding_profile
+    stamp = _profile_stamp()
+    now = time.monotonic()
+    cached = _profile_cache
+    if cached['fn'] is function and cached['stamp'] == stamp and now - cached['at'] < PROFILE_SECONDS:
+        return dict(cached['value'])
+    value = function()
+    _profile_cache.update(stamp=stamp, at=now, fn=function, value=value)
+    return dict(value)
+
+
 
 def embedding_media(config=None, hw=None):
     """Which media the selected local embedding model takes now: its name, whether it has an extra file (mmproj),

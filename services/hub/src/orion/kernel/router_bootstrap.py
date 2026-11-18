@@ -82,6 +82,35 @@ def register_local_router_installation(root):
     return record
 
 
+# Inspecting a registered Router folder checks the whole installed package (a pass over every file: 200-400 ms for the
+# Router on this PC, a packaged one or a source checkout alike), and it ran on EVERY call that needs the local Router:
+# each model catalog refresh while the Router is not connected yet (so every memory search or note, which ask the
+# catalog for the embedding model, paid it before failing), the connection check, the enrollment. The answer only changes
+# when the Router's inventory record does (an install, an update, a repair writes the registry, and the record names the
+# package), so a GOOD answer is remembered for as long as that record is the same; the time limit is a net for a folder
+# edited in place. A refusal is never remembered (a Router being repaired is looked at again at once).
+_INSPECT_SECONDS = 60.0
+_inspect_cache: dict = {}
+
+
+def forget_local_router_candidate() -> None:
+    """The next read inspects the folder again (after something changed the Router's files on purpose)."""
+    _inspect_cache.clear()
+
+
+def _inspected(item: dict, inspect):
+    import time
+    key = json.dumps(item, sort_keys=True, default=str)
+    found = _inspect_cache.get(key)
+    if found is not None and time.monotonic() - found[0] < _INSPECT_SECONDS:
+        return found[1]
+    candidate = inspect()
+    _inspect_cache.clear()
+    if candidate.status in {'ready', 'closed-unverified'}:
+        _inspect_cache[key] = (time.monotonic(), candidate)
+    return candidate
+
+
 def read_local_router_candidate():
     # A canonical inventory is authoritative, including an intentionally absent
     # local Router. Never reconnect to stale legacy provenance behind its back.
@@ -99,12 +128,12 @@ def read_local_router_candidate():
             return None
         from services.shared.router_installation import inspect_router_folder
         root = Path(item['code_path'])
-        candidate = inspect_router_folder(
+        candidate = _inspected(item, lambda: inspect_router_folder(
             root, distribution=item['distribution'], expected_identity=item.get('router_uuid'),
             expected_spki=item.get('tls_spki_sha256'), identity_path=item.get('identity_path'),
             certificate_path=item.get('certificate_path'),
             data_path=item.get('data_path') if item['distribution'] == 'packaged' else None,
-            state_path=item.get('state_path'))
+            state_path=item.get('state_path')))
         if candidate.status not in {'ready', 'closed-unverified'}:
             raise ValueError(f'Registered Router requires repair: {candidate.status}')
         return validate_registration({

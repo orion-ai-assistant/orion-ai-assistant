@@ -792,7 +792,7 @@ async def embedding_targets(settings) -> list[tuple[object, str, bool]]:
         local = chosen.get("provider") == "local"
         if local:
             from services.shared import local_parts
-            space = local_parts.embedding_profile().get("vector_space") or "local"
+            space = local_parts.embedding_profile_cached().get("vector_space") or "local"
         else:
             space = f"cloud:{chosen['name']}"
         found.append((settings.model_copy(update={"router_model_group": chosen["name"]}), space, local))
@@ -1067,7 +1067,7 @@ def embedding_context() -> int | None:
     """The local embedding server's context (tokens), None when unknown (a cloud model)."""
     try:
         from services.shared import local_parts
-        return int(local_parts.embedding_profile().get("context") or 0) or None
+        return int(local_parts.embedding_profile_cached().get("context") or 0) or None
     except Exception:
         return None
 
