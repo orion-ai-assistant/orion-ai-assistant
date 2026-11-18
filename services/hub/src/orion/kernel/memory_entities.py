@@ -781,35 +781,29 @@ async def duplicate_pairs(conn, user_id: str) -> list[dict]:
     return pairs
 
 
-# --- Proposals: the cards (§8) ----------------------------------------------------------------------------------------
-
-async def _pending_like(conn, user_id: str, action: str, payload: dict) -> int | None:
-    """A pending proposal that asks the same thing (a model that asks twice opens one card)."""
-    def text(p):
-        return memory.fold(p.get("statement", ""))
-    same = {"add": lambda a, b: a.get("about") == b.get("about") and text(a) == text(b),
-            "supersede": lambda a, b: a.get("fact_id") == b.get("fact_id") and text(a) == text(b),
-            "merge_entities": lambda a, b: (a.get("from_id"), a.get("into_id")) == (b.get("from_id"), b.get("into_id"))
-            }[action]
-    for r in await conn.fetch("select id, payload from orion_mem_proposal where user_id = $1 and action = $2 and "
-                              "state = 'pending'", user_id, action):
-        if same(json.loads(r["payload"]) if isinstance(r["payload"], str) else r["payload"], payload):
-            return r["id"]
-    return None
-
+# --- Proposals: the cards (§8). The card machinery is kernel/memory_proposals.py; this module only knows what its own
+# actions (add, supersede, merge_entities) do when the user presses Onayla (carry_out). ---------------------------------------
 
 async def propose(user_id: str, settings, action: str, payload: dict, reason: str | None = None,
                   chat_id: str | None = None, batch_id: int | None = None, conn=None) -> int:
-    """Open a card: a change that waits for the user (id). The same open question is not asked twice."""
-    require(settings)
-    async with _db() as own:
-        db = conn or own
-        existing = await _pending_like(db, user_id, action, payload)
-        if existing:
-            return existing
-        return await db.fetchval(
-            "insert into orion_mem_proposal (user_id, batch_id, action, payload, reason, chat_id) values ($1, $2, $3, $4, $5, "
-            "$6) returning id", user_id, batch_id, action, json.dumps(payload, ensure_ascii=False), reason, chat_id)
+    from orion.kernel import memory_proposals
+    return await memory_proposals.propose(user_id, settings, action, payload, reason, chat_id, batch_id, conn=conn)
+
+
+async def proposals(user_id: str, settings, state: str | None = "pending", ids: list[int] | None = None) -> list[dict]:
+    from orion.kernel import memory_proposals
+    return await memory_proposals.proposals(user_id, settings, state, ids)
+
+
+async def decide(user_id: str, settings, accept: list[int] = (), reject: list[int] = (),
+                 edits: dict[int, str] | None = None) -> list[dict]:
+    from orion.kernel import memory_proposals
+    return await memory_proposals.decide(user_id, settings, accept, reject, edits)
+
+
+async def _pending_like(conn, user_id: str, action: str, payload: dict) -> int | None:
+    from orion.kernel import memory_proposals
+    return await memory_proposals.pending_like(conn, user_id, action, payload)
 
 
 async def propose_supersede(user_id: str, settings, fact_id: int, statement: str, *, since=None, chat_id: str | None = None,
@@ -873,64 +867,7 @@ async def propose_merges(user_id: str, settings) -> dict:
     return {"batch_id": batch, "proposals": sorted([*open_ones, *ids])}
 
 
-def _proposal_out(r) -> dict:
-    payload = json.loads(r["payload"]) if isinstance(r["payload"], str) else r["payload"]
-    return {"id": r["id"], "batch_id": r["batch_id"], "action": r["action"], "payload": payload, "reason": r["reason"],
-            "chat_id": r["chat_id"], "state": r["state"], "created_at": r["created_at"].isoformat(),
-            "decided_at": r["decided_at"].isoformat() if r["decided_at"] else None}
-
-
-async def proposals(user_id: str, settings, state: str | None = "pending", ids: list[int] | None = None) -> list[dict]:
-    require(settings)
-    async with _db() as conn:
-        rows = await conn.fetch(
-            "select * from orion_mem_proposal where user_id = $1 and ($2::text is null or state = $2) and "
-            "($3::bigint[] is null or id = any($3::bigint[])) order by id desc limit 200", user_id, state, ids)
-    return [_proposal_out(r) for r in rows]
-
-
-async def decide(user_id: str, settings, accept: list[int] = (), reject: list[int] = (),
-                 edits: dict[int, str] | None = None) -> list[dict]:
-    """The user's answer to cards: each accepted one is carried out (in its own transaction), rejected ones closed;
-    `edits` {id: sentence}: Düzenle (the user's own sentence is written instead, state 'edited'). Each result:
-    {"id", "state": accepted | edited | rejected | pending (failed: "error") | already}. A decided card is never
-    decided twice. The sentence of a card closed without a fact is removed from it."""
-    require(settings)
-    edits = edits or {}
-    out = []
-    for pid in list(dict.fromkeys([*accept, *reject])):
-        async with _db() as conn:
-            row = await conn.fetchrow("update orion_mem_proposal set state = 'claimed' where user_id = $1 and id = $2 "
-                                      "and state = 'pending' returning *", user_id, pid)
-            if row is None:
-                known = await conn.fetchval("select state from orion_mem_proposal where user_id = $1 and id = $2", user_id,
-                                            pid)
-                out.append({"id": pid, "state": "already" if known else "unknown", "was": known})
-                continue
-        card = _proposal_out(row)
-        if pid in reject and pid not in accept:
-            state, error, extra = "rejected", None, {}
-        else:
-            try:
-                extra = await _carry_out(user_id, settings, card, edits.get(pid))
-                state, error = ("edited" if edits.get(pid) else "accepted"), None
-            except Exception as exc:  # noqa: BLE001 - one card failing does not stop the others
-                logger.info("Memory proposal %s not carried out: %s", pid, exc)
-                state, error, extra = "pending", str(exc), {}
-        async with _db() as conn:
-            scrub = state != "pending"
-            payload = {k: v for k, v in card["payload"].items() if k not in ("statement", "old")} if scrub else card["payload"]
-            await conn.execute("update orion_mem_proposal set state = $3, decided_at = case when $3 = 'pending' then null "
-                               "else now() end, payload = $4 where user_id = $1 and id = $2", user_id, pid, state,
-                               json.dumps(payload, ensure_ascii=False))
-        result = {"id": pid, "state": state, **extra}
-        if error:
-            result["error"] = error
-        out.append(result)
-    return out
-
-
-async def _carry_out(user_id: str, settings, card: dict, edit: str | None) -> dict:
+async def carry_out(user_id: str, settings, card: dict, edit: str | None) -> dict:
     p, action = card["payload"], card["action"]
     source = {**(p.get("source") or {}), "by_user": True} if edit or not (p.get("source") or {}).get("chat_id") \
         else p["source"]

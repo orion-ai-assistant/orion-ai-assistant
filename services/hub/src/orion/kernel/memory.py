@@ -624,6 +624,15 @@ def _index_plan() -> list[tuple[str, str]]:
         plan.append((f"idx_orion_memory_ann_{kind}", f"create index concurrently if not exists idx_orion_memory_ann_{kind} "
                                                      f"on orion_memory using hnsw (embedding vector_cosine_ops) "
                                                      f"where kind = '{kind}'"))
+    # "Son eklenenler" (memory_recent): what the assistant wrote itself, newest first. Tiny partial indexes, so the list does
+    # not walk a big memory looking for the few rows that are not the user's own.
+    plan.append(("idx_orion_memory_assistant", "create index concurrently if not exists idx_orion_memory_assistant on "
+                                               "orion_memory (user_id, created_at desc, id desc) "
+                                               "where source_kind = 'assistant'"))
+    plan.append(("idx_orion_mem_fact_auto", "create index concurrently if not exists idx_orion_mem_fact_auto on "
+                                            "orion_mem_fact (user_id, recorded_at desc, id desc) where origin <> 'user'"))
+    plan.append(("idx_orion_mem_event_auto", "create index concurrently if not exists idx_orion_mem_event_auto on "
+                                             "orion_mem_event (user_id, recorded_at desc, id desc) where origin <> 'user'"))
     plan.append(("idx_orion_memory_user_chats", "create index concurrently if not exists idx_orion_memory_user_chats on "
                                                 f"orion_memory (user_id, vector_space, id) where source_kind = '{CHAT_INDEX}'"))
     plan.append(("idx_orion_memory_newest_chats", "create index concurrently if not exists idx_orion_memory_newest_chats on "

@@ -452,11 +452,52 @@ async def add_note_to_album(args: MemoryAddInput, context: ToolContext, settings
     return {"added": args.text, "album": args.collection}
 
 
+async def delete_by_card(args: MemoryDeleteInput, context: ToolContext, settings) -> dict:
+    """delete_memory for a memory_v2 user: the delete is a proposal card (memory_proposals, action `trash`) like every
+    other change that waits for the user; nothing is removed until they press Sil, and then it goes to the trash."""
+    from orion.kernel import memory, memory_proposals
+    try:
+        if args.confirmation_id:
+            wanted = args.confirmation_id.strip()
+            found = await memory_proposals.proposals(context.user_id, settings, None,
+                                                     [int(wanted)] if wanted.isdigit() else [0])
+            if not found:
+                return {"note": "No such confirmation."}
+            card = found[0]
+            outcome = {"pending": "The user has not answered yet; nothing is deleted.",
+                       "claimed": "The user confirmed; the delete is being carried out.",
+                       "accepted": "The user confirmed: it was moved to the memory's trash (Çöp kutusu), where they "
+                                   "can restore it until it is deleted for good.",
+                       "rejected": "The user declined: nothing was deleted. Do not ask again unless they do."
+                       }.get(card["state"], "Nothing was deleted.")
+            return {"state": card["state"], "deleted_ids": (card["payload"].get("result") or {}).get("deleted", []),
+                    "note": outcome}
+        if not args.ids:
+            return {"error": "Give the ids to delete (from search_memory), or a confirmation_id to check."}
+        asked = await memory_proposals.propose_trash(context.user_id, settings, args.ids, args.whole_memory,
+                                                     chat_id=context.chat_id)
+    except (memory.MemoryUnavailable, ValueError) as exc:
+        return {"error": str(exc)}
+    if asked is None:
+        return {"note": "No memory has these ids; nothing to delete."}
+    return {"status": "awaiting_user_confirmation", "proposal_id": asked["proposal"],
+            "will_delete": asked["will_delete"][:20], "parts": asked["parts"], "whole_memory": asked["whole_memory"],
+            "instruction": "NOTHING is deleted yet. A card with a Sil button was shown to the user. Tell them briefly "
+                           "what you asked to delete and that it waits for their press; do not say it was deleted. If "
+                           "they say they answered, call delete_memory with confirmation_id set to this proposal_id "
+                           "(as text) to see the outcome."}
+
+
 async def delete_memory(args: MemoryDeleteInput, context: ToolContext) -> dict:
     """Never deletes: records what would go and shows the user a confirmation card (memory_pending); the user's Sil
     press moves it to the trash (restorable). With `confirmation_id`: the outcome so far (pending, deleted,
     declined, expired)."""
     from orion.kernel import memory, memory_pending
+    from orion.kernel.config import get_runtime_settings
+    settings = await get_runtime_settings(None, context.user_id)
+    from orion.kernel import memory_collections
+    if memory_collections.enabled(settings):  # memory_v2: the same card as every other proposal (memory_proposals).
+        return await delete_by_card(args, context, settings)
     try:
         if args.confirmation_id:
             found = await memory_pending.status(context.user_id, args.confirmation_id.strip())

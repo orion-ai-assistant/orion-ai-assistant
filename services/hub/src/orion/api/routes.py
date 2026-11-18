@@ -441,7 +441,7 @@ async def memory_fact_restore(fact_id: int, request: Request, current_user: str 
 async def memory_proposals(request: Request, state: str = "pending", ids: str = "",
                            current_user: str = Depends(get_current_user)):
     """The cards: proposals in `state` ("" = every state), newest first; `ids` (comma separated) picks some."""
-    from orion.kernel import memory_entities as me
+    from orion.kernel import memory_proposals as me
     wanted = [int(i) for i in ids.split(",") if i.strip().isdigit()][:100] or None
     return await _ben(request, current_user, lambda s: _proposal_list(me, current_user, s, state, wanted))
 
@@ -454,13 +454,42 @@ async def _proposal_list(me, user: str, settings, state: str, ids):
 async def memory_proposals_answer(payload: ProposalAnswer, request: Request,
                                   current_user: str = Depends(get_current_user)):
     """The user's answer to one card or a batch card: accept / reject ids, `edits` {id: own sentence} (Düzenle)."""
-    from orion.kernel import memory_entities as me
+    from orion.kernel import memory_proposals as me
     edits = {int(k): v[:2000] for k, v in payload.edits.items() if k.isdigit()}
     return await _ben(request, current_user, lambda s: _proposal_answer(me, current_user, s, payload, edits))
 
 
 async def _proposal_answer(me, user: str, settings, payload: ProposalAnswer, edits: dict):
     return {"results": await me.decide(user, settings, payload.accept, payload.reject, edits)}
+
+
+class RecentUndo(BaseModel):
+    type: str = Field(max_length=10)  # fact | event | note
+    id: str = Field(max_length=64)
+
+
+@router.get("/api/v1/memory/review")
+async def memory_review(request: Request, current_user: str = Depends(get_current_user)):
+    """The page's two badges: {"pending": cards waiting for an answer, "recent": additions of the last 7 days}."""
+    from orion.kernel import memory_recent
+    return await _ben(request, current_user, lambda s: memory_recent.review(current_user, s))
+
+
+@router.get("/api/v1/memory/recent")
+async def memory_recent_list(request: Request, days: int = 30, limit: int = 50, offset: int = 0,
+                             current_user: str = Depends(get_current_user)):
+    """Son eklenenler: what the assistant wrote into the memory by itself, newest first, with its source chat:
+    {"items": [{type, id, key, title, text, locked, origin, added_at, chat}], "more"}."""
+    from orion.kernel import memory_recent
+    return await _ben(request, current_user, lambda s: memory_recent.recent(current_user, s, days, limit, offset))
+
+
+@router.post("/api/v1/memory/recent/undo")
+async def memory_recent_undo(payload: RecentUndo, request: Request, current_user: str = Depends(get_current_user)):
+    """Geri al: take one addition back: {"trash_id"} (undo of the undo: POST /memory/trash/restore) or {"restore":
+    {"fact": id}} for a locked fact (POST /memory/facts/{id}/restore). 404 when it is not an addition of this user's."""
+    from orion.kernel import memory_recent
+    return await _ben(request, current_user, lambda s: memory_recent.undo(current_user, s, payload.type, payload.id))
 
 
 # --- Yaşadıklarım: events, albums (memory_events, memory_albums; behind the user's memory_v2) -------------------------------

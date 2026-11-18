@@ -21,6 +21,28 @@ async def _ensure(conn) -> None:
         "resolved_at timestamptz, trash_id text)")
 
 
+async def describe(conn, user_id: str, ids: list[int], whole: bool) -> dict | None:
+    """What a delete of these rows would take, for a card: {"ids", "preview": [{id, kind, label}], "parts"}; None when
+    none of `ids` is this user's live part. (Shared by this module's confirmation and the proposal card of
+    memory_proposals, which is what a delete_memory of a memory_v2 user opens.)"""
+    rows = [dict(r) for r in await conn.fetch(
+        "select id, text, kind, group_id, source_chat_title from orion_memory where user_id = $1 "
+        f"and id = any($2::bigint[]) and not whole and {memory.LIVE} order by id", user_id, [int(i) for i in ids])]
+    if not rows:
+        return None
+    groups = sorted({memory.group_key(r) for r in rows})
+    parts = len(rows)
+    if whole:
+        real = [g for g in groups if not g.startswith("r")]
+        loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
+        parts = await conn.fetchval(
+            f"select count(*) from orion_memory where user_id = $1 and not whole and {memory.LIVE} and "
+            "(group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[])))", user_id, real, loose)
+    preview = [{"id": r["id"], "kind": r["kind"],
+                "label": " ".join((r["text"] or r["source_chat_title"] or "").split())[:LABEL]} for r in rows]
+    return {"ids": [r["id"] for r in rows], "preview": preview, "parts": int(parts or 0)}
+
+
 async def create(user_id: str, chat_id: str | None, ids: list[int], whole: bool) -> dict | None:
     """Record a delete the user must confirm; None when none of `ids` is this user's (or all are in the trash).
     {"token", "will_delete": [{"id", "label", "kind"}], "parts", "whole_memory"}."""
@@ -28,26 +50,14 @@ async def create(user_id: str, chat_id: str | None, ids: list[int], whole: bool)
     try:
         await memory.ensure_memory_table(conn)
         await _ensure(conn)
-        rows = [dict(r) for r in await conn.fetch(
-            "select id, text, kind, group_id, source_chat_title from orion_memory where user_id = $1 "
-            f"and id = any($2::bigint[]) and not whole and {memory.LIVE} order by id", user_id, [int(i) for i in ids])]
-        if not rows:
+        found = await describe(conn, user_id, ids, whole)
+        if found is None:
             return None
-        groups = sorted({memory.group_key(r) for r in rows})
-        parts = len(rows)
-        if whole:
-            real = [g for g in groups if not g.startswith("r")]
-            loose = [int(g[1:]) for g in groups if g.startswith("r") and g[1:].isdigit()]
-            parts = await conn.fetchval(
-                f"select count(*) from orion_memory where user_id = $1 and not whole and {memory.LIVE} and "
-                "(group_id = any($2::text[]) or (group_id is null and id = any($3::bigint[])))", user_id, real, loose)
-        preview = [{"id": r["id"], "kind": r["kind"],
-                    "label": " ".join((r["text"] or r["source_chat_title"] or "").split())[:LABEL]} for r in rows]
         token = memory.new_group()
         await conn.execute(
             "insert into orion_memory_pending (token, user_id, chat_id, ids, whole, preview) values ($1, $2, $3, $4, $5, $6)",
-            token, user_id, chat_id, [r["id"] for r in rows], bool(whole), json.dumps(preview, ensure_ascii=False))
-        return {"token": token, "will_delete": preview, "parts": int(parts or 0), "whole_memory": bool(whole)}
+            token, user_id, chat_id, found["ids"], bool(whole), json.dumps(found["preview"], ensure_ascii=False))
+        return {"token": token, "will_delete": found["preview"], "parts": found["parts"], "whole_memory": bool(whole)}
     finally:
         await conn.close()
 
