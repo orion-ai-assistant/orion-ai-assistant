@@ -119,7 +119,7 @@ Hepsi ayrı dallarda, hiçbiri birleştirilmedi/itilmedi:
 - Sohbet modelinin hafıza araçları: `search_memory`, `remember` (yalnız metni kuyruğa koyar), `delete_memory`, `open_memory_files`, `memory_context`.
   Yazan, arka plan yazıcıdır (`memory_extract`): `remember` kuyruğunu canlı, sıkıştırma çıkarımını anahtara göre (gölge/canlı) yazar;
   bilgi/olay/not doğrudan eklenir, değişiklikler (`supersede`, `set_relation`) kart olur.
-- Sohbet sıkıştırma: `memory_compact` (`POST/GET /chats/{id}/compact`, ayarlar `chat_compact_percent`, `chat_context_tokens`).
+- Sohbet sıkıştırma: `memory_compact` (`POST/GET /chats/{id}/compact`, ayarlar `chat_compact_idle_percent` 40, `chat_compact_idle_minutes` 30, `chat_compact_force_percent` 90, `chat_context_tokens`; ayrıntı hafiza-tasarimi.md §17d).
 - Profil: iki blok sistem isteminde (`job_processor` -> `memory_profile.for_chat`); `memory_profile_soft_tokens` 600, `memory_profile_tokens` 800,
   `memory_profile_compact_tokens` 400, `memory_soon_tokens` 150, `memory_soon_days` 14, `memory_recent_days` 7. Router logunda görünür.
 - Yapılmadı / bilinen: `chat_context_tokens` varsayılan 0 (modelin bağlam penceresi Hub'da bilinmiyor): otomatik sıkıştırma ancak ayarlanırsa

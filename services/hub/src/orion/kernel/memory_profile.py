@@ -240,6 +240,23 @@ async def compact_profile(user_id: str, settings) -> dict:
     return await get(user_id, settings)
 
 
+async def start_compact(user_id: str, settings) -> dict:
+    """"Profili düzenle" without waiting: the model call runs in the background (it can take long and may fail: a request that
+    waited for it and raised let the error out past the CORS headers). {"state": "started" | "running"}; the page reads
+    GET /memory/profile (`compacting`) for the end. ValueError (400) when memory is off or there is nothing to shorten."""
+    require(settings)
+    if user_id in _compacting:
+        return {"state": "running"}
+    async with me._db() as conn:
+        pinned = await _pinned_state(conn, user_id, await _pinned(conn, user_id))
+        facts = await _candidates(conn, user_id)
+    pinned_ids = {int(p["fact_id"]) for p in pinned if p.get("fact_id") is not None}
+    if not [f for f in facts if f["id"] not in pinned_ids]:
+        raise ValueError("Kısaltılacak bilgi yok.")
+    _compact_later(user_id, settings)
+    return {"state": "started"}
+
+
 def _compact_later(user_id: str, settings) -> None:
     if user_id in _compacting:
         return
@@ -472,7 +489,12 @@ async def add_line(user_id: str, settings, text: str) -> dict:
     require(settings)
     done = await me.write_by_user(user_id, settings, "", "diğer", text)
     fact_id = (done.get("fact") or {}).get("id") or done.get("same_as")
-    return {"fact": done.get("fact"), "profile": await pin_fact(user_id, settings, int(fact_id))}
+    group_id = done.get("group_id")
+    if group_id is None:  # The same sentence was already there: its memory.
+        async with me._db() as conn:
+            group_id = await conn.fetchval("select group_id from orion_mem_fact where user_id = $1 and id = $2", user_id,
+                                           int(fact_id))
+    return {"fact": done.get("fact"), "group_id": group_id, "profile": await pin_fact(user_id, settings, int(fact_id))}
 
 
 async def forget_user(conn, user_id: str) -> None:

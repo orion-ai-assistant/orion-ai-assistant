@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from orion.kernel import memory, memory_entities as me, memory_events as ev, memory_groups
 
 DAYS = 30  # How far back the list goes.
-PAGE = 50
+PAGE = 30  # The list shows the last 30 additions of the last 30 days (days, limit: parameters).
 SNIPPET = 240
 
 TYPES = ("fact", "event", "note")
@@ -132,5 +132,6 @@ async def undo(user_id: str, settings, type_: str, ident: str) -> dict:
 async def review(user_id: str, settings) -> dict:
     """The page's two badges: {"pending": cards waiting, "recent": additions of the last 7 days}."""
     from orion.kernel import memory_proposals
+    await memory_proposals.approve_pending(user_id, settings)  # memory_auto_approve: the waiting ones are applied.
     return {"pending": await memory_proposals.count_pending(user_id, settings),
-            "recent": await count(user_id, settings)}
+            "recent": await count(user_id, settings), "auto_approve": bool(getattr(settings, "memory_auto_approve", False))}

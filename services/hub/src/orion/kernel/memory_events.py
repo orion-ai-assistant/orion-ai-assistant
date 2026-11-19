@@ -14,9 +14,10 @@ Versions, never overwrites (like facts). An event the user corrects is a new row
 event, only add one.
 
 How an event is searched. Its vector is an ordinary `orion_memory` row (kind 'text', source_kind 'event', its own group, main
-collection `yasadiklarim`), embedded as "<title>. <text>. Yer: ... Katılanlar: ...", each once (no date and never the user's own
-time words: "dün" goes stale; the date is the event's own field, `said_as` is metadata only; the user, "Ben", is not
-listed among the participants): the page, map,
+collection `yasadiklarim`). Its STORED text (what the page and the results show) is the title and the text only ("<title>.
+<text>."); what is EMBEDDED is "<title>. <text>. Yer: ... Katılanlar: ..." (names only, never a relation label, each once; no date and
+never the user's own time words: "dün" goes stale; the date is the event's own field, `said_as` is metadata only; the user, "Ben",
+is not listed among the participants): the page, map,
 counters, trash, model move and `search_memory` (`in: ["experiences"]`) need no new path. An event is live while that memory
 has a live row (the page's own delete, or the trash, removes it; restoring brings it back; deleting for good removes the
 event rows: after_purge). The date filter (`when`) is one SQL condition (when_sql) on the memory's group.
@@ -31,6 +32,7 @@ the next ones.
 Every table has user_id and every read filters by it."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import date, datetime, timedelta
@@ -411,8 +413,14 @@ def _sentence(text: str) -> str:
     return text if text.endswith(("!", "?", "…")) else text.rstrip(".") + "."
 
 
+def display_text(title: str, body: str | None) -> str:
+    """The stored text of an event's memory row (what the page shows): the title and the text, each one clean sentence. The place
+    and the participants are fields of the event (chips on the page), they are only part of the EMBEDDED text."""
+    return " ".join([_sentence(title), *([_sentence(body)] if body else [])])
+
+
 def embedded_text(title: str, body: str | None, when: dict, people: list[str], place: str | None) -> str:
-    """What the event's vector row says: the title, the text, then the place and who took part, each once and one clean
+    """What the event's vector is made from: the title, the text, then the place and who took part, each once and one clean
     sentence. Never the user's own time words (`said_as` is metadata: "dün" goes stale), and no date (the event's own
     field, the `when` filter); `when` is kept in the signature for the callers. `people`: names of the participants
     without the user (the user is in every event of theirs: "Ben" tells nothing)."""
@@ -427,17 +435,19 @@ def embedded_text(title: str, body: str | None, when: dict, people: list[str], p
 
 
 def _others(people: list[dict]) -> list[str]:
-    """The participants' labels without the user's own entity."""
-    return [me.label_of(e) for e in people if e.get("kind") != "self"]
+    """The participants' NAMES without the user's own entity (never a relation label like "Sevgilim (Defne)")."""
+    return [e["name"] for e in people if e.get("kind") != "self" and e.get("name")]
 
 
-async def _store_vector(conn, user_id: str, text: str, title: str, space: str, vector: str, source: dict) -> str:
-    """The event's memory (one row, the Yaşadıklarım collection); its group id."""
+async def _store_vector(conn, user_id: str, text: str, title: str, space: str, vector: str, source: dict,
+                        embedded: str | None = None) -> str:
+    """The event's memory (one row, the Yaşadıklarım collection); its group id. `text`: the stored text (display_text);
+    `embedded`: the text the vector was made from (its words are the folded ones, so a name or a place finds the event)."""
     group, item = memory.new_group(), memory.new_group()
     await conn.fetchval(
         memory.ROW_SQL, user_id, text, space, vector, EVENT, title, "text", None, None, None, group,
         source.get("chat_id"), None, item, False, None, None, None, None, memory.item_order(), None,
-        memory.fold(memory.match_text(text, title, None, EVENT)), None, True)
+        memory.fold(memory.match_text(embedded or text, title, None, EVENT)), None, True)
     if await conn.fetchval("select 1 from orion_mem_collection where user_id = $1 and id = $2", user_id, COLLECTION):
         await conn.execute("insert into orion_mem_collection_item (user_id, collection_id, group_id, main) "
                            "values ($1, $2, $3, true) on conflict do nothing", user_id, COLLECTION, group)
@@ -536,7 +546,7 @@ async def add_event(user_id: str, settings, title: str, when: dict, *, body: str
         text = embedded_text(title, body, when, _others(people), where["name"] if where else None)
         space, vector = await _vector_for(settings, text)
         async with conn.transaction():
-            group = await _store_vector(conn, user_id, text, title, space, vector, source)
+            group = await _store_vector(conn, user_id, display_text(title, body), title, space, vector, source, text)
             event_id = await conn.fetchval(
                 "insert into orion_mem_event (user_id, title, body, occurred_on, occurred_end, precision, said_as, mood, "
                 "origin, group_id, run_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id", user_id, title,
@@ -595,7 +605,7 @@ async def replace_event(user_id: str, settings, event_id: int, *, title: str | N
                                       "of e", user_id, event_id)
             if old["superseded_by"] is not None:
                 raise ValueError("This event was already replaced by a newer version; change the current one.")
-            group = await _store_vector(conn, user_id, text, new_title, space, vector, source)
+            group = await _store_vector(conn, user_id, display_text(new_title, new_body), new_title, space, vector, source, text)
             new_id = await conn.fetchval(
                 "insert into orion_mem_event (user_id, lineage, title, body, occurred_on, occurred_end, precision, said_as, "
                 "mood, origin, group_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id", user_id,
@@ -781,10 +791,11 @@ async def after_purge(user_id: str) -> int:
 
 
 async def clean_existing(conn) -> int:
-    """Schema 10: the stored event texts of every user made right once: the title and body without the user's time words
-    (`said_as`), and each current event's memory row (its text, title and folded words) rewritten as embedded_text says (no
-    date, no time words, no "Ben"). The vector of a row is not touched (embedding needs the model: it follows when the event
-    is next edited or the memory moves to another model). Returns the events changed."""
+    """Schemas 10 and 12: the stored event texts of every user rendered again from the event's own fields: the title and body
+    without the user's time words (`said_as`), and each current event's memory row rewritten: its text is display_text (title +
+    body, no place or participants glued on), its folded words are those of embedded_text (names, not relation labels). The
+    vector of a row is not touched here (embedding needs the model): `reembed_events` redoes it in the background. Returns the
+    events changed."""
     rows = await conn.fetch(
         "select e.id, e.user_id, e.title, e.body, e.said_as, e.group_id, e.superseded_by from orion_mem_event e")
     changed = 0
@@ -806,11 +817,91 @@ async def clean_existing(conn) -> int:
             "l.from_id = $2 and l.to_type = 'entity' order by l.created_at, en.id", r["user_id"], r["id"])
         place = next((x["name"] for x in linked if x["role"] == PLACE), None)
         people = _others([dict(x) for x in linked if x["role"] == PARTICIPANT])
-        text = embedded_text(title, body, {}, people, place)
+        embedded = embedded_text(title, body, {}, people, place)
+        text = display_text(title, body)
         done = await conn.execute(
             "update orion_memory set text = $3, source_chat_title = $4, folded = $5 where user_id = $1 and group_id = $2 "
-            "and source_kind = $6 and text is distinct from $3", r["user_id"], r["group_id"], text, title,
-            memory.fold(memory.match_text(text, title, None, EVENT)), EVENT)
+            "and source_kind = $6 and (text is distinct from $3 or folded is distinct from $5)", r["user_id"], r["group_id"],
+            text, title, memory.fold(memory.match_text(embedded, title, None, EVENT)), EVENT)
         if (title, body) != (r["title"], r["body"]) or done.split()[-1] != "0":
             changed += 1
     return changed
+
+
+# --- Vectors of the re-rendered event texts (schema 12): a bounded background job -----------------------------------------------
+
+REEMBED_KEY = "events_reembed"  # orion_memory_meta: the last event id done ("0": not started), "done" when every one is.
+REEMBED_BATCH = 10  # Events embedded per step (one embedding call each, the normal path).
+REEMBED_PAUSE = 2.0  # Seconds between two steps: the job never competes with the user's own requests.
+REEMBED_RETRY = 600  # Seconds to wait when the embedding model cannot be reached.
+
+
+async def reembed_step(settings_of=None) -> str:
+    """One bounded step of the job: the next REEMBED_BATCH current events (by id) get their vector made again from
+    embedded_text (the normal embedding path, the user's active embedding model) and written over their row's vector in that
+    model's space. "more" (call again), "done" (nothing left; remembered) or "waiting" (the embedding model is not available:
+    nothing is skipped, the same events are tried again later). An event whose own embedding fails stays as it was."""
+    if settings_of is None:
+        from orion.kernel.config import get_runtime_settings
+
+        async def settings_of(user_id):
+            return await get_runtime_settings(None, user_id)
+    conn = await memory._connect()
+    try:
+        await memory.ensure_memory_table(conn)
+        mark = await conn.fetchval("select value from orion_memory_meta where key = $1", REEMBED_KEY)
+        if mark is None or mark == "done":
+            return "done"
+        if not await conn.fetchval("select pg_try_advisory_lock(hashtext($1))", REEMBED_KEY):
+            return "waiting"  # Another process of the Hub is on it (the lock goes with this connection).
+        rows = await conn.fetch(
+            "select e.id, e.user_id, e.title, e.body, e.group_id from orion_mem_event e where e.id > $1 and "
+            "e.superseded_by is null and e.group_id is not null order by e.id limit $2", int(mark), REEMBED_BATCH)
+        if not rows:
+            await conn.execute("update orion_memory_meta set value = 'done' where key = $1", REEMBED_KEY)
+            return "done"
+        settings_cache: dict[str, object] = {}
+        last = int(mark)
+        for r in rows:
+            linked = await conn.fetch(
+                "select en.kind, en.name, l.role from orion_mem_link l join orion_mem_entity en on en.user_id = l.user_id "
+                "and en.id = l.to_id::bigint where l.user_id = $1 and l.from_type = 'event' and l.from_id = $2 and "
+                "l.to_type = 'entity' order by l.created_at, en.id", r["user_id"], r["id"])
+            place = next((x["name"] for x in linked if x["role"] == PLACE), None)
+            text = embedded_text(r["title"], r["body"], {}, _others([dict(x) for x in linked if x["role"] == PARTICIPANT]), place)
+            try:
+                if r["user_id"] not in settings_cache:
+                    settings_cache[r["user_id"]] = await settings_of(r["user_id"])
+                target, space, local = await memory.embedding_target(settings_cache[r["user_id"]])
+                vector = memory._vector((await memory._embed(text, target, "document", local))[0])
+            except memory.MemoryUnavailable:
+                return "waiting"
+            except Exception:
+                logger.warning("Memory: the vector of event %s could not be redone", r["id"], exc_info=True)
+                last = r["id"]
+                continue
+            await conn.execute("update orion_memory set embedding = $4::vector where user_id = $1 and group_id = $2 and "
+                               "source_kind = $3 and vector_space = $5", r["user_id"], r["group_id"], EVENT, vector, space)
+            last = r["id"]
+        await conn.execute("update orion_memory_meta set value = $2 where key = $1 and value <> 'done'", REEMBED_KEY, str(last))
+        return "more"
+    finally:
+        await conn.close()
+
+
+async def reembed_loop() -> None:
+    """Started by the Hub: runs reembed_step until every event is done (a Hub restart goes on where it stopped)."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            state = await reembed_step()
+        except asyncio.CancelledError:
+            raise
+        except memory.MemoryUnavailable:
+            state = "waiting"
+        except Exception:
+            logger.exception("Memory: re-embedding the event vectors failed")
+            state = "waiting"
+        if state == "done":
+            return
+        await asyncio.sleep(REEMBED_PAUSE if state == "more" else REEMBED_RETRY)

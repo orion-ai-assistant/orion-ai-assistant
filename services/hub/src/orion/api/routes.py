@@ -290,14 +290,21 @@ async def memory_move_start(payload: MemoryMove, request: Request, current_user:
 async def get_chat_compaction(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
     """The compaction of the "Asistanla konuş" chat: {running, compacted_upto (last message id covered), compacted_at,
     summary_tokens, messages_since, tokens_since, summary, compacted_turn_id, last_usage {prompt_tokens, completion_tokens, at},
-    context_tokens (the chat model's context length, 0 = unknown), threshold_percent} for the client's token meter."""
+    used_tokens (the chat's size now: the last answer's prompt + completion tokens; after a compaction, until the next answer, an
+    estimate of summary + messages since, then used_estimated is true), used_estimated, breakdown ({system, profile, tools,
+    messages, tool_results} scaled to the last answer's real prompt tokens, null when unknown), context_tokens (the chat model's
+    context length, 0 = unknown), idle_percent / idle_minutes / force_percent (the automatic policy), threshold_percent (= idle_percent,
+    kept for older clients)} for the client's token meter."""
     from orion.kernel import memory, memory_compact
     await ensure_chat_access(request.app.state.redis, current_user, chat_id)
     settings = await get_runtime_settings(request.app.state.redis, current_user)
     try:
         got = await memory_compact.state(current_user, chat_id)
         got["context_tokens"] = await memory_compact.context_length(settings)
-        got["threshold_percent"] = settings.chat_compact_percent
+        got["idle_percent"] = settings.chat_compact_idle_percent
+        got["idle_minutes"] = settings.chat_compact_idle_minutes
+        got["force_percent"] = settings.chat_compact_force_percent
+        got["threshold_percent"] = settings.chat_compact_idle_percent
         return got
     except memory.MemoryUnavailable as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -426,7 +433,8 @@ async def memory_entity_update(entity_id: int, payload: EntityBody, request: Req
 
 @router.post("/api/v1/memory/facts")
 async def memory_fact_create(payload: FactBody, request: Request, current_user: str = Depends(get_current_user)):
-    """The user writes a fact (no card; source: the user): {"fact"} or {"same_as"}."""
+    """The user writes a fact (no card; source: the user): {"fact" (with its "group_id"), "entity", "group_id"} or {"same_as"}. The
+    fact's vector row is stored in the same call, so the map can link `group_id` at once (None for a locked kind)."""
     from orion.kernel import memory_entities as me
     return await _ben(request, current_user, lambda s: me.write_by_user(
         current_user, s, payload.about, payload.category, payload.statement, kind=payload.kind,
@@ -484,14 +492,19 @@ async def memory_fact_restore(fact_id: int, request: Request, current_user: str 
 @router.get("/api/v1/memory/proposals")
 async def memory_proposals(request: Request, state: str = "pending", ids: str = "",
                            current_user: str = Depends(get_current_user)):
-    """The cards: proposals in `state` ("" = every state), newest first; `ids` (comma separated) picks some."""
+    """The cards: proposals in `state` ("" = every state), newest first; `ids` (comma separated) picks some. {"proposals", "auto_approve"}:
+    with `memory_auto_approve` on (`auto_approve: true`) the cards that were already waiting are applied when this list is read
+    (once; merge cards excepted), so the client can say cards are approved by themselves."""
     from orion.kernel import memory_proposals as me
     wanted = [int(i) for i in ids.split(",") if i.strip().isdigit()][:100] or None
     return await _ben(request, current_user, lambda s: _proposal_list(me, current_user, s, state, wanted))
 
 
 async def _proposal_list(me, user: str, settings, state: str, ids):
-    return {"proposals": await me.proposals(user, settings, state or None, ids)}
+    if not state or state == "pending":
+        await me.approve_pending(user, settings)
+    return {"proposals": await me.proposals(user, settings, state or None, ids),
+            "auto_approve": bool(getattr(settings, "memory_auto_approve", False))}
 
 
 @router.post("/api/v1/memory/proposals/answer")
@@ -514,13 +527,13 @@ class RecentUndo(BaseModel):
 
 @router.get("/api/v1/memory/review")
 async def memory_review(request: Request, current_user: str = Depends(get_current_user)):
-    """The page's two badges: {"pending": cards waiting for an answer, "recent": additions of the last 7 days}."""
+    """The page's two badges: {"pending": cards waiting for an answer, "recent": additions of the last 7 days, "auto_approve"}."""
     from orion.kernel import memory_recent
     return await _ben(request, current_user, lambda s: memory_recent.review(current_user, s))
 
 
 @router.get("/api/v1/memory/recent")
-async def memory_recent_list(request: Request, days: int = 30, limit: int = 50, offset: int = 0,
+async def memory_recent_list(request: Request, days: int = 30, limit: int = 30, offset: int = 0,
                              current_user: str = Depends(get_current_user)):
     """Son eklenenler: what the assistant wrote into the memory by itself, newest first, with its source chat:
     {"items": [{type, id, key, title, text, locked, origin, added_at, chat}], "more"}."""
@@ -577,12 +590,13 @@ async def memory_profile_pin(payload: ProfilePin, request: Request, current_user
         current_user, settings, payload.fact_id, payload.text))
 
 
-@router.post("/api/v1/memory/profile/compact")
+@router.post("/api/v1/memory/profile/compact", status_code=202)
 async def memory_profile_compact(request: Request, current_user: str = Depends(get_current_user)):
-    """"Profili düzenle": the background model compacts the non-pinned part of the profile now (the same the Hub starts by
-    itself past the hard limit). Answers like GET /memory/profile. 400 when there is nothing to shorten."""
+    """"Profili düzenle": the background model compacts the non-pinned part of the profile (the same the Hub starts by itself
+    past the hard limit). Answers 202 {"state": "started" | "running"} at once and works in the background; poll
+    GET /memory/profile (`compacting`, then the new text). 400 when there is nothing to shorten."""
     from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda settings: memory_profile.compact_profile(current_user, settings))
+    return await _ben(request, current_user, lambda settings: memory_profile.start_compact(current_user, settings))
 
 
 class ProfileAdd(BaseModel):
@@ -591,7 +605,8 @@ class ProfileAdd(BaseModel):
 
 @router.post("/api/v1/memory/profile/lines")
 async def memory_profile_add_line(payload: ProfileAdd, request: Request, current_user: str = Depends(get_current_user)):
-    """"Satır ekle": creates a fact about the user (the same path as POST /memory/facts) and pins it: {"fact", "profile"}."""
+    """"Satır ekle": creates a fact about the user (the same path as POST /memory/facts, its vector row included) and pins it:
+    {"fact", "group_id" (its memory, for the map), "profile"}."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda s: memory_profile.add_line(current_user, s, payload.text))
 

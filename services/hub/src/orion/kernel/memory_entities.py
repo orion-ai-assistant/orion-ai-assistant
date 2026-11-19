@@ -368,7 +368,8 @@ def _fact_out(r, reveal: bool = False) -> dict:
             "since_precision": (r["since_precision"] or "day") if r["valid_from"] else None,
             "until": r["valid_to"].isoformat() if r["valid_to"] else None,
             "recorded_at": r["recorded_at"].isoformat(), "current": r["superseded_by"] is None,
-            "origin": r["origin"], "recurring": r["recurring"]}
+            "origin": r["origin"], "recurring": r["recurring"],
+            "group_id": r["group_id"] if "group_id" in r.keys() else None}  # Its memory (vector row); None for a locked fact.
 
 
 def recurring_of(value: str | None) -> str | None:
@@ -487,7 +488,7 @@ async def add_fact(user_id: str, settings, entity: dict, category: str, statemen
             await conn.execute("update orion_mem_fact set lineage = id where id = $1", fact_id)
             await _source(conn, user_id, fact_id, source)
             row = await conn.fetchrow(f"select {_FACT} from orion_mem_fact f where f.id = $1", fact_id)
-    return {"fact": _fact_out(row, reveal=True), "entity": _entity_out(entity)}
+    return {"fact": _fact_out(row, reveal=True), "entity": _entity_out(entity), "group_id": group}
 
 
 async def _head(conn, user_id: str, fact_id: int, lock: bool = False):

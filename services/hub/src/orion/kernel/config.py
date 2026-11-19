@@ -8,7 +8,7 @@ from redis.asyncio import Redis
 
 from orion.contracts.constants import SETTINGS_HASH_KEY_PREFIX, SETTINGS_DEFAULT_USER
 from orion.contracts.settings import RuntimeSettings
-from orion.kernel.registry import fetch_setting_overrides, fetch_setting_overrides_for, upsert_setting_overrides, insert_missing_setting_overrides, fetch_all_settings, delete_setting_override
+from orion.kernel.registry import fetch_setting_overrides, fetch_setting_overrides_for, upsert_setting_overrides, insert_missing_setting_overrides, fetch_all_settings, delete_setting_override, migrate_compact_setting
 
 settings = RuntimeSettings()
 _allowed_keys = set(settings.model_dump().keys())
@@ -146,6 +146,7 @@ async def get_runtime_settings(redis: Redis | None = None, user_id: str | None =
 
 async def seed_database_settings(redis: Redis) -> None:
     """Add missing schema defaults to the global settings on every startup."""
+    migrated = await migrate_compact_setting()  # The old single compaction threshold becomes the idle one.
     existing = await fetch_setting_overrides(SETTINGS_DEFAULT_USER)
     defaults = {key: serialize_setting(value) for key, value in settings.model_dump().items()}
     missing = {key: value for key, value in defaults.items() if key not in existing}
@@ -158,7 +159,7 @@ async def seed_database_settings(redis: Redis) -> None:
     if updates:
         await upsert_setting_overrides(SETTINGS_DEFAULT_USER, updates)
 
-    if missing or updates:
+    if missing or updates or migrated:
         await refresh_runtime_settings(redis, SETTINGS_DEFAULT_USER)
 
 

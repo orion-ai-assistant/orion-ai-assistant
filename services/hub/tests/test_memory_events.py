@@ -179,8 +179,9 @@ class EventTests(PostgresMemoryCase):
                            row['group_id'], fetch=True)
         self.assertEqual(len(vector), 1)
         self.assertEqual(vector[0]['source_kind'], 'event')
-        self.assertEqual(vector[0]['text'], 'Annemin doğum günü. Annemin doğum günüydü, pasta yedik. '
-                                            'Yer: Kadıköy. Katılanlar: Ayşe.')  # Title, text, place, people (not "Ben"); no date.
+        self.assertEqual(vector[0]['text'], 'Annemin doğum günü. Annemin doğum günüydü, pasta yedik.')  # Stored: title + text only.
+        self.assertEqual(self.embedded[-1], 'Annemin doğum günü. Annemin doğum günüydü, pasta yedik. '
+                                            'Yer: Kadıköy. Katılanlar: Ayşe.')  # Embedded: + place, names (not "Ben"); no date.
         member = await sql("select collection_id, main from orion_mem_collection_item where group_id = $1",
                            row['group_id'], fetch=True)
         self.assertEqual([(m['collection_id'], m['main']) for m in member], [('yasadiklarim', True)])
@@ -223,7 +224,8 @@ class EventTests(PostgresMemoryCase):
         done = await self.add(said, title=said, date='2026-11', precision='approx', participants=['Mehmet', 'me'],
                               place='park')
         text = await sql("select text from orion_memory where source_kind = 'event'")
-        self.assertEqual(text, "Geçen parkta Mehmet'le karşılaştık ve kahve içtik. Yer: park. Katılanlar: Mehmet.")
+        self.assertEqual(text, "Geçen parkta Mehmet'le karşılaştık ve kahve içtik.")
+        self.assertEqual(self.embedded[-1], "Geçen parkta Mehmet'le karşılaştık ve kahve içtik. Yer: park. Katılanlar: Mehmet.")
         self.assertEqual(done['added']['title'], "Geçen parkta Mehmet'le karşılaştık ve kahve içtik")
 
     async def test_albums_projects_and_the_old_bucket_are_gone(self):
@@ -268,8 +270,10 @@ class EventTests(PostgresMemoryCase):
         self.assertNotIn('dün', text.lower())
         self.assertNotIn('2026', text)  # No date in the embedded text.
         self.assertNotIn('Ben', text)  # The user is not listed among the participants.
-        self.assertIn('Mehmet', text)
-        self.assertIn('park', text)
+        self.assertNotIn('Ben', self.embedded[-1])
+        self.assertIn('Mehmet', self.embedded[-1])  # Place and names are only in what is embedded...
+        self.assertIn('park', self.embedded[-1])
+        self.assertNotIn('Yer:', text)  # ...not glued onto the stored text.
         # Schema 10 cleans what is stored from before.
         await sql("update orion_mem_event set title = 'Dün kahve içtik', body = null, said_as = 'dün'")
         await sql("update orion_memory set text = '17 Kasım 2026 Salı (dün): Dün kahve içtik. Katılanlar: Ben.' "
@@ -280,8 +284,51 @@ class EventTests(PostgresMemoryCase):
         finally:
             await conn.close()
         self.assertEqual(await sql('select title from orion_mem_event'), 'Kahve içtik')
+        self.assertEqual(await sql("select text from orion_memory where source_kind = 'event'"), 'Kahve içtik.')
+        folded = await sql("select folded from orion_memory where source_kind = 'event'")
+        self.assertIn('mehmet', folded)  # The links stay: the names are still found by words.
+        self.assertIn('park', folded)
+
+    async def test_old_glued_event_texts_are_rendered_again_and_their_vectors_redone_in_the_background(self):
+        done = await self.add('Defne ile Bornova\'da yürüdük.', title='Bornova yürüyüşü', date='2026-11-17',
+                              participants=['Defne', 'me'], place='Bornova')
+        await sql("update orion_mem_entity set relation = 'sevgilim' where name = 'Defne'")
+        old = 'Bornova yürüyüşü. Defne ile Bornova\'da yürüdük. Yer: Bornova. Katılanlar: Sevgilim (Defne).'
+        await sql("update orion_memory set text = $1 where source_kind = 'event'", old)
+        before = await sql("select embedding::text from orion_memory where source_kind = 'event'")
+        self.assertEqual(ev._others([{'kind': 'person', 'name': 'Defne', 'relation': 'sevgilim'},
+                                     {'kind': 'self', 'name': 'Ben'}]), ['Defne'])  # Names only, never "Sevgilim (Defne)".
+        conn = await registry._connect()
+        try:
+            await conn.execute("update orion_memory_meta set value = '11' where key = 'schema_version'")
+            await conn.execute("delete from orion_memory_meta where key = 'events_reembed'")
+            await memory._migrate(conn)
+        finally:
+            await conn.close()
         self.assertEqual(await sql("select text from orion_memory where source_kind = 'event'"),
-                         'Kahve içtik. Yer: park. Katılanlar: Mehmet.')  # The links stay; the user is not listed.
+                         "Bornova yürüyüşü. Defne ile Bornova'da yürüdük.")  # Title + text, nothing glued on.
+        self.assertEqual(await sql("select value from orion_memory_meta where key = 'events_reembed'"), '0')
+        self.assertEqual(await sql("select embedding::text from orion_memory where source_kind = 'event'"), before)  # Not yet.
+        seen = len(self.embedded)
+        self.assertEqual(await ev.reembed_step(AsyncMock(return_value=self.v2)), 'more')
+        self.assertEqual(self.embedded[seen:], ["Bornova yürüyüşü. Defne ile Bornova'da yürüdük. Yer: Bornova. Katılanlar: Defne."])
+        self.assertNotEqual(await sql("select embedding::text from orion_memory where source_kind = 'event'"), before)
+        self.assertEqual(await ev.reembed_step(AsyncMock(return_value=self.v2)), 'done')
+        self.assertEqual(await sql("select value from orion_memory_meta where key = 'events_reembed'"), 'done')
+        self.assertEqual(len(self.embedded), seen + 1)  # Done: nothing is embedded again.
+        self.assertTrue(done)
+
+    async def test_the_reembed_job_waits_when_the_embedding_model_is_not_there(self):
+        await self.mother_day()
+        await sql("insert into orion_memory_meta (key, value) values ('events_reembed', '0') on conflict (key) do update "
+                  "set value = '0'")
+
+        async def down(settings, space=None):
+            raise memory.MemoryUnavailable('no model')
+        with patch.object(memory, 'embedding_target', down):
+            self.assertEqual(await ev.reembed_step(AsyncMock(return_value=self.v2)), 'waiting')
+        self.assertEqual(await sql("select value from orion_memory_meta where key = 'events_reembed'"), '0')  # Nothing skipped.
+        self.assertEqual(await ev.reembed_step(AsyncMock(return_value=self.v2)), 'more')
 
     async def test_schema_ten_drops_the_chats_index_and_keeps_the_rest(self):
         note = await self.note('kedi')

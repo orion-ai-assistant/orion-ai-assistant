@@ -151,6 +151,42 @@ class ProposalTests(PostgresMemoryCase):
         self.assertEqual(await sql("select statement from orion_mem_fact where superseded_by is null and "
                                    "lineage = $1", fact), 'Doğum günü 18 Kasım.')
 
+    async def test_auto_approve_applies_the_cards_that_were_already_waiting_once(self):
+        fact = (await self.tool('Doğum günü 17 Kasım.', type='fact', about='Ayşe', relation='anne',
+                                category='date'))['added']['fact_id']
+        await self.tool('Doğum günü 18 Kasım.', type='fact', about='#' + str(
+            await sql("select id from orion_mem_entity where name = 'Ayşe'")), category='date', replaces=fact)
+        self.assertEqual(await mp.count_pending('alice', self.v2), 1)  # Auto approve was off: it waits.
+        on = SimpleNamespace(**{**vars(self.v2), 'memory_auto_approve': True})
+        mp._auto_tried.clear()
+        self.assertEqual(await mp.approve_pending('alice', self.v2), 0)  # Off: nothing.
+        self.assertEqual(await mp.approve_pending('alice', on), 1)
+        self.assertEqual(await mp.count_pending('alice', on), 0)
+        self.assertEqual(await sql("select statement from orion_mem_fact where superseded_by is null and lineage = $1", fact),
+                         'Doğum günü 18 Kasım.')
+        self.assertEqual(await mp.approve_pending('alice', on), 0)
+        self.assertEqual(await sql("select count(*) from orion_chat_messages where content_json like '%Hafıza kartı%'"), 0)
+
+    async def test_the_pending_list_applies_them_and_says_auto_approve(self):
+        from orion.api import routes
+        fact = (await self.tool('Doğum günü 17 Kasım.', type='fact', about='Ayşe', relation='anne',
+                                category='date'))['added']['fact_id']
+        await self.tool('Doğum günü 18 Kasım.', type='fact', about='#' + str(
+            await sql("select id from orion_mem_entity where name = 'Ayşe'")), category='date', replaces=fact)
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
+        on = SimpleNamespace(**{**vars(self.v2), 'memory_auto_approve': True})
+        mp._auto_tried.clear()
+        with patch.object(routes, 'get_runtime_settings', AsyncMock(side_effect=lambda r, u: on)):
+            got = await routes.memory_proposals(request, 'pending', '', 'alice')
+        self.assertEqual((got['proposals'], got['auto_approve']), ([], True))
+
+    async def test_recent_is_the_last_30_items_of_the_last_30_days_by_default(self):
+        import inspect
+        from orion.api import routes
+        self.assertEqual((memory_recent.DAYS, memory_recent.PAGE), (30, 30))
+        defaults = inspect.signature(routes.memory_recent_list).parameters
+        self.assertEqual((defaults['days'].default, defaults['limit'].default), (30, 30))
+
     async def test_a_card_answered_in_two_places_at_once_is_carried_out_once(self):
         import asyncio
         group = await self.note_by_model('Pizza severim')
@@ -187,7 +223,7 @@ class ProposalTests(PostgresMemoryCase):
         self.assertEqual([i['added_at'] for i in listing['items']], sorted((i['added_at'] for i in listing['items']),
                                                                            reverse=True))
         self.assertEqual(await memory_recent.count('alice', self.v2), 3)
-        self.assertEqual(await memory_recent.review('alice', self.v2), {'pending': 0, 'recent': 3})
+        self.assertEqual(await memory_recent.review('alice', self.v2), {'pending': 0, 'recent': 3, 'auto_approve': False})
         page = await memory_recent.recent('alice', self.v2, limit=2)
         self.assertEqual((len(page['items']), page['more']), (2, True))
         rest = await memory_recent.recent('alice', self.v2, limit=2, offset=2)
@@ -248,7 +284,7 @@ class ProposalTests(PostgresMemoryCase):
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(redis=None)))
         fact, event, note, mine = await self.written()
         with patch.object(routes, 'get_runtime_settings', AsyncMock(side_effect=lambda r, u: self.v2)):
-            self.assertEqual(await routes.memory_review(request, 'alice'), {'pending': 0, 'recent': 3})
+            self.assertEqual(await routes.memory_review(request, 'alice'), {'pending': 0, 'recent': 3, 'auto_approve': False})
             listing = await routes.memory_recent_list(request, 30, 50, 0, 'alice')
             self.assertEqual(len(listing['items']), 3)
             undone = await routes.memory_recent_undo(routes.RecentUndo(type='fact', id=str(fact)), request, 'alice')

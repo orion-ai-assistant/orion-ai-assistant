@@ -7,10 +7,12 @@ conversation and answers {summary, entities, ops} (the same ops as the writer: f
   user; they are not sent to the model.
 - The memory items go through the writer's candidate pipeline (quality gate): added directly only when automatic writing is
   switched on (shadow otherwise, as the extraction always was); a change to something known is a card.
-- Triggers: the user's "Sohbeti sıkıştır" (`compact`), or automatically after an answer when the conversation passes
-  `chat_compact_percent` (default 70) of the chat model's context length (the Router's model catalog, else `chat_context_tokens`; 0 =
-  unknown: no automatic compaction), measured with the REAL token count of the last request (stream usage) (`maybe_compact`).
-  There is no extraction after every answer any more.
+- Triggers: the user's "Sohbeti sıkıştır" (`compact`); automatically (a) when the chat is IDLE: usage >= `chat_compact_idle_percent`
+  (40) of the chat model's context length AND no message for `chat_compact_idle_minutes` (30), checked by a light periodic loop
+  (`idle_loop`), and (b) before the next request is sent when usage >= `chat_compact_force_percent` (90) (`force_before_send`).
+  Context length: the Router's model catalog, else `chat_context_tokens` (0 = unknown: no automatic compaction). Usage is the REAL
+  count of the last answer (prompt + completion tokens of the Router's usage); after a compaction, until the next answer, an
+  estimate of the summary + the messages since. There is no extraction after every answer any more.
 Every table has user_id; every read filters by it."""
 from __future__ import annotations
 
@@ -60,13 +62,69 @@ def usage_of(content_json) -> dict | None:
            "at": usage.get("at")}
     if usage.get("estimated"):
         got["estimated"] = True  # A stopped answer the Router reported no usage for: a rough count.
+    if isinstance(usage.get("breakdown"), dict):
+        got["breakdown"] = usage["breakdown"]
     return got
+
+
+BREAKDOWN_KEYS = ("system", "profile", "tools", "messages", "tool_results")
+
+
+def scale_breakdown(parts: dict, total: int) -> dict | None:
+    """`parts` ({system, profile, tools, messages, tool_results}: estimated tokens of what a request carried) scaled so that they
+    add up to `total` (the Router's real prompt_tokens). None when there is nothing to scale (no estimate or no total)."""
+    parts = {k: max(0, int(parts.get(k) or 0)) for k in BREAKDOWN_KEYS}
+    have = sum(parts.values())
+    if have <= 0 or total <= 0:
+        return None
+    scaled = {k: int(v * total / have) for k, v in parts.items()}
+    scaled[max(parts, key=parts.get)] += total - sum(scaled.values())  # The rounding rest goes to the biggest part.
+    return scaled
+
+
+def _message_tokens(message: dict) -> int:
+    content = message.get("content")
+    if isinstance(content, list):  # Multimodal parts: only the text counts here (the scaling absorbs the rest).
+        content = " ".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+    n = memory.estimate_tokens(str(content or ""))
+    if message.get("tool_calls"):
+        n += memory.estimate_tokens(json.dumps(message["tool_calls"], ensure_ascii=False, default=str))
+    return n
+
+
+def request_parts(messages: list[dict], system_text: str, profile_text: str, tools_tokens: int) -> dict:
+    """Estimated tokens of each part of the LAST request of a turn: `messages` is the whole message list it carried (system first,
+    the chat history, this turn's tool rounds), `system_text` the user's own system prompt, `profile_text` the profile + "soon"
+    blocks (both inside the system message), `tools_tokens` the tool schemas. Estimates only (memory.estimate_tokens)."""
+    parts = {"system": memory.estimate_tokens(system_text or ""), "profile": memory.estimate_tokens(profile_text or ""),
+             "tools": int(tools_tokens or 0), "messages": 0, "tool_results": 0}
+    for m in messages:
+        if m.get("role") == "system":
+            continue  # Counted by `system` and `profile`.
+        if m.get("role") == "tool":
+            parts["tool_results"] += _message_tokens(m)
+        else:
+            parts["messages"] += _message_tokens(m)
+    return parts
+
+
+def used_of(last: dict | None, last_id: int | None, compacted_upto: int | None, summary_tokens: int,
+            tokens_since: int) -> tuple[int, bool, dict | None]:
+    """(used_tokens, estimated, breakdown) of a chat. After a compaction, until an answer newer than it reports its usage, the
+    size is an estimate: the summary + the messages since. Otherwise the last answer's REAL count (prompt + completion tokens);
+    with no usage at all, the estimate too."""
+    fresh = last is not None and not (compacted_upto and (last_id or 0) <= compacted_upto)
+    if fresh:
+        return int(last["prompt_tokens"]) + int(last["completion_tokens"]), bool(last.get("estimated")), last.get("breakdown")
+    return summary_tokens + tokens_since, True, None
 
 
 async def state(user_id: str, chat_id: str) -> dict:
     """{"running", "compacted_upto", "compacted_at", "summary_tokens", "messages_since", "tokens_since", "summary" (None before the
     first compaction), "compacted_turn_id" (turn of the last covered message: the summary starts after it), "last_usage"
-    (the last assistant answer's usage, None when it has none)}."""
+    (the last assistant answer's usage, None when it has none), "used_tokens" (the chat's size now: the last answer's
+    prompt + completion tokens, or an estimate after a compaction: see used_of), "used_estimated", "breakdown" ({system, profile,
+    tools, messages, tool_results}: estimated shares scaled to the real prompt tokens of the last answer, None when unknown)}."""
     conn = await mx._connect()
     try:
         row = await conn.fetchrow("select summary, compacted_upto, compacted_at from orion_mem_chat_state where user_id = $1 "
@@ -76,17 +134,22 @@ async def state(user_id: str, chat_id: str) -> dict:
         if row and row["compacted_upto"]:
             turn_id = await conn.fetchval("select turn_id from orion_chat_messages where chat_id = $1 and id = $2",
                                           chat_id, row["compacted_upto"]) or None
-        last = await conn.fetchrow("select content_json from orion_chat_messages where chat_id = $1 and role = 'assistant' "
+        last = await conn.fetchrow("select id, content_json from orion_chat_messages where chat_id = $1 and role = 'assistant' "
                                    "and strpos(content_json, '\"usage\"') > 0 order by id desc limit 1", chat_id)
     finally:
         await conn.close()
     compacted = bool(row and row["compacted_upto"])
+    usage = usage_of(last["content_json"]) if last else None
+    summary_tokens = memory.estimate_tokens(row["summary"]) if compacted else 0
+    tokens_since = estimate(messages)
+    used, estimated, breakdown = used_of(usage, last["id"] if last else None, row["compacted_upto"] if row else None,
+                                         summary_tokens, tokens_since)
     return {"running": chat_id in _running, "compacted_upto": row["compacted_upto"] if row else None,
             "compacted_at": row["compacted_at"].isoformat() if compacted and row["compacted_at"] else None,
-            "summary_tokens": memory.estimate_tokens(row["summary"]) if compacted else 0,
+            "summary_tokens": summary_tokens,
             "summary": row["summary"] if compacted else None, "compacted_turn_id": turn_id,
-            "last_usage": usage_of(last["content_json"]) if last else None,
-            "messages_since": len(messages), "tokens_since": estimate(messages)}
+            "last_usage": usage, "used_tokens": used, "used_estimated": estimated, "breakdown": breakdown,
+            "messages_since": len(messages), "tokens_since": tokens_since}
 
 
 async def compact(user_id: str, chat_id: str, settings) -> dict:
@@ -98,7 +161,11 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
     if chat_id in _running:
         raise ValueError("Bu sohbet zaten sıkıştırılıyor.")
     _running.add(chat_id)
+    guard = None
     try:
+        guard = await mx._connect()  # One compaction per chat across the Hub's processes (a session lock on this connection).
+        if not await guard.fetchval("select pg_try_advisory_lock(hashtext($1))", "compact:" + chat_id):
+            raise ValueError("Bu sohbet zaten sıkıştırılıyor.")
         mx.remember(user_id, settings)
         conn = await mx._connect()
         try:
@@ -164,6 +231,8 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
         return {"summary_tokens": memory.estimate_tokens(summary), "candidates": len(candidates), "compacted_upto": last}
     finally:
         _running.discard(chat_id)
+        if guard is not None:
+            await guard.close()  # Closing the connection releases the lock.
 
 
 async def search_messages(user_id: str, words: list[str], span=None, limit: int = 10) -> list[dict]:
@@ -225,44 +294,85 @@ async def context_length(settings) -> int:
     return int(getattr(settings, "chat_context_tokens", 0) or 0)
 
 
-async def maybe_compact(user_id: str, chat_id: str, settings, used_tokens: int = 0) -> bool:
-    """After an answer: start compaction when the conversation passes `chat_compact_percent` of the chat model's context length.
-    The size is the REAL one: the last request's usage (prompt + completion tokens, from the stream); only when the stream gave no
-    usage (`used_tokens` 0) a rough count of the not yet compacted messages (plus the summary) stands in. False when the context
-    length is unknown (0), it is not reached, or a compaction is running."""
+async def usage_state(user_id: str, chat_id: str, settings) -> tuple[int, int, dict] | None:
+    """(context length, used tokens, state) or None when the context length is unknown / memory is off."""
     window = await context_length(settings)
-    if window <= 0 or not mx.enabled(settings) or chat_id in _running:
-        return False
-    if not used_tokens:
-        try:
-            got = await state(user_id, chat_id)
-        except Exception:
-            return False
-        used_tokens = got["tokens_since"] + got["summary_tokens"]
-    if used_tokens < window * int(getattr(settings, "chat_compact_percent", 70)) / 100:
-        return False
-    start(user_id, chat_id, settings)
-    return True
+    if window <= 0 or not mx.enabled(settings):
+        return None
+    got = await state(user_id, chat_id)
+    return window, got["used_tokens"], got
 
 
-def after_turn(chat_id: str, settings, used_tokens: int = 0) -> None:
-    """A turn of the chat was saved (job_processor): compact it if it is the assistant chat and has grown past the threshold.
-    Returns at once; never raises."""
-    if not mx.enabled(settings):
-        return
-
-    async def job():
-        try:
-            conn = await mx._connect()
-            try:
-                row = await conn.fetchrow("select user_id, assistant from orion_chats where id = $1", chat_id)
-            finally:
-                await conn.close()
-            if row and row["assistant"]:
-                await maybe_compact(row["user_id"], chat_id, settings, used_tokens)
-        except Exception:
-            logger.warning("Compaction check of chat %s failed", chat_id[:8], exc_info=True)
+async def force_before_send(user_id: str, chat_id: str, settings) -> bool:
+    """Before a request of the assistant chat is sent: when the chat's size is at `chat_compact_force_percent` (90) of the context
+    length, compact it NOW (waits for it), so the request carries the summary. True when it was compacted. Never raises: a chat
+    does not break for it."""
     try:
-        asyncio.get_running_loop().create_task(job(), name=f"compact-check-{chat_id[:8]}")
-    except RuntimeError:
-        pass
+        if chat_id in _running:
+            return False
+        got = await usage_state(user_id, chat_id, settings)
+        if got is None or not got[2]["messages_since"]:
+            return False
+        window, used, _ = got
+        if used < window * int(getattr(settings, "chat_compact_force_percent", 90)) / 100:
+            return False
+        await compact(user_id, chat_id, settings)
+        return True
+    except Exception:
+        logger.warning("Forced compaction of chat %s failed", chat_id[:8], exc_info=True)
+        return False
+
+
+IDLE_EVERY = 300  # Seconds between the checks of the idle loop.
+IDLE_START = 120
+_idle_checked: dict[str, int] = {}  # chat id -> the last message id it was judged at (no second look until a new message).
+
+
+async def idle_check(now: datetime | None = None) -> int:
+    """One pass: every assistant chat whose last message is at least `chat_compact_idle_minutes` old (30), which has uncompacted
+    messages and whose size is at `chat_compact_idle_percent` (40) of the context length, is compacted in the background. Returns
+    how many were started. Cheap: one query for the candidates; a chat is judged once per last message."""
+    from orion.kernel.config import get_runtime_settings
+    conn = await mx._connect()
+    try:
+        rows = await conn.fetch(
+            "select c.id, c.user_id, m.last_id, m.last_at from orion_chats c join lateral (select max(id) as last_id, "
+            "max(created_at) as last_at from orion_chat_messages where chat_id = c.id) m on m.last_id is not null "
+            "where c.assistant and m.last_at < now() - interval '1 minute' and m.last_at > now() - interval '7 days' "
+            "and m.last_id > coalesce((select compacted_upto from orion_mem_chat_state s where s.chat_id = c.id "
+            "and s.user_id = c.user_id), 0)")
+    finally:
+        await conn.close()
+    started = 0
+    for r in rows:
+        if _idle_checked.get(r["id"]) == r["last_id"] or r["id"] in _running:
+            continue
+        try:
+            settings = await get_runtime_settings(None, r["user_id"])
+            idle = (now or datetime.now().astimezone()) - r["last_at"]
+            if idle.total_seconds() < int(getattr(settings, "chat_compact_idle_minutes", 30)) * 60:
+                continue  # Not idle long enough yet: looked at again next time.
+            _idle_checked[r["id"]] = r["last_id"]
+            got = await usage_state(r["user_id"], r["id"], settings)
+            if got is None:
+                continue
+            window, used, _ = got
+            if used >= window * int(getattr(settings, "chat_compact_idle_percent", 40)) / 100:
+                start(r["user_id"], r["id"], settings)
+                started += 1
+        except Exception:
+            logger.warning("Idle compaction check of chat %s failed", str(r["id"])[:8], exc_info=True)
+    return started
+
+
+async def idle_loop() -> None:
+    """The periodic job (started by the Hub): idle_check every IDLE_EVERY seconds."""
+    await asyncio.sleep(IDLE_START)
+    while True:
+        try:
+            await idle_check()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Idle compaction pass failed", exc_info=True)
+        await asyncio.sleep(IDLE_EVERY)

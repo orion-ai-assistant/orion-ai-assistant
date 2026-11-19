@@ -22,7 +22,13 @@ class CorsTests(unittest.IsolatedAsyncioTestCase):
         async def register():
             return {"message": "User created successfully"}
 
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://hub")
+        @self.app.post("/api/v1/boom")
+        async def boom():
+            raise RuntimeError("the background model failed")
+
+        # raise_app_exceptions=False: what a browser sees (the response), not what the test client would re-raise.
+        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app, raise_app_exceptions=False),
+                                        base_url="http://hub")
 
     async def asyncTearDown(self):
         await self.client.aclose()
@@ -43,6 +49,13 @@ class CorsTests(unittest.IsolatedAsyncioTestCase):
             response = await self.client.post(f"/api/v1/auth/{endpoint}", headers={"Origin": "http://localhost:51842"}, json={})
             self.assertEqual(response.status_code, status)
             self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:51842")
+
+    async def test_an_unhandled_error_is_a_500_that_still_carries_the_cors_headers(self):
+        # Without this the browser reports "CORS error" and hides the real failure (POST /memory/profile/compact).
+        response = await self.client.post("/api/v1/boom", headers={"Origin": "http://localhost:51842"}, json={})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.headers["access-control-allow-origin"], "http://localhost:51842")
+        self.assertEqual(response.json(), {"detail": "Sunucu hatası."})
 
     async def test_nonlocal_origins_require_explicit_configuration(self):
         for origin, status in (("https://orion.example", 200), ("https://untrusted.example", 400),

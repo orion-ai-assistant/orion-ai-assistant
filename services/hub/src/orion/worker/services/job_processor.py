@@ -151,6 +151,19 @@ async def load_history(
     return shown
 
 
+def _breakdown(messages: list, system_prompt: str, profile: dict | None, conversation, usage: dict) -> dict | None:
+    """The turn's token breakdown {system, profile, tools, messages, tool_results}: what the LAST request carried, estimated with the
+    Hub's estimator and scaled to the real prompt tokens (memory_compact.scale_breakdown). Computed once, here; never raises."""
+    try:
+        from orion.kernel import memory_compact
+        parts = memory_compact.request_parts(messages, system_prompt, (profile or {}).get("text") or "",
+                                             getattr(conversation, "tools_tokens", 0))
+        return memory_compact.scale_breakdown(parts, int(usage.get("prompt_tokens") or 0))
+    except Exception:
+        logging.warning("Could not work out the token breakdown of a turn", exc_info=True)
+        return None
+
+
 async def append_history(
     redis: Redis,
     chat_id: str,
@@ -190,8 +203,6 @@ async def append_history(
     for attempt, pause in enumerate((0.5, 1.0, 2.0, 4.0, None)):
         try:
             await insert_messages(chat_id=chat_id, messages=messages)
-            from orion.kernel import memory_compact
-            memory_compact.after_turn(chat_id, settings, used_tokens)  # Compacts the assistant chat past its threshold.
             return
         except Exception:
             if pause is None:
@@ -349,6 +360,12 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     assistant_chat = await is_assistant_chat_db(context.chat_id, context.user_id)
                 except Exception:
                     logging.warning("Could not tell whether chat %s is the assistant chat; it gets no memory", context.chat_id)
+            if assistant_chat:
+                from orion.kernel import memory_compact
+                # At the force threshold (90 %) the chat is compacted BEFORE this request goes out; the history is read again.
+                if await memory_compact.force_before_send(context.user_id, context.chat_id, settings):
+                    history = await load_history(redis, context.chat_id, settings.chat_history_max_messages,
+                                                 settings.redis_cache_ttl_seconds)
             from orion.kernel import memory_profile  # The user's profile block rides in the system message (memory_v2).
             profile = await memory_profile.for_chat(context.user_id, settings) if assistant_chat else None
             system_text = memory_profile.with_system_prompt(settings.system_prompt, profile)
@@ -661,6 +678,9 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                 assistant_entry["metrics"] = metrics
             if last_usage_raw[0]:
                 assistant_entry["usage"] = {**last_usage_raw[0], "at": utc_now()}  # The token meter's last real count.
+                breakdown = _breakdown(messages, settings.system_prompt, profile, conversation, last_usage_raw[0])
+                if breakdown:
+                    assistant_entry["usage"]["breakdown"] = breakdown
             elif stopped and (final_text or conversation.rounds):
                 # Stopped before the Router reported any usage (it only does, when it does, in its last chunk): a rough count,
                 # marked `estimated`, so the token meter moves at once; the real one replaces it on the next answer.
@@ -669,6 +689,9 @@ async def process_message(redis: Redis, stream_id: str, fields: dict[str, str], 
                     assistant_entry["usage"] = {
                         "prompt_tokens": estimate_tokens(json.dumps(messages, ensure_ascii=False, default=str)),
                         "completion_tokens": estimate_tokens(final_text), "estimated": True, "at": utc_now()}
+                    breakdown = _breakdown(messages, settings.system_prompt, profile, conversation, assistant_entry["usage"])
+                    if breakdown:
+                        assistant_entry["usage"]["breakdown"] = breakdown
                 except Exception:
                     logging.warning("Could not estimate the usage of a stopped turn", exc_info=True)
             if thinking_text:

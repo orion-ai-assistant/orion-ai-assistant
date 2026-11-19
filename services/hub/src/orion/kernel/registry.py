@@ -396,6 +396,26 @@ async def fetch_all_settings() -> dict[str, dict[str, str]]:
         await conn.close()
 
 
+async def migrate_compact_setting() -> int:
+    """`chat_compact_percent` (one threshold, automatic after every answer) became `chat_compact_idle_percent` (+ idle minutes and
+    a force percent): a value somebody chose (not the old default 70) moves over, then the old key is gone. Returns the rows
+    removed."""
+    conn = await _connect()
+    if conn is None:
+        return 0
+    try:
+        await _ensure_tables(conn)
+        async with conn.transaction():
+            await conn.execute(
+                "insert into orion_settings (user_id, key, value) select user_id, 'chat_compact_idle_percent', "
+                "least(95, greatest(10, value::int))::text from orion_settings where key = 'chat_compact_percent' "
+                "and value ~ '^[0-9]{1,4}$' and value <> '70' on conflict (user_id, key) do nothing")
+            done = await conn.execute("delete from orion_settings where key = 'chat_compact_percent'")
+        return int(done.split()[-1])
+    finally:
+        await conn.close()
+
+
 async def delete_setting_override(user_id: str, key: str) -> None:
     conn = await _connect()
     if conn is None:

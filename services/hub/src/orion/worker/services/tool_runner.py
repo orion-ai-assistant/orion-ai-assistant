@@ -125,6 +125,7 @@ class ToolConversation:
         self.rounds = 0
         self.research_used = False
         self.failed_tools = set()
+        self.tools_tokens = 0  # Estimated tokens of the tool schemas the LAST request carried (the token breakdown).
         self.opened_memory = set()  # Files (sha256) this turn already attached for the model (no second copy).
 
     async def stream(self, messages, settings, stop_checker, stream_fn):
@@ -143,6 +144,8 @@ class ToolConversation:
             kwargs = {"stop_checker": stop_checker}
             if schemas:
                 kwargs["tools"] = schemas
+            from orion.kernel.memory import estimate_tokens
+            self.tools_tokens = estimate_tokens(json.dumps(schemas, ensure_ascii=False, default=str)) if schemas else 0
             async with aclosing(stream_fn(messages, settings, **kwargs)) as stream:
                 async for kind, value in stream:
                     if kind == "tool_calls":

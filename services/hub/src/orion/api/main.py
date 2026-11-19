@@ -175,6 +175,12 @@ async def lifespan(app: FastAPI):
         from orion.kernel.memory_trash import purge_loop
         # Memory trash: removals older than the user's trash days are deleted for good (one process at a time).
         trash_purge = asyncio.create_task(admitted(purge_loop()), name='memory-trash-purge')
+        from orion.kernel.memory_compact import idle_loop
+        # Chat compaction: an idle assistant chat past its size threshold is compacted (a light check every few minutes).
+        compact_idle = asyncio.create_task(admitted(idle_loop()), name='chat-compact-idle')
+        from orion.kernel.memory_events import reembed_loop
+        # Schema 12: the vectors of the re-rendered event texts are made again, a few at a time (ends when all are done).
+        event_vectors = asyncio.create_task(admitted(reembed_loop()), name='memory-event-reembed')
         provisioner = None
         if getattr(app.state, 'public', True) is False:
             from orion.kernel.router_accounts import provisioning_loop
@@ -192,6 +198,12 @@ async def lifespan(app: FastAPI):
             trash_purge.cancel()
             with suppress(asyncio.CancelledError):
                 await trash_purge
+            event_vectors.cancel()
+            with suppress(asyncio.CancelledError):
+                await event_vectors
+            compact_idle.cancel()
+            with suppress(asyncio.CancelledError):
+                await compact_idle
             watchdog.cancel()
             with suppress(asyncio.CancelledError):
                 await watchdog

@@ -9,6 +9,8 @@ def configure_cors(app: FastAPI) -> None:
     origins = [origin.strip() for origin in os.getenv("ORION_CORS_ORIGINS", "").split(",") if origin.strip()]
     if "*" in origins:
         raise RuntimeError("ORION_CORS_ORIGINS must list explicit origins, not '*'")
+    from orion.api.error_boundary import ErrorBoundary
+    app.add_middleware(ErrorBoundary)  # Added first = inside CORS: an unhandled error is a 500 that still gets CORS headers.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

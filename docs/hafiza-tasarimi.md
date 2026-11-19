@@ -698,3 +698,22 @@ yerine geçer.
    `memory_profile`, `memory_auto_approve`, `memory_extract_chats`, `memory_profile_soft_tokens`, `memory_profile_tokens`,
    `memory_profile_compact_tokens`, `memory_soon_tokens`, `memory_soon_days`, `memory_recent_days`, `chat_compact_percent`,
    `chat_context_tokens` (bağlam uzunluğu Router katalogundan gelir, bu yalnız yedek).
+
+## 17d. Kararlar: bağlam ölçeri, otomatik sıkıştırma, olay metni (şema 12)
+
+1. **Bağlam ölçeri.** `GET /chats/{id}/compact` `used_tokens` verir = son cevabın Router `usage`ı (prompt + completion); sıkıştırmadan sonra
+   bir sonraki cevaba kadar özet + sonraki mesajların tahmini (`used_estimated: true`). `breakdown` {system, profile, tools, messages,
+   tool_results}: son isteğin parçaları Hub'ın tahmincisiyle sayılır, gerçek prompt_tokens'a ölçeklenir (toplam birebir tutar); tur
+   kaydedilirken hesaplanır, mesajın `usage.breakdown`ında saklanır, GET yeniden hesaplamaz.
+2. **Otomatik sıkıştırma.** Her cevaptan sonra kontrol yok. (a) Boşta: kullanım >= `chat_compact_idle_percent` (40) ve sohbet
+   `chat_compact_idle_minutes` (30) dakikadır sessiz: hafif bir döngü (`idle_loop`, 5 dk) sıkıştırır; (b) zorunlu: kullanım >=
+   `chat_compact_force_percent` (90) ise sonraki istek gitmeden sıkıştırılır (beklenir, geçmiş yeniden okunur). Eski `chat_compact_percent`
+   silinir; seçilmiş (70 dışı) değeri `chat_compact_idle_percent`e taşınır. Bir sohbet için tek sıkıştırma (PG danışma kilidi).
+3. **Profil sıkıştırma** `POST /memory/profile/compact` arka planda çalışır, 202 {state}; model hatası artık HTTP cevabına sızmaz. Genel
+   kök neden: yakalanmayan bir istisna 500'ü CORS katmanının DIŞINDA üretir, tarayıcı "CORS hatası" der; `ErrorBoundary` (cors.py) onu
+   CORS'un içinde 500 yapar.
+4. **Olay metni.** Satırın saklanan metni yalnız başlık + gövde; yer ve katılanlar (yalnız adlar, ilişki etiketi yok) sadece gömülen
+   metinde. Şema 12 eski satırları alanlarından yeniden kurar, vektörleri arka plan işi (`reembed_loop`, 10'arlı, ilerleme
+   `orion_memory_meta.events_reembed`) normal gömme yoluyla yeniler.
+5. `memory_auto_approve` açıkken bekleyen kartlar liste/rozet okunurken bir kez uygulanır (birleştirme kartları hariç); cevaplarda
+   `auto_approve`. "Son eklenenler" varsayılan son 30 gün, 30 öğe. Profil "Satır ekle" ve `POST /memory/facts` `group_id` döner.

@@ -137,6 +137,32 @@ async def proposals(user_id: str, settings, state: str | None = "pending", ids: 
     return out
 
 
+_auto_tried: set[int] = set()  # Cards the automatic approval of old pending ones already tried (a failed one waits for the user).
+
+
+async def approve_pending(user_id: str, settings) -> int:
+    """`memory_auto_approve` is on: the cards that were already waiting are applied too (merge cards need the user's eyes and stay).
+    Called when the pending list is read; a card is tried once per process. The chat is not told (the cards are old news).
+    Returns how many were applied. Never raises."""
+    if not getattr(settings, "memory_auto_approve", False):
+        return 0
+    try:
+        me = _entities()
+        me.require(settings)
+        async with me._db() as conn:
+            ids = [r["id"] for r in await conn.fetch(
+                "select id from orion_mem_proposal where user_id = $1 and state = 'pending' and action <> 'merge_entities' "
+                "and batch_id is null order by id limit 100", user_id) if r["id"] not in _auto_tried]
+        if not ids:
+            return 0
+        _auto_tried.update(ids)
+        results = await decide(user_id, settings, accept=ids, auto=True, tell=False)
+        return sum(1 for r in results if r["state"] in ("accepted", "edited"))
+    except Exception:
+        logger.warning("Memory proposals: the waiting cards could not be approved automatically", exc_info=True)
+        return 0
+
+
 async def count_pending(user_id: str, settings) -> int:
     me = _entities()
     me.require(settings)
@@ -185,7 +211,7 @@ async def _tell_the_model(user_id: str, card: dict, state: str, auto: bool) -> N
 
 
 async def decide(user_id: str, settings, accept: list[int] = (), reject: list[int] = (),
-                 edits: dict[int, str] | None = None, auto: bool = False) -> list[dict]:
+                 edits: dict[int, str] | None = None, auto: bool = False, tell: bool = True) -> list[dict]:
     """The user's answer to cards: each accepted one is carried out (in its own transaction), rejected ones closed;
     `edits` {id: sentence}: Düzenle (the user's own sentence is written instead, state 'edited'). Each result:
     {"id", "state": accepted | edited | rejected | pending (failed: "error") | already | unknown, ...what was done}. A
@@ -225,7 +251,7 @@ async def decide(user_id: str, settings, accept: list[int] = (), reject: list[in
         result = {"id": pid, "state": state, **extra}
         if error:
             result["error"] = error
-        if state != "pending":
+        if state != "pending" and tell:
             await _tell_the_model(user_id, card, state, auto)
         out.append(result)
     return out

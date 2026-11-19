@@ -55,9 +55,12 @@ class AISettings(BaseModel):
     memory_soon_days: int = Field(default=14, ge=1, le=366)
     memory_recent_days: int = Field(default=7, ge=1, le=366)
     # Chat compaction: one background-model call turns the conversation into a summary (its new first message) and memory
-    # items. Automatic once the conversation passes this share of the chat model's context window; the window is
-    # `chat_context_tokens` (0 = not known: only the manual "Sohbeti sıkıştır").
-    chat_compact_percent: int = Field(default=70, ge=10, le=95)
+    # items. Automatic (a) when the chat has been idle for `idle_minutes` and its size is at `idle_percent` of the chat model's
+    # context window, (b) before the next request is sent when it is at `force_percent`. The window comes from the Router's
+    # catalog, else `chat_context_tokens` (0 = not known: only the manual "Sohbeti sıkıştır").
+    chat_compact_idle_percent: int = Field(default=40, ge=10, le=95)
+    chat_compact_idle_minutes: int = Field(default=30, ge=1, le=1440)
+    chat_compact_force_percent: int = Field(default=90, ge=50, le=99)
     chat_context_tokens: int = Field(default=0, ge=0, le=10000000)
 
     thinking_level: str = ""
