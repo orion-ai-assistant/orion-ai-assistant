@@ -799,7 +799,7 @@ async def purge_removed_all(settings_of) -> int:
 async def facts_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
     """{memory group: {"id", "about", "category", "since", "history"?}} for the memories among `groups` that are current
     facts: one indexed lookup on the caller's connection (memory_groups.list_groups: a search card says who its fact is
-    about). `history`: {versions, last_change (the day the current version was recorded), previously (the sentence it replaced)}, only
+    about). `history`: {versions, last_change (the day the current version was recorded)} (never the old text: that is memory_context's), only
     for a fact that changed."""
     if not groups:
         return {}
@@ -815,8 +815,7 @@ async def facts_on(conn, user_id: str, groups: list[str]) -> dict[str, dict]:
         fact = {"id": r["id"], "about": r["name"] if not r["relation"] else f"{r['name']} ({r['relation']})",
                 "category": r["category"], "since": r["valid_from"].isoformat() if r["valid_from"] else None}
         if r["was"]:  # Compact history of a fact that changed; the full history is memory_context's.
-            fact["history"] = {"versions": int(r["versions"]), "last_change": r["recorded_at"].date().isoformat(),
-                               "previously": r["was"]}
+            fact["history"] = {"versions": int(r["versions"]), "last_change": r["recorded_at"].date().isoformat()}
         out[r["group_id"]] = fact
     return out
 

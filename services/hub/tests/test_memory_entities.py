@@ -446,7 +446,8 @@ class EntityTests(PostgresMemoryCase):
         found = await self.find('yaşıyor', **{'in': ['me']})
         fact = found['results'][0]['fact']
         self.assertEqual(fact['history']['versions'], 2)
-        self.assertEqual(fact['history']['previously'], "Ankara'da yaşıyor.")
+        self.assertNotIn('previously', fact['history'])
+        self.assertEqual(set(fact['history']), {'versions', 'last_change'})
         self.assertIn('last_change', fact['history'])
         self.assertIn('since', fact)
         self.assertNotIn('previously', fact)

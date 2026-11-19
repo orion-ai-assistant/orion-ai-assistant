@@ -16,7 +16,7 @@ CATEGORY = Category(
                     "(it also lists replaced fact versions true then as 'past_facts'), 'include_past' lists how facts used to be (by words), 'budget' fits the answer into a "
                     "token budget, and a query that names a known person or thing also returns that 'entity' card "
                     "(its current facts and latest events) before the results. A fact carries its 'since'; one that "
-                    "changed has 'history' {versions, last_change, previously}; the full history is memory_context's. An "
+                    "changed has 'history' {versions, last_change} (no old text: ask memory_context for the earlier versions). An "
                     "event's 'said_as' carries the day it was said ('geçen hafta, said on 2026-11-18')."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
            Tool(id="remember", name="Hatırla",

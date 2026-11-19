@@ -661,7 +661,7 @@ yerine geçer.
    kart açar: "sevgilimden ayrıldım, yeni sevgilim Merve" -> Defne "eski sevgilim" (until), Merve "sevgilim". Bilgiler kişiye bağlı kalır.
 6. **Aynı konu / emme.** Çekirdekte `similar_current` (aynı kategori ya da aramanın puanlamasıyla güçlü eşleşme) ve `write_by_model`
    `possible_update` döner; onaylanan bir değiştirme başka bir güncel bilgiyle aynı cümleye varırsa onu emer (tek güncel bilgi, eski geçmiş).
-7. **Arama sonucu.** Bilgi `since` taşır; geçmişi varsa `history: {versions, last_change, previously}`; olayın `said_as` değeri söylendiği
+7. **Arama sonucu.** Bilgi `since` taşır; geçmişi varsa `history: {versions, last_change} (eski metin yok: yalnız memory_context verir)`; olayın `said_as` değeri söylendiği
    günle gelir ("geçen hafta, said on 2026-11-18"). Tam geçmiş yalnız `memory_context`te; varlık kartı yalnız güncel bilgileri sayar.
 8. **Olay metni.** `said_as` yalnız üst veri: başlığa/gövdeye/gömülen metne girmez; gömülen = başlık + gövde + yer + katılanlar ("Ben" hariç),
    tarihsiz. Şema 10 var olan olay yazılarını düzeltir (vektörler olay düzenlenince/model taşımada yenilenir).
