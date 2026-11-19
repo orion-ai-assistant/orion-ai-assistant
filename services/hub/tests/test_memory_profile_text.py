@@ -14,29 +14,29 @@ class ShortDateTests(unittest.TestCase):
 
 
 class ComposeTests(unittest.TestCase):
-    def test_pinning_never_switches_the_compacted_list_for_the_raw_one(self):
-        facts = [{"id": 1, "statement": "Kahveyi sever.", "category": "x"}, {"id": 2, "statement": "Ankara'da yaşar.", "category": "x"}]
-        short = [{"id": "a1", "text": "Kahve ve Ankara."}]
-        before = mp.compose([], facts, compacted=short)  # Under the limit, yet the stored short list is the profile.
-        self.assertEqual([i["text"] for i in before["lines"]], ["Kahve ve Ankara."])
-        self.assertEqual(before["lines"][0]["line_id"], "a1")
-        after = mp.compose([{"text": "boşboşboş", "fact_id": 1, "state": "ok"}], facts, compacted=short)
-        self.assertEqual([i["text"] for i in after["lines"]], ["boşboşboş", "Kahve ve Ankara."])
-        self.assertFalse(after["needs_compaction"])
-        self.assertEqual(mp._signature(facts), mp._signature(list(facts)))  # The set of facts alone, pins do not enter it.
-        self.assertEqual(mp.compose([], facts, compacted=[])["lines"], [])  # All lines removed: still the (empty) list.
+    def line(self, text, pinned=False, ids=()):
+        return {"id": text[:3], "text": text, "pinned": pinned, "fact_ids": list(ids), "added_at": "x", "edited": False}
+
+    def test_pinned_lines_come_first_and_the_page_text_has_no_wrapper(self):
+        block = mp.compose([self.line("Kahve.", ids=[1]), self.line("Kedim Tarçın", pinned=True)])
+        self.assertEqual([l["text"] for l in block["lines"]], ["Kedim Tarçın", "Kahve."])
+        self.assertEqual(block["text"], "- Kedim Tarçın\n- Kahve.")
+        self.assertTrue(block["prompt"].startswith(mp.HEADER))
+        self.assertNotIn("What you know", block["text"])
+        self.assertEqual(block["fact_ids"], [1])
+        self.assertFalse(block["needs_compaction"])
+
+    def test_past_the_soft_limit_it_needs_compaction_and_past_the_hard_one_lines_are_left_out(self):
+        lines = [self.line("a" * 400, ids=[1]), self.line("b" * 400, ids=[2]), self.line("Sabit.", pinned=True)]
+        block = mp.compose(lines, limit=250, soft=150)
+        self.assertTrue(block["needs_compaction"])
+        self.assertTrue(block["lines"][0]["in_prompt"])  # the pinned one always
+        self.assertEqual(block["left_out"], 1)
+        self.assertEqual(mp.compose(lines, limit=5000, soft=5000)["left_out"], 0)
 
     def test_an_older_store_of_plain_strings_gets_ids(self):
         lines = mp._stored_lines({"sig": "x", "lines": ["Bir.", {"id": "z", "text": "İki."}]})
         self.assertEqual(lines, [{"id": "c0", "text": "Bir."}, {"id": "z", "text": "İki."}])
-
-    def test_page_text_has_only_the_lines_and_the_prompt_has_the_wrapper(self):
-        pinned = [{"text": "Kedim Tarçın", "fact_id": None, "state": "ok"}]
-        block = mp.compose(pinned, [])
-        self.assertEqual(block["text"], "- Kedim Tarçın")
-        self.assertTrue(block["prompt"].startswith(mp.HEADER))
-        self.assertNotIn("What you know", block["text"])
-        self.assertTrue(all("why" not in line for line in block["lines"]))
 
 
 class SincePrecisionTests(unittest.TestCase):
@@ -58,6 +58,7 @@ class SincePrecisionTests(unittest.TestCase):
 
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -118,30 +119,89 @@ class ProfileLineAndCompactTests(PostgresMemoryCase):
         self.assertNotIn('alice', mp._compacting)
         self.assertEqual(mp._compact_errors.get('alice'), 'the model gave no lines')
 
-    async def test_compacted_lines_can_be_edited_pinned_and_removed_and_pinning_keeps_the_list(self):
-        import json
-        await me.write_by_user('alice', self.v2, '', 'diğer', 'Kahveyi sever.')
-        await me.write_by_user('alice', self.v2, '', 'diğer', "Ankara'da yaşar.")
-        facts = await sql('select id from orion_mem_fact where user_id = $1 order by id', 'alice', fetch=True)
-        lines = [{'id': 'a1', 'text': 'Kahve.'}, {'id': 'b2', 'text': 'Ankara.'}, {'id': 'c3', 'text': 'Üçüncü.'}]
-        await sql("insert into orion_mem_profile (user_id, compacted) values ('alice', $1::jsonb) on conflict (user_id) do update "
-                  "set compacted = excluded.compacted",
-                  json.dumps({'sig': mp._signature([{'id': r['id']} for r in facts]), 'lines': lines}))
-        got = await mp.get('alice', self.v2)
-        self.assertEqual([(g['line_id'], g['text']) for g in got['generated']],
-                         [('a1', 'Kahve.'), ('b2', 'Ankara.'), ('c3', 'Üçüncü.')])
-        await mp.pin_fact('alice', self.v2, facts[0]['id'], 'boşboşboş')  # Pinning a fact: the short list stays.
-        got = await mp.get('alice', self.v2)
-        self.assertEqual([g['text'] for g in got['generated']], ['Kahve.', 'Ankara.', 'Üçüncü.'])
-        await mp.edit_compacted('alice', self.v2, 'a1', 'Kahve çok.')
-        got = await mp.remove_compacted('alice', self.v2, 'b2')
-        self.assertEqual([g['text'] for g in got['generated']], ['Kahve çok.', 'Üçüncü.'])
-        got = await mp.pin_compacted('alice', self.v2, 'c3')
-        self.assertEqual([g['text'] for g in got['generated']], ['Kahve çok.'])
-        self.assertIn('Üçüncü.', [p['text'] for p in got['pinned']])
-        with self.assertRaises(LookupError):
-            await mp.remove_compacted('alice', self.v2, 'zzz')
-        self.assertEqual(await sql("select count(*) from orion_mem_fact where user_id = 'alice'"), 2)  # The facts stay.
+    async def lines(self):
+        return (await mp.get('alice', self.v2))['lines']
+
+    async def write(self, *texts):
+        for text in texts:
+            await me.write_by_user('alice', self.v2, '', 'diğer', text)
+
+    async def test_pin_and_unpin_keep_the_line_where_it_is(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.")
+        before = await self.lines()
+        self.assertEqual([l['text'] for l in before], ["Ankara'da yaşar.", 'Kahveyi sever.'])  # newest on top
+        coffee = next(l for l in before if l['text'].startswith('Kahve'))
+        got = await mp.set_line_pinned('alice', self.v2, coffee['id'], True)
+        self.assertEqual([(l['text'], l['pinned']) for l in got['lines']],
+                         [('Kahveyi sever.', True), ("Ankara'da yaşar.", False)])
+        got = await mp.set_line_pinned('alice', self.v2, coffee['id'], False)
+        self.assertEqual([(l['text'], l['pinned']) for l in got['lines']],
+                         [("Ankara'da yaşar.", False), ('Kahveyi sever.', False)])
+        got = await mp.unpin_fact('alice', self.v2, coffee['fact_ids'][0])  # the fact-id way: still no loss
+        self.assertEqual(len(got['lines']), 2)
+
+    async def test_unpinning_a_compacted_line_keeps_it_and_a_new_fact_adds_one_line_only(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.", 'Kedisi var.')
+        old = await self.lines()
+        answer = {'lines': [{'text': 'Kahve, Ankara, kedi.', 'from': [0, 1, 2]}]}
+        with patch.object(mx, '_call_model', AsyncMock(return_value=(json.dumps(answer), {}))):
+            await mp.compact_profile('alice', self.v2)
+        got = await self.lines()
+        self.assertEqual([l['text'] for l in got], ['Kahve, Ankara, kedi.'])
+        self.assertEqual(sorted(got[0]['fact_ids']), sorted(i for l in old for i in l['fact_ids']))  # the union
+        line_id = got[0]['id']
+        await mp.set_line_pinned('alice', self.v2, line_id, True)
+        got = await mp.set_line_pinned('alice', self.v2, line_id, False)  # unpinning a compacted line: it stays
+        self.assertEqual([l['text'] for l in got['lines']], ['Kahve, Ankara, kedi.'])
+        await self.write('Çay içmez.')  # one new fact: ONE new line, none of the old ones back
+        self.assertEqual([l['text'] for l in await self.lines()], ['Çay içmez.', 'Kahve, Ankara, kedi.'])
+
+    async def test_a_removed_or_compacted_away_line_never_comes_back_by_itself(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.", 'Kedisi var.')
+        by_text = {l['text']: l for l in await self.lines()}
+        await mp.remove_line('alice', self.v2, by_text['Kedisi var.']['id'])  # x: the fact stays in memory ...
+        self.assertEqual(await sql("select count(*) from orion_mem_fact where user_id = 'alice'"), 3)
+        self.assertEqual(sorted(l['text'] for l in await self.lines()), ["Ankara'da yaşar.", 'Kahveyi sever.'])  # ... not here
+        answer = {'lines': [{'text': 'Ankara.', 'from': [0]}]}  # the model drops the coffee line
+        with patch.object(mx, '_call_model', AsyncMock(return_value=(json.dumps(answer), {}))):
+            await mp.compact_profile('alice', self.v2)
+        self.assertEqual([l['text'] for l in await self.lines()], ['Ankara.'])
+        await self.write('Çay içmez.')
+        self.assertEqual([l['text'] for l in await self.lines()], ['Çay içmez.', 'Ankara.'])
+
+    async def test_pinned_lines_are_not_touched_by_compaction(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.")
+        pin = next(l for l in await self.lines() if l['text'].startswith('Kahve'))
+        await mp.set_line_pinned('alice', self.v2, pin['id'], True)
+        seen = []
+
+        async def fake(settings, request):
+            seen.append(request[1]['content'])
+            return json.dumps({'lines': [{'text': 'Ankara.', 'from': [0]}]}), {}
+        with patch.object(mx, '_call_model', fake):
+            await mp.compact_profile('alice', self.v2)
+        self.assertNotIn('Kahve', seen[0])  # only the non-pinned lines go to the model
+        self.assertEqual([(l['text'], l['pinned']) for l in await self.lines()],
+                         [('Kahveyi sever.', True), ('Ankara.', False)])
+
+    async def test_a_deleted_fact_leaves_its_line_unless_the_user_edited_it(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.", 'Kedisi var.')
+        by_text = {l['text']: l for l in await self.lines()}
+        await mp.edit_line('alice', self.v2, by_text['Kedisi var.']['id'], 'Kedisi Tarçın.')
+        for text in ('Kahveyi sever.', 'Kedisi var.'):
+            await me.remove_fact('alice', self.v2, by_text[text]['fact_ids'][0])
+        got = await self.lines()
+        self.assertEqual(sorted(l['text'] for l in got), ["Ankara'da yaşar.", 'Kedisi Tarçın.'])
+        self.assertEqual(next(l for l in got if l['text'] == 'Kedisi Tarçın.')['fact_ids'], [])
+
+    async def test_the_first_read_builds_the_list_from_the_old_state_once(self):
+        await self.write('Kahveyi sever.', "Ankara'da yaşar.")
+        await sql("insert into orion_mem_profile (user_id, pinned) values ('alice', $1::jsonb) on conflict (user_id) "
+                  "do update set pinned = excluded.pinned, lines = null", json.dumps([{'text': 'Kedim Tarçın', 'fact_id': None}]))
+        got = await self.lines()
+        self.assertEqual([(l['text'], l['pinned']) for l in got],
+                         [('Kedim Tarçın', True), ("Ankara'da yaşar.", False), ('Kahveyi sever.', False)])
+        self.assertEqual([l['id'] for l in await self.lines()], [l['id'] for l in got])  # stable: not rebuilt
 
     async def test_the_profile_compact_route_answers_202_started(self):
         import inspect

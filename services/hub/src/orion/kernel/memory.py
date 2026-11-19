@@ -173,7 +173,7 @@ async def ensure_memory_table(conn) -> None:
     _schedule_index_build()
 
 
-SCHEMA_VERSION = 12  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership. 10: no chats index (windows, Sohbetler, its tables). 11: facts keep how exact their start is (`since_precision`). 12: event texts rendered again from their fields (title + body stored; place/names only embedded) and their vectors redone in the background (memory_events.reembed_loop).
+SCHEMA_VERSION = 13  # orion_memory_meta 'schema_version'. 2: collections and sources. 3: the trash. 4: the chats index. 5: entities and facts. 6: events, links, recurring facts. 7: extraction runs, candidates, chat summaries. 8: the profile block (pinned lines). 9: no albums, projects or "Eski hafıza"; Ben is defined, not a membership. 10: no chats index (windows, Sohbetler, its tables). 11: facts keep how exact their start is (`since_precision`). 12: event texts rendered again from their fields (title + body stored; place/names only embedded) and their vectors redone in the background (memory_events.reembed_loop). 13: the profile is one stored list of lines (`orion_mem_profile.lines`, `seen`).
 LIVE = "not exists (select 1 from orion_mem_trash t where t.memory_id = id)"  # Not in the trash: what every read sees.
 
 
@@ -219,6 +219,9 @@ async def _migrate(conn) -> None:
             logger.info("Memory: %d event texts rendered again", await memory_events.clean_existing(conn))
             await conn.execute("insert into orion_memory_meta (key, value) values ('events_reembed', '0') "
                                "on conflict (key) do update set value = '0'")  # The vectors follow in the background.
+        if version < 13:
+            await conn.execute("alter table orion_mem_profile add column if not exists lines jsonb")  # null: not migrated yet
+            await conn.execute("alter table orion_mem_profile add column if not exists seen jsonb not null default '[]'")
         await conn.execute("insert into orion_memory_meta (key, value) values ('schema_version', $1) "
                            "on conflict (key) do update set value = excluded.value", str(SCHEMA_VERSION))
     logger.info("Memory: schema %d -> %d", version, SCHEMA_VERSION)

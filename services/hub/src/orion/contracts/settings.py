@@ -51,7 +51,10 @@ class AISettings(BaseModel):
     memory_profile_compact_tokens: int = Field(default=400, ge=50, le=4000)
     # "Yakında / güncel": a second small block (automatic): events and yearly dates coming within `soon_days`, important
     # events of the last `recent_days`, in at most `soon_tokens`.
-    memory_soon_tokens: int = Field(default=150, ge=0, le=2000)
+    # Gündem limits like the profile's: soft (past it the list is trimmed to compact_tokens, furthest dates first), hard (never past).
+    memory_soon_soft_tokens: int = Field(default=400, ge=50, le=4000)
+    memory_soon_tokens: int = Field(default=600, ge=0, le=4000)  # The hard limit.
+    memory_soon_compact_tokens: int = Field(default=300, ge=50, le=4000)
     memory_soon_days: int = Field(default=14, ge=1, le=366)
     memory_recent_days: int = Field(default=7, ge=1, le=366)
     # Chat compaction: one background-model call turns the conversation into a summary (its new first message) and memory

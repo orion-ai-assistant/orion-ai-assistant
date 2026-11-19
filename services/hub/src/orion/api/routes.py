@@ -551,15 +551,6 @@ async def memory_recent_undo(payload: RecentUndo, request: Request, current_user
 
 # --- Profile block: what every chat is told about the user (memory_profile; memory_v2) ---------------------------------------
 
-class ProfileLine(BaseModel):
-    text: str = Field(max_length=2000)
-    fact_id: int | None = None
-
-
-class ProfilePinned(BaseModel):
-    items: list[ProfileLine] = Field(default_factory=list, max_length=100)
-
-
 class ProfilePin(BaseModel):
     fact_id: int
     text: str | None = Field(default=None, max_length=2000)  # The user's own wording of it (else the fact's sentence).
@@ -567,24 +558,16 @@ class ProfilePin(BaseModel):
 
 @router.get("/api/v1/memory/profile")
 async def memory_profile_get(request: Request, current_user: str = Depends(get_current_user)):
-    """The profile block as the next "Asistanla konuş" request would carry it in its system prompt ({text, tokens, limit (the
-    `memory_profile_tokens` budget, default 800), overflow, left_out}), the pinned lines with their state (ok / replaced / gone /
-    locked) and the generated lines (the user's own facts only) with their fact id and category. `text` is the lines only (no instruction wrapper; that stays internal)."""
+    """The profile as the next "Asistanla konuş" request would carry it ({text, tokens, limit (the hard `memory_profile_tokens`
+    budget), soft_limit, overflow, left_out}) and THE list of its lines: `lines` [{id, text, pinned, fact_ids, added_at, edited,
+    in_prompt}], pinned first. `soon` is the Gündem block (items, tokens, limit, soft_limit). `text` is the lines only."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.get(current_user, settings))
 
 
-@router.put("/api/v1/memory/profile/pinned")
-async def memory_profile_set_pinned(payload: ProfilePinned, request: Request, current_user: str = Depends(get_current_user)):
-    """Replace the pinned lines (they always go into the block; the generated part fills what is left)."""
-    from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda settings: memory_profile.set_pinned(
-        current_user, settings, [i.model_dump() for i in payload.items]))
-
-
 @router.post("/api/v1/memory/profile/pin")
 async def memory_profile_pin(payload: ProfilePin, request: Request, current_user: str = Depends(get_current_user)):
-    """Pin one current fact (its sentence, or the user's own wording)."""
+    """Pin the line of one current fact (made when it has none; the sentence, or the user's own wording)."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.pin_fact(
         current_user, settings, payload.fact_id, payload.text))
@@ -592,9 +575,9 @@ async def memory_profile_pin(payload: ProfilePin, request: Request, current_user
 
 @router.post("/api/v1/memory/profile/compact", status_code=202)
 async def memory_profile_compact(request: Request, current_user: str = Depends(get_current_user)):
-    """"Profili düzenle": the background model compacts the non-pinned part of the profile (the same the Hub starts by itself
-    past the hard limit). Answers 202 {"state": "started" | "running"} at once and works in the background; poll
-    GET /memory/profile (`compacting`, then the new text). 400 when there is nothing to shorten."""
+    """"Profili düzenle": the background model rewrites the non-pinned lines into fewer ones (the same the Hub starts by itself
+    past the soft limit). Answers 202 {"state": "started" | "running"} at once and works in the background; poll
+    GET /memory/profile (`compacting`, then the new lines). 400 when there is nothing to shorten."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda settings: memory_profile.start_compact(current_user, settings))
 
@@ -605,41 +588,38 @@ class ProfileAdd(BaseModel):
 
 @router.post("/api/v1/memory/profile/lines")
 async def memory_profile_add_line(payload: ProfileAdd, request: Request, current_user: str = Depends(get_current_user)):
-    """"Satır ekle": creates a fact about the user (the same path as POST /memory/facts, its vector row included) and pins it:
-    {"fact", "group_id" (its memory, for the map), "profile"}."""
+    """"Satır ekle": creates a fact about the user (the same path as POST /memory/facts, its vector row included) and pins its
+    line: {"fact", "group_id" (its memory, for the map), "profile"}."""
     from orion.kernel import memory_profile
     return await _ben(request, current_user, lambda s: memory_profile.add_line(current_user, s, payload.text))
 
 
-class ProfileLineText(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+class ProfileLineChange(BaseModel):
+    text: str | None = Field(default=None, min_length=1, max_length=2000)
+    pinned: bool | None = None
 
 
-class ProfileLinePin(BaseModel):
-    text: str | None = Field(default=None, max_length=2000)
-
-
-@router.patch("/api/v1/memory/profile/compacted/{line_id}")
-async def memory_profile_compacted_edit(line_id: str, payload: ProfileLineText, request: Request,
-                                        current_user: str = Depends(get_current_user)):
-    """Edit the text of one compacted profile line (they carry a `line_id` in `generated`)."""
+@router.patch("/api/v1/memory/profile/lines/{line_id}")
+async def memory_profile_line_change(line_id: str, payload: ProfileLineChange, request: Request,
+                                     current_user: str = Depends(get_current_user)):
+    """Change one line: `text` (edit) and / or `pinned` (pin / unpin; the line always stays). Answers like GET /memory/profile."""
     from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda s: memory_profile.edit_compacted(current_user, s, line_id, payload.text))
+
+    async def call(settings):
+        profile = None
+        if payload.text is not None:
+            profile = await memory_profile.edit_line(current_user, settings, line_id, payload.text)
+        if payload.pinned is not None:
+            profile = await memory_profile.set_line_pinned(current_user, settings, line_id, payload.pinned)
+        return profile or await memory_profile.get(current_user, settings)
+    return await _ben(request, current_user, call)
 
 
-@router.post("/api/v1/memory/profile/compacted/{line_id}/pin")
-async def memory_profile_compacted_pin(line_id: str, payload: ProfileLinePin, request: Request,
-                                       current_user: str = Depends(get_current_user)):
-    """Pin one compacted line: it moves to the pinned lines."""
+@router.delete("/api/v1/memory/profile/lines/{line_id}")
+async def memory_profile_line_remove(line_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """Drop one line from the profile (its facts stay in the memory and do not come back by themselves)."""
     from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda s: memory_profile.pin_compacted(current_user, s, line_id, payload.text))
-
-
-@router.delete("/api/v1/memory/profile/compacted/{line_id}")
-async def memory_profile_compacted_remove(line_id: str, request: Request, current_user: str = Depends(get_current_user)):
-    """Drop one compacted line from the profile (the facts stay in the memory)."""
-    from orion.kernel import memory_profile
-    return await _ben(request, current_user, lambda s: memory_profile.remove_compacted(current_user, s, line_id))
+    return await _ben(request, current_user, lambda s: memory_profile.remove_line(current_user, s, line_id))
 
 
 @router.delete("/api/v1/memory/profile/pin/{fact_id}")
