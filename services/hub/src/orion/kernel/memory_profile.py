@@ -556,6 +556,22 @@ async def remove_line(user_id: str, settings, line_id: str) -> dict:
     return await _mutate(user_id, settings, change)
 
 
+async def restore_line(user_id: str, settings, line_id: str, text: str, pinned: bool, fact_ids: list[int], edited: bool = False) -> dict:
+    """"Geri al" of a removed line: the same line (its id, text, pin and facts) goes back to the top of the list. A line with that id
+    already there is left alone."""
+    words = _check_text(text)
+
+    async def change(conn, lines, seen):
+        if any(l["id"] == line_id for l in lines):
+            return
+        if pinned:
+            _room(lines)
+        line = _new_line(words, [int(i) for i in fact_ids], pinned=bool(pinned), edited=bool(edited))
+        line["id"] = line_id
+        lines.insert(0, line)
+    return await _mutate(user_id, settings, change)
+
+
 async def pin_fact(user_id: str, settings, fact_id: int, text: str | None = None) -> dict:
     """Pin the line of a current fact (made when it has none, e.g. a close person's fact); `text`: the user's own wording."""
     fact_id = int(fact_id)
