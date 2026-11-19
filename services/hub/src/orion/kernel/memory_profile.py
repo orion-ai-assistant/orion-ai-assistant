@@ -157,10 +157,11 @@ async def _candidates(conn, user_id: str) -> list:
 
 
 def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int = SOFT_LIMIT,
-             compacted: list[str] | None = None) -> dict:
+             compacted: list[dict] | None = None) -> dict:
     """The "Profil" block from the pinned lines (state ok) and the candidate facts (newest first), see the module docstring:
     {"text" (the lines only, for the page), "prompt" (the same with the instruction wrapper, what the model gets), "tokens", "fact_ids", "lines": [{"fact_id", "text", "pinned"}], "overflow", "left_out", "over_soft",
-    "needs_compaction"}. `compacted`: the model's short lines for the non-pinned part, used when the facts pass `limit`."""
+    "needs_compaction"}. `compacted`: the stored short lines ([{"id", "text"}]) for the non-pinned part; when given (even empty) they ARE the non-pinned
+    part, under the limit too: pinning never switches between the raw and the compacted list."""
     header = memory.estimate_tokens(HEADER)
     lines = [{"fact_id": p.get("fact_id"), "text": p["text"], "pinned": True}
              for p in pinned if p["state"] == "ok"]
@@ -173,10 +174,12 @@ def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int
         rest = [f for f in facts if f["id"] not in pinned_ids and memory.fold(f["statement"]) not in seen]
         total = sum(memory.estimate_tokens(_line(f["statement"])) for f in rest)
         needs = used + total > limit
-        if compacted:  # a stored short list that still matches the facts (made by the user's button or by the limit)
-            for text in compacted:
-                lines.append({"fact_id": None, "text": text, "pinned": False, "compacted": True})
-                used += memory.estimate_tokens(_line(text))
+        if compacted is not None:  # a stored short list that still matches the facts (made by the user's button or by the limit)
+            for item in compacted:
+                if memory.fold(item["text"]) in seen:
+                    continue
+                lines.append({"fact_id": None, "text": item["text"], "pinned": False, "compacted": True, "line_id": item["id"]})
+                used += memory.estimate_tokens(_line(item["text"]))
             left_out = 0
         else:
             room = soft if needs else limit  # Past the hard limit the soft one holds until the compaction is ready.
@@ -193,13 +196,31 @@ def compose(pinned: list[dict], facts: list, limit: int = TOKEN_LIMIT, soft: int
     return {"text": text, "prompt": prompt, "tokens": used if lines else 0,
             "fact_ids": [i["fact_id"] for i in lines if i["fact_id"] is not None], "lines": lines,
             "overflow": overflow, "left_out": left_out, "over_soft": bool(lines) and used > soft,
-            "needs_compaction": needs and not compacted}
+            "needs_compaction": needs and compacted is None}
 
 
-def _signature(facts: list, pinned: list[dict]) -> str:
+def _signature(facts: list) -> str:
+    """The set of the user's facts a compaction was made from. ALL of them (pinned ones too): pinning or unpinning a line must
+    not make the stored short list look stale."""
     import hashlib
-    pinned_ids = {int(p["fact_id"]) for p in pinned if p.get("fact_id") is not None}
-    return hashlib.sha1(",".join(str(f["id"]) for f in facts if f["id"] not in pinned_ids).encode()).hexdigest()
+    return hashlib.sha1(",".join(str(i) for i in sorted(f["id"] for f in facts)).encode()).hexdigest()
+
+
+def _line_id() -> str:
+    import secrets
+    return secrets.token_hex(4)
+
+
+def _stored_lines(stored) -> list[dict]:
+    """The stored short lines as [{"id", "text"}] (an older store kept plain strings: they get an id here, kept on the next save)."""
+    out = []
+    for n, item in enumerate((stored or {}).get("lines") or []):
+        if isinstance(item, str):
+            item = {"id": f"c{n}", "text": item}
+        text = " ".join(str(item.get("text") or "").split())
+        if text:
+            out.append({"id": str(item.get("id") or f"c{n}"), "text": text})
+    return out
 
 
 _compacting: set[str] = set()
@@ -231,13 +252,13 @@ async def compact_profile(user_id: str, settings) -> dict:
                                                       ensure_ascii=False)}]
     text, _ = await mx._call_model(settings, request)
     parsed = mx.parse_output(text)
-    lines = [" ".join(str(x).split()) for x in parsed.get("lines") or [] if str(x).strip()]
+    lines = [{"id": _line_id(), "text": " ".join(str(x).split())} for x in parsed.get("lines") or [] if str(x).strip()]
     if not lines:
         raise mx.BadOutput("the model gave no lines")
     async with me._db() as conn:
         await conn.execute("insert into orion_mem_profile (user_id, compacted, compacted_at) values ($1, $2::jsonb, now()) "
                            "on conflict (user_id) do update set compacted = excluded.compacted, compacted_at = now()",
-                           user_id, json.dumps({"sig": _signature(facts, pinned), "lines": lines}, ensure_ascii=False))
+                           user_id, json.dumps({"sig": _signature(facts), "lines": lines}, ensure_ascii=False))
     return await get(user_id, settings)
 
 
@@ -280,36 +301,38 @@ def _compact_later(user_id: str, settings) -> None:
 
 async def soon(user_id: str, settings) -> dict:
     """The "Yakında / güncel" block: yearly dates and events in the next `memory_soon_days`, events of the last
-    `memory_recent_days`, in at most `memory_soon_tokens`. {"text", "tokens", "lines"}; empty text when there is nothing."""
+    `memory_recent_days`, in at most `memory_soon_tokens`. {"text", "tokens", "lines", "items": [{"text", "kind": "fact" | "event", "id"}]}; empty text when there is nothing."""
     from orion.kernel import memory_events as ev
     limit = int(getattr(settings, "memory_soon_tokens", SOON_TOKENS))
     ahead = int(getattr(settings, "memory_soon_days", SOON_DAYS))
     back = int(getattr(settings, "memory_recent_days", RECENT_DAYS))
     if limit <= 0:
-        return {"text": "", "prompt": "", "tokens": 0, "lines": []}
+        return {"text": "", "prompt": "", "tokens": 0, "lines": [], "items": []}
     today = ev.today_of()
     items = [(u["next"], f"{short_date(date.fromisoformat(u['next']), None, 'day', year=False)} "
-                         f"({'bugün' if u['in_days'] == 0 else '%d gün sonra' % u['in_days']}): {u['statement']}")
+                         f"({'bugün' if u['in_days'] == 0 else '%d gün sonra' % u['in_days']}): {u['statement']}",
+              "fact", u["fact_id"])
              for u in await ev.upcoming(user_id, settings, days=ahead, today=today)]
     first, last = today - timedelta(days=back), today + timedelta(days=ahead)
     listed = await ev.list_events(user_id, settings, first.isoformat(), last.isoformat(), limit=30)
     for e in listed["events"]:
         on = date.fromisoformat(e["date"][:10])
         end = date.fromisoformat(e["end"][:10]) if e.get("end") else None
-        items.append((e["date"], f"{short_date(on, end, e.get('precision') or 'day')}: {e['title']}"))
+        items.append((e["date"], f"{short_date(on, end, e.get('precision') or 'day')}: {e['title']}", "event", e["id"]))
     items.sort(key=lambda x: x[0])
     used = memory.estimate_tokens(SOON_HEADER)
-    lines = []
-    for _, text in items:
+    lines, kept = [], []
+    for _, text, kind, item_id in items:
         cost = memory.estimate_tokens(_line(text))
         if used + cost > limit:
             continue
         used += cost
         lines.append(text)
+        kept.append({"text": text, "kind": kind, "id": item_id})  # The page removes an item by its kind (fact / event) and id.
     if not lines:
-        return {"text": "", "prompt": "", "tokens": 0, "lines": []}
+        return {"text": "", "prompt": "", "tokens": 0, "lines": [], "items": []}
     return {"text": "\n".join(_line(t) for t in lines), "prompt": "\n".join([SOON_HEADER, *(_line(t) for t in lines)]),
-            "tokens": used, "lines": lines}
+            "tokens": used, "lines": lines, "items": kept}
 
 
 async def build(user_id: str, settings, store: bool = True) -> dict:
@@ -320,13 +343,14 @@ async def build(user_id: str, settings, store: bool = True) -> dict:
         facts = await _candidates(conn, user_id)
         stored = await conn.fetchval("select compacted from orion_mem_profile where user_id = $1", user_id)
         stored = json.loads(stored) if isinstance(stored, str) else stored
-        fresh = stored["lines"] if stored and stored.get("sig") == _signature(facts, pinned) else None
+        fresh = _stored_lines(stored) if stored and stored.get("sig") == _signature(facts) else None
         block = compose(pinned, facts, budget(settings), min(soft_budget(settings), budget(settings)), fresh)
         block["pinned"] = pinned
         if block["needs_compaction"] and store:
             _compact_later(user_id, settings)
         if store:
-            generated = [{"fact_id": i["fact_id"], "text": i["text"]} for i in block["lines"] if not i["pinned"]]  # stored form
+            generated = [{"fact_id": i["fact_id"], "text": i["text"], **({"line_id": i["line_id"]} if i.get("line_id") else {})}
+                         for i in block["lines"] if not i["pinned"]]  # stored form
             was = await conn.fetchval("select generated from orion_mem_profile where user_id = $1", user_id)
             was = json.loads(was) if isinstance(was, str) else was
             if was is None or was != generated:
@@ -428,7 +452,7 @@ async def get(user_id: str, settings) -> dict:
             "text": block["text"], "tokens": block["tokens"], "over_soft": block["over_soft"],
             "compacting": user_id in _compacting, "compact_error": _compact_errors.get(user_id), "soon": near,
             "overflow": block["overflow"], "left_out": block["left_out"], "pinned": block["pinned"],
-            "generated": [{"fact_id": i["fact_id"], "text": i["text"], "category": i.get("category")}
+            "generated": [{"fact_id": i["fact_id"], "text": i["text"], "category": i.get("category"), "line_id": i.get("line_id")}
                           for i in block["lines"] if not i["pinned"]]}
 
 
@@ -464,6 +488,59 @@ async def unpin_fact(user_id: str, settings, fact_id: int) -> dict:
     async with me._db() as conn:
         await _save_pinned(conn, user_id, [p for p in await _pinned(conn, user_id) if p["fact_id"] != int(fact_id)])
     return await get(user_id, settings)
+
+
+async def _stored_compacted(conn, user_id: str) -> dict | None:
+    raw = await conn.fetchval("select compacted from orion_mem_profile where user_id = $1 for update", user_id)
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+async def _save_compacted(conn, user_id: str, stored: dict, lines: list[dict]) -> None:
+    await conn.execute("update orion_mem_profile set compacted = $2::jsonb where user_id = $1", user_id,
+                       json.dumps({"sig": stored["sig"], "lines": lines}, ensure_ascii=False))
+
+
+async def _change_compacted(user_id: str, settings, line_id: str, change) -> dict:
+    """Edit / pin / remove one stored short line (they have no fact id of their own). `change(conn, line, lines, stored)` saves the
+    new list; the set of facts the list was made from stays, so the list stays THE profile. LookupError for an unknown id."""
+    require(settings)
+    async with me._db() as conn:
+        async with conn.transaction():
+            stored = await _stored_compacted(conn, user_id)
+            lines = _stored_lines(stored)
+            line = next((x for x in lines if x["id"] == line_id), None)
+            if stored is None or line is None:
+                raise LookupError(line_id)
+            await change(conn, line, lines, stored)
+    return await get(user_id, settings)
+
+
+async def edit_compacted(user_id: str, settings, line_id: str, text: str) -> dict:
+    text = " ".join((text or "").split())
+    if not text:
+        raise ValueError("Satır boş olamaz.")
+    if len(text) > MAX_PINNED_CHARS:
+        raise ValueError(f"Bir satır en fazla {MAX_PINNED_CHARS} karakter olabilir.")
+
+    async def change(conn, line, lines, stored):
+        await _save_compacted(conn, user_id, stored, [{**x, "text": text} if x is line else x for x in lines])
+    return await _change_compacted(user_id, settings, line_id, change)
+
+
+async def remove_compacted(user_id: str, settings, line_id: str) -> dict:
+    """Drop the line from the profile; the facts it was made from stay in the memory."""
+    async def change(conn, line, lines, stored):
+        await _save_compacted(conn, user_id, stored, [x for x in lines if x is not line])
+    return await _change_compacted(user_id, settings, line_id, change)
+
+
+async def pin_compacted(user_id: str, settings, line_id: str, text: str | None = None) -> dict:
+    """Pin the line (its own wording, or `text`): it moves from the short list to the pinned lines (no fact behind it)."""
+    async def change(conn, line, lines, stored):
+        items = _clean_pinned([*await _pinned(conn, user_id), {"text": text or line["text"], "fact_id": None}])
+        await _save_pinned(conn, user_id, items)
+        await _save_compacted(conn, user_id, stored, [x for x in lines if x is not line])
+    return await _change_compacted(user_id, settings, line_id, change)
 
 
 async def follow_fact(user_id: str, old_id: int, new_id: int, text: str, was: str | None = None) -> None:

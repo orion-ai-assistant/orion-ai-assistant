@@ -14,6 +14,22 @@ class ShortDateTests(unittest.TestCase):
 
 
 class ComposeTests(unittest.TestCase):
+    def test_pinning_never_switches_the_compacted_list_for_the_raw_one(self):
+        facts = [{"id": 1, "statement": "Kahveyi sever.", "category": "x"}, {"id": 2, "statement": "Ankara'da yaşar.", "category": "x"}]
+        short = [{"id": "a1", "text": "Kahve ve Ankara."}]
+        before = mp.compose([], facts, compacted=short)  # Under the limit, yet the stored short list is the profile.
+        self.assertEqual([i["text"] for i in before["lines"]], ["Kahve ve Ankara."])
+        self.assertEqual(before["lines"][0]["line_id"], "a1")
+        after = mp.compose([{"text": "boşboşboş", "fact_id": 1, "state": "ok"}], facts, compacted=short)
+        self.assertEqual([i["text"] for i in after["lines"]], ["boşboşboş", "Kahve ve Ankara."])
+        self.assertFalse(after["needs_compaction"])
+        self.assertEqual(mp._signature(facts), mp._signature(list(facts)))  # The set of facts alone, pins do not enter it.
+        self.assertEqual(mp.compose([], facts, compacted=[])["lines"], [])  # All lines removed: still the (empty) list.
+
+    def test_an_older_store_of_plain_strings_gets_ids(self):
+        lines = mp._stored_lines({"sig": "x", "lines": ["Bir.", {"id": "z", "text": "İki."}]})
+        self.assertEqual(lines, [{"id": "c0", "text": "Bir."}, {"id": "z", "text": "İki."}])
+
     def test_page_text_has_only_the_lines_and_the_prompt_has_the_wrapper(self):
         pinned = [{"text": "Kedim Tarçın", "fact_id": None, "state": "ok"}]
         block = mp.compose(pinned, [])
@@ -101,6 +117,31 @@ class ProfileLineAndCompactTests(PostgresMemoryCase):
             run.assert_awaited_once()  # The model's failure ended in a log line, not in the HTTP answer.
         self.assertNotIn('alice', mp._compacting)
         self.assertEqual(mp._compact_errors.get('alice'), 'the model gave no lines')
+
+    async def test_compacted_lines_can_be_edited_pinned_and_removed_and_pinning_keeps_the_list(self):
+        import json
+        await me.write_by_user('alice', self.v2, '', 'diğer', 'Kahveyi sever.')
+        await me.write_by_user('alice', self.v2, '', 'diğer', "Ankara'da yaşar.")
+        facts = await sql('select id from orion_mem_fact where user_id = $1 order by id', 'alice', fetch=True)
+        lines = [{'id': 'a1', 'text': 'Kahve.'}, {'id': 'b2', 'text': 'Ankara.'}, {'id': 'c3', 'text': 'Üçüncü.'}]
+        await sql("insert into orion_mem_profile (user_id, compacted) values ('alice', $1::jsonb) on conflict (user_id) do update "
+                  "set compacted = excluded.compacted",
+                  json.dumps({'sig': mp._signature([{'id': r['id']} for r in facts]), 'lines': lines}))
+        got = await mp.get('alice', self.v2)
+        self.assertEqual([(g['line_id'], g['text']) for g in got['generated']],
+                         [('a1', 'Kahve.'), ('b2', 'Ankara.'), ('c3', 'Üçüncü.')])
+        await mp.pin_fact('alice', self.v2, facts[0]['id'], 'boşboşboş')  # Pinning a fact: the short list stays.
+        got = await mp.get('alice', self.v2)
+        self.assertEqual([g['text'] for g in got['generated']], ['Kahve.', 'Ankara.', 'Üçüncü.'])
+        await mp.edit_compacted('alice', self.v2, 'a1', 'Kahve çok.')
+        got = await mp.remove_compacted('alice', self.v2, 'b2')
+        self.assertEqual([g['text'] for g in got['generated']], ['Kahve çok.', 'Üçüncü.'])
+        got = await mp.pin_compacted('alice', self.v2, 'c3')
+        self.assertEqual([g['text'] for g in got['generated']], ['Kahve çok.'])
+        self.assertIn('Üçüncü.', [p['text'] for p in got['pinned']])
+        with self.assertRaises(LookupError):
+            await mp.remove_compacted('alice', self.v2, 'zzz')
+        self.assertEqual(await sql("select count(*) from orion_mem_fact where user_id = 'alice'"), 2)  # The facts stay.
 
     async def test_the_profile_compact_route_answers_202_started(self):
         import inspect

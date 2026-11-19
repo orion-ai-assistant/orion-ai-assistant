@@ -611,6 +611,37 @@ async def memory_profile_add_line(payload: ProfileAdd, request: Request, current
     return await _ben(request, current_user, lambda s: memory_profile.add_line(current_user, s, payload.text))
 
 
+class ProfileLineText(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class ProfileLinePin(BaseModel):
+    text: str | None = Field(default=None, max_length=2000)
+
+
+@router.patch("/api/v1/memory/profile/compacted/{line_id}")
+async def memory_profile_compacted_edit(line_id: str, payload: ProfileLineText, request: Request,
+                                        current_user: str = Depends(get_current_user)):
+    """Edit the text of one compacted profile line (they carry a `line_id` in `generated`)."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda s: memory_profile.edit_compacted(current_user, s, line_id, payload.text))
+
+
+@router.post("/api/v1/memory/profile/compacted/{line_id}/pin")
+async def memory_profile_compacted_pin(line_id: str, payload: ProfileLinePin, request: Request,
+                                       current_user: str = Depends(get_current_user)):
+    """Pin one compacted line: it moves to the pinned lines."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda s: memory_profile.pin_compacted(current_user, s, line_id, payload.text))
+
+
+@router.delete("/api/v1/memory/profile/compacted/{line_id}")
+async def memory_profile_compacted_remove(line_id: str, request: Request, current_user: str = Depends(get_current_user)):
+    """Drop one compacted line from the profile (the facts stay in the memory)."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda s: memory_profile.remove_compacted(current_user, s, line_id))
+
+
 @router.delete("/api/v1/memory/profile/pin/{fact_id}")
 async def memory_profile_unpin(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory_profile
