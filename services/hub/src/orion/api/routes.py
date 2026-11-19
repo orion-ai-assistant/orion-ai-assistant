@@ -639,6 +639,22 @@ async def memory_profile_line_remove(line_id: str, request: Request, current_use
     return await _ben(request, current_user, lambda s: memory_profile.remove_line(current_user, s, line_id))
 
 
+class ProfileLineRestore(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=2000)
+    pinned: bool = False
+    fact_ids: list[int] = Field(default_factory=list, max_length=200)
+    edited: bool = False
+
+
+@router.post("/api/v1/memory/profile/lines/restore")
+async def memory_profile_line_restore(payload: ProfileLineRestore, request: Request, current_user: str = Depends(get_current_user)):
+    """"Geri al" of a removed profile line: puts the same line back. Answers like GET /memory/profile."""
+    from orion.kernel import memory_profile
+    return await _ben(request, current_user, lambda s: memory_profile.restore_line(
+        current_user, s, payload.id, payload.text, payload.pinned, payload.fact_ids, payload.edited))
+
+
 @router.delete("/api/v1/memory/profile/pin/{fact_id}")
 async def memory_profile_unpin(fact_id: int, request: Request, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory_profile

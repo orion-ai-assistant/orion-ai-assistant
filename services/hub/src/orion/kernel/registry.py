@@ -411,7 +411,10 @@ async def migrate_compact_setting() -> int:
                 "least(95, greatest(10, value::int))::text from orion_settings where key = 'chat_compact_percent' "
                 "and value ~ '^[0-9]{1,4}$' and value <> '70' on conflict (user_id, key) do nothing")
             done = await conn.execute("delete from orion_settings where key = 'chat_compact_percent'")
-        return int(done.split()[-1])
+            # Gündem hard limit: the old default 150 (stored when the settings were first seeded) would override the new
+            # 400 soft / 600 hard defaults; a row still holding 150 is dropped so the default (re-seeded at startup) applies.
+            old = await conn.execute("delete from orion_settings where key = 'memory_soon_tokens' and value = '150'")
+        return int(done.split()[-1]) + int(old.split()[-1])
     finally:
         await conn.close()
 
