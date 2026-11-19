@@ -5,12 +5,11 @@ conversation and answers {summary, entities, ops} (the same ops as the writer: f
 - The summary becomes the conversation's first message from now on (`orion_mem_chat_state.summary`, `compacted_upto` = the last
   message it covers; registry.get_compaction_db, job_processor.load_history). The older messages stay stored and shown for the
   user; they are not sent to the model.
-- The memory items go through the writer's candidate pipeline (quality gate): added directly only when automatic writing is
-  switched on (shadow otherwise, as the extraction always was); a change to something known is a card.
+- The memory items go through the writer's candidate pipeline (quality gate): written live (add-only); a change to something known is a card.
 - Triggers: the user's "Sohbeti sıkıştır" (`compact`); automatically (a) when the chat is IDLE: usage >= `chat_compact_idle_percent`
   (40) of the chat model's context length AND no message for `chat_compact_idle_minutes` (30), checked by a light periodic loop
   (`idle_loop`), and (b) before the next request is sent when usage >= `chat_compact_force_percent` (90) (`force_before_send`).
-  Context length: the Router's model catalog, else `chat_context_tokens` (0 = unknown: no automatic compaction). Usage is the REAL
+  Context length: the Router's model catalog, else `chat_context_tokens`, else 128000. Usage is the REAL
   count of the last answer (prompt + completion tokens of the Router's usage); after a compaction, until the next answer, an
   estimate of the summary + the messages since. There is no extraction after every answer any more.
 Every table has user_id; every read filters by it."""
@@ -24,6 +23,8 @@ from datetime import datetime
 from orion.kernel import memory, memory_collections, memory_entities as me, memory_extract as mx
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CONTEXT = 128000  # Assumed when no context length is known.
 
 COMPACT_NOTE = (
     "compaction: the \"summary\" REPLACES the older messages for the assistant, so it is the assistant's only memory of them. Write it "
@@ -77,6 +78,12 @@ def scale_breakdown(parts: dict, total: int) -> dict | None:
     have = sum(parts.values())
     if have <= 0 or total <= 0:
         return None
+    # The estimate of the conversation text is the one that is off (tokenizers differ most on the user's words), so the fixed
+    # parts keep their own estimate and `messages` takes the rest: a tool result's count stays the same turn after turn (a
+    # proportional scaling made it grow with the chat). If the fixed parts alone exceed the total, scale everything.
+    fixed = have - parts["messages"]
+    if fixed < total:
+        return {**parts, "messages": total - fixed}
     scaled = {k: int(v * total / have) for k, v in parts.items()}
     scaled[max(parts, key=parts.get)] += total - sum(scaled.values())  # The rounding rest goes to the biggest part.
     return scaled
@@ -157,7 +164,7 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
     user's assistant chat, the memory is off or there is nothing to compact; BadOutput when the model's answer is not JSON.
     {"summary_tokens", "candidates", "compacted_upto"}."""
     if not mx.enabled(settings):
-        raise ValueError("Hafıza kapalı (memory_v2 ve sohbetten çıkarım).")
+        raise ValueError("Hafıza kapalı (memory_v2).")
     if chat_id in _running:
         raise ValueError("Bu sohbet zaten sıkıştırılıyor.")
     _running.add(chat_id)
@@ -179,7 +186,6 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
             previous = await conn.fetchval("select summary from orion_mem_chat_state where user_id = $1 and chat_id = $2 "
                                            "and compacted_upto is not null", user_id, chat_id)
             keys, entities = await mx._entity_context(conn, user_id, [m["text"] for m in messages if m["role"] == "user"])
-            live = bool(await conn.fetchval("select live from orion_mem_extraction_state where user_id = $1", user_id))
             now = datetime.now().astimezone()
         finally:
             await conn.close()
@@ -196,11 +202,11 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
         last = messages[-1]["id"]
         conn = await mx._connect()
         try:
-            candidates = await mx.build_candidates(conn, user_id, parsed, messages, not live, None)
+            candidates = await mx.build_candidates(conn, user_id, parsed, messages, None)
             run_id = await conn.fetchval(
                 "insert into orion_mem_extraction_run (user_id, chat_id, mode, prefilter, state, model, tokens_in, tokens_out, "
                 "candidates, first_message, last_message, started_at, finished_at) values ($1, $2, $3, 'passed:compaction', "
-                "'done', $4, $5, $6, $7, $8, $9, now(), now()) returning id", user_id, chat_id, "live" if live else "shadow",
+                "'done', $4, $5, $6, $7, $8, $9, now(), now()) returning id", user_id, chat_id, "live",
                 mx.model_of(settings), mx._count(usage.get("prompt_tokens")), mx._count(usage.get("completion_tokens")),
                 len(candidates), messages[0]["id"], last)
             ids = []
@@ -225,9 +231,8 @@ async def compact(user_id: str, chat_id: str, settings) -> dict:
                                   title=f"Sohbet özeti {now.date().isoformat()} (mesaj {messages[0]['id']}-{last})")
         except Exception:
             logger.warning("The summary of chat %s could not be embedded", chat_id[:8], exc_info=True)
-        if live:
-            for cid, c in zip(ids, candidates):
-                await mx.apply_candidate(user_id, settings, run_id, chat_id, cid, c)
+        for cid, c in zip(ids, candidates):
+            await mx.apply_candidate(user_id, settings, run_id, chat_id, cid, c)
         return {"summary_tokens": memory.estimate_tokens(summary), "candidates": len(candidates), "compacted_upto": last}
     finally:
         _running.discard(chat_id)
@@ -281,7 +286,8 @@ def start(user_id: str, chat_id: str, settings) -> None:
 
 async def context_length(settings) -> int:
     """The chat model's context length in tokens: from the Router's model catalog (the `context_length` of the chat model's entry; a
-    group: its smallest), else the setting `chat_context_tokens` (0 = not known)."""
+    group: its smallest), else the setting `chat_context_tokens`, else DEFAULT_CONTEXT (128000: the Router has no value for the model
+    or cannot be reached; the meter and the compaction go on with that)."""
     try:
         from orion.kernel.router_models import get_router_catalog
         catalog = await get_router_catalog(include_voices=False)
@@ -291,7 +297,7 @@ async def context_length(settings) -> int:
                     return int(model["context_length"])
     except Exception:
         pass
-    return int(getattr(settings, "chat_context_tokens", 0) or 0)
+    return int(getattr(settings, "chat_context_tokens", 0) or 0) or DEFAULT_CONTEXT
 
 
 async def usage_state(user_id: str, chat_id: str, settings) -> tuple[int, int, dict] | None:

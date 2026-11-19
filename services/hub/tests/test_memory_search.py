@@ -545,7 +545,7 @@ class MemorySearchTests(PostgresMemoryCase):
     async def test_the_tool_loop_shows_the_media_right_after_the_tool_results(self):
         row, media_id, raw = await self.stored_image()
         conversation = ToolConversation(SimpleNamespace(user_id='alice', chat_id='chat', turn_id='t'),
-                                        ['open_memory_files'])
+                                        ['open_memory_files'], assistant=True)
         requests = []
 
         async def stream(messages, settings, **kwargs):

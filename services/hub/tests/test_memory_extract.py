@@ -1,7 +1,6 @@
-"""Memory step 7 (docs/hafiza-tasarimi.md §16): extraction. The pre-filter, the shadow run (candidates and the quality-gate
-report, nothing written), the Hub's own checks of what the model says (sources, dates, entities, duplicates, conflicts,
-sensitive), the switch for automatic writing (add-only, conflicts become cards, off by default), the job (queue bounds,
-cancel, backoff, heartbeat), the chat summary, the first-week summary, and user separation of every new table. On a throwaway
+"""Memory step 7 (docs/hafiza-tasarimi.md §16): extraction. The pre-filter, the candidates (stored with their verdict), the Hub's own checks of what the model says (sources, dates,
+entities, duplicates, conflicts, sensitive), live writing (add-only, conflicts become cards), the job (queue bounds, cancel,
+backoff, heartbeat), the chat summary, and user separation of every new table. On a throwaway
 real PostgreSQL (test_memory_search); the model is a scripted fake and embeddings are hand-made."""
 import asyncio
 import json
@@ -88,9 +87,9 @@ class ExtractTests(PostgresMemoryCase):
         await sql("insert into orion_chats(id, user_id, title, assistant) values ('c1', 'alice', 'Aile', true), "
                   "('c2', 'alice', 'Tarih', true), ('b1', 'bob', 'Bob', true), ('c3', 'alice', 'Normal', false) "
                   "on conflict (id) do update set title = excluded.title, assistant = excluded.assistant")
-        self.v2 = SimpleNamespace(router_model_group='chat', memory_v2=True, memory_extract_chats=True,
+        self.v2 = SimpleNamespace(router_model_group='chat', memory_v2=True,
                                   memory_background_model='', memory_trash_days=30)
-        self.off = SimpleNamespace(router_model_group='chat', memory_v2=False, memory_extract_chats=True,
+        self.off = SimpleNamespace(router_model_group='chat', memory_v2=False,
                                    memory_background_model='')
         self.calls = []
         self.reply = answer()
@@ -118,6 +117,11 @@ class ExtractTests(PostgresMemoryCase):
         guard = patch.object(memory_backup, 'backup', AsyncMock(return_value=None))
         guard.start()
         self.addCleanup(guard.stop)
+        # Most tests look at the candidates and their verdicts only: what is written is patched out until `apply_for_real`.
+        self.real_apply = mx.apply_candidate
+        self.apply_off = patch.object(mx, 'apply_candidate', AsyncMock(return_value='skipped'))
+        self.apply_off.start()
+        self.addCleanup(self.apply_for_real)
         mx._settings.clear()
         self.addCleanup(self.stop_worker)
         # Most tests take runs by hand (process_next); the worker is only started by the timer / worker tests.
@@ -125,6 +129,13 @@ class ExtractTests(PostgresMemoryCase):
         self.worker_off = patch.object(mx, 'ensure_worker', lambda: self.started.append(1))
         self.worker_off.start()
         self.addCleanup(self.start_worker)
+
+    def apply_for_real(self):
+        """Give the real apply_candidate back (idempotent): the run then writes live."""
+        try:
+            self.apply_off.stop()
+        except RuntimeError:
+            pass
 
     def start_worker(self):
         """Give the real ensure_worker back (idempotent)."""
@@ -175,9 +186,9 @@ class ExtractTests(PostgresMemoryCase):
              'recurring': '11-17', 'messages': [ids[0], ids[0]], 'bucket': 'direct', 'unsupported_risk': 'low'}], \
             [{'ref': 'e1', 'name': 'Ayşe', 'kind': 'person', 'relation': 'annem'}]
 
-    # --- shadow mode ---------------------------------------------------------------------------------------------------
+    # --- the run ---------------------------------------------------------------------------------------------------------
 
-    async def test_a_shadow_run_stores_candidates_and_writes_nothing(self):
+    async def test_a_run_stores_candidates_with_their_verdict(self):
         ids = await self.family_chat()
         ops, entities = self.mom_ops(ids)
         self.reply = answer(ops, entities, 'Kullanıcı annesinin doğum gününü anlattı.')
@@ -185,10 +196,10 @@ class ExtractTests(PostgresMemoryCase):
         run_id = await self.run_for()
         run = await self.run_row(run_id)
         self.assertEqual((run['state'], run['mode'], run['model'], run['tokens_in'], run['tokens_out'], run['candidates']),
-                         ('done', 'shadow', 'chat', 111, 22, 2))
+                         ('done', 'live', 'chat', 111, 22, 2))
         self.assertTrue(run['prefilter'].startswith('passed'))
         self.assertEqual((run['first_message'], run['last_message']), (ids[0], ids[1]))
-        self.assertEqual(await self.counts(), before)  # Nothing in the memory, no card, no entity, no source.
+        self.assertEqual(await self.counts(), before)  # (apply is patched out here: the verdicts are what is looked at.)
         found = await self.candidates(run_id)
         self.assertEqual([(c['verdict'], c['bucket'], c['unsupported_risk'], c['dedupe']) for c in found],
                          [('would_write', 'direct', 'low', 'new')] * 2)
@@ -221,19 +232,7 @@ class ExtractTests(PostgresMemoryCase):
                          ('done', 'dropped:no_personal_signal', 0, None))
         self.assertEqual(self.calls, [])  # The assistant's "ben ve annem" did not count: only the user's words are looked at.
         self.assertEqual(await sql('select extracted_upto from orion_mem_chat_state where chat_id = $1', 'c2'), ids[1])
-        rep = await mx.report('alice', self.v2)
-        self.assertEqual(rep['dropped_by_prefilter'][0]['reason'], 'no_personal_signal')
-        self.assertEqual(rep['dropped_by_prefilter'][0]['title'], 'Tarih')
-        self.assertEqual(rep['runs']['prefilter'], {'passed': 0, 'dropped:no_personal_signal': 1})
         self.assertIsNone(await mx.enqueue('alice', 'c2', self.v2))  # Nothing new: no second run.
-
-    async def test_a_chat_read_with_nothing_found_is_listed_in_the_report(self):
-        await self.put('c1', say('user', 'Benim için bugün sıradan bir gündü.'), say('assistant', 'Anladım.'))
-        self.reply = answer()
-        run_id = await self.run_for()
-        rep = await mx.report('alice', self.v2)
-        self.assertEqual([n['run_id'] for n in rep['nothing_extracted']], [run_id])
-        self.assertEqual(rep['candidates']['total'], 0)
 
     async def test_only_new_messages_are_sent_next_time_and_a_summary_is_kept(self):
         first = await self.put('c1', say('user', 'Benim adım Kürşat.'), say('assistant', 'Merhaba Kürşat.'))
@@ -344,7 +343,7 @@ class ExtractTests(PostgresMemoryCase):
         self.assertIsNone(c['merge_target'])
         self.assertEqual(c['dedupe'], 'new')
 
-    async def test_sensitive_is_at_most_a_card_masked_in_the_report_and_never_sent_back_to_the_model(self):
+    async def test_sensitive_is_at_most_a_card_and_never_sent_back_to_the_model(self):
         await me.write_by_user('alice', self.v2, 'ben', 'health', 'Astımı var.')
         self.assertEqual(await sql('select count(*) from orion_mem_fact where sensitive'), 1)
         ids = await self.put('c1', say('user', 'Benim diyabetim var, ayrıca ben dinime çok bağlıyım.'))
@@ -359,11 +358,6 @@ class ExtractTests(PostgresMemoryCase):
         prompt = self.calls[0][1]['content']
         self.assertNotIn('Astımı', prompt)  # A locked fact's text is never put in the input...
         self.assertIn('"has_locked_facts": true', prompt)  # ...only that the entity has some.
-        rep = await mx.report('alice', self.v2)
-        self.assertEqual(rep['candidates']['sensitive'], 2)
-        self.assertEqual({i['text'] for i in rep['items']}, {'[locked]'})
-        shown = await mx.report('alice', self.v2, reveal=True)
-        self.assertEqual({i['text'] for i in shown['items']}, {'Diyabeti var.', 'Dindar.'})
 
     async def test_the_model_input_holds_the_named_entities_with_current_facts_and_the_prompt_says_data_not_instructions(self):
         mother = await me.create_entity('alice', self.v2, 'Ayşe', 'person', 'annem')
@@ -383,7 +377,7 @@ class ExtractTests(PostgresMemoryCase):
     async def test_every_table_is_separated_by_user(self):
         ids = await self.family_chat()
         bob = await self.put('b1', say('user', 'Benim kedim bugün hasta.'))
-        bsettings = SimpleNamespace(router_model_group='chat', memory_v2=True, memory_extract_chats=True,
+        bsettings = SimpleNamespace(router_model_group='chat', memory_v2=True,
                                     memory_background_model='')
         ops, entities = self.mom_ops(ids)
         self.reply = answer(ops, entities)
@@ -393,10 +387,7 @@ class ExtractTests(PostgresMemoryCase):
         bob_run = await self.run_for('b1', 'bob', bsettings)
         self.assertEqual({r['user_id'] for r in await sql('select user_id from orion_mem_candidate where run_id = $1',
                                                            alice_run, fetch=True)}, {'alice'})
-        a, b = await mx.report('alice', self.v2), await mx.report('bob', bsettings)
-        self.assertEqual({i['run_id'] for i in a['items']}, {alice_run})
-        self.assertEqual({i['run_id'] for i in b['items']}, {bob_run})
-        self.assertEqual((await mx.report('bob', bsettings, run_id=alice_run))['items'], [])
+        self.assertEqual({r['run_id'] for r in await sql('select run_id from orion_mem_candidate where user_id = $1', 'bob', fetch=True)}, {bob_run})
         self.assertEqual([r['id'] for r in (await mx.status('bob', bsettings))['runs']], [bob_run])
         with self.assertRaises(LookupError):
             await mx.cancel_run('bob', alice_run)
@@ -423,7 +414,6 @@ class ExtractTests(PostgresMemoryCase):
             self.assertEqual(await conn.fetchval('select count(*) from orion_mem_extraction_run'), 1)
         finally:
             await conn.close()
-        self.assertEqual((await mx.daily_summary('bob', bsettings))['cards'], [])
 
     # --- the job ---------------------------------------------------------------------------------------------------------
 
@@ -568,6 +558,7 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual(self.calls, [])
 
     async def test_remember_is_queued_and_filed_live_and_a_relation_change_is_a_card(self):
+        self.apply_for_real()
         defne = await me.create_entity('alice', self.v2, 'Defne', relation='sevgilim')
         rid = await mx.queue_remember('alice', 'c1', 'Sevgilimden ayrıldım, yeni sevgilim Merve. Cuma kitap iade et.', self.v2)
         self.assertEqual(await sql("select count(*) from orion_mem_extraction_run where chat_id = 'remember:c1' and "
@@ -624,52 +615,10 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual(json.loads(self.calls[-1][1]['content']).keys(), {'messages'})
         self.assertEqual(await mx.chat_summary('bob', 'c1'), {'chat_id': 'c1', 'summary': None, 'stale': False, 'extracted_upto': None})
 
-    # --- the report ------------------------------------------------------------------------------------------------------
-
-    async def test_the_report_reads_in_numbers_and_in_text(self):
-        ids = await self.family_chat()
-        ops, entities = self.mom_ops(ids)
-        ops.append({**ops[1], 'statement': 'Annem çay sever.', 'unsupported_risk': 'medium'})
-        self.reply = answer(ops, entities)
-        await self.run_for()
-        await self.put('c2', say('user', 'Atatürk kimdir?'))
-        await self.run_for('c2')
-        rep = await mx.report('alice', self.v2)
-        self.assertEqual(rep['runs']['by_state'], {'done': 2})
-        self.assertEqual((rep['runs']['tokens_in'], rep['runs']['tokens_out']), (111, 22))
-        self.assertEqual(rep['candidates']['by_verdict'], {'would_write': 2, 'would_card': 1})
-        self.assertEqual(rep['would_have_written'], {'facts': 1, 'events': 1, 'cards': 1})
-        item = next(i for i in rep['items'] if i['type'] == 'fact' and i['verdict'] == 'would_write')
-        self.assertEqual((item['about'], item['category'], item['source']['first_message']), ('Ayşe (annem)', 'tarih', ids[0]))
-        self.assertIn('annemin doğum günüydü', item['source']['user_messages'][0]['text'])
-        self.assertEqual([i['verdict'] for i in (await mx.report('alice', self.v2, verdict='would_card'))['items']], ['would_card'])
-        self.assertEqual(len((await mx.report('alice', self.v2, limit=1))['items']), 1)
-        text = mx.report_text(rep)
-        self.assertIn('Would have written: 1 facts, 1 events; would have asked: 1 cards', text)
-        self.assertIn('Dropped by the pre-filter:', text)
-        self.assertIn('annemin doğum günüydü', text)
-        # Shadow mode: still nothing in the memory.
-        self.assertEqual((await self.counts())['orion_mem_fact'], 0)
-
-    # --- live mode (off by default) --------------------------------------------------------------------------------------
-
-    async def test_automatic_writing_is_off_by_default_and_needs_a_confirmation(self):
-        self.assertFalse((await mx.status('alice', self.v2))['live'])
-        with self.assertRaises(ValueError):
-            await mx.set_live('alice', self.v2, True)
-        self.assertFalse((await mx.status('alice', self.v2))['live'])
-        self.assertEqual((await mx.set_live('alice', self.v2, True, confirm=True))['live'], True)
-        status = await mx.status('alice', self.v2)
-        self.assertTrue(status['live'] and status['live_since'])
-        first = status['live_since']
-        await mx.set_live('alice', self.v2, True, confirm=True)  # Again: the week does not restart.
-        self.assertEqual((await mx.status('alice', self.v2))['live_since'], first)
-        await mx.set_live('alice', self.v2, False)
-        self.assertFalse((await mx.status('alice', self.v2))['live'])
-        self.assertFalse((await mx.status('bob', self.v2))['live'])  # Per user.
+    # --- live writing ----------------------------------------------------------------------------------------------------
 
     async def test_live_writes_add_only_with_source_run_and_origin_and_cards_for_the_rest(self):
-        await mx.set_live('alice', self.v2, True, confirm=True)
+        self.apply_for_real()
         mother = await me.create_entity('alice', self.v2, 'Ayşe', 'person', 'annem')
         old = await me.write_by_user('alice', self.v2, '#' + str(mother['id']), 'place', 'Ankara\'da yaşıyor.')
         ids = await self.put('c1', say('user', 'Bugün annemin doğum günüydü. Annem artık İstanbul\'da yaşıyor. Benim diyabetim var. '
@@ -725,7 +674,7 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual(await sql("select count(*) from orion_mem_event where origin = 'extraction'"), 1)
 
     async def test_live_duplicates_add_the_source_to_the_existing_fact(self):
-        await mx.set_live('alice', self.v2, True, confirm=True)
+        self.apply_for_real()
         mother = await me.create_entity('alice', self.v2, 'Ayşe', 'person', 'annem')
         await me.write_by_user('alice', self.v2, '#' + str(mother['id']), 'date', 'Annemin doğum günü 17 Kasım.')
         ids = await self.family_chat()
@@ -736,18 +685,8 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual([(c['outcome'], c['reason']) for c in await self.candidates(run_id)], [('skipped', 'duplicate')])
         self.assertEqual(await sql('select count(*) from orion_mem_fact'), 1)
 
-    async def test_live_does_not_trust_earlier_shadow_candidates_as_written(self):
-        ids = await self.family_chat()
-        ops, entities = self.mom_ops(ids)
-        self.reply = answer(ops[1:], entities)
-        await self.run_for()  # Shadow: would_write.
-        await mx.set_live('alice', self.v2, True, confirm=True)
-        await sql('update orion_mem_chat_state set extracted_upto = null')
-        await self.run_for()
-        self.assertEqual(await sql("select count(*) from orion_mem_fact where origin = 'extraction'"), 1)  # Really written.
-
     async def test_embedding_down_in_live_mode_leaves_the_candidate_skipped_not_lost(self):
-        await mx.set_live('alice', self.v2, True, confirm=True)
+        self.apply_for_real()
         ids = await self.family_chat()
         ops, entities = self.mom_ops(ids)
         self.reply = answer(ops[1:], entities)
@@ -762,40 +701,21 @@ class ExtractTests(PostgresMemoryCase):
         self.assertEqual([(c['outcome'], c['reason']) for c in await self.candidates(run_id)], [('skipped', 'embedding_unavailable')])
         self.assertEqual(await sql('select count(*) from orion_mem_fact'), 0)
 
-    async def test_the_first_weeks_daily_summary_counts_what_was_added_not_what_was_undone(self):
-        self.assertEqual((await mx.daily_summary('alice', self.v2))['cards'], [])  # Live off: no cards.
-        await mx.set_live('alice', self.v2, True, confirm=True)
-        ids = await self.family_chat()
-        ops, entities = self.mom_ops(ids)
-        self.reply = answer(ops, entities)
-        await self.run_for()
-        daily = await mx.daily_summary('alice', self.v2)
-        self.assertEqual([(c['facts'], c['events']) for c in daily['cards']], [(1, 1)])
-        self.assertEqual(daily['cards'][0]['text'], 'Bugün hafızaya 1 bilgi, 1 olay eklendi.')
-        fact_id = await sql("select id from orion_mem_fact where origin = 'extraction'")
-        await memory_recent.undo('alice', self.v2, 'fact', str(fact_id))
-        self.assertEqual([(c['facts'], c['events']) for c in (await mx.daily_summary('alice', self.v2))['cards']], [(0, 1)])
-        later = datetime.now().astimezone().date() + timedelta(days=mx.SUMMARY_DAYS + 3)
-        self.assertEqual((await mx.daily_summary('alice', self.v2, today=later))['cards'], [])  # The first week is over.
-        self.assertEqual((await mx.daily_summary('bob', self.v2))['cards'], [])
-
     async def test_the_routes_are_behind_memory_v2_and_the_model_setting_names_the_background_model(self):
         from orion.api import routes
-        for name in ('memory_extraction_status', 'memory_extraction_report', 'memory_extraction_live', 'memory_extraction_daily',
-                     'memory_extraction_backlog', 'memory_extraction_cancel', 'memory_extraction_cancel_all',
+        for name in ('memory_extraction_status', 'memory_extraction_backlog', 'memory_extraction_cancel', 'memory_extraction_cancel_all',
                      'memory_chat_summary'):
             self.assertTrue(callable(getattr(routes, name)))
-        with self.assertRaises(ValueError):
-            await mx.report('alice', self.off)
         self.assertEqual(mx.model_of(SimpleNamespace(router_model_group='chat', memory_background_model=' cheap ')), 'cheap')
         await self.family_chat()
-        mx_settings = SimpleNamespace(router_model_group='chat', memory_v2=True, memory_extract_chats=True,
+        mx_settings = SimpleNamespace(router_model_group='chat', memory_v2=True,
                                       memory_background_model='cheap')
         run_id = await self.run_for(settings=mx_settings)
         self.assertEqual((await self.run_row(run_id))['model'], 'cheap')
         from orion.contracts.settings import RuntimeSettings
         defaults = RuntimeSettings()
-        self.assertEqual((defaults.memory_extract_chats, defaults.memory_background_model), (True, ''))
+        self.assertEqual(defaults.memory_background_model, '')
+        self.assertFalse(hasattr(defaults, 'memory_extract_chats'))
 
 
 if __name__ == '__main__':

@@ -1,8 +1,8 @@
 """Extraction (docs/hafiza-tasarimi.md §7.2-§7.4, §16 step 7): the assistant reads the new messages of a chat once the chat has
 been quiet for a while, in the background, and finds the things worth remembering about the user: facts, events and the
-people they name, each with the messages it came from. SHADOW MODE FIRST: until the user turns automatic writing on, nothing
-is written to the memory; the candidates and a quality-gate report (`report`) are all there is. Behind the per-user `memory_v2`
-setting (and `memory_extract_chats`, on by default): with it off nothing here runs.
+people they name, each with the messages it came from. What it finds is written live (add-only; a change to
+something known is a card, which `memory_auto_approve` applies at once). Behind the per-user `memory_v2` setting: with it off
+nothing here runs.
 
 The chain, for one chat:
 1. Trigger. `after_turn` (called after a turn is saved, in the Worker) arms a per-chat idle timer (IDLE_SECONDS); a newer turn
@@ -24,15 +24,14 @@ The chain, for one chat:
    and holds a user message, validates sentences, categories and dates (relative words are resolved from the message's own time
    by memory_events.resolve_date), matches the named entities to the user's own ones (an exact name or relation; several
    matches = ambiguous), and looks for duplicates (same words about the same entity, same event on the same day, the same thing
-   already found in a shadow run) and conflicts (a `supersede`).
+   already written) and conflicts (a `supersede`).
 6. Verdict (`judge`, categorical, no tuned number): inferred -> never; duplicate -> skip (live: the source is added to the
    existing one); conflict -> card; sensitive -> at most a card, and only when said directly; ambiguous -> card; direct with
    a low unsupported-claim risk -> would write; medium -> card; high -> skip.
-7. Shadow: the candidates are stored with their verdict and that is all. Live (`set_live`, off by default): `write` verdicts are
+7. Live: `write` verdicts are
    written add-only (memory_entities.add_fact / memory_events.add_event, origin 'extraction', run id, source = the chat's
    message range), `card` verdicts open the step-6 cards (a fact to add, a changed fact); an ambiguous EVENT has no card kind yet
-   and is skipped (the candidate says so). Everything written shows in "Son eklenenler" with Geri al. For the first week after
-   live is switched on `daily_summary` gives the per-day counts.
+   and is skipped (the candidate says so). Everything written shows in "Son eklenenler" with Geri al.
 8. The same pass keeps a short summary of the chat (`orion_mem_chat_state.summary`); `message_deleted` marks it stale and a
    summary-only run remakes it.
 
@@ -76,7 +75,6 @@ BAD_OUTPUT_ATTEMPTS = 2
 HEADERS = {"x-orion-purpose": "memory-extraction"}  # A label for the Router's log; the log content is never hidden.
 BUCKETS = ("direct", "ambiguous", "inferred")
 RISKS = ("low", "medium", "high")
-SUMMARY_DAYS = 7            # "The first week" after automatic writing is turned on.
 
 _settings: dict[str, object] = {}       # The newest settings seen per user (what the worker runs a user's runs with).
 _timers: dict[str, asyncio.Task] = {}
@@ -91,8 +89,8 @@ class BadOutput(Exception):
 # --- Switches and small helpers -----------------------------------------------------------------------------------------
 
 def enabled(settings) -> bool:
-    """The user has the new memory on and has not turned the extraction off."""
-    return bool(getattr(settings, "memory_v2", False)) and bool(getattr(settings, "memory_extract_chats", True))
+    """The user has the new memory on."""
+    return bool(getattr(settings, "memory_v2", False))
 
 
 def model_of(settings) -> str:
@@ -163,7 +161,7 @@ async def enqueue_backlog(user_id: str, settings, limit: int = 20) -> dict:
     """Queue the chats that have messages not read yet, newest chat first (at most `limit`, MAX_BACKLOG): the way to put the
     old chats through the quality gate. {"queued": [run ids], "limit"}. ValueError when the extraction is off."""
     if not enabled(settings):
-        raise ValueError("Çıkarım kapalı: Ayarlar'da Hafıza koleksiyonları (memory_v2) ve sohbetten çıkarım açık olmalı.")
+        raise ValueError("Çıkarım kapalı: Ayarlar'da Hafıza koleksiyonları (memory_v2) açık olmalı.")
     limit = max(1, min(int(limit), MAX_BACKLOG))
     remember(user_id, settings)
     queued = []
@@ -308,7 +306,7 @@ async def queue_remember(user_id: str, chat_id: str, text: str, settings) -> int
     """The `remember` tool: keep the user's words and queue a run of the background memory writer for them (explicit request:
     written live, add-only; what changes known facts or relations waits for a card). ValueError when the memory is off."""
     if not enabled(settings):
-        raise ValueError("The memory writer is off (memory_v2 and memory_extract_chats).")
+        raise ValueError("The memory writer is off (memory_v2).")
     remember(user_id, settings)
     text = " ".join((text or "").split())[:4000]
     if not text:
@@ -353,7 +351,7 @@ async def _work_remember(run, settings, outcome: dict) -> None:
     parsed = parse_output(text)
     conn = await _connect()
     try:
-        candidates = await build_candidates(conn, user_id, parsed, messages, False, run["id"])
+        candidates = await build_candidates(conn, user_id, parsed, messages, run["id"])
         outcome["candidates"] = len(candidates)
         ids = []
         async with conn.transaction():
@@ -746,8 +744,7 @@ def _entity_key(spec: dict) -> str:
     return "self" if spec["self"] else f"e{spec['target']}" if spec["target"] else "new:" + memory.fold(spec["name"] or "")
 
 
-async def build_candidates(conn, user_id: str, parsed: dict, messages: list[dict], shadow: bool = True,
-                           run_id: int | None = None) -> list[dict]:
+async def build_candidates(conn, user_id: str, parsed: dict, messages: list[dict], run_id: int | None = None) -> list[dict]:
     """Turn the model's answer into candidates (not stored yet): each op checked, normalised, matched to entities, compared
     with what the memory already has, and given its verdict. Nothing is created. `messages`: the run's new messages (the
     ids a source may cite, their time)."""
@@ -844,7 +841,7 @@ async def build_candidates(conn, user_id: str, parsed: dict, messages: list[dict
             key = None
         op["dedupe_key"] = key
         if not c["problems"] and kind not in ("add_note", "set_relation"):
-            await _dedupe(conn, user_id, c, key, seen, run_id, shadow)
+            await _dedupe(conn, user_id, c, key, seen)
         elif key and key in seen and not c["problems"]:
             c["dedupe"] = "duplicate_in_run"
         c["verdict"], c["reason"] = judge(c)
@@ -861,7 +858,7 @@ def _int(value) -> int:
         return -1
 
 
-async def _dedupe(conn, user_id: str, c: dict, key: str | None, seen: dict, run_id: int | None, shadow: bool) -> None:
+async def _dedupe(conn, user_id: str, c: dict, key: str | None, seen: dict) -> None:
     op = c["op"]
     if key in seen:
         c["dedupe"] = "duplicate_in_run"
@@ -885,12 +882,6 @@ async def _dedupe(conn, user_id: str, c: dict, key: str | None, seen: dict, run_
         if c["type"] == "supersede":
             c["dedupe"] = f"conflicts_with:{op['fact_id']}"
             return
-    if key and shadow:  # In shadow nothing is written, so "already found" can only be seen among the candidates.
-        earlier = await conn.fetchval(
-            "select id from orion_mem_candidate where user_id = $1 and (op->>'dedupe_key') = $2 and verdict = 'would_write' "
-            "and run_id is distinct from $3 order by id limit 1", user_id, key, run_id)
-        if earlier:
-            c["dedupe"] = f"duplicate_of:candidate:{earlier}"
 
 
 # --- The work of one run ------------------------------------------------------------------------------------------------
@@ -905,8 +896,7 @@ async def _work(run, settings, outcome: dict) -> None:
         await memory_collections.ensure_user(conn, user_id)
         state = await conn.fetchrow("select extracted_upto, summary from orion_mem_chat_state where user_id = $1 "
                                     "and chat_id = $2", user_id, chat_id)
-        live = bool(await conn.fetchval("select live from orion_mem_extraction_state where user_id = $1", user_id))
-        outcome["mode"] = "live" if live else "shadow"
+        outcome["mode"] = "live"
         assistant = await conn.fetchrow("select assistant from orion_chats where id = $1 and user_id = $2", chat_id, user_id)
         if assistant is None:
             outcome["prefilter"] = "dropped:chat_gone"
@@ -952,7 +942,7 @@ async def _work(run, settings, outcome: dict) -> None:
     summary = _clip(parsed.get("summary") if isinstance(parsed.get("summary"), str) else "", SUMMARY_MAX) or None
     conn = await _connect()
     try:
-        candidates = [] if run["summary_only"] else await build_candidates(conn, user_id, parsed, messages, not live, run["id"])
+        candidates = [] if run["summary_only"] else await build_candidates(conn, user_id, parsed, messages, run["id"])
         outcome["candidates"] = len(candidates)
         ids = []
         async with conn.transaction():
@@ -975,9 +965,8 @@ async def _work(run, settings, outcome: dict) -> None:
         await _more(conn, user_id, chat_id, settings, more)
     finally:
         await conn.close()
-    if live:
-        for cid, c in zip(ids, candidates):
-            await apply_candidate(user_id, settings, run["id"], chat_id, cid, c)
+    for cid, c in zip(ids, candidates):
+        await apply_candidate(user_id, settings, run["id"], chat_id, cid, c)
 
 
 def _count(value) -> int | None:
@@ -1105,25 +1094,6 @@ async def _write_event(user_id, settings, run_id, cid, op, source) -> str:
     return "written"
 
 
-async def set_live(user_id: str, settings, on: bool, confirm: bool = False) -> dict:
-    """Turn automatic writing (add-only; conflicts become cards) on or off. Off is the default and turning it on needs
-    `confirm` (the user has looked at the quality-gate report). The first week after it is turned on has a daily summary."""
-    me.require(settings)
-    if on and not confirm:
-        raise ValueError("Otomatik yazmayı açmak için kalite kapısı raporunu görüp onay verin (confirm=true).")
-    conn = await _connect()
-    try:
-        was = await conn.fetchval("select live from orion_mem_extraction_state where user_id = $1", user_id)
-        await conn.execute(
-            "insert into orion_mem_extraction_state (user_id, live, live_since) values ($1, $2, case when $2 then now() end) "
-            "on conflict (user_id) do update set live = $2, updated_at = now(), live_since = case when $2 and not "
-            "orion_mem_extraction_state.live then now() when $2 then orion_mem_extraction_state.live_since "
-            "else orion_mem_extraction_state.live_since end", user_id, on)
-    finally:
-        await conn.close()
-    return {"live": on, "was": bool(was)}
-
-
 # --- Cancel, status ----------------------------------------------------------------------------------------------------
 
 async def cancel_run(user_id: str, run_id: int) -> dict:
@@ -1167,12 +1137,11 @@ def _run_out(r: dict) -> dict:
 
 
 async def status(user_id: str, settings, limit: int = 20) -> dict:
-    """{"enabled", "live", "live_since", "model", "queue": {queued, running}, "runs": newest first}."""
+    """{"enabled", "model", "queue": {queued, running}, "runs": newest first}."""
     me.require(settings)
     limit = max(1, min(int(limit), 100))
     conn = await _connect()
     try:
-        state = await conn.fetchrow("select live, live_since from orion_mem_extraction_state where user_id = $1", user_id)
         counts = {r["state"]: r["n"] for r in await conn.fetch(
             "select state, count(*) as n from orion_mem_extraction_run where user_id = $1 and state in ('queued', 'running') "
             "group by state", user_id)}
@@ -1180,9 +1149,7 @@ async def status(user_id: str, settings, limit: int = 20) -> dict:
                                 "and c.user_id = r.user_id where r.user_id = $1 order by r.id desc limit $2", user_id, limit)
     finally:
         await conn.close()
-    return {"enabled": enabled(settings), "live": bool(state and state["live"]),
-            "live_since": state["live_since"].isoformat() if state and state["live_since"] else None,
-            "model": model_of(settings), "queue": {"queued": counts.get("queued", 0), "running": counts.get("running", 0)},
+    return {"enabled": enabled(settings), "model": model_of(settings), "queue": {"queued": counts.get("queued", 0), "running": counts.get("running", 0)},
             "runs": [_run_out(dict(r)) for r in rows]}
 
 
@@ -1226,215 +1193,9 @@ async def forget_chat(conn, user_id: str, chat_id: str) -> int:
 
 
 async def forget_user(conn, user_id: str) -> int:
-    """memory_v2 turned off for good (collections revert): the user's runs, candidates and the live switch go. The facts and
+    """memory_v2 turned off for good (collections revert): the user's runs and candidates go. The facts and
     events live mode wrote are memory, not derived data, and stay."""
     done = await conn.execute("delete from orion_mem_extraction_run where user_id = $1", user_id)
     await conn.execute("delete from orion_mem_extraction_state where user_id = $1", user_id)
     _settings.pop(user_id, None)
     return int(done.split()[-1])
-
-
-# --- The quality-gate report -------------------------------------------------------------------------------------------
-
-async def _snippets(conn, chat_id: str, first: int | None, last: int | None) -> list[dict]:
-    if first is None or last is None:
-        return []
-    rows = await conn.fetch("select id, content_json from orion_chat_messages where chat_id = $1 and id >= $2 and id <= $3 "
-                            "order by id limit 12", chat_id, first, last)
-    out = []
-    for row in rows:
-        try:
-            content = json.loads(row["content_json"])
-        except (TypeError, ValueError):
-            continue
-        if isinstance(content, dict) and content.get("role") == "user" and not content.get("failed_turn"):
-            text = memory.memory_message_text(content)
-            if text:
-                out.append({"id": row["id"], "text": _clip(text, 280)})
-    return out[:3]
-
-
-def _describe(op: dict, reveal: bool, sensitive: bool) -> dict:
-    """The candidate as the report shows it (a locked sentence only when `reveal`)."""
-    locked = sensitive and not reveal
-    if op["type"] == "add_event":
-        w = op["when"]
-        return {"type": "event", "text": "[locked]" if locked else op["title"], "date": w["on"], "end": w["end"],
-                "precision": w["precision"], "said_as": w["said_as"], "date_note": w["note"],
-                "people": [p["name"] for p in op.get("people") or []], "place": (op.get("place") or {}).get("name")}
-    if op["type"] == "add_note":
-        return {"type": "note", "text": op["text"]}
-    if op["type"] == "set_relation":
-        spec = op["entity"]
-        return {"type": "relation", "text": op["relation"], "about": spec["name"]}
-    spec = op["entity"]
-    out = {"type": "supersede" if op["type"] == "supersede" else "fact", "category": op["category"],
-           "text": "[locked]" if locked else op["statement"],
-           "about": spec["name"] + (f" ({spec['relation']})" if spec.get("relation") else "")}
-    if op["type"] == "supersede":
-        out["replaces"] = {"fact_id": op["fact_id"], "was": "[locked]" if locked else op["old"]}
-    return out
-
-
-async def report(user_id: str, settings, run_id: int | None = None, chat_id: str | None = None, limit: int = 100,
-                 reveal: bool = False, verdict: str | None = None) -> dict:
-    """What the extraction found and what it would have done (the quality gate, §7.4). `run_id` / `chat_id` narrow it; `limit`
-    candidates (newest first, at most 300), `verdict` filters them; locked texts are shown only with `reveal`."""
-    me.require(settings)
-    limit = max(1, min(int(limit), 300))
-    scope = "r.user_id = $1 and ($2::bigint is null or r.id = $2) and ($3::text is null or r.chat_id = $3)"
-    conn = await _connect()
-    try:
-        runs = await conn.fetch(f"select r.state, r.prefilter, r.tokens_in, r.tokens_out, r.duration_ms, r.mode, r.candidates, "
-                                f"r.summary_only from orion_mem_extraction_run r where {scope}", user_id, run_id, chat_id)
-        counts = await conn.fetch(
-            f"select c.verdict, c.bucket, c.unsupported_risk as risk, split_part(c.dedupe, ':', 1) as dedupe, c.sensitive, "
-            f"c.reason, c.op->>'type' as type, c.outcome, count(*) as n from orion_mem_candidate c join "
-            f"orion_mem_extraction_run r on r.id = c.run_id where {scope} group by 1, 2, 3, 4, 5, 6, 7, 8", user_id, run_id,
-            chat_id)
-        dropped = await conn.fetch(
-            f"select r.id, r.chat_id, r.prefilter, c.title from orion_mem_extraction_run r left join orion_chats c on c.id = "
-            f"r.chat_id and c.user_id = r.user_id where {scope} and r.prefilter like 'dropped:%' order by r.id desc limit 100",
-            user_id, run_id, chat_id)
-        empty = await conn.fetch(
-            f"select r.id, r.chat_id, c.title from orion_mem_extraction_run r left join orion_chats c on c.id = r.chat_id and "
-            f"c.user_id = r.user_id where {scope} and r.state = 'done' and r.prefilter like 'passed%' and r.candidates = 0 "
-            f"and not r.summary_only order by r.id desc limit 100", user_id, run_id, chat_id)
-        rows = await conn.fetch(
-            f"select c.*, r.mode, t.title from orion_mem_candidate c join orion_mem_extraction_run r on r.id = c.run_id left "
-            f"join orion_chats t on t.id = c.chat_id and t.user_id = c.user_id where {scope} and "
-            f"($4::text is null or c.verdict = $4) order by c.id desc limit $5", user_id, run_id, chat_id, verdict, limit)
-        items = []
-        for r in rows:
-            op = _j(r["op"])
-            items.append({"id": r["id"], "run_id": r["run_id"], "chat": {"id": r["chat_id"], "title": r["title"]},
-                          "source": {"first_message": r["first_message"], "last_message": r["last_message"],
-                                     "user_messages": await _snippets(conn, r["chat_id"], r["first_message"],
-                                                                      r["last_message"])},
-                          **_describe(op, reveal, r["sensitive"]), "bucket": r["bucket"],
-                          "unsupported_risk": r["unsupported_risk"], "dedupe": r["dedupe"],
-                          "merge_target": r["merge_target"], "sensitive": r["sensitive"], "verdict": r["verdict"],
-                          "reason": r["reason"], "outcome": r["outcome"], "mode": r["mode"]})
-    finally:
-        await conn.close()
-
-    def tally(key: str, rows_=counts) -> dict:
-        out: dict = {}
-        for r in rows_:
-            out[r[key]] = out.get(r[key], 0) + r["n"]
-        return out
-    by_prefilter: dict = {"passed": 0}
-    for r in runs:
-        if r["prefilter"]:
-            head = "passed" if r["prefilter"].startswith("passed") else r["prefilter"]
-            by_prefilter[head] = by_prefilter.get(head, 0) + 1
-    total = sum(r["n"] for r in counts)
-    would = {"facts": sum(r["n"] for r in counts if r["verdict"] == "would_write" and r["type"] == "add_fact"),
-             "events": sum(r["n"] for r in counts if r["verdict"] == "would_write" and r["type"] == "add_event"),
-             "cards": tally("verdict").get("would_card", 0)}
-    skip_reasons: dict = {}
-    for r in counts:
-        if r["verdict"] == "would_skip":
-            skip_reasons[r["reason"] or "?"] = skip_reasons.get(r["reason"] or "?", 0) + r["n"]
-    return {
-        "runs": {"total": len(runs), "by_state": _count_by(runs, "state"),
-                 "tokens_in": sum(r["tokens_in"] or 0 for r in runs), "tokens_out": sum(r["tokens_out"] or 0 for r in runs),
-                 "seconds": round(sum(r["duration_ms"] or 0 for r in runs) / 1000, 1), "prefilter": by_prefilter},
-        "candidates": {"total": total, "by_verdict": tally("verdict"), "by_bucket": tally("bucket"),
-                       "by_risk": tally("risk"), "by_dedupe": tally("dedupe"),
-                       "sensitive": sum(r["n"] for r in counts if r["sensitive"]), "skip_reasons": skip_reasons,
-                       "by_outcome": {k: v for k, v in tally("outcome").items() if k}},
-        "would_have_written": would,
-        "dropped_by_prefilter": [{"run_id": r["id"], "chat_id": r["chat_id"], "title": r["title"],
-                                  "reason": r["prefilter"].split(":", 1)[1]} for r in dropped],
-        "nothing_extracted": [{"run_id": r["id"], "chat_id": r["chat_id"], "title": r["title"]} for r in empty],
-        "items": items, "shown": len(items)}
-
-
-def _count_by(rows, key: str) -> dict:
-    out: dict = {}
-    for r in rows:
-        out[r[key]] = out.get(r[key], 0) + 1
-    return out
-
-
-def report_text(rep: dict) -> str:
-    """The report as plain lines to read in a terminal or a browser."""
-    r, c, w = rep["runs"], rep["candidates"], rep["would_have_written"]
-    lines = [f"Runs: {r['total']} {r['by_state']}; pre-filter {r['prefilter']}; tokens in/out {r['tokens_in']}/{r['tokens_out']}; "
-             f"{r['seconds']} s",
-             f"Candidates: {c['total']} verdicts {c['by_verdict']}; buckets {c['by_bucket']}; risk {c['by_risk']}; "
-             f"dedupe {c['by_dedupe']}; sensitive {c['sensitive']}; skipped because {c['skip_reasons']}",
-             f"Would have written: {w['facts']} facts, {w['events']} events; would have asked: {w['cards']} cards", ""]
-    if rep["dropped_by_prefilter"]:
-        lines.append("Dropped by the pre-filter:")
-        lines += [f"  run {d['run_id']} {d['title'] or d['chat_id'][:8]}: {d['reason']}" for d in rep["dropped_by_prefilter"]]
-        lines.append("")
-    if rep["nothing_extracted"]:
-        lines.append("Read by the model, nothing extracted:")
-        lines += [f"  run {d['run_id']} {d['title'] or d['chat_id'][:8]}" for d in rep["nothing_extracted"]]
-        lines.append("")
-    lines.append(f"Candidates (newest first, {rep['shown']} shown):")
-    for i in rep["items"]:
-        src = i["source"]
-        head = f"  #{i['id']} run {i['run_id']} [{i['verdict']}{': ' + i['reason'] if i['reason'] else ''}] {i['type']}"
-        about = f" about {i['about']}" if i.get("about") else ""
-        when = f" on {i['date']} ({i['precision']}{', said ' + repr(i['said_as']) if i['said_as'] else ''})" if i["type"] == "event" else ""
-        lines.append(f"{head}{about}{when}: {i['text']}")
-        lines.append(f"      chat {i['chat']['title'] or i['chat']['id'][:8]} msgs {src['first_message']}-{src['last_message']}; "
-                     f"bucket {i['bucket']}, risk {i['unsupported_risk']}, dedupe {i['dedupe']}"
-                     f"{', merges into entity ' + str(i['merge_target']) if i['merge_target'] else ''}"
-                     f"{', SENSITIVE' if i['sensitive'] else ''}"
-                     f"{', outcome ' + i['outcome'] if i['outcome'] else ''}")
-        for m in src["user_messages"]:
-            lines.append(f"      > {m['text']}")
-    return "\n".join(lines)
-
-
-# --- The first week's daily summary -------------------------------------------------------------------------------------
-
-def _bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, day_time.min).astimezone()
-    return start, datetime.combine(day + timedelta(days=1), day_time.min).astimezone()
-
-
-async def daily_summary(user_id: str, settings, today: date | None = None) -> dict:
-    """For the first week after automatic writing was turned on: one card per day that had additions, newest first
-    ({"day", "facts", "events", "cards", "text"}: "Dün hafızaya 4 bilgi, 2 olay eklendi"). Empty when live is off or the week
-    is over. What was undone (Geri al, the trash) is not counted."""
-    me.require(settings)
-    today = today or datetime.now().astimezone().date()
-    conn = await _connect()
-    try:
-        state = await conn.fetchrow("select live, live_since from orion_mem_extraction_state where user_id = $1", user_id)
-        if state is None or not state["live_since"]:
-            return {"live": bool(state and state["live"]), "cards": []}
-        first = state["live_since"].astimezone().date()
-        end = first + timedelta(days=SUMMARY_DAYS)
-        cards = []
-        day = today if today <= end else first - timedelta(days=1)  # Past the first week: no cards.
-        while day >= first:
-            start, stop = _bounds(day)
-            facts = await conn.fetchval(
-                f"select count(*) from orion_mem_fact f where f.user_id = $1 and f.origin = 'extraction' and f.run_id is not "
-                f"null and coalesce(f.lineage, f.id) = f.id and f.recorded_at >= $2 and f.recorded_at < $3 and {me._live('f')}",
-                user_id, start, stop)
-            events = await conn.fetchval(
-                f"select count(*) from orion_mem_event e where e.user_id = $1 and e.origin = 'extraction' and e.run_id is not "
-                f"null and coalesce(e.lineage, e.id) = e.id and e.recorded_at >= $2 and e.recorded_at < $3 and {ev._live('e')}",
-                user_id, start, stop)
-            asked = await conn.fetchval("select count(*) from orion_mem_candidate where user_id = $1 and outcome = 'carded' "
-                                        "and created_at >= $2 and created_at < $3", user_id, start, stop)
-            if facts or events or asked:
-                label = "Bugün" if day == today else "Dün" if day == today - timedelta(days=1) else day.isoformat()
-                parts = [f"{facts} bilgi" if facts else "", f"{events} olay" if events else ""]
-                text = f"{label} hafızaya {', '.join(p for p in parts if p)} eklendi" if facts or events else f"{label} hafızaya bir şey eklenmedi"
-                if asked:
-                    text += f"; {asked} öneri onayını bekliyor"
-                cards.append({"day": day.isoformat(), "facts": int(facts), "events": int(events), "cards": int(asked),
-                              "text": text + "."})
-            day -= timedelta(days=1)
-    finally:
-        await conn.close()
-    return {"live": bool(state["live"]), "live_since": state["live_since"].isoformat(), "window_ends": end.isoformat(),
-            "cards": cards}

@@ -106,7 +106,7 @@ async def execute_tool(tool, arguments, context):
 
 
 class ToolConversation:
-    def __init__(self, context, enabled, assistant: bool = True):
+    def __init__(self, context, enabled, assistant: bool = False):  # Memory tools only when the caller says it is "Asistanla konuş".
         self.context = context
         self.enabled = set(expand_split_tools(enabled))  # A job queued before add_memory was split still names it.
         if not assistant:  # Memory belongs to "Asistanla konuş" only: a normal chat never gets a memory tool.

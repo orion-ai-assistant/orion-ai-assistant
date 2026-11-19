@@ -33,9 +33,6 @@ class AISettings(BaseModel):
     # stays only so tests and an emergency fallback can turn it off. And how long a removed memory waits in the trash.
     memory_v2: bool = True
     memory_trash_days: int = Field(default=30, ge=1, le=3650)
-    # With memory_v2: new messages of the "Asistanla konuş" chat (only that one) are read in the background for things worth remembering (memory_extract). The
-    # candidates only go to the quality-gate report until the user turns automatic writing on (its own switch, not a setting).
-    memory_extract_chats: bool = True
     # The model that does it, a Router model group; empty = the chat model.
     memory_background_model: str = ""
     # With memory_v2: a short profile of the user (their pinned lines and their own facts, memory_profile) is added to the

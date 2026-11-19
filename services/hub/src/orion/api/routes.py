@@ -42,8 +42,21 @@ from orion.worker.tools._registry import get_registry
 
 
 @router.get("/api/v1/tools")
-async def tool_catalog(request: Request, lang: str | None = None, current_user: str = Depends(get_current_user)):
-    return get_registry().catalog(lang or request.headers.get("Accept-Language"))
+async def tool_catalog(request: Request, lang: str | None = None, chat_id: str | None = Query(default=None, max_length=120),
+                       current_user: str = Depends(get_current_user)):
+    """The tool groups. With `chat_id` of a chat that is not "Asistanla konuş" the memory group is left out (memory belongs to that chat only)."""
+    groups = get_registry().catalog(lang or request.headers.get("Accept-Language"))
+    if chat_id and not await _is_assistant_chat(request, current_user, chat_id):
+        groups = [g for g in groups if g["id"] != "memory"]
+    return groups
+
+
+async def _is_assistant_chat(request: Request, user_id: str, chat_id: str) -> bool:
+    from orion.api.services.assistant_chat import current_assistant_chat
+    try:
+        return await current_assistant_chat(request.app.state.redis, user_id) == chat_id
+    except Exception:
+        return False  # Unknown = not the assistant chat: no memory.
 
 
 @router.get("/api/v1/tools/default-selection", response_model=ToolSelection)
@@ -55,9 +68,13 @@ async def tool_default_selection(current_user: str = Depends(get_current_user)):
 async def get_chat_tools(chat_id: str, request: Request, current_user: str = Depends(get_current_user)):
     await ensure_chat_access(request.app.state.redis, current_user, chat_id)
     try:
-        return await read_selection(request.app.state.redis, current_user, chat_id)
+        got = await read_selection(request.app.state.redis, current_user, chat_id)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+    if not await _is_assistant_chat(request, current_user, chat_id):  # A normal chat has no memory tools at all.
+        from orion.contracts.tools import MEMORY_TOOLS
+        got["enabled_tools"] = [t for t in got["enabled_tools"] if t not in MEMORY_TOOLS]
+    return got
 
 
 @router.put("/api/v1/chats/{chat_id}/tools")
@@ -628,12 +645,7 @@ async def memory_profile_unpin(fact_id: int, request: Request, current_user: str
     return await _ben(request, current_user, lambda settings: memory_profile.unpin_fact(current_user, settings, fact_id))
 
 
-# --- Extraction: reading chats for memories, shadow mode and the quality-gate report (memory_extract; memory_v2) -------------
-
-class ExtractionLive(BaseModel):
-    enabled: bool
-    confirm: bool = False  # Needed to turn automatic writing on: the user has read the report.
-
+# --- Extraction: reading chats for memories (memory_extract; memory_v2) -------------
 
 class ExtractionBacklog(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
@@ -641,7 +653,7 @@ class ExtractionBacklog(BaseModel):
 
 @router.get("/api/v1/memory/extraction")
 async def memory_extraction_status(request: Request, limit: int = 20, current_user: str = Depends(get_current_user)):
-    """The extraction: whether it is on, whether automatic writing is on (off by default), the queue and the newest runs."""
+    """The extraction: whether it is on, the queue and the newest runs."""
     from orion.kernel import memory_extract as mx
 
     async def call(settings):
@@ -650,25 +662,9 @@ async def memory_extraction_status(request: Request, limit: int = 20, current_us
     return await _ben(request, current_user, call)
 
 
-@router.get("/api/v1/memory/extraction/report")
-async def memory_extraction_report(request: Request, run_id: int | None = None, chat_id: str | None = Query(default=None, max_length=120),
-                                   limit: int = 100, verdict: str | None = Query(default=None, max_length=12),
-                                   reveal: bool = False, format: str = Query(default="json", pattern="^(json|text)$"),
-                                   current_user: str = Depends(get_current_user)):
-    """The quality-gate report: what the extraction found and what it would have written (nothing is written in shadow
-    mode). `format=text` is the same as readable lines. Locked (sensitive) sentences only with `reveal=true`."""
-    from orion.kernel import memory_extract as mx
-
-    async def call(settings):
-        rep = await mx.report(current_user, settings, run_id, chat_id, limit, reveal, verdict)
-        return Response(mx.report_text(rep), media_type="text/plain; charset=utf-8") if format == "text" else rep
-    return await _ben(request, current_user, call)
-
-
 @router.post("/api/v1/memory/extraction/backlog")
 async def memory_extraction_backlog(payload: ExtractionBacklog, request: Request, current_user: str = Depends(get_current_user)):
-    """Queue the chats that have messages not read yet (newest first, at most `limit`): how the old chats go through the
-    quality gate. Runs one at a time in the background; cancel any time."""
+    """Queue the chats that have messages not read yet (newest first, at most `limit`): how the old chats are read. Runs one at a time in the background; cancel any time."""
     from orion.kernel import memory_extract as mx
     return await _ben(request, current_user, lambda s: mx.enqueue_backlog(current_user, s, payload.limit))
 
@@ -683,20 +679,6 @@ async def memory_extraction_cancel_all(request: Request, current_user: str = Dep
 async def memory_extraction_cancel(run_id: int, request: Request, current_user: str = Depends(get_current_user)):
     from orion.kernel import memory_extract as mx
     return await _ben(request, current_user, lambda s: mx.cancel_run(current_user, run_id))
-
-
-@router.put("/api/v1/memory/extraction/live")
-async def memory_extraction_live(payload: ExtractionLive, request: Request, current_user: str = Depends(get_current_user)):
-    """Automatic writing (add-only; conflicts become cards) on or off. Off by default; turning it on needs confirm=true."""
-    from orion.kernel import memory_extract as mx
-    return await _ben(request, current_user, lambda s: mx.set_live(current_user, s, payload.enabled, payload.confirm))
-
-
-@router.get("/api/v1/memory/extraction/daily")
-async def memory_extraction_daily(request: Request, current_user: str = Depends(get_current_user)):
-    """The first week after automatic writing was turned on: one summary per day ("Dün hafızaya 4 bilgi, 2 olay eklendi")."""
-    from orion.kernel import memory_extract as mx
-    return await _ben(request, current_user, lambda s: mx.daily_summary(current_user, s))
 
 
 @router.get("/api/v1/chats/{chat_id}/memory/summary")

@@ -228,7 +228,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('automatic retry is disabled', conversation.activity[1]['result']['error']['message'])
 
     async def test_a_call_refused_before_it_ran_can_be_retried_in_the_same_turn(self):
-        conversation = self.conversation(['remember'])
+        conversation = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['remember'], assistant=True)
         requests = []
 
         async def stream(messages, settings, **kwargs):
@@ -266,7 +266,7 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         saved = ToolSelection(categories={'memory': True}, functions={'add_memory': False, 'search_memory': True})
         self.assertEqual(saved.functions, {'remember': False, 'search_memory': True})
         self.assertNotIn('add_memory', saved.functions)
-        queued = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['add_memory', 'get_current_time'])
+        queued = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), ['add_memory', 'get_current_time'], assistant=True)
         self.assertEqual(queued.enabled, {'remember', 'get_current_time'})
 
     async def test_a_normal_chat_never_gets_a_memory_tool(self):
@@ -276,6 +276,29 @@ class ConversationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normal.enabled, {'get_current_time'})
         talk = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), names, assistant=True)
         self.assertEqual(talk.enabled, set(names))
+
+    async def test_a_normal_chat_sends_no_memory_schema_and_a_forced_memory_call_is_refused(self):
+        from orion.contracts.tools import MEMORY_TOOLS
+        names = sorted(MEMORY_TOOLS | {'get_current_time'})
+        for assistant, expect_memory in ((False, False), (True, True)):
+            conversation = ToolConversation(SimpleNamespace(user_id='u', chat_id='c', turn_id='t'), names, assistant=assistant)
+            sent = []
+
+            async def stream(messages, settings, **kwargs):
+                sent.append([t['function']['name'] for t in kwargs.get('tools', [])])
+                if len(sent) == 1:  # The model calls `remember` whether or not it was offered.
+                    yield 'tool_calls', json.dumps([{'id': 'm1', 'type': 'function', 'function': {
+                        'name': 'remember', 'arguments': json.dumps({'text': 'Annemin doğum günü 17 Kasım.'})}}])
+                else:
+                    yield 'content', 'ok'
+            with patch('orion.kernel.memory_extract.queue_remember', AsyncMock(return_value=1)), \
+                    patch('orion.kernel.config.get_runtime_settings', AsyncMock(return_value=RuntimeSettings())):
+                _ = [e async for e in conversation.stream([], RuntimeSettings(), AsyncMock(return_value=False), stream)]
+            self.assertEqual(bool(MEMORY_TOOLS & set(sent[0])), expect_memory)
+            status = conversation.activity[0]['status']
+            if not expect_memory:
+                self.assertEqual(status, 'error')
+                self.assertIn('not enabled', conversation.activity[0]['result']['error']['message'])
 
     async def test_ambiguous_media_seek_returns_to_model_for_targeted_retry(self):
         conversation = self.conversation(['media_control'])

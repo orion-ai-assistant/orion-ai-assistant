@@ -20,7 +20,7 @@ CATEGORY = Category(
                     "event's 'said_as' carries the day it was said ('geçen hafta, said on 2026-11-18')."),
                 input_model=MemorySearchInput, handler=search_memory, timeout_seconds=45, default_on=True),
            Tool(id="remember", name="Hatırla",
-                description=("When the user asks you to remember something ('remember this', 'note that', 'don't forget'), "
+                description=("When the user asks you to remember something, in ANY language ('remember this', 'note that', 'don't forget' or the same in theirs), "
                              "or tells you something personal and asks you to keep it, call this with their words in 'text', "
                              "in their own language, never translated. You do not choose what kind of memory it is: a "
                              "background writer files it (a fact, an event, a person, a changed relation or a note) and "

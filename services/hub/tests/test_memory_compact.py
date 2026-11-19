@@ -35,7 +35,7 @@ class ContextLengthTest(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_in_the_catalog_falls_back_to_the_setting(self):
         models = [{"name": "g", "capability": "chat", "context_length": None}]
         self.assertEqual(await self.resolve(models, setting=32000), 32000)
-        self.assertEqual(await self.resolve([], setting=0), 0)
+        self.assertEqual(await self.resolve([], setting=0), 128000)  # Nothing known (or the Router is down): 128000.
 
 
 class CatalogContextLengthTest(unittest.TestCase):
@@ -56,6 +56,15 @@ class BreakdownTest(unittest.TestCase):
         self.assertGreater(got["messages"], got["tools"])
         self.assertIsNone(memory_compact.scale_breakdown({}, 3800))  # Nothing estimated.
         self.assertIsNone(memory_compact.scale_breakdown({"system": 10}, 0))  # No real count.
+
+    def test_a_tool_results_count_stays_the_same_while_the_chat_grows(self):
+        results = []
+        for turn in range(1, 6):  # One tool call early on, then only talk: the real total grows faster than the estimate.
+            parts = {"system": 100, "profile": 50, "tools": 300, "tool_results": 80, "messages": 200 * turn}
+            got = memory_compact.scale_breakdown(parts, 700 + 330 * turn)
+            self.assertEqual(sum(got.values()), 700 + 330 * turn)
+            results.append(got["tool_results"])
+        self.assertEqual(set(results), {80})
 
     def test_request_parts_split_system_profile_tools_messages_and_tool_results(self):
         messages = [{"role": "system", "content": "s" * 400},
@@ -110,7 +119,7 @@ class ContextMeterTests(PostgresMemoryCase):
         await sql('truncate orion_mem_chat_state, orion_chat_messages cascade')
         await sql("insert into orion_chats(id, user_id, title, assistant) values ('c1', 'alice', 'A', true), "
                   "('c3', 'alice', 'Normal', false) on conflict (id) do update set assistant = excluded.assistant")
-        self.settings = SimpleNamespace(memory_v2=True, memory_extract_chats=True, router_model_group='g', chat_context_tokens=1000,
+        self.settings = SimpleNamespace(memory_v2=True, router_model_group='g', chat_context_tokens=1000,
                                         chat_compact_idle_percent=40, chat_compact_idle_minutes=30, chat_compact_force_percent=90)
         for target, name, value in ((memory_compact, 'context_length', AsyncMock(return_value=1000)),
                                     (memory_compact, '_idle_checked', {}),
