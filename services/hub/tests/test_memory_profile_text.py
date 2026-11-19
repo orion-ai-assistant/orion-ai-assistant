@@ -100,6 +100,7 @@ class ProfileLineAndCompactTests(PostgresMemoryCase):
                 await asyncio.sleep(0.02)
             run.assert_awaited_once()  # The model's failure ended in a log line, not in the HTTP answer.
         self.assertNotIn('alice', mp._compacting)
+        self.assertEqual(mp._compact_errors.get('alice'), 'the model gave no lines')
 
     async def test_the_profile_compact_route_answers_202_started(self):
         import inspect
